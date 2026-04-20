@@ -1,0 +1,606 @@
+# cPyNodus
+
+The cPyNodus project is a CircuitPython project for the “Nodus” family of Pico2 W devices. Nodus devices support sensor-only, switch-only, and combined sensor+switch configurations, and is designed to be provisioned in the field via a lightweight AP onboarding flow or via Sensorius. After Nodus is properly provisioned and rebooted, Nodus will use a discovery protocol to automatically publish/subscribe to either Sensorius or Home Assistant MQTT broker.
+
+Sensorius Automatio Instrumentorum (or Sensorius AI) or just "Sensorius" (see my saiSensorius project) is the companion system that monitors and manages deployed Nodus devices. Sensorius and Nodus were developed together and are designed to be used as a pair, but Nodus can be configured to integrate directly with Home Assistant using Home Assistant's MQTT integration. Sensorius is a modular, Python-based system for managing environmental sensors and controlling relays via MQTT. Sensorius was focussed on providing environmental monitoring and control for greenhouse/hoop-house environments. It features a real-time web dashboard, automated onboarding for new devices, and robust data logging and visualization. Sensorius can be set up on Raspberry Pi (with directly connected sensors), macOS, Windows 10/11, and Linux using Nodus sensors and switches. Sensorius can also be integrated in to Home Assistant to have it's sensors and switches publish/subscribe to Home Assistant.
+
+## Who this is for
+
+- Makers and students who want a real-world IoT firmware example.
+- Contributors who want a small, readable CircuitPython codebase.
+- Anyone building Pico2 W sensor or relay nodes.
+- Project Status: Pre-1.0. Interfaces and internal architecture may change.
+- Security Note: Wi-Fi credentials are obfuscated, not encrypted. Do not deploy in security-sensitive environments. See SECURITY.md.
+
+## Key features
+Nodus is a headless IoT node with the following core responsibilities:
+
+- Bring up Wi‑Fi in normal mode when valid credentials exist.
+- Fall back to AP mode when credentials are missing or invalid.
+- Provide a minimal web UI for initial provisioning.
+- Support MQTT publishing and control (Sensorius or Home Assistant).
+- Auto‑detect supported sensors and switches at boot.
+- Maintain sensor data collection and publish loops.
+- Provide recovery hooks (network restart, soft restart, hard reboot).
+- Constrained-memory friendly web server and routes
+
+
+## System Architecture
+### Nodus using Sensorius MQTT Broker
+```
+                     +------------------------+        +------------------+
+                     |      Sensorius Hub     |<------>|  Home Assistant  |
+                     |  (FastAPI + MQTT + DB) |        |     (Optional)   |
+                     +------------------------+        +------------------+
+                         ^            ^          
+                         |            |
+                 +-------+            +-------+
+                 |                            |
+                 v                            v
+         +---------------+            +----------------+
+         | Nodus Sensor  |            | Nodus Switch   |
+         |  (e.g. CO2)   |            |  IoT Relay     |
+         +---------------+            +----------------+
+                |                              |
+        MQTT pub/sub                      MQTT pub/sub 
+```
+### Nodus using Home Assistant MQTT Broker
+```
+                     +------------------+
+                     | Home Assistant   |
+                     |     (HA)         |
+                     +------------------+
+                         ^           ^          
+                         |           |
+                 +-------+           +--------+
+                 |                            |
+                 v                            v
+         +---------------+            +----------------+
+         | Nodus Sensor  |            | Nodus Switch   |
+         |  (e.g. CO2)   |            |  IoT Relay     |
+         +---------------+            +----------------+
+                |                              |
+        MQTT pub/sub                      MQTT pub/sub 
+```
+
+## Hardware
+
+- Raspberry Pi Pico2 W (required)
+- Optional I2C sensors
+- Optional UART/Modbus soil sensor
+- Optional relay switches
+
+The Pico2 W is a hard requirement because the extra memory is needed for this firmware.
+
+Firmware requirement:
+- CircuitPython 9.2.8 (tested baseline)
+- CircuitPython 10.x not validated
+
+See `docs/pinout.md` for the Nodus wiring pinout.
+
+## Quick start (device)
+
+1. Install CircuitPython on the Pico2 W.
+2. Copy this repo to the device filesystem (CIRCUITPY).
+3. `docs/pinout.md` should be used as guidance to connect sensors, switches, RW enable, etc 
+4. Reboot the device and allow about a minute for it to self-configure.
+5. Edit the relavent files for your Nodus:
+   - `settings.toml` (configure the wifi credentials)
+   - `sensor_i2c.toml`
+   - `sensor_soil.toml`
+   - `switch.toml` if the device includes switches
+
+## Deployment script
+
+Use `scripts/deploy_nodus.sh` to copy firmware files to a `CIRCUITPY` drive.
+
+To stage a `.mpy`-based release tree for memory testing, use
+`scripts/build_mpy_release.sh`. It writes a deployable tree under
+`build/mpy_release/` by default, keeping `code.py` and `boot.py` as source and
+compiling the other root modules plus `sensor_modules/*.py` to `.mpy`.
+
+Examples:
+
+- Direct local mount:
+  - `scripts/deploy_nodus.sh --target /Volumes/CIRCUITPY`
+- Raspberry Pi host with a connected Nodus (direct to drive):
+  - `scripts/deploy_nodus.sh --target pi@raspberrypi:/media/pi/CIRCUITPY`
+- Raspberry Pi staging folder (manual flash later):
+  - `scripts/deploy_nodus.sh --target pi@raspberrypi:/home/pi/cPyNodus-release --mode staging`
+- Preview without writing:
+  - `scripts/deploy_nodus.sh --target pi@raspberrypi:/media/pi/CIRCUITPY --dry-run`
+- Sync only root Python files (`/*.py`):
+  - `scripts/deploy_nodus.sh --target /Volumes/CIRCUITPY --content root-py`
+- Sync Nodus runtime files only (root `/*.py`, root `/*.def`, plus `sensor_modules/*.py`):
+  - `scripts/deploy_nodus.sh --target /Volumes/CIRCUITPY --content nodus`
+- Build a staged `.mpy` release tree:
+  - `scripts/build_mpy_release.sh --clean`
+
+Notes:
+
+- The script excludes development files (`tests/`, `docs/`, `.git/`, caches, etc.).
+- `--content` options are `full` (default), `root-py` (only root `/*.py` files), or `nodus` (root `/*.py`, root `/*.def`, plus `sensor_modules/*.py`).
+- `scripts/build_mpy_release.sh` copies `lib/` and root `*.def` files unchanged.
+- Use an `mpy-cross` build that matches CircuitPython `9.2.8` when building `.mpy` files for device testing.
+- On macOS, deploy sets `COPYFILE_DISABLE=1` and `COPY_EXTENDED_ATTRIBUTES_DISABLE=1` to prevent `._*` sidecar files on CIRCUITPY.
+- In `drive` mode, the target path must contain `CIRCUITPY` (override with `--force`).
+- `--mode` options are `auto` (default), `drive`, or `staging`.
+- Use `--delete` if you want files removed from target when no longer present in this repo.
+- `--delete` is not supported with `--content root-py` or `--content nodus`.
+- Use `--prune-deprecated` to remove only the target paths listed in `scripts/deprecated_target_files.txt`.
+
+## Boot Flow
+
+1. `boot.py` configures USB/FS access based on a guard pin.
+2. `code.py` initializes settings, sensor, and switch controllers.
+3. Network logic chooses AP mode or normal mode:
+   - **AP mode**: starts an AP SSID named `Nodus_Setup` password is `password` (default channel `6`).
+   After connecting to the `Nodus_Setup` SSID, browse to `http://192.168.4.1:8000/setup` for the local setup UI. The setup UI exposes pane-based configuration for network, sensor, switch, MQTT, and time settings, and includes manual switch override buttons when switch channels are present.
+   - **Normal mode**: connects to Wi‑Fi, configures mDNS, and starts profile-specific runtime services.
+4. TaskSupervisor starts asynchronous tasks (sensor reads, MQTT loop, watchdog, GC, etc.).
+
+## AP Mode (Factory / Recovery)
+
+AP mode is used when:
+
+- SSID or password is missing,
+- SSID equals `Nodus_Setup`, or
+- Wi‑Fi connection fails.
+
+AP mode exposes a local setup web UI for provisioning and configuration. Once settings are saved, a reboot is triggered to re-enter normal mode.
+
+## Web UI Memory Guards
+
+Nodus uses intentional low-memory guards around the web UI to protect runtime stability on constrained CircuitPython heaps.
+
+- The web server has a global low-memory admission guard. Under pressure, requests may be rejected before heavy handler work begins.
+- Some routes have stricter route-specific guards than the global floor. `/setup` is the most memory-sensitive page and is guarded more aggressively than lightweight status views.
+- Guarded requests return `503 Service Unavailable` with a retry message. This is a protective response, not necessarily a crash or reboot condition.
+- Before rejecting a request for low memory, Nodus attempts a garbage-collection pass and re-checks available memory.
+- Manual pacing still matters on weaker devices. Repeated rapid page loads or heavy configuration actions can still push the heap into protection windows.
+
+## Normal Mode
+
+In normal mode the device:
+
+- Connects to Wi‑Fi and configures socket pool and mDNS.
+- Starts sensor data collection loop.
+- Publishes sensor metrics on a fixed interval.
+- Serves a lightweight status page and JSON endpoints (unless HA mode disables the web server).
+
+## Profiles
+
+- `nodusweb` is the default local-only profile.
+  - MQTT startup is skipped.
+  - Periodic NTP sync is started after normal network bring-up.
+  - The device can run without an MQTT broker.
+  - In AP mode, the Nodus web UI can be used to provision Wi-Fi and select/update the runtime profile.
+  - In normal mode, the Nodus web UI can still be used to manage configuration directly without Sensorius.
+- `sensorius` is the networked profile used by Sensorius for Nodus onboarding, management, monitoring and automation implementation.
+  - MQTT is started and switch control topics are subscribed when enabled.
+  - Broker settings come from `[MQTT]`.
+  - Sensor metrics and runtime metadata are published over MQTT.
+  - In normal mode, the built-in webserver is intentionally not started in this profile.
+  - NTP sync is not started in this profile.
+- `weewx` is a networked MQTT profile using the shared `[MQTT]` connection settings.
+  - MQTT is enabled.
+  - In normal mode, the built-in webserver is intentionally not started in this profile.
+  - NTP sync is not started in this profile.
+- `homeassistant` is a networked MQTT profile using the shared `[MQTT]` connection settings.
+  - MQTT is enabled.
+  - Home Assistant behavior is configured in `[HomeAssistant]`.
+  - NTP sync is not started in this profile.
+  - In normal mode, the built-in webserver is intentionally not started in this profile.
+  - Provision the device in `nodusweb`/AP mode first, then reboot into `homeassistant`.
+  - Once the device is operating in `homeassistant`, changes are currently expected through `settings.toml` edits or by returning the device to provisioning mode.
+
+## Sensor Auto‑Detect
+
+`cPySensorFactory.detect_device()` probes I2C and UART interfaces at boot to detect supported sensor types and configure the appropriate driver and settings.
+
+## Boot-Time Factory Reset
+
+- `GP17` is reserved as the factory-reset input.
+- Hold `GP17` LOW continuously for 5 seconds during boot to force `ACTIVE_PROFILE = "nodusweb"` in `settings.toml`, then reboot.
+- The `GP17` reset does not currently rewrite the rest of `settings.toml`, and it does not delete or recreate `sensor_i2c.toml`, `sensor_soil.toml`, or `switch.toml`.
+- The pin uses an internal pull-up, so the reset is triggered by externally grounding `GP17` during startup.
+
+## Supported Sensor Types and Metrics
+
+Nodus currently supports these sensor device types: `apvpd`, `aqi`, `avpd`, `co2`, `lux`, and `soil`.
+
+### `apvpd` (dual BME280: ambient + plant)
+
+- `Temperature` (`°C`)
+- `Temperature_F` (`°F`)
+- `Rel-Humidity` (`%`)
+- `Humidity` (`g/m³`)
+- `Ambient VPD` (`kPa`)
+- `Dew Point` (`°C`)
+- `Dew Point_F` (`°F`)
+- `Dew Point Deficit` (`°C`)
+- `DewVPD Risk` (`%`)
+- `Plant Temperature` (`°C`)
+- `Plant Temperature_F` (`°F`)
+- `Plant Rel-Humidity` (`%`)
+- `Plant Humidity` (`g/m³`)
+- `Plant VPD` (`kPa`)
+- `Plant Dew Point` (`°C`)
+- `Plant Dew Point_F` (`°F`)
+- `Plant Dew Point Deficit` (`°C`)
+- `Plant DewVPD Risk` (`%`)
+
+### `aqi` (BME680)
+
+- `Air Quality` (`AQI`)
+- `Gas` (`Ω`)
+- `Temperature` (`°C`)
+- `Temperature_F` (`°F`)
+- `Rel-Humidity` (`%`)
+- `Humidity` (`g/m³`)
+- `Ambient VPD` (`kPa`)
+- `Dew Point` (`°C`)
+- `Dew Point_F` (`°F`)
+- `Dew Point Deficit` (`°C`)
+- `DewVPD Risk` (`%`)
+- `Baro-Pressure` (`hPa`)
+
+### `avpd` (single BME280)
+
+- `Temperature` (`°C`)
+- `Temperature_F` (`°F`)
+- `Rel-Humidity` (`%`)
+- `Humidity` (`g/m³`)
+- `Ambient VPD` (`kPa`)
+- `Dew Point` (`°C`)
+- `Dew Point_F` (`°F`)
+- `Dew Point Deficit` (`°C`)
+- `DewVPD Risk` (`%`)
+- `Baro-Pressure` (`hPa`)
+
+### `co2` (SCD30/SCD4x family)
+
+- `CO2` (`ppm`)
+- `Temperature` (`°C`)
+- `Temperature_F` (`°F`)
+- `Rel-Humidity` (`%`)
+- `Humidity` (`g/m³`)
+- `Ambient VPD` (`kPa`)
+- `Dew Point` (`°C`)
+- `Dew Point_F` (`°F`)
+- `Dew Point Deficit` (`°C`)
+- `DewVPD Risk` (`%`)
+
+### `lux` (VEML7700)
+
+- `Light Intensity` (`lux`)
+- `Auto Light` (`lux`)
+- `PPFD` (`µmol/m²/s`)
+- `DLI` (`mol/m²/day`)
+
+## It is strongly suggested to use HaliSense soil sensors for capatibility (known register layout)
+### `soil` (RS485 Modbus 2-in-1)
+
+- `Soil-Moisture` (`%`)
+- `SSI` (`%`)
+- `Soil-Temp` (`°C`)
+- `Soil-Temp_F` (`°F`)
+- `SMD` (`%`)
+
+### `soil` (RS485 Modbus 4-in-1)
+
+- `Soil-Moisture` (`%`)
+- `SSI` (`%`)
+- `Soil-Temp` (`°C`)
+- `Soil-Temp_F` (`°F`)
+- `Soil-pH` (`pH`)
+- `Soil-EC` (`mS/cm`)
+- `SMD` (`%`)
+
+### `soil` (RS485 Modbus 7-in-1)
+
+- `Soil-Moisture` (`%`)
+- `SSI` (`%`)
+- `Soil-Temp` (`°C`)
+- `Soil-Temp_F` (`°F`)
+- `Soil-pH` (`pH`)
+- `Soil-EC` (`mS/cm`)
+- `SMD` (`%`)
+- `Soil-N` (`mg/kg`)
+- `Soil-P` (`mg/kg`)
+- `Soil-K` (`mg/kg`)
+
+## Soil Moisture Deficit (`SMD`)
+
+`SMD` is a Nodus-derived dryness metric that expresses how much water the soil is currently missing relative to the configured wet and dry thresholds.
+
+It is a measure of current water shortfall, not the soil's inherent ability to retain water.
+
+- `0%` means the soil is at or above the configured wet threshold
+- `100%` means the soil is at or below the configured dry threshold
+- values between `0%` and `100%` show where the current moisture sits within that wet-to-dry operating band
+- higher values mean drier soil and greater watering need
+
+This makes `SMD` easier to alert on than raw volumetric moisture alone, because the same percentage scale can be tuned for different media, sensor placements, or crop targets.
+
+Nodus calculates `SMD` from the corrected soil moisture value using the thresholds in `sensor_soil.toml`:
+
+```text
+SMD = 100 * ((wet_threshold - corrected_soil_moisture) / (wet_threshold - dry_threshold))
+```
+
+The result is clamped to the range `0-100%`.
+
+Default thresholds:
+
+- `SPD_WET_THRESHOLD_PCT = 38.0`
+- `SPD_DRY_THRESHOLD_PCT = 18.0`
+
+Using the defaults:
+
+- `38%` soil moisture or higher reports `SMD = 0%`
+- `18%` soil moisture or lower reports `SMD = 100%`
+- `28%` soil moisture reports `SMD = 50%`
+
+If the wet threshold is not greater than the dry threshold, `SMD` is not reported.
+
+## Soil Stress Index (`SSI`)
+
+`SSI` is a Nodus-derived soil concern metric that combines moisture deficit (`SMD`) with root-zone temperature stress into a single normalized percentage.
+
+- `0%` means low combined stress
+- `100%` means high combined stress
+- higher values mean the soil is drier, thermally less favorable, or both
+
+By default, `SSI` is a weighted blend of:
+
+- `70%` `SMD`
+- `30%` soil temperature stress
+
+The temperature component uses these default bands:
+
+- overall range: `15°C` to `30°C`
+- too low: below `18°C`
+- OK: `18°C` to `24°C`
+- too high: above `24°C`
+
+To avoid an abrupt step change, temperature stress ramps linearly and reaches full stress at the critical edges:
+
+- low critical: `15°C`
+- high critical: `30°C`
+
+That means:
+
+- `18-24°C` contributes `0%` temperature stress
+- `<=15°C` contributes `100%` temperature stress
+- `>=30°C` contributes `100%` temperature stress
+- values between those points scale linearly
+
+Nodus calculates `SSI` as:
+
+```text
+soil_temp_stress = temperature-based stress from 0 to 100
+SSI = ((SMD * moisture_weight) + (soil_temp_stress * temp_weight)) / (moisture_weight + temp_weight)
+```
+
+With the default weights and temperature bands:
+
+- `SMD = 50%` and `Soil-Temp = 21°C` reports `SSI = 35%`
+- `SMD = 50%` and `Soil-Temp = 27°C` reports `SSI = 50%`
+- `SMD = 80%` and `Soil-Temp = 31°C` reports `SSI = 86%`
+
+If the temperature band configuration is invalid, `SSI` is not reported.
+
+## DewVPD Risk Metric
+
+`DewVPD Risk` is a Nodus-specific derived metric intended to summarize two related environmental concerns in one percentage:
+
+- condensation / leaf-wetness risk, represented by how close dew point is to the measured air or leaf temperature
+- plant-environment stress risk, represented by VPD being too low or too high
+
+The metric is reported as a percentage:
+
+- lower values mean a safer environment
+- higher values mean a greater chance of undesirable microbial / mold-promoting conditions and/or VPD-driven plant stress
+
+For dual-sensor plant devices, `Plant DewVPD Risk` uses the same algorithm but is calculated from the plant-side temperature and RH.
+
+### Inputs
+
+The calculation uses:
+
+- dew point
+- dewpoint deficit
+- VPD
+
+Definitions:
+
+- `dewpoint deficit = temperature - dew_point`
+- low dewpoint deficit means dew point is close to the measured surface/air temperature
+- when dew point approaches the measured temperature, condensation risk rises sharply
+
+### Design Intent
+
+This metric is intentionally not just a mold metric and not just a VPD metric.
+
+It is designed to:
+
+- strongly penalize dew point being close to temperature
+- penalize very low VPD because air with little drying force encourages condensation persistence
+- treat a moderate VPD band as the safest range
+- penalize very high VPD because it represents increasing plant stress even if condensation risk is lower
+
+### Current Risk Model
+
+The current implementation combines two normalized terms:
+
+- `dew_risk`: derived from dewpoint deficit
+- `vpd_risk`: derived from a two-sided VPD risk curve
+
+Combined score:
+
+```text
+dewvpd_risk = 100 * (dew_weight * dew_risk + (1 - dew_weight) * vpd_risk)
+```
+
+Current defaults:
+
+- `dew_weight = 0.65`
+- dewpoint deficit risk band: `0.5°C` to `4.0°C`
+- VPD low-risk target band: `0.8` to `1.2 kPa`
+- low-VPD high-risk threshold: `<= 0.4 kPa`
+- high-VPD high-risk threshold: `>= 2.0 kPa`
+
+Interpretation of the two parts:
+
+- Dew component:
+  `0.5°C` or less depression is maximum dew risk.
+  `4.0°C` or greater depression is zero dew-driven risk.
+- VPD component:
+  `0.8 - 1.2 kPa` contributes no VPD penalty.
+  Risk rises as VPD drops below `0.8`.
+  Risk also rises as VPD climbs above `1.2`.
+
+### VPD Interpretation Used By The Metric
+
+The current VPD-side assumptions are:
+
+- `0.0 - 0.4`: no drying force
+- `0.4 - 0.8`: low drying force
+- `0.8 - 1.2`: moderate / preferred operating band
+- `1.2 - 1.6`: high drying force
+- `1.6 - 2.0`: very high drying force / increasing stress
+- `> 2.0`: extreme drying force / maximum high-side stress penalty
+
+### Practical Reading Guidance
+
+- High risk with low VPD usually means the room is humid enough that drying force is weak and condensation is more likely to persist.
+- High risk with high VPD usually means dew point may be acceptable, but the environment is becoming stressful to plants.
+- Low risk generally requires both:
+  a healthy dewpoint deficit and VPD near the target band.
+
+### Example Comparisons
+
+At the same dewpoint deficit:
+
+- `VPD = 1.0 kPa` produces the lowest VPD-side penalty
+- `VPD = 0.4 kPa` produces a strong low-drying-force penalty
+- `VPD = 1.6 kPa` produces a moderate high-stress penalty
+
+So two rooms with the same dew point spacing can still receive different `DewVPD Risk` values if one is too wet and the other is too dry.
+
+## Switch Channels (S1/S2)
+
+Nodus supports up to two switch channels. The default/detected Pico2 W mappings are:
+
+- `S1` uses `SWITCH_1_ENABLE_PIN=GP5` and `SWITCH_1_PIN=GP28`
+- `S2` uses `SWITCH_2_ENABLE_PIN=GP10` and `SWITCH_2_PIN=GP21`
+
+`switch.toml` is the primary gate for switch-enabled operation on normal boots.
+
+- During factory bootstrap, when no live TOML files exist yet, Nodus probes the switch enable pins and creates/populates `switch.toml` from `switch.toml.def` for grounded channels.
+- On later normal boots, Nodus expects `switch.toml` to already exist for switch-enabled devices.
+- If only one switch is installed, only that channel is enabled/populated in `switch.toml`.
+
+Automations are implemented in Sensorius. Sensorius publishes the desired switch state to each channel's MQTT `/config/set` topic, Nodus applies the change locally, and Nodus publishes the resulting state change back over MQTT (`/event` plus retained `/state`).
+
+## Recovery & Resilience
+
+- **TaskSupervisor**: restarts tasks that exit or throw exceptions.
+- **Watchdog**: software watchdog with optional hardware watchdog feeding.
+- **Network restart**: clean teardown + rebuild of Wi‑Fi, socket pool, and MQTT.
+- **Soft/hard restart**: utility helpers for recovery from fatal states.
+- **Developer note (current policy)**: hardware watchdog (HW WDT) is currently kept disabled because aggressive hard reboots were counterproductive in field testing. Experimental recovery evidence showed `softRestart` paths used for network-issue recovery are adequate and provide better stability than repeated hard reboots.
+
+## Web Server
+
+- Lightweight `adafruit_httpserver` based server.
+- `WebServerController` monitors socket pool health and can self‑restart.
+- AP mode routes are intentionally minimal to reduce memory pressure.
+
+## Known Constraints / Notes
+
+- Nodusweb-profile NTP sync is gated on DNS readiness. If DNS ping fails, NTP is skipped to avoid long blocking failures (NTP timeouts can stall coroutines).
+- AP mode uses a fixed SSID/password for factory provisioning and defaults to Wi-Fi channel 6.
+- The system assumes a constrained heap; many routes and handlers are intentionally minimal to avoid memory fragmentation.
+
+## MQTT + Home Assistant
+
+- MQTT broker can be Sensorius or Home Assistant.
+- TLS is enabled when configured or when broker port is 8883.
+- Home Assistant discovery is supported with configurable prefixes and base topics.
+- Switch control is handled via `/set` topics; events and state are published to `/event` and `/state`.
+- Broker IP fallback is in-memory only; Nodus does not persist resolved broker IPs into `settings.toml`.
+- Implemented Home Assistant corner case:
+  - when `ACTIVE_PROFILE=homeassistant` or `ACTIVE_PROFILE=weewx`, Nodus skips the normal-mode webserver in both ROFS and RWFS
+  - this policy exists because these networked MQTT-only profiles are intended to run without the normal local web UI path
+  - AP/nodusweb mode remains the supported provisioning path before switching into either profile
+
+## Directory Layout
+
+- `code.py`: application entry point
+- `boot.py`: boot mode guard logic
+- `lib/`: CircuitPython libraries
+- `sensor_modules/`: sensor driver implementations
+- `sd/`: optional SD assets or logs
+
+## Project layout
+
+- `code.py`: application entry point
+- `boot.py`: boot mode guard logic
+- `cPyPicoNet.py`: Wi-Fi, socket pool, mDNS, and NTP handling
+- `cPySettings.py`: TOML-based configuration manager
+- `cPySensor.py` / `cPySensorFactory.py`: sensor controller and driver selection
+- `cPySwitch.py`: switch controller and MQTT command handling
+- MQTT transport and startup path:
+  - `cPyMQTTClient.py`: broker connect/reconnect lifecycle, publish loop, health checks, and the minimal safe post-connect command path
+  - `cPyMQTTSwitchHandler.py`: lightweight switch-only topic subscription, payload parsing, and deferred switch state apply used on the normal post-connect path
+- MQTT lightweight runtime command path:
+  - `cPyMQTTCommandHandler.py`: tiny runtime command wrapper that routes exact-topic device commands without pulling heavier control-plane code onto the callback path
+  - `cPyMQTTConfigHandler.py`: lightweight device `config/set` apply path that persists accepted settings and emits `.../meta/patch`
+  - `cPyMQTTCalibrationHandler.py`: lightweight calibration `apply`/`status` command parser, ack/result transport, and routing to narrower calibration workers
+- MQTT deferred runtime/control-plane helpers:
+  - `cPyMQTTMetaHandler.py`: deferred retained runtime metadata publish scheduling and helper flow
+- MQTT calibration apply workers:
+  - `cPyMQTTCalibrationApplyCommon.py`: shared persistence, reload, and live-verification helpers used by calibration apply workers
+  - `cPyMQTTCalibrationDeviceHandler.py`: deferred device-level calibration write, reload, and verification worker
+  - `cPyMQTTCalibrationSystemHandler.py`: deferred system-level calibration write, reload, and verification worker
+  - `cPyMQTTCalibrationSoilHandler.py`: deferred soil-session calibration worker and summary helpers
+- MQTT shared support:
+  - `cPyMQTTCommandTransport.py`: shared publish, reconnect-recovery, and handshake transport helpers for runtime MQTT commands
+  - `cPyMQTTPayloads.py`: compact outbound payload builders for sensor publishes and retained runtime metadata
+- `cPyWebServer.py`, `cPyWebRoutes.py`, `cPyOnboardRoutes.py`: HTTP server and routes
+
+## Documentation
+
+- `docs/architecture.md`: boot flow and task model
+- `docs/configuration.md`: configuration files and keys
+- `docs/onboarding.md`: AP provisioning behavior
+- `docs/mqtt.md`: topics and Home Assistant notes
+- `docs/pinout.md`: Nodus Pico2 W pin mapping
+- `docs/extending.md`: adding sensors or switches
+
+## Development Notes
+
+- Use the guard pin (`GP14`) to control whether the filesystem is R/W for the app.
+- `DEBUG_MODULES` in `cPyUtils.py` controls module‑level debug output.
+- Keep web routes small; heavy handlers can destabilize startup on constrained devices.
+- Add Device flow uses `POST /itaot-init`, then MQTT onboarding topics (`nodus/<device_id>/onboard/hello`, `config/set`, `config/ack`, `config/result`) as the authoritative configuration path.
+- Nodus TOML files are the source of truth for accepted config. Sensorius should use retained `nodus/<device_id>/meta` as the full snapshot at startup/reconnect, then consume `nodus/<device_id>/meta/patch` for accepted steady-state config deltas.
+- `GET /itaot-meta` remains available as optional, on-demand UI metadata fallback; it is not required for onboarding success.
+
+## Testing (manual)
+
+- Boot with missing SSID -> AP mode is reachable.
+- `POST /itaot-init` in AP mode -> device reboots and joins Wi-Fi.
+- Sensor data publishes at the configured interval.
+- Switch commands are honored and persisted.
+- Network loss triggers restart and recovery.
+
+## Contributing
+
+See `CONTRIBUTING.md` for development workflow, code style, and PR guidance.
+
+## License
+
+MIT. See `LICENSE`.

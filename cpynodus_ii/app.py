@@ -1,0 +1,251 @@
+"""Main application orchestration for the cPyNodus_II scaffold."""
+
+import asyncio
+import gc
+import os
+import time
+
+from cpynodus_ii import __version__
+from cpynodus_ii.hardware import bind_sensor_hardware, bind_switch_hardware
+from cpynodus_ii.core.mqtt import MQTTTransport
+from cpynodus_ii.core import (
+    build_mqtt_client_adapter,
+    build_network_stack,
+    connect_mqtt_client,
+    disconnect_mqtt_client,
+    poll_mqtt_client,
+    sync_transport_to_client,
+)
+from cpynodus_ii.core.plan import StartupPlan
+from cpynodus_ii.core.settings import Settings
+from cpynodus_ii.features import (
+    build_sensor_runtime,
+    build_switch_runtime,
+    plan_sensor_initialization,
+    plan_switch_initialization,
+    read_sensor_snapshot,
+    SteadyState,
+    run_steady_state_iteration,
+    snapshot_switch_states,
+    start_sensor_service,
+    start_switch_service,
+)
+
+
+def _path_exists(path):
+    try:
+        os.stat(path)
+        return True
+    except OSError:
+        return False
+
+
+def _seconds_stamp(start_monotonic):
+    try:
+        elapsed = max(0, int(time.monotonic() - float(start_monotonic)))
+    except Exception:
+        elapsed = 0
+    return "{}s".format(elapsed)
+
+
+def _print_log(prefix, message, *, start_monotonic):
+    print("{} {} {}".format(_seconds_stamp(start_monotonic), prefix, message))
+
+
+def _memory_summary():
+    free_mem = "unknown"
+    mem_alloc = "unknown"
+    try:
+        free_mem = str(gc.mem_free())
+    except Exception:
+        pass
+    try:
+        mem_alloc = str(gc.mem_alloc())
+    except Exception:
+        pass
+    return "free_mem={} mem_alloc={}".format(free_mem, mem_alloc)
+
+
+def _should_preflight_broker(adapter):
+    targets = tuple(getattr(adapter, "broker_targets", ()) or ())
+    return len(targets) > 1
+
+
+async def main():
+    """Run the current scaffold runtime."""
+    start_monotonic = time.monotonic()
+    settings_root = "."
+    settings = Settings.from_working_directory()
+    fs_writable = Settings.filesystem_writable(settings_root)
+    persistence_mode = "persisted" if fs_writable else "volatile" if fs_writable is False else "unknown"
+    runtime_config = settings.runtime_config()
+    plan = StartupPlan.from_settings(settings)
+    network_stack = build_network_stack(runtime_config)
+    transport = MQTTTransport.from_settings(settings)
+    mqtt_adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=network_stack.socket_pool,
+        ssl_context=network_stack.ssl_context,
+    )
+    sensor_init = plan_sensor_initialization(runtime_config)
+    switch_init = plan_switch_initialization(runtime_config)
+    sensor_runtime = build_sensor_runtime(sensor_init, runtime_config)
+    switch_runtime = build_switch_runtime(switch_init)
+    sensor_adapter = bind_sensor_hardware(sensor_runtime, runtime_config)
+    switch_adapter = bind_switch_hardware(switch_runtime)
+    sensor_service = start_sensor_service(sensor_runtime, sensor_adapter, runtime_config)
+    switch_service = start_switch_service(switch_runtime, switch_adapter)
+    sensor_snapshot = read_sensor_snapshot(sensor_service, runtime_config)
+    switch_snapshot = snapshot_switch_states(switch_service)
+    steady_state = SteadyState()
+    last_health_at = float(start_monotonic)
+    last_mqtt_connect_attempt_at = float(start_monotonic)
+
+    connect_phase = "deferred" if plan.mqtt_enabled else "skipped"
+
+    _print_log(
+        "cPyNodus_II",
+        "boot version={} profile={} ap_mode={} persistence_mode={} network_phase={} network_errors={} mqtt_client={} mqtt_connect={} sensor={} sensor_family={} sensor_interface={} sensor_file={} sensor_phase={} sensor_target={} sensor_adapter={} sensor_service={} sensor_metrics={} switch={} switch_channels={} switch_phase={} switch_adapter={} switch_service={} mqtt={} web={} ntp={}".format(
+            __version__,
+            plan.profile,
+            plan.ap_mode,
+            persistence_mode,
+            network_stack.phase,
+            ",".join(network_stack.errors) if network_stack.errors else "none",
+            mqtt_adapter.phase,
+            "{}:{}".format(connect_phase, mqtt_adapter.active_broker or "none"),
+            plan.sensor_enabled,
+            plan.sensor_family or "none",
+            plan.sensor_interface or "none",
+            plan.active_sensor_file or "none",
+            sensor_runtime.phase,
+            sensor_runtime.transport_target or "none",
+            sensor_adapter.phase,
+            sensor_service.phase,
+            len((sensor_snapshot.metrics or {})),
+            plan.switch_enabled,
+            switch_init.channel_count,
+            switch_runtime.phase,
+            switch_adapter.phase,
+            switch_service.phase,
+            plan.mqtt_enabled,
+            plan.web_enabled,
+            plan.ntp_enabled,
+        ),
+        start_monotonic=start_monotonic,
+    )
+    _print_log(
+        "cPyNodus_II",
+        "network ssid={} ipv4={} hostname={}".format(
+            network_stack.ssid or "none",
+            network_stack.ip_address or "none",
+            network_stack.hostname or "none",
+        ),
+        start_monotonic=start_monotonic,
+    )
+    _print_log(
+        "cPyNodus_II",
+        "switch_channels ids={} labels={}".format(
+            ",".join(channel.channel_id or "none" for channel in runtime_config.switch.channels)
+            or "none",
+            ",".join(channel.label or channel.key or "none" for channel in runtime_config.switch.channels)
+            or "none",
+        ),
+        start_monotonic=start_monotonic,
+    )
+
+    try:
+        while True:
+            now_monotonic = time.monotonic()
+            if (
+                plan.mqtt_enabled
+                and not transport.connected
+                and mqtt_adapter.phase == "ready"
+                and (float(now_monotonic) - float(last_mqtt_connect_attempt_at)) >= 5.0
+            ):
+                transport.mark_connect_requested()
+                connect_result = connect_mqtt_client(
+                    mqtt_adapter,
+                    transport,
+                    preflight=_should_preflight_broker(mqtt_adapter),
+                )
+                mqtt_adapter = connect_result.adapter
+                connect_phase = connect_result.phase
+                last_mqtt_connect_attempt_at = float(now_monotonic)
+                if connect_phase == "connected":
+                    _print_log(
+                        "mqtt",
+                        "connect phase={} broker={}".format(
+                            connect_phase,
+                            mqtt_adapter.active_broker or "none",
+                        ),
+                        start_monotonic=start_monotonic,
+                    )
+                    sync_result = sync_transport_to_client(mqtt_adapter, transport)
+                    mqtt_adapter = sync_result.adapter
+            if transport.connected:
+                poll_result = poll_mqtt_client(mqtt_adapter, transport)
+                mqtt_adapter = poll_result.adapter
+            iteration = run_steady_state_iteration(
+                transport,
+                runtime_config,
+                switch_service,
+                sensor_service,
+                state=steady_state,
+                version=__version__,
+                now_monotonic=now_monotonic,
+                active_broker=mqtt_adapter.active_broker,
+                settings_root=settings_root if _path_exists(Settings.SETTINGS_FILE) else None,
+            )
+            steady_state = iteration.state
+            runtime_config = iteration.runtime_config
+            if iteration.subscribed_topics:
+                _print_log(
+                    "mqtt",
+                    "subscriptions topics={}".format(
+                        ",".join(iteration.subscribed_topics)
+                    ),
+                    start_monotonic=start_monotonic,
+                )
+            for result in iteration.command_results:
+                if result.phase == "ignored":
+                    continue
+                _print_log(
+                    "mqtt",
+                    "command type={} phase={} topic={} requested={} published={} persistence_mode={} errors={}".format(
+                        result.command_type,
+                        result.phase,
+                        result.topic,
+                        result.requested_state or "none",
+                        result.published_count,
+                        result.persistence_mode or persistence_mode,
+                        ",".join(result.errors) if result.errors else "none",
+                    ),
+                    start_monotonic=start_monotonic,
+                )
+            if (float(now_monotonic) - float(last_health_at)) >= 300.0:
+                _print_log(
+                    "cPyNodus_II",
+                    "health network_phase={} ssid={} ipv4={} mqtt_connected={} active_broker={} {}".format(
+                        network_stack.phase,
+                        network_stack.ssid or "none",
+                        network_stack.ip_address or "none",
+                        transport.connected,
+                        mqtt_adapter.active_broker or "none",
+                        _memory_summary(),
+                    ),
+                    start_monotonic=start_monotonic,
+                )
+                last_health_at = float(now_monotonic)
+            if transport.connected:
+                sync_result = sync_transport_to_client(mqtt_adapter, transport)
+                mqtt_adapter = sync_result.adapter
+            await asyncio.sleep(0.05)
+    finally:
+        if transport.connected:
+            disconnect_result = disconnect_mqtt_client(
+                mqtt_adapter,
+                transport,
+                runtime_config,
+            )
+            mqtt_adapter = disconnect_result.adapter

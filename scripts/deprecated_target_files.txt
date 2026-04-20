@@ -1,0 +1,18 @@
+# Paths relative to the target CIRCUITPY root.
+# One path per line. Blank lines and comments are ignored.
+
+# macOS filesystem cruft / AppleDouble sidecars
+.fseventsd
+.metadata_never_index
+.Trash-1000
+.Trashes
+._boot.py
+._code.py
+._cpynodus_ii
+._lib
+
+# Legacy paths from older flat-layout experiments
+__pycache__
+docs
+specs
+tests

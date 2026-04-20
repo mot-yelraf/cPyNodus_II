@@ -1,0 +1,384 @@
+"""Narrow MQTT client adapter over the configured vendor client."""
+
+from dataclasses import dataclass
+
+from cpynodus_ii.features.publish_cycle import publish_shutdown_cycle
+
+
+@dataclass(frozen=True)
+class MQTTClientAdapter:
+    """Describe the current MQTT client binding state."""
+
+    phase: str
+    driver_kind: str
+    broker: str
+    port: int
+    broker_targets: tuple = ()
+    active_broker: str = ""
+    client: object | None = None
+    client_class: object | None = None
+    client_kwargs: dict | None = None
+    published_index: int = 0
+    subscription_index: int = 0
+    errors: tuple = ()
+
+
+@dataclass(frozen=True)
+class MQTTClientSyncResult:
+    """Describe one adapter operation."""
+
+    phase: str
+    adapter: MQTTClientAdapter
+    published_count: int = 0
+    subscribed_count: int = 0
+    received_count: int = 0
+    errors: tuple = ()
+
+
+def build_mqtt_client_adapter(
+    runtime_config,
+    *,
+    socket_pool=None,
+    ssl_context=None,
+    modules=None,
+):
+    """Build a clean-room MQTT client adapter when runtime MQTT is enabled."""
+    if not runtime_config.mqtt_enabled:
+        return MQTTClientAdapter(
+            phase="inactive",
+            driver_kind="none",
+            broker=runtime_config.mqtt.preferred_host,
+            port=runtime_config.mqtt.port,
+            broker_targets=runtime_config.mqtt.connection_targets,
+            errors=(),
+        )
+
+    if socket_pool is None:
+        return MQTTClientAdapter(
+            phase="unavailable",
+            driver_kind="none",
+            broker=runtime_config.mqtt.preferred_host,
+            port=runtime_config.mqtt.port,
+            broker_targets=runtime_config.mqtt.connection_targets,
+            errors=("socket_pool_unavailable",),
+        )
+
+    client_class = _resolve_mqtt_class(modules)
+    if client_class is None:
+        return MQTTClientAdapter(
+            phase="unavailable",
+            driver_kind="none",
+            broker=runtime_config.mqtt.preferred_host,
+            port=runtime_config.mqtt.port,
+            broker_targets=runtime_config.mqtt.connection_targets,
+            errors=("mqtt_client_module_unavailable",),
+        )
+
+    broker_targets = runtime_config.mqtt.connection_targets or (runtime_config.mqtt.preferred_host,)
+    kwargs = {
+        "socket_pool": socket_pool,
+        "port": runtime_config.mqtt.port,
+        "keep_alive": 60,
+    }
+    if runtime_config.mqtt.use_tls or runtime_config.mqtt.port == 8883:
+        kwargs["ssl_context"] = ssl_context
+    if runtime_config.mqtt.username:
+        kwargs["username"] = runtime_config.mqtt.username
+    if runtime_config.mqtt.password:
+        kwargs["password"] = runtime_config.mqtt.password
+
+    try:
+        client = _instantiate_client(client_class, dict(kwargs), broker_targets[0])
+    except Exception as exc:
+        return MQTTClientAdapter(
+            phase="error",
+            driver_kind="adafruit_minimqtt",
+            broker=runtime_config.mqtt.preferred_host,
+            port=runtime_config.mqtt.port,
+            broker_targets=broker_targets,
+            errors=("mqtt_client_init_failed", str(exc)),
+        )
+
+    return MQTTClientAdapter(
+        phase="ready",
+        driver_kind="adafruit_minimqtt",
+        broker=runtime_config.mqtt.preferred_host,
+        port=runtime_config.mqtt.port,
+        broker_targets=broker_targets,
+        active_broker=broker_targets[0],
+        client=client,
+        client_class=client_class,
+        client_kwargs=dict(kwargs),
+        errors=(),
+    )
+
+
+def connect_mqtt_client(adapter, transport, *, preflight=True):
+    """Connect the bound client and wire inbound message delivery."""
+    if adapter.phase != "ready" or adapter.client is None:
+        return MQTTClientSyncResult(
+            phase=adapter.phase,
+            adapter=adapter,
+            errors=adapter.errors,
+        )
+
+    _bind_on_message(adapter.client, transport)
+    errors = []
+    active_adapter = adapter
+    connected = False
+    for index, broker in enumerate(adapter.broker_targets or (adapter.active_broker or adapter.broker,)):
+        if preflight:
+            preflight_error = _preflight_broker_target(adapter, broker)
+            if preflight_error:
+                errors.append(preflight_error)
+                transport.mark_disconnected()
+                continue
+        if index > 0:
+            try:
+                client = _instantiate_client(
+                    adapter.client_class,
+                    dict(adapter.client_kwargs or {}),
+                    broker,
+                )
+            except Exception as exc:
+                errors.append("mqtt_client_init_failed:{}".format(exc))
+                continue
+            active_adapter = MQTTClientAdapter(
+                phase=adapter.phase,
+                driver_kind=adapter.driver_kind,
+                broker=adapter.broker,
+                port=adapter.port,
+                broker_targets=adapter.broker_targets,
+                active_broker=broker,
+                client=client,
+                client_class=adapter.client_class,
+                client_kwargs=dict(adapter.client_kwargs or {}),
+                published_index=adapter.published_index,
+                subscription_index=adapter.subscription_index,
+                errors=adapter.errors,
+            )
+        _bind_on_message(active_adapter.client, transport)
+        try:
+            active_adapter.client.connect()
+            transport.mark_connected()
+            connected = True
+            break
+        except Exception as exc:
+            errors.append("mqtt_connect_failed:{}:{}".format(broker, exc))
+            transport.mark_disconnected()
+
+    if not connected:
+        return MQTTClientSyncResult(
+            phase="error",
+            adapter=active_adapter,
+            errors=tuple(errors) or ("mqtt_connect_failed",),
+        )
+
+    return MQTTClientSyncResult(
+        phase="connected",
+        adapter=active_adapter,
+        errors=(),
+    )
+
+
+def sync_transport_to_client(adapter, transport):
+    """Flush newly queued subscriptions and publishes to the bound client."""
+    if adapter.phase != "ready" or adapter.client is None or not transport.connected:
+        return MQTTClientSyncResult(
+            phase="skipped",
+            adapter=adapter,
+            errors=adapter.errors if adapter.phase != "ready" else ("transport_not_connected",),
+        )
+
+    client = adapter.client
+    subscribed_count = 0
+    for topic in transport.subscriptions[adapter.subscription_index :]:
+        client.subscribe(topic)
+        subscribed_count += 1
+
+    published_count = 0
+    for message in transport.published_messages[adapter.published_index :]:
+        payload = _serialize_payload(message.payload)
+        client.publish(message.topic, payload, retain=message.retain)
+        published_count += 1
+
+    updated_adapter = MQTTClientAdapter(
+        phase=adapter.phase,
+        driver_kind=adapter.driver_kind,
+        broker=adapter.broker,
+        port=adapter.port,
+        broker_targets=adapter.broker_targets,
+        active_broker=adapter.active_broker,
+        client=adapter.client,
+        client_class=adapter.client_class,
+        client_kwargs=adapter.client_kwargs,
+        published_index=len(transport.published_messages),
+        subscription_index=len(transport.subscriptions),
+        errors=adapter.errors,
+    )
+    return MQTTClientSyncResult(
+        phase="synced",
+        adapter=updated_adapter,
+        published_count=published_count,
+        subscribed_count=subscribed_count,
+        errors=(),
+    )
+
+
+def poll_mqtt_client(adapter, transport):
+    """Poll the client loop so inbound MQTT messages can reach the transport."""
+    if adapter.phase != "ready" or adapter.client is None or not transport.connected:
+        return MQTTClientSyncResult(
+            phase="skipped",
+            adapter=adapter,
+            errors=adapter.errors if adapter.phase != "ready" else ("transport_not_connected",),
+        )
+
+    before = len(transport.received_messages)
+    loop = getattr(adapter.client, "loop", None)
+    if callable(loop):
+        timeout = _poll_timeout_for_client(adapter.client)
+        try:
+            loop(timeout=timeout)
+        except TypeError:
+            loop()
+        except ValueError:
+            try:
+                loop(timeout=max(1.0, timeout))
+            except TypeError:
+                loop()
+    received_count = len(transport.received_messages) - before
+    return MQTTClientSyncResult(
+        phase="polled",
+        adapter=adapter,
+        received_count=max(0, received_count),
+        errors=(),
+    )
+
+
+def disconnect_mqtt_client(adapter, transport, runtime_config):
+    """Publish retained offline status, flush it, then disconnect the client."""
+    if adapter.phase != "ready" or adapter.client is None:
+        transport.mark_disconnected()
+        return MQTTClientSyncResult(
+            phase=adapter.phase,
+            adapter=adapter,
+            errors=adapter.errors,
+        )
+
+    publish_shutdown_cycle(transport, runtime_config)
+    sync_result = sync_transport_to_client(adapter, transport)
+    try:
+        disconnect = getattr(adapter.client, "disconnect", None)
+        if callable(disconnect):
+            disconnect()
+    finally:
+        transport.mark_disconnected()
+    return MQTTClientSyncResult(
+        phase="disconnected",
+        adapter=sync_result.adapter,
+        published_count=sync_result.published_count,
+        subscribed_count=sync_result.subscribed_count,
+        errors=(),
+    )
+
+
+def _resolve_mqtt_class(modules):
+    if isinstance(modules, dict) and modules.get("mqtt_cls") is not None:
+        return modules["mqtt_cls"]
+    try:
+        from adafruit_minimqtt.adafruit_minimqtt import MQTT  # type: ignore
+    except ImportError:
+        return None
+    return MQTT
+
+
+def _instantiate_client(client_class, kwargs, broker):
+    kwargs["broker"] = broker
+    return client_class(**kwargs)
+
+
+def _poll_timeout_for_client(client):
+    for attr_name in ("socket_timeout", "_socket_timeout", "recv_timeout", "_recv_timeout"):
+        value = getattr(client, attr_name, None)
+        if _is_positive_number(value):
+            return float(value)
+    socket_obj = getattr(client, "_socket", None)
+    for attr_name in ("timeout", "_timeout"):
+        value = getattr(socket_obj, attr_name, None)
+        if _is_positive_number(value):
+            return float(value)
+    return 1.0
+
+
+def _preflight_broker_target(adapter, broker):
+    broker_text = str(broker or "").strip()
+    if not broker_text:
+        return "mqtt_connect_failed:empty_broker"
+    if _looks_like_ip_literal(broker_text):
+        return ""
+
+    socket_pool = None
+    if isinstance(adapter.client_kwargs, dict):
+        socket_pool = adapter.client_kwargs.get("socket_pool")
+    if socket_pool is None:
+        return ""
+
+    getaddrinfo = getattr(socket_pool, "getaddrinfo", None)
+    if not callable(getaddrinfo):
+        return ""
+
+    try:
+        getaddrinfo(broker_text, adapter.port)
+    except Exception as exc:
+        return "mqtt_resolve_failed:{}:{}".format(broker_text, exc)
+    return ""
+
+
+def _looks_like_ip_literal(value):
+    text = str(value or "").strip()
+    if not text:
+        return False
+    parts = text.split(".")
+    if len(parts) == 4:
+        try:
+            return all(0 <= int(part) <= 255 for part in parts)
+        except ValueError:
+            return False
+    if ":" in text:
+        return True
+    return False
+
+
+def _is_positive_number(value):
+    try:
+        return float(value) > 0.0
+    except (TypeError, ValueError):
+        return False
+
+
+def _bind_on_message(client, transport):
+    def _on_message(_client, topic, message):
+        transport.receive(topic, _coerce_payload_text(message))
+
+    try:
+        client.on_message = _on_message
+    except Exception:
+        pass
+
+
+def _serialize_payload(payload):
+    import json
+
+    if isinstance(payload, str):
+        return payload
+    return json.dumps(dict(payload or {}), separators=(",", ":"))
+
+
+def _coerce_payload_text(message):
+    if isinstance(message, bytes):
+        try:
+            return message.decode("utf-8")
+        except Exception:
+            return message.decode("utf-8", errors="ignore")
+    return str(message)

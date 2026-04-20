@@ -1,0 +1,159 @@
+from types import SimpleNamespace
+
+from cpynodus_ii.core.config import (
+    DetectedSensor,
+    NetworkConfig,
+    RuntimeConfig,
+    SwitchChannelConfig,
+    SwitchConfig,
+)
+from cpynodus_ii.features import (
+    build_calibration_ack_payload,
+    build_calibration_result_payload,
+    build_config_ack_payload,
+    build_config_result_payload,
+    build_device_heartbeat_payload,
+    build_meta_patch_payload,
+    build_runtime_meta_payload,
+    build_sensor_availability_payload,
+    build_sensor_data_payload,
+    build_switch_state_payload,
+)
+
+
+def test_sensor_data_payload_uses_enriched_snapshot_metrics():
+    runtime_config = RuntimeConfig(
+        network=NetworkConfig(hostname="aqi-x943fm"),
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            device="aqi",
+            sensor_id="aqi-x943fm",
+            location="TestLab",
+        ),
+    )
+    snapshot = SimpleNamespace(
+        phase="ready",
+        metrics={
+            "temperature_c": 24.5,
+            "temperature_f": 76.1,
+            "ambient_vpd_kpa": 1.2,
+            "air_quality_aqi": 87,
+        },
+    )
+
+    payload = build_sensor_data_payload(runtime_config, snapshot)
+    assert payload["schema"] == "nodus-sensor-data/v1"
+    assert payload["sensor_id"] == "aqi-x943fm"
+    assert payload["location"] == "TestLab"
+    assert payload["metrics"]["temperature_f"] == 76.1
+    assert payload["metrics"]["air_quality_aqi"] == 87
+
+
+def test_switch_state_payloads_use_channel_ids_and_states():
+    runtime_config = RuntimeConfig(
+        switch=SwitchConfig(
+            present=True,
+            device_id="switch-x943fm",
+            location="TestLab",
+            channel_count=2,
+            channels=(
+                SwitchChannelConfig(key="SWITCH_1", channel_id="S1-x943fm", label="Fan", enable_pin="GP5", control_pin="GP28"),
+                SwitchChannelConfig(key="SWITCH_2", channel_id="S2-x943fm", label="Pump", enable_pin="GP10", control_pin="GP21"),
+            ),
+        )
+    )
+    state_snapshot = {
+        "SWITCH_1": {"phase": "ready", "state": True},
+        "SWITCH_2": {"phase": "ready", "state": False},
+    }
+
+    payloads = build_switch_state_payload(runtime_config, state_snapshot)
+    assert payloads["SWITCH_1"]["channel_id"] == "S1-x943fm"
+    assert payloads["SWITCH_1"]["state"] == "ON"
+    assert payloads["SWITCH_2"]["state"] == "OFF"
+
+
+def test_runtime_meta_payload_includes_sensor_and_switch_topics():
+    runtime_config = RuntimeConfig(
+        network=NetworkConfig(hostname="aqi-x943fm"),
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            device="aqi",
+            sensor_id="aqi-x943fm",
+            serial_number="x943fm",
+            location="TestLab",
+        ),
+        switch=SwitchConfig(
+            present=True,
+            device_id="switch-x943fm",
+            serial_number="x943fm",
+            location="TestLab",
+            channel_count=1,
+            channels=(
+                SwitchChannelConfig(key="SWITCH_1", channel_id="S1-x943fm", label="Fan", enable_pin="GP5", control_pin="GP28"),
+            ),
+        ),
+    )
+
+    payload = build_runtime_meta_payload(
+        runtime_config,
+        version="0.1.0",
+        active_broker="sensoria-hub-0.local",
+    )
+    assert payload["schema"] == "nodus-meta/v1"
+    assert payload["device_id"] == "aqi-x943fm"
+    assert payload["mqtt"]["active_broker"] == "sensoria-hub-0.local"
+    assert payload["sensor"]["data_topic"] == "nodus/aqi-x943fm/data"
+    assert payload["switch"]["channels"][0]["state_topic"] == "nodus/S1-x943fm/state"
+    assert payload["location_group"]["members"] == ["aqi-x943fm", "S1-x943fm"]
+
+
+def test_availability_and_heartbeat_payloads_use_online_state():
+    runtime_config = RuntimeConfig(
+        network=NetworkConfig(hostname="aqi-x943fm"),
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            device="aqi",
+            sensor_id="aqi-x943fm",
+        ),
+    )
+
+    availability = build_sensor_availability_payload(runtime_config, online=True)
+    heartbeat = build_device_heartbeat_payload(runtime_config, online=False)
+    assert availability["status"] == "online"
+    assert heartbeat["status"] == "offline"
+    assert heartbeat["device_id"] == "aqi-x943fm"
+
+
+def test_config_and_calibration_payload_helpers_use_compact_contracts():
+    config_ack = build_config_ack_payload("cfg-1", accepted=True, duplicate=False)
+    config_result = build_config_result_payload("cfg-1", applied=True, updated=2, error="")
+    calibration_ack = build_calibration_ack_payload("cal-1", accepted=True)
+    calibration_result = build_calibration_result_payload("cal-1", applied=False, error="calibration_not_supported")
+
+    assert config_ack["accepted"] is True
+    assert config_result["updated"] == 2
+    assert calibration_ack["message_id"] == "cal-1"
+    assert calibration_result["error"] == "calibration_not_supported"
+
+
+def test_meta_patch_payload_keeps_sections_and_updates():
+    runtime_config = RuntimeConfig(network=NetworkConfig(hostname="aqi-x943fm"))
+
+    payload = build_meta_patch_payload(
+        runtime_config,
+        source="config_set",
+        message_id="cfg-1",
+        updates=(
+            {"section": "Network", "key": "HOSTNAME", "value": "aqi-x943fm"},
+            {"section": "MQTT", "key": "BROKER", "value": "broker.local"},
+        ),
+    )
+
+    assert payload["schema"] == "nodus-meta-patch/v1"
+    assert payload["source"] == "config_set"
+    assert payload["sections"] == ["Network", "MQTT"]
+    assert payload["updates"][1]["key"] == "BROKER"
