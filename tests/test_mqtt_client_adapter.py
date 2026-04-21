@@ -1,3 +1,11 @@
+from pathlib import Path
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+ROOT_STR = str(ROOT)
+if ROOT_STR not in sys.path:
+    sys.path.insert(0, ROOT_STR)
+
 from cpynodus_ii.core import (
     build_mqtt_client_adapter,
     connect_mqtt_client,
@@ -7,6 +15,25 @@ from cpynodus_ii.core import (
 )
 from cpynodus_ii.core.config import DetectedSensor, MQTTConfig, RuntimeConfig, SwitchChannelConfig, SwitchConfig
 from cpynodus_ii.core.mqtt import MQTTTransport
+
+
+def _run_direct_tests():
+    tests = (
+        test_build_mqtt_client_adapter_uses_runtime_target_and_credentials,
+        test_connect_sync_poll_and_disconnect_flow,
+        test_build_mqtt_client_adapter_is_unavailable_without_socket_pool,
+        test_connect_mqtt_client_falls_back_to_broker_ip_when_mdns_target_fails,
+        test_connect_mqtt_client_falls_back_when_hostname_resolution_fails_preflight,
+        test_connect_mqtt_client_can_skip_preflight_for_hostname_only_targets,
+        test_poll_mqtt_client_uses_timeout_compatible_with_socket_timeout,
+        test_sync_transport_to_client_marks_transport_disconnected_on_publish_oserror,
+        test_poll_mqtt_client_marks_transport_disconnected_on_oserror,
+        test_disconnect_mqtt_client_swallow_shutdown_publish_oserror,
+        test_disconnect_mqtt_client_reports_disconnect_oserror,
+    )
+    for test in tests:
+        test()
+    print("test_mqtt_client_adapter: {} tests passed".format(len(tests)))
 
 
 class _FakeMQTTClient:
@@ -57,6 +84,21 @@ class _TimeoutSensitiveMQTTClient(_FakeMQTTClient):
                 )
             )
         super().loop(timeout=timeout)
+
+
+class _PublishFailMQTTClient(_FakeMQTTClient):
+    def publish(self, topic, payload, retain=False):
+        raise OSError(9)
+
+
+class _PollFailMQTTClient(_FakeMQTTClient):
+    def loop(self, timeout=0.0):
+        raise OSError(9)
+
+
+class _DisconnectFailMQTTClient(_FakeMQTTClient):
+    def disconnect(self):
+        raise OSError(9)
 
 
 def _runtime_config():
@@ -270,3 +312,85 @@ def test_poll_mqtt_client_uses_timeout_compatible_with_socket_timeout():
     assert poll_result.phase == "polled"
     assert poll_result.received_count == 1
     assert connect_result.adapter.client.loop_timeouts == [1.0]
+
+
+def test_sync_transport_to_client_marks_transport_disconnected_on_publish_oserror():
+    runtime_config = _runtime_config()
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connect_requested()
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=object(),
+        modules={"mqtt_cls": _PublishFailMQTTClient},
+    )
+
+    connect_result = connect_mqtt_client(adapter, transport)
+    transport.publish("nodus/aqi-x943fm/data", {"schema": "nodus-sensor/v1"}, retain=False)
+
+    sync_result = sync_transport_to_client(connect_result.adapter, transport)
+
+    assert sync_result.phase == "error"
+    assert transport.connected is False
+    assert "mqtt_publish_failed:nodus/aqi-x943fm/data" in sync_result.errors[0]
+
+
+def test_poll_mqtt_client_marks_transport_disconnected_on_oserror():
+    runtime_config = _runtime_config()
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connect_requested()
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=object(),
+        modules={"mqtt_cls": _PollFailMQTTClient},
+    )
+
+    connect_result = connect_mqtt_client(adapter, transport)
+
+    poll_result = poll_mqtt_client(connect_result.adapter, transport)
+
+    assert poll_result.phase == "error"
+    assert transport.connected is False
+    assert poll_result.errors == ("mqtt_poll_failed:9",)
+
+
+def test_disconnect_mqtt_client_swallow_shutdown_publish_oserror():
+    runtime_config = _runtime_config()
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connect_requested()
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=object(),
+        modules={"mqtt_cls": _PublishFailMQTTClient},
+    )
+
+    connect_result = connect_mqtt_client(adapter, transport)
+
+    disconnect_result = disconnect_mqtt_client(connect_result.adapter, transport, runtime_config)
+
+    assert disconnect_result.phase == "disconnected"
+    assert transport.connected is False
+    assert disconnect_result.errors
+    assert "mqtt_publish_failed:" in disconnect_result.errors[0]
+
+
+def test_disconnect_mqtt_client_reports_disconnect_oserror():
+    runtime_config = _runtime_config()
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connect_requested()
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=object(),
+        modules={"mqtt_cls": _DisconnectFailMQTTClient},
+    )
+
+    connect_result = connect_mqtt_client(adapter, transport)
+
+    disconnect_result = disconnect_mqtt_client(connect_result.adapter, transport, runtime_config)
+
+    assert disconnect_result.phase == "disconnected"
+    assert transport.connected is False
+    assert "mqtt_disconnect_failed:9" in disconnect_result.errors
+
+
+if __name__ == "__main__":
+    _run_direct_tests()

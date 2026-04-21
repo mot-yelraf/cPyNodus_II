@@ -193,14 +193,53 @@ def sync_transport_to_client(adapter, transport):
     client = adapter.client
     subscribed_count = 0
     for topic in transport.subscriptions[adapter.subscription_index :]:
-        client.subscribe(topic)
+        try:
+            client.subscribe(topic)
+        except OSError as exc:
+            transport.mark_disconnected()
+            return MQTTClientSyncResult(
+                phase="error",
+                adapter=adapter,
+                published_count=0,
+                subscribed_count=subscribed_count,
+                errors=("mqtt_subscribe_failed:{}".format(exc),),
+            )
         subscribed_count += 1
 
     published_count = 0
     for message in transport.published_messages[adapter.published_index :]:
         payload = _serialize_payload(message.payload)
-        client.publish(message.topic, payload, retain=message.retain)
+        try:
+            client.publish(message.topic, payload, retain=message.retain)
+        except OSError as exc:
+            transport.mark_disconnected()
+            return MQTTClientSyncResult(
+                phase="error",
+                adapter=MQTTClientAdapter(
+                    phase=adapter.phase,
+                    driver_kind=adapter.driver_kind,
+                    broker=adapter.broker,
+                    port=adapter.port,
+                    broker_targets=adapter.broker_targets,
+                    active_broker=adapter.active_broker,
+                    client=adapter.client,
+                    client_class=adapter.client_class,
+                    client_kwargs=adapter.client_kwargs,
+                    published_index=adapter.published_index + published_count,
+                    subscription_index=adapter.subscription_index + subscribed_count,
+                    errors=adapter.errors,
+                ),
+                published_count=published_count,
+                subscribed_count=subscribed_count,
+                errors=("mqtt_publish_failed:{}:{}".format(message.topic, exc),),
+            )
         published_count += 1
+
+    if subscribed_count or published_count:
+        transport.compact(
+            published_keep_from=adapter.published_index + published_count,
+            subscriptions_keep_from=adapter.subscription_index + subscribed_count,
+        )
 
     updated_adapter = MQTTClientAdapter(
         phase=adapter.phase,
@@ -212,8 +251,8 @@ def sync_transport_to_client(adapter, transport):
         client=adapter.client,
         client_class=adapter.client_class,
         client_kwargs=adapter.client_kwargs,
-        published_index=len(transport.published_messages),
-        subscription_index=len(transport.subscriptions),
+        published_index=0,
+        subscription_index=0,
         errors=adapter.errors,
     )
     return MQTTClientSyncResult(
@@ -247,6 +286,14 @@ def poll_mqtt_client(adapter, transport):
                 loop(timeout=max(1.0, timeout))
             except TypeError:
                 loop()
+        except OSError as exc:
+            transport.mark_disconnected()
+            return MQTTClientSyncResult(
+                phase="error",
+                adapter=adapter,
+                received_count=0,
+                errors=("mqtt_poll_failed:{}".format(exc),),
+            )
     received_count = len(transport.received_messages) - before
     return MQTTClientSyncResult(
         phase="polled",
@@ -266,12 +313,34 @@ def disconnect_mqtt_client(adapter, transport, runtime_config):
             errors=adapter.errors,
         )
 
-    publish_shutdown_cycle(transport, runtime_config)
-    sync_result = sync_transport_to_client(adapter, transport)
+    sync_result = MQTTClientSyncResult(
+        phase="skipped",
+        adapter=adapter,
+        errors=(),
+    )
+    try:
+        publish_shutdown_cycle(transport, runtime_config)
+        sync_result = sync_transport_to_client(adapter, transport)
+    except OSError as exc:
+        transport.mark_disconnected()
+        sync_result = MQTTClientSyncResult(
+            phase="error",
+            adapter=adapter,
+            errors=("mqtt_disconnect_flush_failed:{}".format(exc),),
+        )
     try:
         disconnect = getattr(adapter.client, "disconnect", None)
         if callable(disconnect):
-            disconnect()
+            try:
+                disconnect()
+            except OSError as exc:
+                sync_result = MQTTClientSyncResult(
+                    phase="error",
+                    adapter=sync_result.adapter,
+                    published_count=sync_result.published_count,
+                    subscribed_count=sync_result.subscribed_count,
+                    errors=sync_result.errors + ("mqtt_disconnect_failed:{}".format(exc),),
+                )
     finally:
         transport.mark_disconnected()
     return MQTTClientSyncResult(
@@ -279,7 +348,7 @@ def disconnect_mqtt_client(adapter, transport, runtime_config):
         adapter=sync_result.adapter,
         published_count=sync_result.published_count,
         subscribed_count=sync_result.subscribed_count,
-        errors=(),
+        errors=sync_result.errors,
     )
 
 

@@ -188,6 +188,7 @@ async def main():
         start_monotonic=start_monotonic,
     )
 
+    loop_error = None
     try:
         while True:
             now_monotonic = time.monotonic()
@@ -217,9 +218,30 @@ async def main():
                     )
                     sync_result = sync_transport_to_client(mqtt_adapter, transport)
                     mqtt_adapter = sync_result.adapter
+                    if sync_result.phase == "error":
+                        _print_log(
+                            "mqtt",
+                            "sync phase={} published={} subscribed={} errors={}".format(
+                                sync_result.phase,
+                                sync_result.published_count,
+                                sync_result.subscribed_count,
+                                ",".join(sync_result.errors) if sync_result.errors else "none",
+                            ),
+                            start_monotonic=start_monotonic,
+                        )
             if transport.connected:
                 poll_result = poll_mqtt_client(mqtt_adapter, transport)
                 mqtt_adapter = poll_result.adapter
+                if poll_result.phase == "error":
+                    _print_log(
+                        "mqtt",
+                        "poll phase={} received={} errors={}".format(
+                            poll_result.phase,
+                            poll_result.received_count,
+                            ",".join(poll_result.errors) if poll_result.errors else "none",
+                        ),
+                        start_monotonic=start_monotonic,
+                    )
             iteration = run_steady_state_iteration(
                 transport,
                 runtime_config,
@@ -274,12 +296,55 @@ async def main():
             if transport.connected:
                 sync_result = sync_transport_to_client(mqtt_adapter, transport)
                 mqtt_adapter = sync_result.adapter
+                if sync_result.phase == "error":
+                    _print_log(
+                        "mqtt",
+                        "sync phase={} published={} subscribed={} errors={}".format(
+                            sync_result.phase,
+                            sync_result.published_count,
+                            sync_result.subscribed_count,
+                            ",".join(sync_result.errors) if sync_result.errors else "none",
+                        ),
+                        start_monotonic=start_monotonic,
+                    )
             await asyncio.sleep(0.05)
+    except Exception as exc:
+        loop_error = exc
+        _print_log(
+            "runtime",
+            "fatal error={} type={}".format(str(exc), type(exc).__name__),
+            start_monotonic=start_monotonic,
+        )
+        raise
     finally:
         if transport.connected:
-            disconnect_result = disconnect_mqtt_client(
-                mqtt_adapter,
-                transport,
-                runtime_config,
+            try:
+                disconnect_result = disconnect_mqtt_client(
+                    mqtt_adapter,
+                    transport,
+                    runtime_config,
+                )
+                mqtt_adapter = disconnect_result.adapter
+                if disconnect_result.errors:
+                    _print_log(
+                        "mqtt",
+                        "disconnect phase={} published={} subscribed={} errors={}".format(
+                            disconnect_result.phase,
+                            disconnect_result.published_count,
+                            disconnect_result.subscribed_count,
+                            ",".join(disconnect_result.errors),
+                        ),
+                        start_monotonic=start_monotonic,
+                    )
+            except Exception as exc:
+                _print_log(
+                    "mqtt",
+                    "disconnect phase=error errors={}".format(str(exc)),
+                    start_monotonic=start_monotonic,
+                )
+        if loop_error is not None:
+            _print_log(
+                "runtime",
+                "shutdown after fatal type={}".format(type(loop_error).__name__),
+                start_monotonic=start_monotonic,
             )
-            mqtt_adapter = disconnect_result.adapter

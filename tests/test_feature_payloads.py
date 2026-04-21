@@ -21,7 +21,7 @@ from cpynodus_ii.features import (
 )
 
 
-def test_sensor_data_payload_uses_enriched_snapshot_metrics():
+def test_sensor_data_payload_uses_values_contract():
     runtime_config = RuntimeConfig(
         network=NetworkConfig(hostname="aqi-x943fm"),
         sensor=DetectedSensor(
@@ -35,10 +35,10 @@ def test_sensor_data_payload_uses_enriched_snapshot_metrics():
     snapshot = SimpleNamespace(
         phase="ready",
         metrics={
-            "temperature_c": 24.5,
-            "temperature_f": 76.1,
-            "ambient_vpd_kpa": 1.2,
-            "air_quality_aqi": 87,
+            "Temperature": 24.5,
+            "Temperature_F": 76.1,
+            "Ambient VPD": 1.2,
+            "Air Quality": 87,
         },
     )
 
@@ -46,8 +46,9 @@ def test_sensor_data_payload_uses_enriched_snapshot_metrics():
     assert payload["schema"] == "nodus-sensor-data/v1"
     assert payload["sensor_id"] == "aqi-x943fm"
     assert payload["location"] == "TestLab"
-    assert payload["metrics"]["temperature_f"] == 76.1
-    assert payload["metrics"]["air_quality_aqi"] == 87
+    assert payload["values"]["Temperature_F"] == 76.1
+    assert payload["values"]["Air Quality"] == 87
+    assert "metrics" not in payload
 
 
 def test_switch_state_payloads_use_channel_ids_and_states():

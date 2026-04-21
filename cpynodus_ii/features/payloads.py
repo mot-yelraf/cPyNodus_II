@@ -25,7 +25,7 @@ def build_sensor_data_payload(runtime_config, sensor_snapshot):
         "sensor_id": sensor.sensor_id,
         "device": sensor.device,
         "location": sensor.location,
-        "metrics": dict(sensor_snapshot.metrics or {}),
+        "values": dict(sensor_snapshot.metrics or {}),
         "timestamp": int(time()),
     }
 

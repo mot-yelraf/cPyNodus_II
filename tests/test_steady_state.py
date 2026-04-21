@@ -86,10 +86,10 @@ def test_steady_state_iteration_processes_commands_and_publishes_sensor_cycle():
     assert result.startup_published_count == 6
     assert len(result.command_results) == 1
     assert result.command_results[0].phase == "published"
-    assert result.command_published_count == 2
+    assert result.command_published_count == 5
     assert result.sensor_publish_phase == "published"
     assert result.sensor_published_count == 1
-    assert result.total_published_count == 9
+    assert result.total_published_count == 12
     assert transport.published_messages[-1].topic == "nodus/aqi-x943fm/data"
 
 

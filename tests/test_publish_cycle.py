@@ -45,7 +45,7 @@ def test_startup_cycle_publishes_heartbeat_meta_sensor_and_switch_topics():
             ),
         ),
     )
-    sensor_snapshot = SimpleNamespace(phase="ready", metrics={"temperature_c": 24.5})
+    sensor_snapshot = SimpleNamespace(phase="ready", metrics={"Temperature": 24.5})
     switch_snapshot = {"SWITCH_1": {"phase": "ready", "state": True}}
 
     result = publish_startup_cycle(
@@ -76,7 +76,7 @@ def test_sensor_cycle_publishes_non_retained_sensor_data():
             sensor_id="aqi-x943fm",
         ),
     )
-    sensor_snapshot = SimpleNamespace(phase="ready", metrics={"temperature_c": 24.5, "air_quality_aqi": 80})
+    sensor_snapshot = SimpleNamespace(phase="ready", metrics={"Temperature": 24.5, "Air Quality": 80})
 
     result = publish_sensor_cycle(transport, runtime_config, sensor_snapshot)
 
@@ -84,7 +84,8 @@ def test_sensor_cycle_publishes_non_retained_sensor_data():
     assert result.published_count == 1
     assert result.topics == ("nodus/aqi-x943fm/data",)
     assert transport.published_messages[-1].retain is False
-    assert transport.published_messages[-1].payload["metrics"]["air_quality_aqi"] == 80
+    assert transport.published_messages[-1].payload["values"]["Air Quality"] == 80
+    assert "metrics" not in transport.published_messages[-1].payload
 
 
 def test_sensor_cycle_skips_when_snapshot_not_ready():
@@ -166,7 +167,7 @@ def test_startup_cycle_uses_configured_base_topic():
         transport,
         runtime_config,
         version="0.1.0",
-        sensor_snapshot=SimpleNamespace(phase="ready", metrics={"temperature_c": 24.5}),
+        sensor_snapshot=SimpleNamespace(phase="ready", metrics={"Temperature": 24.5}),
         switch_snapshot={},
     )
 

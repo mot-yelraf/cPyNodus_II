@@ -56,6 +56,15 @@ class MQTTTransport:
     def mark_disconnected(self):
         self.connected = False
 
+    def compact(self, *, published_keep_from=0, subscriptions_keep_from=0):
+        """Drop already-synced transport queues to limit long-run heap growth."""
+        published_start = max(0, int(published_keep_from or 0))
+        if published_start > 0:
+            self.published_messages = self.published_messages[published_start:]
+        subscriptions_start = max(0, int(subscriptions_keep_from or 0))
+        if subscriptions_start > 0:
+            self.subscriptions = self.subscriptions[subscriptions_start:]
+
     def target(self):
         return self.broker, self.port
 

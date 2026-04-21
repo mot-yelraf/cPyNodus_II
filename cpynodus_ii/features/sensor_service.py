@@ -92,10 +92,13 @@ def read_sensor_snapshot(sensor_service, runtime_config):
     if sensor.device == "aqi":
         metrics = _compact_metrics(
             {
-                "temperature_c": _maybe_round(getattr(sensor_service.driver, "temperature", None)),
-                "humidity_rh": _maybe_round(getattr(sensor_service.driver, "humidity", None)),
-                "pressure_hpa": _maybe_round(_scale_pressure_hpa(getattr(sensor_service.driver, "pressure", None))),
-                "gas_ohms": _maybe_round(getattr(sensor_service.driver, "gas", None)),
+                "Temperature": _maybe_round(getattr(sensor_service.driver, "temperature", None), 2),
+                "Rel-Humidity": _maybe_round(getattr(sensor_service.driver, "humidity", None), 2),
+                "Baro-Pressure": _maybe_round(
+                    _scale_pressure_hpa(getattr(sensor_service.driver, "pressure", None)),
+                    0,
+                ),
+                "Gas": _maybe_round(getattr(sensor_service.driver, "gas", None), 0),
             }
         )
         metrics = enrich_metrics(sensor.device, metrics, runtime_config=runtime_config)
@@ -110,9 +113,9 @@ def read_sensor_snapshot(sensor_service, runtime_config):
     if sensor.device == "co2":
         metrics = _compact_metrics(
             {
-                "co2_ppm": _maybe_round(getattr(sensor_service.driver, "CO2", None)),
-                "temperature_c": _maybe_round(getattr(sensor_service.driver, "temperature", None)),
-                "humidity_rh": _maybe_round(getattr(sensor_service.driver, "relative_humidity", None)),
+                "CO2": _maybe_round(getattr(sensor_service.driver, "CO2", None), 0),
+                "Temperature": _maybe_round(getattr(sensor_service.driver, "temperature", None), 2),
+                "Rel-Humidity": _maybe_round(getattr(sensor_service.driver, "relative_humidity", None), 2),
             }
         )
         metrics = enrich_metrics(sensor.device, metrics, runtime_config=runtime_config)
@@ -127,7 +130,7 @@ def read_sensor_snapshot(sensor_service, runtime_config):
     if sensor.device == "lux":
         metrics = _compact_metrics(
             {
-                "lux": _maybe_round(getattr(sensor_service.driver, "lux", None)),
+                "Light Intensity": _maybe_round(getattr(sensor_service.driver, "lux", None), 0),
             }
         )
         metrics = enrich_metrics(sensor.device, metrics, runtime_config=runtime_config)
@@ -142,9 +145,12 @@ def read_sensor_snapshot(sensor_service, runtime_config):
     if sensor.device in {"avpd", "apvpd"}:
         metrics = _compact_metrics(
             {
-                "temperature_c": _maybe_round(getattr(sensor_service.driver, "temperature", None)),
-                "humidity_rh": _maybe_round(getattr(sensor_service.driver, "relative_humidity", None)),
-                "pressure_hpa": _maybe_round(_scale_pressure_hpa(getattr(sensor_service.driver, "pressure", None))),
+                "Temperature": _maybe_round(getattr(sensor_service.driver, "temperature", None), 2),
+                "Rel-Humidity": _maybe_round(getattr(sensor_service.driver, "relative_humidity", None), 2),
+                "Baro-Pressure": _maybe_round(
+                    _scale_pressure_hpa(getattr(sensor_service.driver, "pressure", None)),
+                    None,
+                ),
             }
         )
         metrics = enrich_metrics(sensor.device, metrics, runtime_config=runtime_config)
@@ -290,9 +296,12 @@ def _maybe_round(value, digits=3):
     if value is None:
         return None
     try:
-        return round(float(value), digits)
+        numeric = float(value)
     except (TypeError, ValueError):
         return None
+    if digits is None:
+        return numeric
+    return round(numeric, digits)
 
 
 def _scale_pressure_hpa(value):
@@ -319,20 +328,31 @@ def _read_soil_metrics(transport, sensor):
     if registers is None or scales is None:
         return {}
     return {
-        "soil_temperature_c": _scale_register(transport.read_registers(registers.temperature, 1), scales.temperature),
-        "soil_moisture_pct": _scale_register(transport.read_registers(registers.moisture, 1), scales.moisture),
-        "soil_ec": _scale_register(transport.read_registers(registers.ec, 1), scales.ec),
-        "soil_ph": _scale_register(transport.read_registers(registers.ph, 1), scales.ph),
-        "soil_n": _scale_register(transport.read_registers(registers.n, 1), scales.n),
-        "soil_p": _scale_register(transport.read_registers(registers.p, 1), scales.p),
-        "soil_k": _scale_register(transport.read_registers(registers.k, 1), scales.k),
+        "Soil Temp_C": _scale_register(
+            transport.read_registers(registers.temperature, 1),
+            scales.temperature,
+            1,
+        ),
+        "Soil Moisture": _scale_register(
+            transport.read_registers(registers.moisture, 1),
+            scales.moisture,
+            None,
+        ),
+        "Soil EC": _scale_register(transport.read_registers(registers.ec, 1), scales.ec, 2),
+        "Soil pH": _scale_register(transport.read_registers(registers.ph, 1), scales.ph, 1),
+        "Soil Nitrogen": _scale_register(transport.read_registers(registers.n, 1), scales.n, 0),
+        "Soil Phosphorus": _scale_register(transport.read_registers(registers.p, 1), scales.p, 0),
+        "Soil Potassium": _scale_register(transport.read_registers(registers.k, 1), scales.k, 0),
     }
 
 
-def _scale_register(raw_value, scale):
+def _scale_register(raw_value, scale, digits):
     if raw_value is None:
         return None
     try:
-        return round(float(raw_value) / float(scale or 1.0), 3)
+        numeric = float(raw_value) / float(scale or 1.0)
     except (TypeError, ValueError, ZeroDivisionError):
         return None
+    if digits is None:
+        return numeric
+    return round(numeric, digits)

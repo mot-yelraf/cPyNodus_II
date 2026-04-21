@@ -101,7 +101,7 @@ def test_sensor_service_starts_bme680_for_aqi_config():
     assert sensor_service.driver.address == 119
 
 
-def test_sensor_service_reads_normalized_aqi_snapshot():
+def test_sensor_service_reads_legacy_aqi_snapshot():
     docs_root = Path(__file__).resolve().parents[1] / "docs" / "sensor+switch"
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
@@ -129,18 +129,18 @@ def test_sensor_service_reads_normalized_aqi_snapshot():
 
     assert snapshot.phase == "ready"
     assert snapshot.sensor_id == "aqi-x943fm"
-    assert snapshot.metrics["temperature_c"] == 24.5
-    assert snapshot.metrics["temperature_f"] == 76.1
-    assert snapshot.metrics["humidity_rh"] == 55.25
-    assert snapshot.metrics["humidity_g_m3"] > 0
-    assert snapshot.metrics["pressure_hpa"] == 1008.5
-    assert snapshot.metrics["gas_ohms"] == 12345.0
-    assert snapshot.metrics["air_quality_aqi"] >= 0
-    assert snapshot.metrics["ambient_vpd_kpa"] > 0
-    assert snapshot.metrics["dew_point_c"] < snapshot.metrics["temperature_c"]
-    assert snapshot.metrics["dew_point_f"] < snapshot.metrics["temperature_f"]
-    assert snapshot.metrics["dew_point_deficit_c"] > 0
-    assert 0 <= snapshot.metrics["dewvpd_risk_pct"] <= 100
+    assert snapshot.metrics["Temperature"] == 24.5
+    assert snapshot.metrics["Temperature_F"] == 76.1
+    assert snapshot.metrics["Rel-Humidity"] == 55.25
+    assert snapshot.metrics["Humidity"] > 0
+    assert snapshot.metrics["Baro-Pressure"] == 1008.0
+    assert snapshot.metrics["Gas"] == 12345.0
+    assert snapshot.metrics["Air Quality"] >= 0
+    assert snapshot.metrics["Ambient VPD"] > 0
+    assert snapshot.metrics["Dew Point"] < snapshot.metrics["Temperature"]
+    assert snapshot.metrics["Dew Point_F"] < snapshot.metrics["Temperature_F"]
+    assert snapshot.metrics["Dew Point Deficit"] > 0
+    assert 0 <= snapshot.metrics["DewVPD Risk"] <= 100
 
 
 def test_sensor_service_uses_uart_transport_for_soil_sensor():
@@ -170,7 +170,7 @@ def test_sensor_service_uses_uart_transport_for_soil_sensor():
     assert sensor_service.transport.baudrate == 4800
 
 
-def test_sensor_service_reads_normalized_soil_snapshot():
+def test_sensor_service_reads_legacy_soil_snapshot():
     class _FakeSoilTransport:
         def __init__(self):
             self.values = {0: 215, 1: 430, 2: 55, 3: 68, 4: 11, 5: 22, 6: 33}
@@ -214,15 +214,15 @@ def test_sensor_service_reads_normalized_soil_snapshot():
     snapshot = read_sensor_snapshot(sensor_service, runtime_config)
 
     assert snapshot.phase == "ready"
-    assert snapshot.metrics["soil_temperature_c"] == 21.5
-    assert snapshot.metrics["soil_temperature_f"] == 70.7
-    assert snapshot.metrics["soil_moisture_pct"] == 43.0
-    assert snapshot.metrics["soil_ph"] == 6.8
-    assert snapshot.metrics["soil_moisture_deficit_pct"] == 0.0
-    assert snapshot.metrics["soil_stress_index_pct"] == 0.0
+    assert snapshot.metrics["Soil Temp_C"] == 21.5
+    assert snapshot.metrics["Soil Temp_F"] == 70.7
+    assert snapshot.metrics["Soil Moisture"] == 43.0
+    assert snapshot.metrics["Soil pH"] == 6.8
+    assert snapshot.metrics["Soil Moisture Deficit"] == 0.0
+    assert snapshot.metrics["Soil Stress Index"] == 0.0
 
 
-def test_sensor_service_reads_normalized_lux_snapshot_with_ppfd():
+def test_sensor_service_reads_legacy_lux_snapshot_with_ppfd():
     class _FakeLuxDriver:
         def __init__(self, transport, *, address):
             self.transport = transport
@@ -258,14 +258,14 @@ def test_sensor_service_reads_normalized_lux_snapshot_with_ppfd():
     snapshot = read_sensor_snapshot(sensor_service, runtime_config)
 
     assert snapshot.phase == "ready"
-    assert snapshot.metrics["lux"] == 5400.0
-    assert snapshot.metrics["estimated_ppfd_umol_m2_s"] == 100.0
+    assert snapshot.metrics["Light Intensity"] == 5400.0
+    assert snapshot.metrics["Estimated PPFD"] == 100.0
 
 
 def test_sensor_service_uses_keyword_snapshot_construction_for_co2(monkeypatch):
     class _FakeCO2Driver:
         def __init__(self):
-            self.CO2 = 845.0
+            self.CO2 = 845.4
             self.temperature = 23.5
             self.relative_humidity = 47.0
 
@@ -299,7 +299,7 @@ def test_sensor_service_uses_keyword_snapshot_construction_for_co2(monkeypatch):
             "errors": (),
         }
     ]
-    assert snapshot.metrics["co2_ppm"] == 845.0
+    assert snapshot.metrics["CO2"] == 845.0
 
 
 def test_sensor_service_stop_deinits_transport():
