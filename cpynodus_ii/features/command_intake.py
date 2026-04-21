@@ -196,6 +196,7 @@ def process_switch_command_message(
                         "value": bool(command.desired_state),
                     },
                 ),
+                reload_runtime=False,
             )
     transport.publish(topic, "", retain=True)
     return CommandResult(

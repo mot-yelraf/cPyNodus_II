@@ -106,7 +106,7 @@ class Settings:
         return toml_compat.load_file(path)
 
     @classmethod
-    def apply_updates_to_directory(cls, root, runtime_config, updates):
+    def apply_updates_to_directory(cls, root, runtime_config, updates, *, reload_runtime=True):
         """Persist supported TOML updates and return runtime config plus diagnostics."""
         root_path = str(root or ".")
         if not updates:
@@ -134,6 +134,9 @@ class Settings:
             if code in {30} or "read-only" in str(exc).lower():
                 return runtime_config, tuple(applied_updates), ("read_only_filesystem",)
             return runtime_config, tuple(applied_updates), ("persistence_failed", str(exc))
+
+        if not reload_runtime:
+            return runtime_config, tuple(applied_updates), ()
 
         reloaded = cls.from_directory(root_path).runtime_config()
         return reloaded, tuple(applied_updates), ()

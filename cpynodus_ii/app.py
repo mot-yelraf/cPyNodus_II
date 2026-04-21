@@ -66,6 +66,15 @@ def _memory_summary():
     return "free_mem={} mem_alloc={}".format(free_mem, mem_alloc)
 
 
+def _filesystem_mode_label(fs_writable):
+    """Return a compact filesystem mode label for logs."""
+    if fs_writable is True:
+        return "RWFS"
+    if fs_writable is False:
+        return "ROFS"
+    return "FS?"
+
+
 def _should_preflight_broker(adapter):
     targets = tuple(getattr(adapter, "broker_targets", ()) or ())
     return len(targets) > 1
@@ -77,7 +86,13 @@ async def main():
     settings_root = "."
     settings = Settings.from_working_directory()
     fs_writable = Settings.filesystem_writable(settings_root)
+    fs_mode = _filesystem_mode_label(fs_writable)
     persistence_mode = "persisted" if fs_writable else "volatile" if fs_writable is False else "unknown"
+    writable_settings_root = (
+        settings_root
+        if fs_writable is True and _path_exists(Settings.SETTINGS_FILE)
+        else None
+    )
     runtime_config = settings.runtime_config()
     plan = StartupPlan.from_settings(settings)
     network_stack = build_network_stack(runtime_config)
@@ -105,15 +120,28 @@ async def main():
 
     _print_log(
         "cPyNodus_II",
-        "boot version={} profile={} ap_mode={} persistence_mode={} network_phase={} network_errors={} mqtt_client={} mqtt_connect={} sensor={} sensor_family={} sensor_interface={} sensor_file={} sensor_phase={} sensor_target={} sensor_adapter={} sensor_service={} sensor_metrics={} switch={} switch_channels={} switch_phase={} switch_adapter={} switch_service={} mqtt={} web={} ntp={}".format(
+        "boot version={} profile={} ap_mode={} fs={} persistence_mode={}".format(
             __version__,
             plan.profile,
             plan.ap_mode,
+            fs_mode,
             persistence_mode,
+        ),
+        start_monotonic=start_monotonic,
+    )
+    _print_log(
+        "cPyNodus_II",
+        "runtime network_phase={} network_errors={} mqtt_client={} mqtt_connect={}".format(
             network_stack.phase,
             ",".join(network_stack.errors) if network_stack.errors else "none",
             mqtt_adapter.phase,
             "{}:{}".format(connect_phase, mqtt_adapter.active_broker or "none"),
+        ),
+        start_monotonic=start_monotonic,
+    )
+    _print_log(
+        "cPyNodus_II",
+        "sensor enabled={} family={} interface={} file={} phase={} target={} adapter={} service={} metrics={}".format(
             plan.sensor_enabled,
             plan.sensor_family or "none",
             plan.sensor_interface or "none",
@@ -123,6 +151,12 @@ async def main():
             sensor_adapter.phase,
             sensor_service.phase,
             len((sensor_snapshot.metrics or {})),
+        ),
+        start_monotonic=start_monotonic,
+    )
+    _print_log(
+        "cPyNodus_II",
+        "switch enabled={} channels={} phase={} adapter={} service={} mqtt={} web={} ntp={}".format(
             plan.switch_enabled,
             switch_init.channel_count,
             switch_runtime.phase,
@@ -195,7 +229,7 @@ async def main():
                 version=__version__,
                 now_monotonic=now_monotonic,
                 active_broker=mqtt_adapter.active_broker,
-                settings_root=settings_root if _path_exists(Settings.SETTINGS_FILE) else None,
+                settings_root=writable_settings_root,
             )
             steady_state = iteration.state
             runtime_config = iteration.runtime_config

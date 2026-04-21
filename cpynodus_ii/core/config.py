@@ -22,7 +22,7 @@ def _clean_str(value):
     return str(value or "").strip()
 
 
-@dataclass(frozen=True)
+@dataclass
 class I2CConfig:
     """Normalized I2C sensor transport settings."""
 
@@ -38,7 +38,7 @@ class I2CConfig:
         _raw_setattr(self, "address", int(self.address or 0))
 
 
-@dataclass(frozen=True)
+@dataclass
 class SoilModbusConfig:
     """Normalized soil sensor Modbus transport settings."""
 
@@ -58,7 +58,7 @@ class SoilModbusConfig:
         _raw_setattr(self, "variant", _clean_str(self.variant) or "canonical")
 
 
-@dataclass(frozen=True)
+@dataclass
 class SoilRegisterMap:
     """Normalized soil register mapping."""
 
@@ -71,7 +71,7 @@ class SoilRegisterMap:
     k: int = 6
 
 
-@dataclass(frozen=True)
+@dataclass
 class SoilScaleMap:
     """Normalized soil scaling values."""
 
@@ -84,7 +84,7 @@ class SoilScaleMap:
     k: float = 1.0
 
 
-@dataclass(frozen=True)
+@dataclass
 class SoilThresholdConfig:
     """Normalized soil deficit thresholds."""
 
@@ -92,7 +92,7 @@ class SoilThresholdConfig:
     dry_pct: float = 18.0
 
 
-@dataclass(frozen=True)
+@dataclass
 class SoilStressConfig:
     """Normalized soil stress weighting and temperature bands."""
 
@@ -104,7 +104,7 @@ class SoilStressConfig:
     temp_weight_pct: float = 30.0
 
 
-@dataclass(frozen=True)
+@dataclass
 class NetworkConfig:
     """Normalized network and AP bootstrap settings."""
 
@@ -124,7 +124,7 @@ class NetworkConfig:
         _raw_setattr(self, "http_port", int(self.http_port or 8000))
 
 
-@dataclass(frozen=True)
+@dataclass
 class MQTTConfig:
     """Normalized MQTT connection and topic settings."""
 
@@ -159,7 +159,7 @@ class MQTTConfig:
         return tuple(targets)
 
 
-@dataclass(frozen=True)
+@dataclass
 class HomeAssistantConfig:
     """Normalized Home Assistant integration settings."""
 
@@ -177,7 +177,7 @@ class HomeAssistantConfig:
         _raw_setattr(self, "publish_legacy_sensor_topic", bool(self.publish_legacy_sensor_topic))
 
 
-@dataclass(frozen=True)
+@dataclass
 class TimeConfig:
     """Normalized time settings."""
 
@@ -191,7 +191,7 @@ class TimeConfig:
         _raw_setattr(self, "tz_name", _clean_str(self.tz_name) or "MST")
 
 
-@dataclass(frozen=True)
+@dataclass
 class DetectedSensor:
     """Describe the sensor family detected or configured for this boot."""
 
@@ -253,7 +253,7 @@ class DetectedSensor:
         return bool(self.family)
 
 
-@dataclass(frozen=True)
+@dataclass
 class SwitchConfig:
     """Normalized switch runtime identity and enablement."""
 
@@ -273,7 +273,7 @@ class SwitchConfig:
         _raw_setattr(self, "channels", tuple(self.channels or ()))
 
 
-@dataclass(frozen=True)
+@dataclass
 class SwitchChannelConfig:
     """Normalized switch channel definition."""
 
@@ -295,7 +295,7 @@ class SwitchChannelConfig:
         _raw_setattr(self, "override_script", bool(self.override_script))
 
 
-@dataclass(frozen=True)
+@dataclass
 class RuntimeConfig:
     """Describe the normalized runtime configuration for one boot."""
 

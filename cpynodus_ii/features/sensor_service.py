@@ -99,7 +99,13 @@ def read_sensor_snapshot(sensor_service, runtime_config):
             }
         )
         metrics = enrich_metrics(sensor.device, metrics, runtime_config=runtime_config)
-        return SensorSnapshot("ready", sensor.sensor_id, sensor.device, metrics, ())
+        return SensorSnapshot(
+            phase="ready",
+            sensor_id=sensor.sensor_id,
+            device=sensor.device,
+            metrics=metrics,
+            errors=(),
+        )
 
     if sensor.device == "co2":
         metrics = _compact_metrics(
@@ -110,7 +116,13 @@ def read_sensor_snapshot(sensor_service, runtime_config):
             }
         )
         metrics = enrich_metrics(sensor.device, metrics, runtime_config=runtime_config)
-        return SensorSnapshot("ready", sensor.sensor_id, sensor.device, metrics, ())
+        return SensorSnapshot(
+            phase="ready",
+            sensor_id=sensor.sensor_id,
+            device=sensor.device,
+            metrics=metrics,
+            errors=(),
+        )
 
     if sensor.device == "lux":
         metrics = _compact_metrics(
@@ -119,7 +131,13 @@ def read_sensor_snapshot(sensor_service, runtime_config):
             }
         )
         metrics = enrich_metrics(sensor.device, metrics, runtime_config=runtime_config)
-        return SensorSnapshot("ready", sensor.sensor_id, sensor.device, metrics, ())
+        return SensorSnapshot(
+            phase="ready",
+            sensor_id=sensor.sensor_id,
+            device=sensor.device,
+            metrics=metrics,
+            errors=(),
+        )
 
     if sensor.device in {"avpd", "apvpd"}:
         metrics = _compact_metrics(
@@ -130,12 +148,24 @@ def read_sensor_snapshot(sensor_service, runtime_config):
             }
         )
         metrics = enrich_metrics(sensor.device, metrics, runtime_config=runtime_config)
-        return SensorSnapshot("ready", sensor.sensor_id, sensor.device, metrics, ())
+        return SensorSnapshot(
+            phase="ready",
+            sensor_id=sensor.sensor_id,
+            device=sensor.device,
+            metrics=metrics,
+            errors=(),
+        )
 
     if sensor.device == "soil":
         metrics = _compact_metrics(_read_soil_metrics(sensor_service.transport, sensor))
         metrics = enrich_metrics(sensor.device, metrics, runtime_config=runtime_config)
-        return SensorSnapshot("ready", sensor.sensor_id, sensor.device, metrics, ())
+        return SensorSnapshot(
+            phase="ready",
+            sensor_id=sensor.sensor_id,
+            device=sensor.device,
+            metrics=metrics,
+            errors=(),
+        )
 
     return SensorSnapshot(
         phase="error",

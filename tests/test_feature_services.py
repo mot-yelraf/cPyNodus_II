@@ -2,6 +2,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 
+import cpynodus_ii.features.sensor_service as sensor_service_module
 from cpynodus_ii.core.config import (
     DetectedSensor,
     I2CConfig,
@@ -259,6 +260,46 @@ def test_sensor_service_reads_normalized_lux_snapshot_with_ppfd():
     assert snapshot.phase == "ready"
     assert snapshot.metrics["lux"] == 5400.0
     assert snapshot.metrics["estimated_ppfd_umol_m2_s"] == 100.0
+
+
+def test_sensor_service_uses_keyword_snapshot_construction_for_co2(monkeypatch):
+    class _FakeCO2Driver:
+        def __init__(self):
+            self.CO2 = 845.0
+            self.temperature = 23.5
+            self.relative_humidity = 47.0
+
+    runtime_config = RuntimeConfig(
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            active_config_file="sensor_i2c.toml",
+            device="co2",
+            sensor_id="co2-1",
+            i2c=I2CConfig(bus=1, scl_pin="GP3", sda_pin="GP2", address=0x62),
+        )
+    )
+    sensor_service = SimpleNamespace(phase="ready", driver=_FakeCO2Driver(), errors=())
+    calls = []
+
+    def _keyword_only_snapshot(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(**kwargs)
+
+    monkeypatch.setattr(sensor_service_module, "SensorSnapshot", _keyword_only_snapshot)
+
+    snapshot = sensor_service_module.read_sensor_snapshot(sensor_service, runtime_config)
+
+    assert calls == [
+        {
+            "phase": "ready",
+            "sensor_id": "co2-1",
+            "device": "co2",
+            "metrics": snapshot.metrics,
+            "errors": (),
+        }
+    ]
+    assert snapshot.metrics["co2_ppm"] == 845.0
 
 
 def test_sensor_service_stop_deinits_transport():

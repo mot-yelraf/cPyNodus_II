@@ -111,3 +111,61 @@ def test_switch_command_persists_switch_toml_last_state():
     assert result.phase == "published"
     assert result.persistence_mode == "persisted"
     assert switch_doc["Switch"]["SWITCH_1_LAST_STATE"] is True
+
+
+def test_switch_command_persists_without_reloading_runtime_config(monkeypatch):
+    docs_root = Path(__file__).resolve().parents[1] / "docs" / "switch_only"
+    with TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        for name in ("settings.toml", "switch.toml"):
+            (tmpdir_path / name).write_text((docs_root / name).read_text(), encoding="utf-8")
+
+        runtime_config = Settings.from_directory(tmpdir_path).runtime_config()
+        transport = MQTTTransport("broker.local", 1883)
+
+        class _Handle:
+            def __init__(self, value=False):
+                self.value = value
+
+        switch_service = type(
+            "_SwitchService",
+            (),
+            {
+                "phase": "ready",
+                "device_id": runtime_config.switch.device_id,
+                "channel_count": 1,
+                "errors": (),
+                "channels": (
+                    type(
+                        "_Channel",
+                        (),
+                        {
+                            "key": "SWITCH_1",
+                            "channel_id": "S1-w9umh8",
+                            "phase": "ready",
+                            "control_handle": _Handle(False),
+                            "enable_handle": _Handle(True),
+                            "errors": (),
+                        },
+                    )(),
+                ),
+            },
+        )()
+
+        def _fail_on_reload(cls, root):
+            raise AssertionError("switch persistence should not reload runtime config")
+
+        monkeypatch.setattr(Settings, "from_directory", classmethod(_fail_on_reload))
+        result = process_switch_command_message(
+            transport,
+            runtime_config,
+            switch_service,
+            topic="nodus/S1-w9umh8/config/set",
+            payload_text="ON",
+            settings_root=tmpdir_path,
+        )
+        switch_doc = Settings._read_toml_file(tmpdir_path / Settings.SWITCH_FILE)
+
+    assert result.phase == "published"
+    assert result.persistence_mode == "persisted"
+    assert switch_doc["Switch"]["SWITCH_1_LAST_STATE"] is True
