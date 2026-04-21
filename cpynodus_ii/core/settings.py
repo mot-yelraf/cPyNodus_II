@@ -336,6 +336,8 @@ class Settings:
         section = str(update.get("section", "") or "").strip()
         if section in {"Network", "Profile", "MQTT", "HomeAssistant", "Time"}:
             return cls.SETTINGS_FILE
+        if section == "Switch":
+            return cls.SWITCH_FILE
         if section.startswith("Calibration") or section in {"Display", "Display.Style"}:
             if runtime_config.sensor.active_config_file:
                 return runtime_config.sensor.active_config_file

@@ -3,6 +3,20 @@
 from time import time
 
 
+def mqtt_base_topic(runtime_config):
+    """Return the normalized MQTT topic prefix for the active runtime."""
+    topic = str(getattr(runtime_config.mqtt, "base_topic", "") or "").strip()
+    return topic or "nodus"
+
+
+def mqtt_topic(runtime_config, *parts):
+    """Build one MQTT topic under the active runtime base topic."""
+    members = [str(part or "").strip("/") for part in parts if str(part or "").strip("/")]
+    if not members:
+        return mqtt_base_topic(runtime_config)
+    return "{}/{}".format(mqtt_base_topic(runtime_config), "/".join(members))
+
+
 def build_sensor_data_payload(runtime_config, sensor_snapshot):
     """Build a compact sensor data payload from an enriched sensor snapshot."""
     sensor = runtime_config.sensor
@@ -74,7 +88,7 @@ def build_runtime_meta_payload(runtime_config, *, version, active_broker=""):
             "switch": switch.present,
         },
         "status": {
-            "heartbeat_topic": "nodus/{}/status/heartbeat".format(device_id),
+            "heartbeat_topic": mqtt_topic(runtime_config, device_id, "status", "heartbeat"),
         },
         "mqtt": {
             "broker": runtime_config.mqtt.broker,
@@ -93,9 +107,9 @@ def build_runtime_meta_payload(runtime_config, *, version, active_broker=""):
         payload["sensor"] = {
             "sensor_id": sensor.sensor_id,
             "location": sensor.location,
-            "data_topic": "nodus/{}/data".format(sensor.sensor_id),
-            "event_topic": "nodus/{}/event".format(sensor.sensor_id),
-            "availability_topic": "nodus/{}/availability".format(sensor.sensor_id),
+            "data_topic": mqtt_topic(runtime_config, sensor.sensor_id, "data"),
+            "event_topic": mqtt_topic(runtime_config, sensor.sensor_id, "event"),
+            "availability_topic": mqtt_topic(runtime_config, sensor.sensor_id, "availability"),
         }
 
     if switch.present:
@@ -108,10 +122,10 @@ def build_runtime_meta_payload(runtime_config, *, version, active_broker=""):
                     "channel_id": channel.channel_id,
                     "enable_pin": channel.enable_pin,
                     "pin": channel.control_pin,
-                    "state_topic": "nodus/{}/state".format(channel.channel_id),
-                    "set_topic": "nodus/{}/config/set".format(channel.channel_id),
-                    "result_topic": "nodus/{}/config/result".format(channel.channel_id),
-                    "availability_topic": "nodus/{}/availability".format(channel.channel_id),
+                    "state_topic": mqtt_topic(runtime_config, channel.channel_id, "state"),
+                    "set_topic": mqtt_topic(runtime_config, channel.channel_id, "config", "set"),
+                    "result_topic": mqtt_topic(runtime_config, channel.channel_id, "config", "result"),
+                    "availability_topic": mqtt_topic(runtime_config, channel.channel_id, "availability"),
                 }
             )
         payload["switch"] = {

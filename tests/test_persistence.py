@@ -3,7 +3,11 @@ from tempfile import TemporaryDirectory
 
 from cpynodus_ii.core.settings import Settings
 from cpynodus_ii.core.mqtt import MQTTTransport
-from cpynodus_ii.features import process_calibration_message, process_device_config_message
+from cpynodus_ii.features import (
+    process_calibration_message,
+    process_device_config_message,
+    process_switch_command_message,
+)
 
 
 def test_device_config_message_persists_settings_toml_and_reloads_runtime_config():
@@ -53,3 +57,57 @@ def test_calibration_message_persists_active_sensor_toml_and_reloads_runtime_con
     assert result.phase == "published"
     assert sensor_doc["Calibration"]["Device"]["TEMP_OFFSET"] == 1.5
     assert transport.published_messages[-1].payload["updates"][0]["value"] == 1.5
+
+
+def test_switch_command_persists_switch_toml_last_state():
+    docs_root = Path(__file__).resolve().parents[1] / "docs" / "switch_only"
+    with TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        for name in ("settings.toml", "switch.toml"):
+            (tmpdir_path / name).write_text((docs_root / name).read_text(), encoding="utf-8")
+
+        runtime_config = Settings.from_directory(tmpdir_path).runtime_config()
+        transport = MQTTTransport("broker.local", 1883)
+
+        class _Handle:
+            def __init__(self, value=False):
+                self.value = value
+
+        switch_service = type(
+            "_SwitchService",
+            (),
+            {
+                "phase": "ready",
+                "device_id": runtime_config.switch.device_id,
+                "channel_count": 1,
+                "errors": (),
+                "channels": (
+                    type(
+                        "_Channel",
+                        (),
+                        {
+                            "key": "SWITCH_1",
+                            "channel_id": "S1-w9umh8",
+                            "phase": "ready",
+                            "control_handle": _Handle(False),
+                            "enable_handle": _Handle(True),
+                            "errors": (),
+                        },
+                    )(),
+                ),
+            },
+        )()
+
+        result = process_switch_command_message(
+            transport,
+            runtime_config,
+            switch_service,
+            topic="nodus/S1-w9umh8/config/set",
+            payload_text='{"message_id":"cfg-1","payload":{"updates":[{"section":"Switch","key":"SWITCH_1_LAST_STATE","value":true,"name":"switch.toml"}]}}',
+            settings_root=tmpdir_path,
+        )
+        switch_doc = Settings._read_toml_file(tmpdir_path / Settings.SWITCH_FILE)
+
+    assert result.phase == "published"
+    assert result.persistence_mode == "persisted"
+    assert switch_doc["Switch"]["SWITCH_1_LAST_STATE"] is True

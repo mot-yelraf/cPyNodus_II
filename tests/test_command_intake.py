@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from cpynodus_ii.core.config import RuntimeConfig, SwitchChannelConfig, SwitchConfig
+from cpynodus_ii.core.config import MQTTConfig, RuntimeConfig, SwitchChannelConfig, SwitchConfig
 from cpynodus_ii.core.mqtt import MQTTTransport
 from cpynodus_ii.features import (
     parse_calibration_command,
@@ -85,6 +85,23 @@ def test_subscribe_runtime_topics_tracks_all_switch_channels():
     assert transport.subscriptions == list(topics)
 
 
+def test_subscribe_runtime_topics_uses_configured_base_topic():
+    transport = MQTTTransport("broker.local", 1883)
+    runtime_config = RuntimeConfig(
+        mqtt=MQTTConfig(base_topic="greenhouse"),
+        switch=_runtime_config().switch,
+    )
+
+    topics = subscribe_runtime_topics(transport, runtime_config)
+
+    assert topics == (
+        "greenhouse/switch-x943fm/config/set",
+        "greenhouse/switch-x943fm/calibration/set",
+        "greenhouse/S1-x943fm/config/set",
+        "greenhouse/S2-x943fm/config/set",
+    )
+
+
 def test_parse_switch_command_accepts_compact_and_json_payloads():
     command = parse_switch_command("nodus/S1-x943fm/config/set", "ON")
     json_command = parse_switch_command(
@@ -151,6 +168,31 @@ def test_process_switch_command_message_accepts_device_style_updates_payload():
     assert transport.published_messages[0].payload["message_id"] == "cfg-1"
     assert transport.published_messages[2].payload == "ON"
     assert transport.published_messages[3].payload["updates"][0]["key"] == "SWITCH_1_LAST_STATE"
+
+
+def test_process_switch_command_message_uses_configured_base_topic():
+    transport = MQTTTransport("broker.local", 1883)
+    runtime_config = RuntimeConfig(
+        mqtt=MQTTConfig(base_topic="greenhouse"),
+        switch=_runtime_config().switch,
+    )
+
+    result = process_switch_command_message(
+        transport,
+        runtime_config,
+        _switch_service(),
+        topic="greenhouse/S1-x943fm/config/set",
+        payload_text="ON",
+    )
+
+    assert result.phase == "published"
+    assert [message.topic for message in transport.published_messages] == [
+        "greenhouse/S1-x943fm/config/ack",
+        "greenhouse/S1-x943fm/config/result",
+        "greenhouse/S1-x943fm/state",
+        "greenhouse/switch-x943fm/meta/patch",
+        "greenhouse/S1-x943fm/config/set",
+    ]
 
 
 def test_process_inbound_messages_drains_queue_and_ignores_non_command_topics():

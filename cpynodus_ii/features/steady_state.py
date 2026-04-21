@@ -16,6 +16,7 @@ class SteadyState:
     sensor_interval_s: float = 60.0
     last_sensor_publish_at: float = -1.0
     handled_message_ids: tuple = ()
+    handled_message_id_limit: int = 64
 
 
 @dataclass(frozen=True)
@@ -79,6 +80,7 @@ def run_steady_state_iteration(
             sensor_interval_s=state.sensor_interval_s,
             last_sensor_publish_at=last_sensor_publish_at,
             handled_message_ids=state.handled_message_ids,
+            handled_message_id_limit=state.handled_message_id_limit,
         )
 
     command_results = process_inbound_messages(
@@ -95,6 +97,8 @@ def run_steady_state_iteration(
             updated_runtime_config = result.runtime_config
         if result.message_id and result.message_id not in handled_message_ids:
             handled_message_ids.append(result.message_id)
+    if len(handled_message_ids) > int(working_state.handled_message_id_limit or 0):
+        handled_message_ids = handled_message_ids[-int(working_state.handled_message_id_limit or 0) :]
     command_published_count = sum(
         int(result.published_count or 0) for result in command_results
     )
@@ -124,6 +128,7 @@ def run_steady_state_iteration(
                 sensor_interval_s=working_state.sensor_interval_s,
                 last_sensor_publish_at=float(now_monotonic),
                 handled_message_ids=tuple(handled_message_ids),
+                handled_message_id_limit=working_state.handled_message_id_limit,
             )
     else:
         working_state = SteadyState(
@@ -131,6 +136,7 @@ def run_steady_state_iteration(
             sensor_interval_s=working_state.sensor_interval_s,
             last_sensor_publish_at=working_state.last_sensor_publish_at,
             handled_message_ids=tuple(handled_message_ids),
+            handled_message_id_limit=working_state.handled_message_id_limit,
         )
 
     return SteadyStateResult(

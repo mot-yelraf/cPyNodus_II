@@ -157,3 +157,21 @@ def test_steady_state_respects_sensor_publish_interval():
     assert third.sensor_publish_phase == "published"
     assert third.sensor_published_count == 1
     assert third.state.last_sensor_publish_at == 41.0
+
+
+def test_steady_state_bounds_handled_message_ids():
+    transport = MQTTTransport("broker.local", 1883)
+    transport.receive(
+        "nodus/S1-x943fm/config/set",
+        '{"message_id":"cfg-1","payload":{"state":"ON"}}',
+    )
+    result = run_steady_state_iteration(
+        transport,
+        _runtime_config(),
+        _switch_service(),
+        state=SteadyState(handled_message_ids=("old-1", "old-2"), handled_message_id_limit=2),
+        version="0.1.0",
+        now_monotonic=10.0,
+    )
+
+    assert result.state.handled_message_ids == ("old-2", "cfg-1")

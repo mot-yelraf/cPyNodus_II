@@ -8,6 +8,7 @@ from cpynodus_ii.features.payloads import (
     build_sensor_availability_payload,
     build_sensor_data_payload,
     build_switch_state_payload,
+    mqtt_topic,
 )
 
 
@@ -34,14 +35,14 @@ def publish_startup_cycle(
     topics = []
     device_id = _device_id(runtime_config)
     heartbeat = transport.publish(
-        "nodus/{}/status/heartbeat".format(device_id),
+        mqtt_topic(runtime_config, device_id, "status", "heartbeat"),
         build_device_heartbeat_payload(runtime_config, online=True),
         retain=True,
     )
     topics.append(heartbeat.topic)
 
     meta = transport.publish(
-        "nodus/{}/meta".format(device_id),
+        mqtt_topic(runtime_config, device_id, "meta"),
         build_runtime_meta_payload(
             runtime_config,
             version=version,
@@ -53,14 +54,14 @@ def publish_startup_cycle(
 
     if runtime_config.sensor.present:
         availability = transport.publish(
-            "nodus/{}/availability".format(runtime_config.sensor.sensor_id),
+            mqtt_topic(runtime_config, runtime_config.sensor.sensor_id, "availability"),
             build_sensor_availability_payload(runtime_config, online=(sensor_snapshot is not None and sensor_snapshot.phase == "ready")),
             retain=True,
         )
         topics.append(availability.topic)
         if sensor_snapshot is not None and sensor_snapshot.phase == "ready":
             data = transport.publish(
-                "nodus/{}/data".format(runtime_config.sensor.sensor_id),
+                mqtt_topic(runtime_config, runtime_config.sensor.sensor_id, "data"),
                 build_sensor_data_payload(runtime_config, sensor_snapshot),
                 retain=False,
             )
@@ -71,13 +72,13 @@ def publish_startup_cycle(
         for channel in runtime_config.switch.channels:
             payload = state_payloads[channel.key]
             message = transport.publish(
-                "nodus/{}/state".format(channel.channel_id),
+                mqtt_topic(runtime_config, channel.channel_id, "state"),
                 payload,
                 retain=True,
             )
             topics.append(message.topic)
             availability = transport.publish(
-                "nodus/{}/availability".format(channel.channel_id),
+                mqtt_topic(runtime_config, channel.channel_id, "availability"),
                 {
                     "schema": "nodus-availability/v1",
                     "channel_id": channel.channel_id,
@@ -105,7 +106,7 @@ def publish_sensor_cycle(transport, runtime_config, sensor_snapshot):
             topics=(),
             errors=("sensor_snapshot_not_ready",),
         )
-    topic = "nodus/{}/data".format(runtime_config.sensor.sensor_id)
+    topic = mqtt_topic(runtime_config, runtime_config.sensor.sensor_id, "data")
     message = transport.publish(
         topic,
         build_sensor_data_payload(runtime_config, sensor_snapshot),
@@ -124,7 +125,7 @@ def publish_shutdown_cycle(transport, runtime_config):
     topics = []
     device_id = _device_id(runtime_config)
     heartbeat = transport.publish(
-        "nodus/{}/status/heartbeat".format(device_id),
+        mqtt_topic(runtime_config, device_id, "status", "heartbeat"),
         build_device_heartbeat_payload(runtime_config, online=False),
         retain=True,
     )
@@ -132,7 +133,7 @@ def publish_shutdown_cycle(transport, runtime_config):
 
     if runtime_config.sensor.present:
         availability = transport.publish(
-            "nodus/{}/availability".format(runtime_config.sensor.sensor_id),
+            mqtt_topic(runtime_config, runtime_config.sensor.sensor_id, "availability"),
             build_sensor_availability_payload(runtime_config, online=False),
             retain=True,
         )
@@ -141,7 +142,7 @@ def publish_shutdown_cycle(transport, runtime_config):
     if runtime_config.switch.present:
         for channel in runtime_config.switch.channels:
             availability = transport.publish(
-                "nodus/{}/availability".format(channel.channel_id),
+                mqtt_topic(runtime_config, channel.channel_id, "availability"),
                 {
                     "schema": "nodus-availability/v1",
                     "channel_id": channel.channel_id,
@@ -181,8 +182,8 @@ def publish_switch_result(transport, runtime_config, apply_result, *, message_id
             topics=(),
             errors=("switch_channel_not_found",),
         )
-    result_topic = "nodus/{}/config/result".format(channel.channel_id)
-    state_topic = "nodus/{}/state".format(channel.channel_id)
+    result_topic = mqtt_topic(runtime_config, channel.channel_id, "config", "result")
+    state_topic = mqtt_topic(runtime_config, channel.channel_id, "state")
     result_payload = {
         "message_id": str(message_id or ""),
         "applied": True,

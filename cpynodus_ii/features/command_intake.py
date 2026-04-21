@@ -12,6 +12,7 @@ from cpynodus_ii.features.payloads import (
     build_config_ack_payload,
     build_config_result_payload,
     build_meta_patch_payload,
+    mqtt_topic,
 )
 from cpynodus_ii.features.publish_cycle import PublishCycleResult, publish_switch_result
 from cpynodus_ii.features.switch_service import apply_switch_state
@@ -68,10 +69,10 @@ def subscribe_runtime_topics(transport, runtime_config):
     topics = []
     device_id = _device_id(runtime_config)
     if device_id:
-        topics.append(transport.subscribe("nodus/{}/config/set".format(device_id)))
-        topics.append(transport.subscribe("nodus/{}/calibration/set".format(device_id)))
+        topics.append(transport.subscribe(mqtt_topic(runtime_config, device_id, "config", "set")))
+        topics.append(transport.subscribe(mqtt_topic(runtime_config, device_id, "calibration", "set")))
     for channel in runtime_config.switch.channels:
-        topics.append(transport.subscribe("nodus/{}/config/set".format(channel.channel_id)))
+        topics.append(transport.subscribe(mqtt_topic(runtime_config, channel.channel_id, "config", "set")))
     return tuple(topics)
 
 
@@ -90,7 +91,7 @@ def process_inbound_messages(
     device_id = _device_id(runtime_config)
 
     for message in transport.drain_received():
-        if message.topic == "nodus/{}/config/set".format(device_id):
+        if message.topic == mqtt_topic(current_runtime_config, device_id, "config", "set"):
             result = process_device_config_message(
                 transport,
                 current_runtime_config,
@@ -106,7 +107,7 @@ def process_inbound_messages(
             results.append(result)
             continue
 
-        if message.topic == "nodus/{}/calibration/set".format(device_id):
+        if message.topic == mqtt_topic(current_runtime_config, device_id, "calibration", "set"):
             result = process_calibration_message(
                 transport,
                 current_runtime_config,
@@ -128,6 +129,7 @@ def process_inbound_messages(
                     switch_service,
                     topic=message.topic,
                     payload_text=message.payload_text,
+                    settings_root=settings_root,
                 )
             )
 
@@ -135,7 +137,7 @@ def process_inbound_messages(
 
 
 def process_switch_command_message(
-    transport, runtime_config, switch_service, *, topic, payload_text
+    transport, runtime_config, switch_service, *, topic, payload_text, settings_root=None
 ):
     """Parse, apply, and publish one switch command message."""
     if not str(payload_text or "").strip():
@@ -157,7 +159,7 @@ def process_switch_command_message(
             errors=("invalid_switch_command",),
             requested_state="",
         )
-    ack_topic = "nodus/{}/config/ack".format(command.channel_id)
+    ack_topic = mqtt_topic(runtime_config, command.channel_id, "config", "ack")
     transport.publish(
         ack_topic,
         build_config_ack_payload(command.message_id, accepted=True, duplicate=False),
@@ -180,14 +182,30 @@ def process_switch_command_message(
         apply_result,
         message_id=command.message_id,
     )
+    persistence_errors = ()
+    if settings_root is not None:
+        switch_channel = _find_runtime_channel(runtime_config, command.channel_id)
+        if switch_channel is not None:
+            _, _, persistence_errors = Settings.apply_updates_to_directory(
+                settings_root,
+                runtime_config,
+                (
+                    {
+                        "section": "Switch",
+                        "key": "{}_LAST_STATE".format(switch_channel.key),
+                        "value": bool(command.desired_state),
+                    },
+                ),
+            )
     transport.publish(topic, "", retain=True)
     return CommandResult(
         phase=publish_result.phase if publish_result.phase != "skipped" else meta_result.phase,
         topic=topic,
         command_type="switch",
         published_count=1 + publish_result.published_count + meta_result.published_count + 1,
-        errors=publish_result.errors + meta_result.errors,
+        errors=publish_result.errors + meta_result.errors + tuple(persistence_errors),
         message_id=command.message_id,
+        persistence_mode="volatile" if persistence_errors else "persisted" if settings_root is not None else "",
         requested_state="ON" if command.desired_state else "OFF",
     )
 
@@ -213,8 +231,8 @@ def process_device_config_message(
         )
 
     duplicate = command.message_id in set(duplicate_message_ids or ())
-    ack_topic = "nodus/{}/config/ack".format(_device_id(runtime_config))
-    result_topic = "nodus/{}/config/result".format(_device_id(runtime_config))
+    ack_topic = mqtt_topic(runtime_config, _device_id(runtime_config), "config", "ack")
+    result_topic = mqtt_topic(runtime_config, _device_id(runtime_config), "config", "result")
 
     transport.publish(
         ack_topic,
@@ -283,7 +301,7 @@ def process_device_config_message(
         retain=False,
     )
     transport.publish(
-        "nodus/{}/meta/patch".format(_device_id(updated_runtime_config)),
+        mqtt_topic(updated_runtime_config, _device_id(updated_runtime_config), "meta", "patch"),
         build_meta_patch_payload(
             updated_runtime_config,
             source="config_set",
@@ -326,8 +344,8 @@ def process_calibration_message(
 
     duplicate = command.message_id in set(duplicate_message_ids or ())
     device_id = _device_id(runtime_config)
-    ack_topic = "nodus/{}/calibration/ack".format(device_id)
-    result_topic = "nodus/{}/calibration/result".format(device_id)
+    ack_topic = mqtt_topic(runtime_config, device_id, "calibration", "ack")
+    result_topic = mqtt_topic(runtime_config, device_id, "calibration", "result")
     published_count = 0
 
     transport.publish(
@@ -406,7 +424,7 @@ def process_calibration_message(
             retain=False,
         )
         transport.publish(
-            "nodus/{}/meta/patch".format(device_id),
+            mqtt_topic(updated_runtime_config, device_id, "meta", "patch"),
             build_meta_patch_payload(
                 updated_runtime_config,
                 source="calibration_set",
@@ -428,7 +446,7 @@ def process_calibration_message(
 
     if command.action == "status":
         transport.publish(
-            "nodus/{}/event/calibration_status".format(device_id),
+            mqtt_topic(runtime_config, device_id, "event", "calibration_status"),
             build_calibration_status_payload(runtime_config, status="idle", calibrated=False),
             retain=True,
         )
@@ -687,7 +705,7 @@ def _publish_switch_meta_patch(transport, runtime_config, apply_result, *, messa
             errors=("switch_channel_not_found",),
         )
 
-    topic = "nodus/{}/meta/patch".format(_device_id(runtime_config))
+    topic = mqtt_topic(runtime_config, _device_id(runtime_config), "meta", "patch")
     transport.publish(
         topic,
         build_meta_patch_payload(
@@ -730,7 +748,7 @@ def _find_runtime_channel(runtime_config, channel_id):
 def _channel_id_from_topic(topic):
     text = str(topic or "").strip()
     parts = text.split("/")
-    if len(parts) >= 3 and parts[0] == "nodus":
+    if len(parts) >= 3:
         return parts[1]
     return ""
 

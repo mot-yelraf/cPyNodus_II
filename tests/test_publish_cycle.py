@@ -149,6 +149,32 @@ def test_switch_result_publishes_result_and_retained_state():
     assert transport.published_messages[-1].payload == "ON"
 
 
+def test_startup_cycle_uses_configured_base_topic():
+    transport = MQTTTransport("broker.local", 1883)
+    runtime_config = RuntimeConfig(
+        network=NetworkConfig(hostname="aqi-x943fm"),
+        mqtt=MQTTConfig(broker="broker.local", base_topic="greenhouse"),
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            device="aqi",
+            sensor_id="aqi-x943fm",
+        ),
+    )
+
+    result = publish_startup_cycle(
+        transport,
+        runtime_config,
+        version="0.1.0",
+        sensor_snapshot=SimpleNamespace(phase="ready", metrics={"temperature_c": 24.5}),
+        switch_snapshot={},
+    )
+
+    assert "greenhouse/aqi-x943fm/status/heartbeat" in result.topics
+    assert "greenhouse/aqi-x943fm/meta" in result.topics
+    assert "greenhouse/aqi-x943fm/data" in result.topics
+
+
 def test_shutdown_cycle_publishes_offline_heartbeat_and_availability():
     transport = MQTTTransport("broker.local", 1883)
     runtime_config = RuntimeConfig(
