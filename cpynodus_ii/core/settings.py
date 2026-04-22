@@ -9,6 +9,7 @@ from cpynodus_ii.core.config import (
     MQTTConfig,
     NetworkConfig,
     RuntimeConfig,
+    SensorCalibration,
     SoilModbusConfig,
     SoilRegisterMap,
     SoilScaleMap,
@@ -215,6 +216,7 @@ class Settings:
                 tz=time_doc.get("TZ", "America/Denver"),
                 tz_offset=time_doc.get("TZ_OFFSET", -25200),
                 tz_name=time_doc.get("TZ_NAME", "MST"),
+                ntp_server=time_doc.get("NTP_SERVER", ""),
             ),
             sensor=sensor,
             switch=switch,
@@ -228,8 +230,13 @@ class Settings:
         soil_scale_doc = sensor_soil_doc.get("SoilSensorScales", {})
         soil_deficit_doc = sensor_soil_doc.get("SoilDeficit", {})
         soil_stress_doc = sensor_soil_doc.get("SoilStress", {})
+        soil_calibration_doc = sensor_soil_doc.get("Calibration", {})
+        soil_device_cal_doc = soil_calibration_doc.get("Device", {})
         i2c_sensor_doc = sensor_i2c_doc.get("Sensor", {})
         i2c_bus_doc = sensor_i2c_doc.get("I2Cbus", {})
+        i2c_calibration_doc = sensor_i2c_doc.get("Calibration", {})
+        i2c_system_cal_doc = i2c_calibration_doc.get("System", {})
+        i2c_device_cal_doc = i2c_calibration_doc.get("Device", {})
         soil_device = str(soil_sensor_doc.get("DEVICE", "") or "").strip().lower()
         i2c_device = str(i2c_sensor_doc.get("DEVICE", "") or "").strip().lower()
 
@@ -280,6 +287,12 @@ class Settings:
                     moisture_weight_pct=float(soil_stress_doc.get("SSI_MOISTURE_WEIGHT_PCT", 70.0)),
                     temp_weight_pct=float(soil_stress_doc.get("SSI_TEMP_WEIGHT_PCT", 30.0)),
                 ),
+                calibration_device=SensorCalibration(
+                    soil_temp_cal_val=float(soil_device_cal_doc.get("SOIL_TEMP_CAL_VAL", 0.0)),
+                    soil_temp_moist_val=float(soil_device_cal_doc.get("SOIL_TEMP_MOIST_VAL", 0.0)),
+                    soil_ph_cal_val=float(soil_device_cal_doc.get("SOIL_PH_CAL_VAL", 0.0)),
+                    soil_ec_cal_val=float(soil_device_cal_doc.get("SOIL_EC_CAL_VAL", 0.0)),
+                ),
             )
 
         if i2c_device:
@@ -296,6 +309,20 @@ class Settings:
                     scl_pin=i2c_bus_doc.get("I2C_SCL", ""),
                     sda_pin=i2c_bus_doc.get("I2C_SDA", ""),
                     address=i2c_bus_doc.get("I2C_ADDR", 0),
+                ),
+                calibration_system=SensorCalibration(
+                    temp_offset=float(i2c_system_cal_doc.get("TEMP_OFFSET", 0.0)),
+                    rh_offset=float(i2c_system_cal_doc.get("RH_OFFSET", 0.0)),
+                    co2_offset=float(i2c_system_cal_doc.get("CO2_OFFSET", 0.0)),
+                ),
+                calibration_device=SensorCalibration(
+                    temp_offset=float(i2c_device_cal_doc.get("TEMP_OFFSET", 0.0)),
+                    rh_offset=float(i2c_device_cal_doc.get("RH_OFFSET", 0.0)),
+                    co2_offset=float(i2c_device_cal_doc.get("CO2_OFFSET", 0.0)),
+                    aqi_offset=float(i2c_device_cal_doc.get("AQI_OFFSET", 0.0)),
+                    gas_offset=float(i2c_device_cal_doc.get("GAS_OFFSET", 0.0)),
+                    lux_offset=float(i2c_device_cal_doc.get("LUX_OFFSET", 0.0)),
+                    ppfd_offset=float(i2c_device_cal_doc.get("PPFD_OFFSET", 0.0)),
                 ),
             )
 
@@ -341,6 +368,18 @@ class Settings:
             return cls.SETTINGS_FILE
         if section == "Switch":
             return cls.SWITCH_FILE
+        if section in {
+            "Sensor",
+            "I2Cbus",
+            "Modbus",
+            "SoilSensorRegisters",
+            "SoilSensorScales",
+            "SoilDeficit",
+            "SoilStress",
+        }:
+            if runtime_config.sensor.active_config_file:
+                return runtime_config.sensor.active_config_file
+            return cls.SENSOR_I2C_FILE
         if section.startswith("Calibration") or section in {"Display", "Display.Style"}:
             if runtime_config.sensor.active_config_file:
                 return runtime_config.sensor.active_config_file

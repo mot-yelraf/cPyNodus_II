@@ -32,7 +32,7 @@ def test_mqtt_profile_enables_transport_and_disables_steady_state_web():
     assert plan.switch_enabled is True
     assert plan.mqtt_enabled is True
     assert plan.web_enabled is False
-    assert plan.ntp_enabled is False
+    assert plan.ntp_enabled is True
     assert plan.calibration_mqtt_available is True
     assert plan.onboarding_allowed is False
 

@@ -29,3 +29,4 @@ PUBLISH_LEGACY_SENSOR_TOPIC = true
 TZ = "America/Denver"
 TZ_OFFSET = -25200
 TZ_NAME = "MST"
+NTP_SERVER = ""

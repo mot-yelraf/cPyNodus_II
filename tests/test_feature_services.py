@@ -7,6 +7,7 @@ from cpynodus_ii.core.config import (
     DetectedSensor,
     I2CConfig,
     RuntimeConfig,
+    SensorCalibration,
     SoilModbusConfig,
     SwitchChannelConfig,
     SwitchConfig,
@@ -131,7 +132,7 @@ def test_sensor_service_reads_legacy_aqi_snapshot():
     assert snapshot.sensor_id == "aqi-x943fm"
     assert snapshot.metrics["Temperature"] == 24.5
     assert snapshot.metrics["Temperature_F"] == 76.1
-    assert snapshot.metrics["Rel-Humidity"] == 55.25
+    assert snapshot.metrics["Rel-Humidity"] == 55.0
     assert snapshot.metrics["Humidity"] > 0
     assert snapshot.metrics["Baro-Pressure"] == 1008.0
     assert snapshot.metrics["Gas"] == 12345.0
@@ -300,6 +301,124 @@ def test_sensor_service_uses_keyword_snapshot_construction_for_co2(monkeypatch):
         }
     ]
     assert snapshot.metrics["CO2"] == 845.0
+
+
+def test_sensor_service_applies_system_and_device_calibration_offsets_for_co2():
+    class _FakeCO2Driver:
+        def __init__(self):
+            self.CO2 = 845.4
+            self.temperature = 23.5
+            self.relative_humidity = 47.0
+
+    runtime_config = RuntimeConfig(
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            active_config_file="sensor_i2c.toml",
+            device="co2",
+            sensor_id="co2-1",
+            i2c=I2CConfig(bus=1, scl_pin="GP3", sda_pin="GP2", address=0x62),
+            calibration_system=SensorCalibration(co2_offset=-400.0, temp_offset=0.5),
+            calibration_device=SensorCalibration(rh_offset=2.0),
+        )
+    )
+    sensor_service = SimpleNamespace(phase="ready", driver=_FakeCO2Driver(), errors=())
+
+    snapshot = sensor_service_module.read_sensor_snapshot(sensor_service, runtime_config)
+
+    assert snapshot.metrics["CO2"] == 445.0
+    assert snapshot.metrics["Temperature"] == 24.0
+    assert snapshot.metrics["Rel-Humidity"] == 49.0
+
+
+def test_sensor_service_applies_device_calibration_offsets_for_aqi_and_lux():
+    aqi_runtime = RuntimeConfig(
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            active_config_file="sensor_i2c.toml",
+            device="aqi",
+            sensor_id="aqi-1",
+            i2c=I2CConfig(bus=1, scl_pin="GP3", sda_pin="GP2", address=0x77),
+            calibration_device=SensorCalibration(gas_offset=100.0, aqi_offset=25.0),
+        )
+    )
+    aqi_service = SimpleNamespace(phase="ready", driver=_FakeBME680(None, address=0x77), errors=())
+    aqi_snapshot = sensor_service_module.read_sensor_snapshot(aqi_service, aqi_runtime)
+
+    lux_runtime = RuntimeConfig(
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            active_config_file="sensor_i2c.toml",
+            device="lux",
+            sensor_id="lux-1",
+            i2c=I2CConfig(bus=1, scl_pin="GP3", sda_pin="GP2", address=0x10),
+            calibration_device=SensorCalibration(lux_offset=100.0, ppfd_offset=5.0),
+        )
+    )
+
+    class _FakeLuxDriver:
+        def __init__(self):
+            self.lux = 5400.0
+
+    lux_service = SimpleNamespace(phase="ready", driver=_FakeLuxDriver(), errors=())
+    lux_snapshot = sensor_service_module.read_sensor_snapshot(lux_service, lux_runtime)
+
+    assert aqi_snapshot.metrics["Gas"] == 12445.0
+    assert aqi_snapshot.metrics["Air Quality"] >= 25.0
+    assert lux_snapshot.metrics["Light Intensity"] == 5500.0
+    assert lux_snapshot.metrics["Estimated PPFD"] == 107.0
+
+
+def test_sensor_service_applies_soil_calibration_offsets():
+    class _FakeSoilTransport:
+        def read_registers(self, start, count):
+            values = {0: 215, 1: 430, 2: 55, 3: 68, 4: 11, 5: 22, 6: 33}
+            return values.get(start)
+
+        def deinit(self):
+            pass
+
+    runtime_config = RuntimeConfig(
+        sensor=DetectedSensor(
+            family="soil",
+            interface="modbus_rs485",
+            active_config_file="sensor_soil.toml",
+            device="soil",
+            sensor_id="soil-1",
+            modbus=SoilModbusConfig(uart_tx="GP4", uart_rx="GP5", baud=4800, address=3),
+            soil_registers=SimpleNamespace(temperature=0, moisture=1, ec=2, ph=3, n=4, p=5, k=6),
+            soil_scales=SimpleNamespace(temperature=10.0, moisture=10.0, ec=1.0, ph=10.0, n=1.0, p=1.0, k=1.0),
+            soil_thresholds=SimpleNamespace(wet_pct=38.0, dry_pct=18.0),
+            soil_stress=SimpleNamespace(
+                temp_low_crit_c=15.0,
+                temp_low_ok_c=18.0,
+                temp_high_ok_c=24.0,
+                temp_high_crit_c=30.0,
+                moisture_weight_pct=70.0,
+                temp_weight_pct=30.0,
+            ),
+            calibration_device=SensorCalibration(
+                soil_temp_cal_val=1.25,
+                soil_temp_moist_val=-3.0,
+                soil_ph_cal_val=0.2,
+                soil_ec_cal_val=4.5,
+            ),
+        )
+    )
+    sensor_service = start_sensor_service(
+        build_sensor_runtime(plan_sensor_initialization(runtime_config), runtime_config),
+        SimpleNamespace(phase="bound", transport=_FakeSoilTransport(), errors=(), interface="modbus_rs485"),
+        runtime_config,
+    )
+
+    snapshot = read_sensor_snapshot(sensor_service, runtime_config)
+
+    assert snapshot.metrics["Soil Temp_C"] == 22.75
+    assert snapshot.metrics["Soil Moisture"] == 40.0
+    assert snapshot.metrics["Soil pH"] == 7.0
+    assert snapshot.metrics["Soil EC"] == 59.5
 
 
 def test_sensor_service_stop_deinits_transport():

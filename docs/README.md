@@ -177,6 +177,7 @@ In normal mode the device:
   - In AP mode, the Nodus web UI can be used to provision Wi-Fi and select/update the runtime profile.
   - In normal mode, the Nodus web UI can still be used to manage configuration directly without Sensorius.
 - `sensorius` is the networked profile used by Sensorius for Nodus onboarding, management, monitoring and automation implementation.
+  - Periodic NTP sync is started after normal network bring-up.
   - MQTT is started and switch control topics are subscribed when enabled.
   - Broker settings come from `[MQTT]`.
   - Sensor metrics and runtime metadata are published over MQTT.
@@ -508,9 +509,10 @@ Automations are implemented in Sensorius. Sensorius publishes the desired switch
 
 - **TaskSupervisor**: restarts tasks that exit or throw exceptions.
 - **Watchdog**: software watchdog with optional hardware watchdog feeding.
-- **Network restart**: clean teardown + rebuild of Wi‑Fi, socket pool, and MQTT.
-- **Soft/hard restart**: utility helpers for recovery from fatal states.
-- **Developer note (current policy)**: hardware watchdog (HW WDT) is currently kept disabled because aggressive hard reboots were counterproductive in field testing. Experimental recovery evidence showed `softRestart` paths used for network-issue recovery are adequate and provide better stability than repeated hard reboots.
+- **Wi-Fi outage policy**: when station Wi‑Fi drops, Nodus pauses MQTT reconnect attempts and spends up to 15 minutes retrying SSID reassociation before soft rebooting.
+- **MQTT outage policy**: when Wi‑Fi is still up but MQTT is unhealthy, Nodus retries broker recovery for up to 3 minutes, including bounded socket-pool/MQTT rebuild attempts, before soft rebooting.
+- **AP recovery policy**: if startup cannot join the configured station network, Nodus falls back into AP recovery mode and soft reboots again after 10 minutes of idle AP uptime.
+- **Soft restart policy**: hardware watchdog (HW WDT) remains disabled by default; bounded soft restart remains the preferred recovery path for network failures on Pico2 W.
 
 ## Web Server
 
@@ -595,7 +597,9 @@ Automations are implemented in Sensorius. Sensorius publishes the desired switch
 - `POST /itaot-init` in AP mode -> device reboots and joins Wi-Fi.
 - Sensor data publishes at the configured interval.
 - Switch commands are honored and persisted.
-- Network loss triggers restart and recovery.
+- Temporary Wi-Fi loss suppresses MQTT publishes until Wi-Fi and MQTT both recover.
+- Extended Wi-Fi loss eventually soft reboots into AP recovery mode.
+- Extended AP recovery uptime soft reboots again after 10 minutes.
 
 ## Contributing
 

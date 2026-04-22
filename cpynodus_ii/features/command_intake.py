@@ -403,12 +403,13 @@ def process_calibration_message(
         applied_updates = tuple(command.updates)
         persistence_errors = ()
         if settings_root is not None:
-            updated_runtime_config, applied_updates, persistence_errors = Settings.apply_updates_to_directory(
+            _, applied_updates, persistence_errors = Settings.apply_updates_to_directory(
                 settings_root,
                 runtime_config,
                 command.updates,
+                reload_runtime=False,
             )
-        if persistence_errors and applied_updates:
+        if applied_updates:
             updated_runtime_config, _, _ = apply_runtime_config_updates(
                 runtime_config,
                 applied_updates,
@@ -585,21 +586,18 @@ def apply_runtime_config_updates(runtime_config, updates, *, settings_root=None)
             settings_root,
             runtime_config,
             updates,
+            reload_runtime=False,
         )
-        if persistence_errors and persisted_updates:
-            current = runtime_config
-            applied_updates = []
-            for update in persisted_updates:
-                section = str(update.get("section", "") or "").strip()
-                key = str(update.get("key", "") or "").strip()
-                value = update.get("value")
-                updated = _apply_runtime_config_update(current, section, key, value)
-                if updated is None:
-                    continue
-                current = updated
-                applied_updates.append(update)
-            return current, tuple(applied_updates), tuple(persistence_errors)
-        return persisted_runtime_config, tuple(persisted_updates), tuple(persistence_errors)
+        current = runtime_config
+        for update in persisted_updates:
+            section = str(update.get("section", "") or "").strip()
+            key = str(update.get("key", "") or "").strip()
+            value = update.get("value")
+            updated = _apply_runtime_config_update(current, section, key, value)
+            if updated is None:
+                continue
+            current = updated
+        return current, tuple(persisted_updates), tuple(persistence_errors)
     current = runtime_config
     applied_updates = []
     for update in updates:
@@ -683,9 +681,67 @@ def _apply_runtime_config_update(runtime_config, section, key, value):
             runtime_config,
             time=replace(runtime_config.time, tz_name=str(value or "").strip()),
         )
+    if section == "Time" and key_upper == "NTP_SERVER":
+        return replace(
+            runtime_config,
+            time=replace(runtime_config.time, ntp_server=str(value or "").strip()),
+        )
     if section == "Profile" and key_upper == "ACTIVE_PROFILE":
         return replace(runtime_config, active_profile=str(value or "").strip())
+    if section == "Sensor" and key_upper == "LOCATION":
+        return replace(
+            runtime_config,
+            sensor=replace(runtime_config.sensor, location=str(value or "").strip()),
+        )
+    if section == "Sensor" and key_upper == "SENSOR_ID":
+        return replace(
+            runtime_config,
+            sensor=replace(runtime_config.sensor, sensor_id=str(value or "").strip()),
+        )
+    if section == "Sensor" and key_upper == "SERIAL_NUM":
+        return replace(
+            runtime_config,
+            sensor=replace(runtime_config.sensor, serial_number=str(value or "").strip()),
+        )
+    calibration_attr = _calibration_attr_name(section, key_upper)
+    if calibration_attr and section == "Calibration.System":
+        calibration = replace(
+            runtime_config.sensor.calibration_system,
+            **{calibration_attr: float(value or 0.0)},
+        )
+        return replace(
+            runtime_config,
+            sensor=replace(runtime_config.sensor, calibration_system=calibration),
+        )
+    if calibration_attr and section == "Calibration.Device":
+        calibration = replace(
+            runtime_config.sensor.calibration_device,
+            **{calibration_attr: float(value or 0.0)},
+        )
+        return replace(
+            runtime_config,
+            sensor=replace(runtime_config.sensor, calibration_device=calibration),
+        )
     return None
+
+
+def _calibration_attr_name(section, key_upper):
+    if section not in {"Calibration.System", "Calibration.Device"}:
+        return ""
+    mapping = {
+        "TEMP_OFFSET": "temp_offset",
+        "RH_OFFSET": "rh_offset",
+        "CO2_OFFSET": "co2_offset",
+        "AQI_OFFSET": "aqi_offset",
+        "GAS_OFFSET": "gas_offset",
+        "LUX_OFFSET": "lux_offset",
+        "PPFD_OFFSET": "ppfd_offset",
+        "SOIL_TEMP_CAL_VAL": "soil_temp_cal_val",
+        "SOIL_TEMP_MOIST_VAL": "soil_temp_moist_val",
+        "SOIL_PH_CAL_VAL": "soil_ph_cal_val",
+        "SOIL_EC_CAL_VAL": "soil_ec_cal_val",
+    }
+    return mapping.get(key_upper, "")
 
 
 def _publish_switch_meta_patch(transport, runtime_config, apply_result, *, message_id):

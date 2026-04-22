@@ -22,6 +22,13 @@ def _clean_str(value):
     return str(value or "").strip()
 
 
+def _normalize_tz_offset(value):
+    offset = int(value or 0)
+    if -14 <= offset <= 14:
+        return offset * 3600
+    return offset
+
+
 @dataclass
 class I2CConfig:
     """Normalized I2C sensor transport settings."""
@@ -105,6 +112,36 @@ class SoilStressConfig:
 
 
 @dataclass
+class SensorCalibration:
+    """Normalized additive calibration offsets for sensor metrics."""
+
+    temp_offset: float = 0.0
+    rh_offset: float = 0.0
+    co2_offset: float = 0.0
+    aqi_offset: float = 0.0
+    gas_offset: float = 0.0
+    lux_offset: float = 0.0
+    ppfd_offset: float = 0.0
+    soil_temp_cal_val: float = 0.0
+    soil_temp_moist_val: float = 0.0
+    soil_ph_cal_val: float = 0.0
+    soil_ec_cal_val: float = 0.0
+
+    def __post_init__(self):
+        _raw_setattr(self, "temp_offset", float(self.temp_offset or 0.0))
+        _raw_setattr(self, "rh_offset", float(self.rh_offset or 0.0))
+        _raw_setattr(self, "co2_offset", float(self.co2_offset or 0.0))
+        _raw_setattr(self, "aqi_offset", float(self.aqi_offset or 0.0))
+        _raw_setattr(self, "gas_offset", float(self.gas_offset or 0.0))
+        _raw_setattr(self, "lux_offset", float(self.lux_offset or 0.0))
+        _raw_setattr(self, "ppfd_offset", float(self.ppfd_offset or 0.0))
+        _raw_setattr(self, "soil_temp_cal_val", float(self.soil_temp_cal_val or 0.0))
+        _raw_setattr(self, "soil_temp_moist_val", float(self.soil_temp_moist_val or 0.0))
+        _raw_setattr(self, "soil_ph_cal_val", float(self.soil_ph_cal_val or 0.0))
+        _raw_setattr(self, "soil_ec_cal_val", float(self.soil_ec_cal_val or 0.0))
+
+
+@dataclass
 class NetworkConfig:
     """Normalized network and AP bootstrap settings."""
 
@@ -184,11 +221,13 @@ class TimeConfig:
     tz: str = "America/Denver"
     tz_offset: int = -25200
     tz_name: str = "MST"
+    ntp_server: str = ""
 
     def __post_init__(self):
         _raw_setattr(self, "tz", _clean_str(self.tz) or "America/Denver")
-        _raw_setattr(self, "tz_offset", int(self.tz_offset or -25200))
+        _raw_setattr(self, "tz_offset", _normalize_tz_offset(self.tz_offset or -25200))
         _raw_setattr(self, "tz_name", _clean_str(self.tz_name) or "MST")
+        _raw_setattr(self, "ntp_server", _clean_str(self.ntp_server))
 
 
 @dataclass
@@ -208,6 +247,8 @@ class DetectedSensor:
     soil_scales: SoilScaleMap | None = None
     soil_thresholds: SoilThresholdConfig | None = None
     soil_stress: SoilStressConfig | None = None
+    calibration_system: SensorCalibration = field(default_factory=SensorCalibration)
+    calibration_device: SensorCalibration = field(default_factory=SensorCalibration)
 
     def __post_init__(self):
         family = str(self.family or "").strip().lower()
@@ -322,7 +363,7 @@ class RuntimeConfig:
 
     @property
     def ntp_enabled(self):
-        return (not self.ap_mode) and self.active_profile == "nodusweb"
+        return (not self.ap_mode) and self.active_profile in {"nodusweb", "sensorius"}
 
     @property
     def calibration_mqtt_available(self):

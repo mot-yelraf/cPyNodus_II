@@ -4,16 +4,25 @@ import asyncio
 import gc
 import os
 import time
+from dataclasses import replace
 
 from cpynodus_ii import __version__
 from cpynodus_ii.hardware import bind_sensor_hardware, bind_switch_hardware
 from cpynodus_ii.core.mqtt import MQTTTransport
 from cpynodus_ii.core import (
+    NTPState,
+    RecoveryPolicy,
+    RecoveryState,
+    advance_recovery_state,
     build_mqtt_client_adapter,
     build_network_stack,
     connect_mqtt_client,
     disconnect_mqtt_client,
+    maybe_sync_ntp,
+    network_link_is_ready,
     poll_mqtt_client,
+    reconnect_network_stack,
+    refresh_network_stack,
     sync_transport_to_client,
 )
 from cpynodus_ii.core.plan import StartupPlan
@@ -48,8 +57,35 @@ def _seconds_stamp(start_monotonic):
     return "{}s".format(elapsed)
 
 
+def _datetime_stamp():
+    try:
+        current = time.localtime()
+    except Exception:
+        return ""
+    try:
+        if int(current[0]) < 2023:
+            return ""
+        return "{:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}".format(
+            int(current[0]),
+            int(current[1]),
+            int(current[2]),
+            int(current[3]),
+            int(current[4]),
+            int(current[5]),
+        )
+    except Exception:
+        return ""
+
+
+def _log_stamp(start_monotonic):
+    stamp = _datetime_stamp()
+    if stamp:
+        return stamp
+    return _seconds_stamp(start_monotonic)
+
+
 def _print_log(prefix, message, *, start_monotonic):
-    print("{} {} {}".format(_seconds_stamp(start_monotonic), prefix, message))
+    print("{} {} {}".format(_log_stamp(start_monotonic), prefix, message))
 
 
 def _memory_summary():
@@ -80,6 +116,31 @@ def _should_preflight_broker(adapter):
     return len(targets) > 1
 
 
+def _should_fallback_to_ap(runtime_config, network_stack):
+    if runtime_config.ap_mode or runtime_config.active_profile == "nodusweb":
+        return False
+    if getattr(network_stack, "phase", "") == "ap":
+        return False
+    if runtime_config.network.ssid:
+        return getattr(network_stack, "phase", "") in {"error", "unavailable"}
+    return True
+
+
+def _enter_ap_recovery_mode(runtime_config):
+    return replace(runtime_config, active_profile="nodusweb", ap_mode=True)
+
+
+def _soft_reboot():
+    try:
+        import supervisor  # type: ignore
+    except ImportError as exc:
+        raise RuntimeError("supervisor_unavailable") from exc
+    reload_runtime = getattr(supervisor, "reload", None)
+    if not callable(reload_runtime):
+        raise RuntimeError("supervisor_reload_unavailable")
+    reload_runtime()
+
+
 async def main():
     """Run the current scaffold runtime."""
     start_monotonic = time.monotonic()
@@ -94,8 +155,12 @@ async def main():
         else None
     )
     runtime_config = settings.runtime_config()
-    plan = StartupPlan.from_settings(settings)
     network_stack = build_network_stack(runtime_config)
+    startup_ap_fallback = _should_fallback_to_ap(runtime_config, network_stack)
+    if startup_ap_fallback:
+        runtime_config = _enter_ap_recovery_mode(runtime_config)
+        network_stack = build_network_stack(runtime_config)
+    plan = StartupPlan.from_runtime_config(runtime_config)
     transport = MQTTTransport.from_settings(settings)
     mqtt_adapter = build_mqtt_client_adapter(
         runtime_config,
@@ -113,6 +178,12 @@ async def main():
     sensor_snapshot = read_sensor_snapshot(sensor_service, runtime_config)
     switch_snapshot = snapshot_switch_states(switch_service)
     steady_state = SteadyState()
+    ntp_state = NTPState()
+    recovery_policy = RecoveryPolicy()
+    recovery_state = RecoveryState(
+        phase="ap" if network_stack.phase == "ap" else "idle",
+        phase_started_at=float(start_monotonic) if network_stack.phase == "ap" else -1.0,
+    )
     last_health_at = float(start_monotonic)
     last_mqtt_connect_attempt_at = float(start_monotonic)
 
@@ -177,6 +248,14 @@ async def main():
         ),
         start_monotonic=start_monotonic,
     )
+    if startup_ap_fallback:
+        _print_log(
+            "recovery",
+            "startup action=ap_fallback reason={}".format(
+                ",".join(network_stack.errors) if network_stack.errors else "network_startup_failed",
+            ),
+            start_monotonic=start_monotonic,
+        )
     _print_log(
         "cPyNodus_II",
         "switch_channels ids={} labels={}".format(
@@ -192,10 +271,93 @@ async def main():
     try:
         while True:
             now_monotonic = time.monotonic()
+            network_stack = refresh_network_stack(network_stack)
+            previous_phase = recovery_state.phase
+            recovery_decision = advance_recovery_state(
+                recovery_state,
+                now_monotonic=now_monotonic,
+                policy=recovery_policy,
+                ap_mode=(network_stack.phase == "ap"),
+                wifi_link_ready=network_link_is_ready(network_stack),
+                transport_connected=transport.connected,
+            )
+            recovery_state = recovery_decision.state
+            if recovery_state.phase != previous_phase:
+                _print_log(
+                    "recovery",
+                    "phase={} wifi_ready={} mqtt_connected={}".format(
+                        recovery_state.phase,
+                        network_link_is_ready(network_stack),
+                        transport.connected,
+                    ),
+                    start_monotonic=start_monotonic,
+                )
+            if recovery_decision.request_soft_reboot:
+                _print_log(
+                    "recovery",
+                    "action=soft_reboot reason={}".format(recovery_decision.reboot_reason),
+                    start_monotonic=start_monotonic,
+                )
+                _soft_reboot()
+            if recovery_decision.attempt_wifi_reconnect:
+                reconnect_result = reconnect_network_stack(
+                    runtime_config,
+                    network_stack,
+                    max_attempts=1,
+                    retry_delay_s=0.0,
+                    rebuild_socket_artifacts=False,
+                )
+                network_stack = reconnect_result
+                if network_link_is_ready(network_stack):
+                    _print_log(
+                        "recovery",
+                        "wifi phase=recovered ipv4={}".format(network_stack.ip_address or "none"),
+                        start_monotonic=start_monotonic,
+                    )
+            if recovery_decision.attempt_mqtt_rebuild and network_link_is_ready(network_stack):
+                network_stack = reconnect_network_stack(
+                    runtime_config,
+                    network_stack,
+                    max_attempts=1,
+                    retry_delay_s=0.0,
+                    rebuild_socket_artifacts=True,
+                )
+                mqtt_adapter = build_mqtt_client_adapter(
+                    runtime_config,
+                    socket_pool=network_stack.socket_pool,
+                    ssl_context=network_stack.ssl_context,
+                )
+                _print_log(
+                    "recovery",
+                    "mqtt action=rebuild broker={} socket_pool={}".format(
+                        mqtt_adapter.active_broker or mqtt_adapter.broker or "none",
+                        "ready" if network_stack.socket_pool is not None else "none",
+                    ),
+                    start_monotonic=start_monotonic,
+                )
+            ntp_result = maybe_sync_ntp(
+                runtime_config,
+                network_stack,
+                state=ntp_state,
+                now_monotonic=now_monotonic,
+            )
+            ntp_state = ntp_result.state
+            if ntp_result.phase != "skipped":
+                _print_log(
+                    "ntp",
+                    "phase={} server={} rtc={} errors={}".format(
+                        ntp_result.phase,
+                        ntp_state.server or "pool.ntp.org",
+                        ntp_state.datetime_text or "unknown",
+                        ",".join(ntp_result.errors) if ntp_result.errors else "none",
+                    ),
+                    start_monotonic=start_monotonic,
+                )
             if (
                 plan.mqtt_enabled
                 and not transport.connected
                 and mqtt_adapter.phase == "ready"
+                and recovery_decision.allow_mqtt_connect
                 and (float(now_monotonic) - float(last_mqtt_connect_attempt_at)) >= 5.0
             ):
                 transport.mark_connect_requested()
@@ -282,8 +444,9 @@ async def main():
             if (float(now_monotonic) - float(last_health_at)) >= 300.0:
                 _print_log(
                     "cPyNodus_II",
-                    "health network_phase={} ssid={} ipv4={} mqtt_connected={} active_broker={} {}".format(
+                    "health network_phase={} recovery_phase={} ssid={} ipv4={} mqtt_connected={} active_broker={} {}".format(
                         network_stack.phase,
+                        recovery_state.phase,
                         network_stack.ssid or "none",
                         network_stack.ip_address or "none",
                         transport.connected,

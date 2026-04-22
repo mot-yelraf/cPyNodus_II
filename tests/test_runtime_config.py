@@ -1,7 +1,7 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from cpynodus_ii.core.config import DetectedSensor, RuntimeConfig
+from cpynodus_ii.core.config import DetectedSensor, RuntimeConfig, TimeConfig
 from cpynodus_ii.core.obfuscation import encode_password
 from cpynodus_ii.core.settings import Settings
 
@@ -174,7 +174,14 @@ def test_runtime_config_keeps_minimal_defaults_for_missing_sections():
     assert runtime_config.mqtt.base_topic == "nodus"
     assert runtime_config.homeassistant.publish_state_retain is True
     assert runtime_config.time.tz_name == "MST"
+    assert runtime_config.time.ntp_server == ""
     assert runtime_config.switch.present is False
+
+
+def test_time_config_normalizes_hour_offset_to_seconds():
+    normalized = TimeConfig(tz_offset=-6)
+
+    assert normalized.tz_offset == -21600
 
 
 def test_switch_only_runtime_config_parses_single_channel_details():

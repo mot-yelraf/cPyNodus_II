@@ -15,6 +15,8 @@ class NetworkStack:
     ip_address: str = ""
     socket_pool: object | None = None
     ssl_context: object | None = None
+    wifi_radio: object | None = None
+    connection_manager_module: object | None = None
     errors: tuple = ()
 
 
@@ -28,11 +30,28 @@ def build_network_stack(
 ):
     """Build the runtime network stack needed by MQTT and networked profiles."""
     if runtime_config.ap_mode:
+        wifi_radio = _resolve_wifi_radio(wifi_radio)
+        connection_manager_module = _resolve_connection_manager(connection_manager_module)
+        ap_ip_address = ""
+        if wifi_radio is not None:
+            start_ap = getattr(wifi_radio, "start_ap", None)
+            if callable(start_ap):
+                try:
+                    start_ap(
+                        runtime_config.network.ap_ssid,
+                        runtime_config.network.ap_password,
+                    )
+                except Exception:
+                    pass
+            ap_ip_address = _current_ip_address(wifi_radio)
         return NetworkStack(
             phase="ap",
             mode="ap",
             ssid=runtime_config.network.ap_ssid,
             hostname=runtime_config.network.hostname,
+            ip_address=ap_ip_address,
+            wifi_radio=wifi_radio,
+            connection_manager_module=connection_manager_module,
             errors=(),
         )
 
@@ -43,6 +62,15 @@ def build_network_stack(
             ssid="",
             hostname=runtime_config.network.hostname,
             errors=(),
+        )
+
+    if not runtime_config.network.ssid:
+        return NetworkStack(
+            phase="error",
+            mode="station",
+            ssid="",
+            hostname=runtime_config.network.hostname,
+            errors=("network_ssid_missing",),
         )
 
     if wifi_radio is None:
@@ -67,59 +95,149 @@ def build_network_stack(
             errors=("wifi_radio_unavailable",),
         )
 
+    connection_manager_module = _resolve_connection_manager(connection_manager_module)
     if connection_manager_module is None:
-        try:
-            import adafruit_connection_manager as connection_manager_module  # type: ignore
-        except ImportError:
+        return NetworkStack(
+            phase="unavailable",
+            mode="station",
+            ssid=runtime_config.network.ssid,
+            hostname=runtime_config.network.hostname,
+            errors=("connection_manager_unavailable",),
+        )
+
+    connect_result = _connect_station(
+        runtime_config,
+        wifi_radio,
+        max_attempts=max_attempts,
+        retry_delay_s=retry_delay_s,
+    )
+    if connect_result["phase"] != "ready":
+        return NetworkStack(
+            phase=connect_result["phase"],
+            mode="station",
+            ssid=runtime_config.network.ssid,
+            hostname=runtime_config.network.hostname,
+            ip_address="",
+            wifi_radio=wifi_radio,
+            connection_manager_module=connection_manager_module,
+            errors=connect_result["errors"],
+        )
+
+    socket_pool = connection_manager_module.get_radio_socketpool(wifi_radio)
+    ssl_context = connection_manager_module.get_radio_ssl_context(wifi_radio)
+    return NetworkStack(
+        phase="ready",
+        mode="station",
+        ssid=runtime_config.network.ssid,
+        hostname=runtime_config.network.hostname,
+        ip_address=connect_result["ip_address"],
+        socket_pool=socket_pool,
+        ssl_context=ssl_context,
+        wifi_radio=wifi_radio,
+        connection_manager_module=connection_manager_module,
+        errors=(),
+    )
+
+
+def reconnect_network_stack(
+    runtime_config,
+    network_stack,
+    *,
+    max_attempts=1,
+    retry_delay_s=0.0,
+    rebuild_socket_artifacts=False,
+):
+    """Reconnect station Wi-Fi, preserving socket artifacts when allowed."""
+    wifi_radio = getattr(network_stack, "wifi_radio", None)
+    connection_manager_module = getattr(network_stack, "connection_manager_module", None)
+    if wifi_radio is None:
+        return build_network_stack(
+            runtime_config,
+            max_attempts=max_attempts,
+            retry_delay_s=retry_delay_s,
+        )
+
+    connect_result = _connect_station(
+        runtime_config,
+        wifi_radio,
+        max_attempts=max_attempts,
+        retry_delay_s=retry_delay_s,
+    )
+    if connect_result["phase"] != "ready":
+        return NetworkStack(
+            phase=connect_result["phase"],
+            mode="station",
+            ssid=runtime_config.network.ssid,
+            hostname=runtime_config.network.hostname,
+            ip_address="",
+            socket_pool=None if rebuild_socket_artifacts else network_stack.socket_pool,
+            ssl_context=None if rebuild_socket_artifacts else network_stack.ssl_context,
+            wifi_radio=wifi_radio,
+            connection_manager_module=connection_manager_module,
+            errors=connect_result["errors"],
+        )
+
+    socket_pool = network_stack.socket_pool
+    ssl_context = network_stack.ssl_context
+    if rebuild_socket_artifacts or socket_pool is None or ssl_context is None:
+        connection_manager_module = _resolve_connection_manager(connection_manager_module)
+        if connection_manager_module is None:
             return NetworkStack(
                 phase="unavailable",
                 mode="station",
                 ssid=runtime_config.network.ssid,
                 hostname=runtime_config.network.hostname,
+                ip_address=connect_result["ip_address"],
+                wifi_radio=wifi_radio,
+                connection_manager_module=None,
                 errors=("connection_manager_unavailable",),
             )
+        socket_pool = connection_manager_module.get_radio_socketpool(wifi_radio)
+        ssl_context = connection_manager_module.get_radio_ssl_context(wifi_radio)
+    return NetworkStack(
+        phase="ready",
+        mode="station",
+        ssid=runtime_config.network.ssid,
+        hostname=runtime_config.network.hostname,
+        ip_address=connect_result["ip_address"],
+        socket_pool=socket_pool,
+        ssl_context=ssl_context,
+        wifi_radio=wifi_radio,
+        connection_manager_module=connection_manager_module,
+        errors=(),
+    )
 
-    connect = getattr(wifi_radio, "connect", None)
-    set_hostname = getattr(wifi_radio, "hostname", None)
-    last_exc = None
-    attempts = max(1, int(max_attempts or 1))
-    for attempt in range(1, attempts + 1):
-        try:
-            if callable(connect) and runtime_config.network.ssid:
-                connect(runtime_config.network.ssid, runtime_config.network.password)
-            if runtime_config.network.hostname and set_hostname is not None:
-                try:
-                    wifi_radio.hostname = runtime_config.network.hostname
-                except Exception:
-                    pass
-            socket_pool = connection_manager_module.get_radio_socketpool(wifi_radio)
-            ssl_context = connection_manager_module.get_radio_ssl_context(wifi_radio)
-            ip_address = str(getattr(wifi_radio, "ipv4_address", "") or "")
-            return NetworkStack(
-                phase="ready",
-                mode="station",
-                ssid=runtime_config.network.ssid,
-                hostname=runtime_config.network.hostname,
-                ip_address=ip_address,
-                socket_pool=socket_pool,
-                ssl_context=ssl_context,
-                errors=(),
-            )
-        except Exception as exc:
-            last_exc = exc
-            if _looks_auth_failure(exc):
-                return NetworkStack(
-                    phase="error",
-                    mode="station",
-                    ssid=runtime_config.network.ssid,
-                    hostname=runtime_config.network.hostname,
-                    errors=("network_auth_failed", str(exc), "attempt={}".format(attempt)),
-                )
-            if attempt < attempts:
-                try:
-                    time.sleep(float(retry_delay_s or 0.0))
-                except Exception:
-                    pass
+
+def network_link_is_ready(network_stack):
+    """Return whether the active Wi-Fi link still appears usable."""
+    if getattr(network_stack, "phase", "") != "ready":
+        return False
+    wifi_radio = getattr(network_stack, "wifi_radio", None)
+    if wifi_radio is None:
+        return bool(getattr(network_stack, "ip_address", ""))
+    return bool(_current_ip_address(wifi_radio))
+
+
+def refresh_network_stack(network_stack):
+    """Refresh cached IP metadata without rebuilding network artifacts."""
+    wifi_radio = getattr(network_stack, "wifi_radio", None)
+    if wifi_radio is None:
+        return network_stack
+    ip_address = _current_ip_address(wifi_radio)
+    if ip_address == getattr(network_stack, "ip_address", ""):
+        return network_stack
+    return NetworkStack(
+        phase=network_stack.phase,
+        mode=network_stack.mode,
+        ssid=network_stack.ssid,
+        hostname=network_stack.hostname,
+        ip_address=ip_address,
+        socket_pool=network_stack.socket_pool,
+        ssl_context=network_stack.ssl_context,
+        wifi_radio=network_stack.wifi_radio,
+        connection_manager_module=network_stack.connection_manager_module,
+        errors=network_stack.errors,
+    )
 
     return NetworkStack(
         phase="error",
@@ -141,3 +259,78 @@ def _looks_auth_failure(exc):
         or "bad password" in text
         or "auth" in text and "fail" in text
     )
+
+
+def _resolve_wifi_radio(wifi_radio):
+    if wifi_radio is not None:
+        return wifi_radio
+    try:
+        import wifi  # type: ignore
+    except ImportError:
+        return None
+    return getattr(wifi, "radio", None)
+
+
+def _resolve_connection_manager(connection_manager_module):
+    if connection_manager_module is not None:
+        return connection_manager_module
+    try:
+        import adafruit_connection_manager as connection_manager_module  # type: ignore
+    except ImportError:
+        return None
+    return connection_manager_module
+
+
+def _connect_station(runtime_config, wifi_radio, *, max_attempts, retry_delay_s):
+    connect = getattr(wifi_radio, "connect", None)
+    set_hostname = getattr(wifi_radio, "hostname", None)
+    last_exc = None
+    attempts = max(1, int(max_attempts or 1))
+    for attempt in range(1, attempts + 1):
+        try:
+            if callable(connect):
+                connect(runtime_config.network.ssid, runtime_config.network.password)
+            if runtime_config.network.hostname and set_hostname is not None:
+                try:
+                    wifi_radio.hostname = runtime_config.network.hostname
+                except Exception:
+                    pass
+            return {
+                "phase": "ready",
+                "ip_address": _current_ip_address(wifi_radio),
+                "errors": (),
+            }
+        except Exception as exc:
+            last_exc = exc
+            if _looks_auth_failure(exc):
+                return {
+                    "phase": "error",
+                    "ip_address": "",
+                    "errors": (
+                        "network_auth_failed",
+                        str(exc),
+                        "attempt={}".format(attempt),
+                    ),
+                }
+            if attempt < attempts:
+                try:
+                    time.sleep(float(retry_delay_s or 0.0))
+                except Exception:
+                    pass
+    return {
+        "phase": "error",
+        "ip_address": "",
+        "errors": (
+            "network_connect_failed",
+            str(last_exc or ""),
+            "attempts={}".format(attempts),
+        ),
+    }
+
+
+def _current_ip_address(wifi_radio):
+    for attr_name in ("ipv4_address", "ipv4_address_ap"):
+        value = getattr(wifi_radio, attr_name, "")
+        if value:
+            return str(value)
+    return ""

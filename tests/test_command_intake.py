@@ -319,6 +319,21 @@ def test_process_calibration_message_publishes_result_and_meta_patch():
     assert transport.published_messages[2].topic == "nodus/switch-x943fm/meta/patch"
 
 
+def test_process_calibration_message_updates_runtime_calibration_offsets():
+    transport = MQTTTransport("broker.local", 1883)
+
+    result = process_calibration_message(
+        transport,
+        _runtime_config(),
+        topic="nodus/switch-x943fm/calibration/set",
+        payload_text='{"message_id":"cal-2","action":"apply","payload":{"offsets":[{"key":"Calibration.System.CO2_OFFSET","value":-400.0},{"key":"Calibration.Device.TEMP_OFFSET","value":1.5}]}}',
+    )
+
+    assert result.phase == "published"
+    assert result.runtime_config.sensor.calibration_system.co2_offset == -400.0
+    assert result.runtime_config.sensor.calibration_device.temp_offset == 1.5
+
+
 def test_process_inbound_messages_handles_device_topics_before_switch_topics():
     transport = MQTTTransport("broker.local", 1883)
     transport.receive(

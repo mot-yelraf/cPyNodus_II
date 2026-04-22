@@ -90,18 +90,34 @@ def read_sensor_snapshot(sensor_service, runtime_config):
         )
 
     if sensor.device == "aqi":
+        temp_c = _apply_linear_calibration(
+            getattr(sensor_service.driver, "temperature", None),
+            sensor.calibration_system.temp_offset,
+            sensor.calibration_device.temp_offset,
+        )
+        rh_pct = _apply_linear_calibration(
+            getattr(sensor_service.driver, "humidity", None),
+            sensor.calibration_system.rh_offset,
+            sensor.calibration_device.rh_offset,
+        )
+        gas_ohms = _apply_linear_calibration(
+            getattr(sensor_service.driver, "gas", None),
+            0.0,
+            sensor.calibration_device.gas_offset,
+        )
         metrics = _compact_metrics(
             {
-                "Temperature": _maybe_round(getattr(sensor_service.driver, "temperature", None), 2),
-                "Rel-Humidity": _maybe_round(getattr(sensor_service.driver, "humidity", None), 2),
+                "Temperature": _maybe_round(temp_c, 2),
+                "Rel-Humidity": _maybe_round(rh_pct, 0),
                 "Baro-Pressure": _maybe_round(
                     _scale_pressure_hpa(getattr(sensor_service.driver, "pressure", None)),
                     0,
                 ),
-                "Gas": _maybe_round(getattr(sensor_service.driver, "gas", None), 0),
+                "Gas": _maybe_round(gas_ohms, 0),
             }
         )
         metrics = enrich_metrics(sensor.device, metrics, runtime_config=runtime_config)
+        _apply_post_enrichment_calibration(metrics, sensor)
         return SensorSnapshot(
             phase="ready",
             sensor_id=sensor.sensor_id,
@@ -111,14 +127,30 @@ def read_sensor_snapshot(sensor_service, runtime_config):
         )
 
     if sensor.device == "co2":
+        co2_ppm = _apply_linear_calibration(
+            getattr(sensor_service.driver, "CO2", None),
+            sensor.calibration_system.co2_offset,
+            sensor.calibration_device.co2_offset,
+        )
+        temp_c = _apply_linear_calibration(
+            getattr(sensor_service.driver, "temperature", None),
+            sensor.calibration_system.temp_offset,
+            sensor.calibration_device.temp_offset,
+        )
+        rh_pct = _apply_linear_calibration(
+            getattr(sensor_service.driver, "relative_humidity", None),
+            sensor.calibration_system.rh_offset,
+            sensor.calibration_device.rh_offset,
+        )
         metrics = _compact_metrics(
             {
-                "CO2": _maybe_round(getattr(sensor_service.driver, "CO2", None), 0),
-                "Temperature": _maybe_round(getattr(sensor_service.driver, "temperature", None), 2),
-                "Rel-Humidity": _maybe_round(getattr(sensor_service.driver, "relative_humidity", None), 2),
+                "CO2": _maybe_round(co2_ppm, 0),
+                "Temperature": _maybe_round(temp_c, 2),
+                "Rel-Humidity": _maybe_round(rh_pct, 0),
             }
         )
         metrics = enrich_metrics(sensor.device, metrics, runtime_config=runtime_config)
+        _apply_post_enrichment_calibration(metrics, sensor)
         return SensorSnapshot(
             phase="ready",
             sensor_id=sensor.sensor_id,
@@ -128,12 +160,18 @@ def read_sensor_snapshot(sensor_service, runtime_config):
         )
 
     if sensor.device == "lux":
+        lux = _apply_linear_calibration(
+            getattr(sensor_service.driver, "lux", None),
+            0.0,
+            sensor.calibration_device.lux_offset,
+        )
         metrics = _compact_metrics(
             {
-                "Light Intensity": _maybe_round(getattr(sensor_service.driver, "lux", None), 0),
+                "Light Intensity": _maybe_round(lux, 0),
             }
         )
         metrics = enrich_metrics(sensor.device, metrics, runtime_config=runtime_config)
+        _apply_post_enrichment_calibration(metrics, sensor)
         return SensorSnapshot(
             phase="ready",
             sensor_id=sensor.sensor_id,
@@ -143,10 +181,20 @@ def read_sensor_snapshot(sensor_service, runtime_config):
         )
 
     if sensor.device in {"avpd", "apvpd"}:
+        temp_c = _apply_linear_calibration(
+            getattr(sensor_service.driver, "temperature", None),
+            sensor.calibration_system.temp_offset,
+            sensor.calibration_device.temp_offset,
+        )
+        rh_pct = _apply_linear_calibration(
+            getattr(sensor_service.driver, "relative_humidity", None),
+            sensor.calibration_system.rh_offset,
+            sensor.calibration_device.rh_offset,
+        )
         metrics = _compact_metrics(
             {
-                "Temperature": _maybe_round(getattr(sensor_service.driver, "temperature", None), 2),
-                "Rel-Humidity": _maybe_round(getattr(sensor_service.driver, "relative_humidity", None), 2),
+                "Temperature": _maybe_round(temp_c, 2),
+                "Rel-Humidity": _maybe_round(rh_pct, 0),
                 "Baro-Pressure": _maybe_round(
                     _scale_pressure_hpa(getattr(sensor_service.driver, "pressure", None)),
                     None,
@@ -154,6 +202,7 @@ def read_sensor_snapshot(sensor_service, runtime_config):
             }
         )
         metrics = enrich_metrics(sensor.device, metrics, runtime_config=runtime_config)
+        _apply_post_enrichment_calibration(metrics, sensor)
         return SensorSnapshot(
             phase="ready",
             sensor_id=sensor.sensor_id,
@@ -316,6 +365,34 @@ def _scale_pressure_hpa(value):
     return numeric
 
 
+def _apply_linear_calibration(value, *offsets):
+    if value is None:
+        return None
+    try:
+        total = float(value)
+        for offset in offsets:
+            total += float(offset or 0.0)
+        return total
+    except (TypeError, ValueError):
+        return None
+
+
+def _apply_post_enrichment_calibration(metrics, sensor):
+    calibration = getattr(sensor, "calibration_device", None)
+    if calibration is None:
+        return
+    if "Air Quality" in metrics:
+        metrics["Air Quality"] = _maybe_round(
+            _apply_linear_calibration(metrics.get("Air Quality"), calibration.aqi_offset),
+            0,
+        )
+    if "Estimated PPFD" in metrics:
+        metrics["Estimated PPFD"] = _maybe_round(
+            _apply_linear_calibration(metrics.get("Estimated PPFD"), calibration.ppfd_offset),
+            0,
+        )
+
+
 def _compact_metrics(metrics):
     return {key: value for key, value in metrics.items() if value is not None}
 
@@ -327,19 +404,44 @@ def _read_soil_metrics(transport, sensor):
     scales = sensor.soil_scales
     if registers is None or scales is None:
         return {}
+    calibration = getattr(sensor, "calibration_device", None)
     return {
-        "Soil Temp_C": _scale_register(
-            transport.read_registers(registers.temperature, 1),
-            scales.temperature,
+        "Soil Temp_C": _maybe_round(
+            _apply_linear_calibration(
+                _scale_register(
+                    transport.read_registers(registers.temperature, 1),
+                    scales.temperature,
+                    None,
+                ),
+                getattr(calibration, "soil_temp_cal_val", 0.0),
+            ),
+            2,
+        ),
+        "Soil Moisture": _maybe_round(
+            _apply_linear_calibration(
+                _scale_register(
+                    transport.read_registers(registers.moisture, 1),
+                    scales.moisture,
+                    None,
+                ),
+                getattr(calibration, "soil_temp_moist_val", 0.0),
+            ),
+            0,
+        ),
+        "Soil EC": _maybe_round(
+            _apply_linear_calibration(
+                _scale_register(transport.read_registers(registers.ec, 1), scales.ec, None),
+                getattr(calibration, "soil_ec_cal_val", 0.0),
+            ),
+            2,
+        ),
+        "Soil pH": _maybe_round(
+            _apply_linear_calibration(
+                _scale_register(transport.read_registers(registers.ph, 1), scales.ph, None),
+                getattr(calibration, "soil_ph_cal_val", 0.0),
+            ),
             1,
         ),
-        "Soil Moisture": _scale_register(
-            transport.read_registers(registers.moisture, 1),
-            scales.moisture,
-            None,
-        ),
-        "Soil EC": _scale_register(transport.read_registers(registers.ec, 1), scales.ec, 2),
-        "Soil pH": _scale_register(transport.read_registers(registers.ph, 1), scales.ph, 1),
         "Soil Nitrogen": _scale_register(transport.read_registers(registers.n, 1), scales.n, 0),
         "Soil Phosphorus": _scale_register(transport.read_registers(registers.p, 1), scales.p, 0),
         "Soil Potassium": _scale_register(transport.read_registers(registers.k, 1), scales.k, 0),

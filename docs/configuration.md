@@ -39,7 +39,7 @@ The active runtime profile is configured in `settings.toml` under `[Profile]`:
   - MQTT-enabled Sensorius profile used by the AP bootstrap and MQTT onboarding flow
   - broker settings come from the shared `[MQTT]` section
   - normal-mode webserver disabled by design
-  - NTP sync not started
+  - NTP sync enabled after network bring-up
   - use `nodusweb` or AP mode for local provisioning before rebooting into this profile
 
 - `ACTIVE_PROFILE = "nodusweb"`
@@ -81,7 +81,10 @@ The built-in `/setup` web UI provides pane-based editing for:
 - `Sensor`: shared location, display metrics, and current `[Calibration.Device]` fields
 - `Switch`: switch labels and manual on/off override buttons
 - `MQTT`: active profile and shared broker connection settings
-- `Time`: `TZ`, `TZ_OFFSET`, and `TZ_NAME`
+- `Time`: `TZ`, `TZ_OFFSET`, `TZ_NAME`, and optional `NTP_SERVER`
+
+Calibration offsets in `[Calibration.System]` and `[Calibration.Device]` are additive corrections.
+For example, a `CO2_OFFSET = -400.0` reduces the live measured `CO2` value by `400 ppm` before publish.
 
 Corner case:
 
@@ -97,6 +100,9 @@ Time is configured in the `[Time]` section of `settings.toml`:
 - `TZ` (e.g., `America/Denver`)
 - `TZ_OFFSET` (seconds, or hours if abs <= 14)
 - `TZ_NAME` (e.g., `MST`)
+- `NTP_SERVER` (optional hostname or IP; defaults to `pool.ntp.org` when blank)
+
+`NTP_SERVER` may be left blank to use the default pool host. NTP sync is deferred until hostname resolution is available; this avoids early boot failures when DNS/mDNS is not ready yet.
 
 ## Soil deficit thresholds
 
