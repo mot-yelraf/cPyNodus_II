@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 from cpynodus_ii.core.config import (
     DetectedSensor,
+    HomeAssistantConfig,
     MQTTConfig,
     NetworkConfig,
     RuntimeConfig,
@@ -213,3 +214,85 @@ def test_shutdown_cycle_publishes_offline_heartbeat_and_availability():
     )
     assert transport.published_messages[0].payload["status"] == "offline"
     assert transport.published_messages[-1].payload["status"] == "offline"
+
+
+def test_homeassistant_startup_cycle_publishes_discovery_topics():
+    transport = MQTTTransport("broker.local", 1883)
+    runtime_config = RuntimeConfig(
+        active_profile="homeassistant",
+        network=NetworkConfig(hostname="co2-ykdvea"),
+        mqtt=MQTTConfig(broker="broker.local", base_topic="nodus"),
+        homeassistant=HomeAssistantConfig(discovery_prefix="homeassistant"),
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            device="co2",
+            sensor_id="co2-ykdvea",
+            location="Bench A",
+        ),
+        switch=SwitchConfig(
+            present=True,
+            device_id="switch-ykdvea",
+            location="Bench A",
+            channel_count=1,
+            channels=(
+                SwitchChannelConfig(
+                    key="SWITCH_1",
+                    channel_id="S1-ykdvea",
+                    label="Fan",
+                    enable_pin="GP5",
+                    control_pin="GP28",
+                ),
+            ),
+        ),
+    )
+
+    result = publish_startup_cycle(
+        transport,
+        runtime_config,
+        version="0.1.0",
+        sensor_snapshot=SimpleNamespace(phase="ready", metrics={"CO2": 800, "Temperature": 24.5}),
+        switch_snapshot={"SWITCH_1": {"phase": "ready", "state": True}},
+    )
+
+    assert result.phase == "published"
+    assert "homeassistant/sensor/co2_ykdvea/co2/config" in result.topics
+    assert "homeassistant/sensor/co2_ykdvea/temperature/config" in result.topics
+    assert "homeassistant/switch/co2_ykdvea/s1_ykdvea/config" in result.topics
+    discovery_messages = {
+        message.topic: message for message in transport.published_messages if message.topic.startswith("homeassistant/")
+    }
+    assert discovery_messages["homeassistant/sensor/co2_ykdvea/co2/config"].retain is True
+    assert discovery_messages["homeassistant/sensor/co2_ykdvea/co2/config"].payload["state_topic"] == "nodus/co2-ykdvea/data"
+    assert discovery_messages["homeassistant/switch/co2_ykdvea/s1_ykdvea/config"].payload["command_topic"] == "nodus/S1-ykdvea/config/set"
+
+
+def test_homeassistant_startup_cycle_clears_stale_discovery_topics():
+    transport = MQTTTransport("broker.local", 1883)
+    transport._ha_last_retained_discovery_topics = {"homeassistant/sensor/co2_ykdvea/old_metric/config"}
+    runtime_config = RuntimeConfig(
+        active_profile="homeassistant",
+        network=NetworkConfig(hostname="co2-ykdvea"),
+        homeassistant=HomeAssistantConfig(discovery_prefix="homeassistant"),
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            device="co2",
+            sensor_id="co2-ykdvea",
+        ),
+    )
+
+    result = publish_startup_cycle(
+        transport,
+        runtime_config,
+        version="0.1.0",
+        sensor_snapshot=SimpleNamespace(phase="ready", metrics={"CO2": 800}),
+        switch_snapshot={},
+    )
+
+    assert "homeassistant/sensor/co2_ykdvea/old_metric/config" in result.topics
+    stale_message = next(
+        message for message in transport.published_messages if message.topic == "homeassistant/sensor/co2_ykdvea/old_metric/config"
+    )
+    assert stale_message.payload == ""
+    assert stale_message.retain is True

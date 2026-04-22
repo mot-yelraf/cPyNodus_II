@@ -3,6 +3,51 @@
 from time import time
 
 
+def _slugify(value):
+    text = str(value or "").strip().lower()
+    out = []
+    previous_underscore = False
+    for char in text:
+        code = ord(char)
+        if (48 <= code <= 57) or (97 <= code <= 122) or char == "_":
+            out.append(char)
+            previous_underscore = char == "_"
+            continue
+        if not previous_underscore:
+            out.append("_")
+            previous_underscore = True
+    return "".join(out).strip("_") or "field"
+
+
+def _short_hash(value):
+    accumulator = 2166136261
+    for byte in str(value or "").encode("utf-8", "ignore"):
+        accumulator ^= byte
+        accumulator = (accumulator * 16777619) & 0xFFFFFFFF
+    return "{:08x}".format(accumulator)[:6]
+
+
+def _ha_device_block(runtime_config):
+    sensor = runtime_config.sensor
+    switch = runtime_config.switch
+    device_id = _slugify(sensor.sensor_id or switch.device_id or runtime_config.network.hostname or "nodus")
+    name = sensor.sensor_id or switch.device_id or runtime_config.network.hostname or "Nodus"
+    location = sensor.location or switch.location
+    device = {
+        "identifiers": [device_id],
+        "name": "{} {}".format(name, location).strip() if location else name,
+        "manufacturer": "Nodus",
+        "model": sensor.device or "switch" if switch.present else "",
+    }
+    if not device["model"]:
+        device.pop("model")
+    return device
+
+
+def _ha_state_base_topic(runtime_config, entity_id):
+    return mqtt_topic(runtime_config, entity_id)
+
+
 def mqtt_base_topic(runtime_config):
     """Return the normalized MQTT topic prefix for the active runtime."""
     topic = str(getattr(runtime_config.mqtt, "base_topic", "") or "").strip()
@@ -135,6 +180,101 @@ def build_runtime_meta_payload(runtime_config, *, version, active_broker=""):
         }
 
     return payload
+
+
+def build_homeassistant_discovery_plan(
+    runtime_config,
+    *,
+    sensor_snapshot=None,
+    retain=True,
+    previous_topics=None,
+):
+    """Build HA discovery messages plus stale retained-topic cleanup."""
+    if str(getattr(runtime_config, "active_profile", "") or "").strip().lower() != "homeassistant":
+        return ()
+
+    discovery_prefix = str(getattr(runtime_config.homeassistant, "discovery_prefix", "") or "homeassistant").strip()
+    if not discovery_prefix:
+        discovery_prefix = "homeassistant"
+    device = _ha_device_block(runtime_config)
+    base_id = device["identifiers"][0]
+    messages = []
+    published_topics = set()
+
+    metrics = ()
+    if sensor_snapshot is not None and getattr(sensor_snapshot, "phase", "") == "ready":
+        metric_map = getattr(sensor_snapshot, "metrics", {}) or {}
+        metrics = tuple(metric_map.keys())
+    unit_map = {
+        "Temperature": "C",
+        "Rel-Humidity": "%",
+        "Humidity": "%",
+        "CO2": "ppm",
+        "Air Quality": "%",
+        "Lux": "lx",
+        "PPFD": "umol/m2/s",
+        "Pressure": "Pa",
+    }
+    used_object_ids = set()
+    if runtime_config.sensor.present:
+        sensor_id = runtime_config.sensor.sensor_id
+        sensor_data_topic = mqtt_topic(runtime_config, sensor_id, "data")
+        availability_topic = mqtt_topic(runtime_config, sensor_id, "availability")
+        for metric in metrics:
+            metric_text = str(metric or "").strip()
+            if not metric_text:
+                continue
+            object_id = _slugify(metric_text)
+            if object_id in used_object_ids:
+                object_id = "{}_{}".format(object_id, _short_hash(metric_text))
+            used_object_ids.add(object_id)
+            topic = "{}/sensor/{}/{}/config".format(discovery_prefix, base_id, object_id)
+            payload = {
+                "name": "{} {}".format(base_id, metric_text),
+                "unique_id": "{}_{}".format(base_id, object_id),
+                "state_topic": sensor_data_topic,
+                "value_template": "{{{{ value_json['values'].get('{}', '') }}}}".format(metric_text),
+                "availability_topic": availability_topic,
+                "payload_available": "online",
+                "payload_not_available": "offline",
+                "device": device,
+            }
+            unit = unit_map.get(metric_text)
+            if unit:
+                payload["unit_of_measurement"] = unit
+            messages.append((topic, payload, bool(retain), False))
+            published_topics.add(topic)
+
+    if runtime_config.switch.present:
+        for channel in runtime_config.switch.channels:
+            channel_id = str(channel.channel_id or "").strip()
+            if not channel_id:
+                continue
+            object_id = _slugify(channel_id)
+            topic = "{}/switch/{}/{}/config".format(discovery_prefix, base_id, object_id)
+            payload = {
+                "name": "{} {}".format(base_id, channel.label or channel_id),
+                "unique_id": "{}_{}".format(base_id, object_id),
+                "state_topic": mqtt_topic(runtime_config, channel_id, "state"),
+                "command_topic": mqtt_topic(runtime_config, channel_id, "config", "set"),
+                "payload_on": "ON",
+                "payload_off": "OFF",
+                "state_on": "ON",
+                "state_off": "OFF",
+                "availability_topic": mqtt_topic(runtime_config, channel_id, "availability"),
+                "payload_available": "online",
+                "payload_not_available": "offline",
+                "device": device,
+            }
+            messages.append((topic, payload, bool(retain), False))
+            published_topics.add(topic)
+
+    previous_topics = set(previous_topics or ())
+    if retain:
+        stale_topics = previous_topics - published_topics
+        for topic in stale_topics:
+            messages.append((topic, "", True, True))
+    return tuple(messages)
 
 
 def build_config_ack_payload(message_id, *, accepted=True, duplicate=False):

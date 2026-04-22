@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from cpynodus_ii.features.payloads import (
     build_device_heartbeat_payload,
+    build_homeassistant_discovery_plan,
     build_runtime_meta_payload,
     build_sensor_availability_payload,
     build_sensor_data_payload,
@@ -51,6 +52,23 @@ def publish_startup_cycle(
         retain=True,
     )
     topics.append(meta.topic)
+
+    discovery_plan = build_homeassistant_discovery_plan(
+        runtime_config,
+        sensor_snapshot=sensor_snapshot,
+        retain=bool(getattr(runtime_config.homeassistant, "publish_discovery_retain", True)),
+        previous_topics=getattr(transport, "_ha_last_retained_discovery_topics", ()),
+    )
+    for topic, payload, retain_flag, is_clear in discovery_plan:
+        message = transport.publish(topic, payload, retain=retain_flag)
+        topics.append(message.topic)
+        if not is_clear:
+            continue
+    if str(getattr(runtime_config, "active_profile", "") or "").strip().lower() == "homeassistant":
+        retained_topics = {
+            topic for topic, _payload, retain_flag, is_clear in discovery_plan if retain_flag and not is_clear
+        }
+        transport._ha_last_retained_discovery_topics = retained_topics
 
     if runtime_config.sensor.present:
         availability = transport.publish(
