@@ -593,7 +593,7 @@ def apply_runtime_config_updates(runtime_config, updates, *, settings_root=None)
             section = str(update.get("section", "") or "").strip()
             key = str(update.get("key", "") or "").strip()
             value = update.get("value")
-            updated = _apply_runtime_config_update(current, section, key, value)
+            updated = apply_runtime_config_update(current, section, key, value)
             if updated is None:
                 continue
             current = updated
@@ -604,7 +604,7 @@ def apply_runtime_config_updates(runtime_config, updates, *, settings_root=None)
         section = str(update.get("section", "") or "").strip()
         key = str(update.get("key", "") or "").strip()
         value = update.get("value")
-        updated = _apply_runtime_config_update(current, section, key, value)
+        updated = apply_runtime_config_update(current, section, key, value)
         if updated is None:
             continue
         current = updated
@@ -618,7 +618,7 @@ def apply_runtime_config_updates(runtime_config, updates, *, settings_root=None)
     return current, tuple(applied_updates), ()
 
 
-def _apply_runtime_config_update(runtime_config, section, key, value):
+def apply_runtime_config_update(runtime_config, section, key, value):
     key_upper = key.upper()
     if section == "Network" and key_upper == "HOSTNAME":
         return replace(
@@ -703,6 +703,35 @@ def _apply_runtime_config_update(runtime_config, section, key, value):
             runtime_config,
             sensor=replace(runtime_config.sensor, serial_number=str(value or "").strip()),
         )
+    if section == "Switch" and key_upper == "SWITCH_LOCATION":
+        return replace(
+            runtime_config,
+            switch=replace(runtime_config.switch, location=str(value or "").strip()),
+        )
+    channel_index = _switch_channel_index_from_key(key_upper)
+    if section == "Switch" and channel_index:
+        return _replace_switch_channel(runtime_config, channel_index, key_upper, value)
+    display_index = _display_metric_index(key_upper)
+    if section == "Display" and display_index:
+        metrics = list(runtime_config.sensor.display.metrics)
+        metrics[display_index - 1] = str(value or "").strip()
+        return replace(
+            runtime_config,
+            sensor=replace(
+                runtime_config.sensor,
+                display=replace(runtime_config.sensor.display, metrics=tuple(metrics)),
+            ),
+        )
+    if section == "Display.Style" and display_index:
+        styles = list(runtime_config.sensor.display.styles)
+        styles[display_index - 1] = str(value or "").strip()
+        return replace(
+            runtime_config,
+            sensor=replace(
+                runtime_config.sensor,
+                display=replace(runtime_config.sensor.display, styles=tuple(styles)),
+            ),
+        )
     calibration_attr = _calibration_attr_name(section, key_upper)
     if calibration_attr and section == "Calibration.System":
         calibration = replace(
@@ -742,6 +771,44 @@ def _calibration_attr_name(section, key_upper):
         "SOIL_EC_CAL_VAL": "soil_ec_cal_val",
     }
     return mapping.get(key_upper, "")
+
+
+def _switch_channel_index_from_key(key_upper):
+    if key_upper.startswith("SWITCH_1_"):
+        return 1
+    if key_upper.startswith("SWITCH_2_"):
+        return 2
+    return 0
+
+
+def _replace_switch_channel(runtime_config, channel_index, key_upper, value):
+    channels = list(runtime_config.switch.channels)
+    position = channel_index - 1
+    if position >= len(channels):
+        return None
+    channel = channels[position]
+    if key_upper.endswith("_LABEL"):
+        channels[position] = replace(channel, label=str(value or "").strip())
+    elif key_upper.endswith("_LAST_STATE"):
+        channels[position] = replace(channel, last_state=bool(value))
+    else:
+        return None
+    return replace(
+        runtime_config,
+        switch=replace(runtime_config.switch, channels=tuple(channels)),
+    )
+
+
+def _display_metric_index(key_upper):
+    if not key_upper.startswith("METRIC_"):
+        return 0
+    try:
+        index = int(key_upper.split("_", 1)[1])
+    except Exception:
+        return 0
+    if 1 <= index <= 6:
+        return index
+    return 0
 
 
 def _publish_switch_meta_patch(transport, runtime_config, apply_result, *, message_id):

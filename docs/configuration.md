@@ -38,9 +38,9 @@ The active runtime profile is configured in `settings.toml` under `[Profile]`:
 - `ACTIVE_PROFILE = "sensorius"`
   - MQTT-enabled Sensorius profile used by the AP bootstrap and MQTT onboarding flow
   - broker settings come from the shared `[MQTT]` section
-  - normal-mode webserver disabled by design
   - NTP sync enabled after network bring-up
-  - use `nodusweb` or AP mode for local provisioning before rebooting into this profile
+  - normal-mode webserver disabled by design
+  - AP mode remains the primary factory/bootstrap path for provisioning credentials
 
 - `ACTIVE_PROFILE = "nodusweb"`
   - default local-only behavior
@@ -50,14 +50,14 @@ The active runtime profile is configured in `settings.toml` under `[Profile]`:
   - networked MQTT behavior using the shared `[MQTT]` connection settings
   - MQTT enabled
   - normal-mode webserver disabled by design
-  - NTP sync not started
+  - NTP sync enabled after network bring-up
 - `ACTIVE_PROFILE = "homeassistant"`
   - networked MQTT behavior using the shared `[MQTT]` connection settings
   - MQTT enabled
   - Home Assistant integration settings come from `[HomeAssistant]`
   - normal-mode webserver disabled by design
   - provision in `nodusweb`/AP mode first, then reboot into `homeassistant`
-  - NTP sync not started
+  - NTP sync enabled after network bring-up
 
 ## MQTT section
 
@@ -88,10 +88,23 @@ For example, a `CO2_OFFSET = -400.0` reduces the live measured `CO2` value by `4
 
 Corner case:
 
-- The normal-mode setup UI is not available when `ACTIVE_PROFILE = "sensorius"`, `ACTIVE_PROFILE = "homeassistant"`, or `ACTIVE_PROFILE = "weewx"`.
-- Devices for these MQTT-only profiles should be provisioned through AP/nodusweb mode before being switched into the target profile.
+- The normal-mode setup UI is available only when `ACTIVE_PROFILE = "nodusweb"`.
+- Devices for MQTT-enabled profiles should be provisioned through AP/nodusweb mode before being switched into the target profile.
 
 Manual switch overrides use the live runtime switch controller and also persist the resulting `SWITCH_#_LAST_STATE`, so the next boot starts from the last successfully applied manual state.
+
+Implementation direction for `cPyNodus_II`:
+
+- In `nodusweb`, web-driven operational edits should apply live when safe:
+  - shared location
+  - switch labels
+  - display metrics/styles
+  - calibration offsets
+  - manual switch override
+- Startup-topology edits should persist but remain restart-required:
+  - Wi-Fi credentials
+  - hostname
+  - MQTT/profile changes
 
 ## Time settings
 

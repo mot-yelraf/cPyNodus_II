@@ -33,6 +33,8 @@ def build_network_stack(
         wifi_radio = _resolve_wifi_radio(wifi_radio)
         connection_manager_module = _resolve_connection_manager(connection_manager_module)
         ap_ip_address = ""
+        socket_pool = None
+        ssl_context = None
         if wifi_radio is not None:
             start_ap = getattr(wifi_radio, "start_ap", None)
             if callable(start_ap):
@@ -44,12 +46,21 @@ def build_network_stack(
                 except Exception:
                     pass
             ap_ip_address = _current_ip_address(wifi_radio)
+            if connection_manager_module is not None:
+                try:
+                    socket_pool = connection_manager_module.get_radio_socketpool(wifi_radio)
+                    ssl_context = connection_manager_module.get_radio_ssl_context(wifi_radio)
+                except Exception:
+                    socket_pool = None
+                    ssl_context = None
         return NetworkStack(
             phase="ap",
             mode="ap",
             ssid=runtime_config.network.ap_ssid,
             hostname=runtime_config.network.hostname,
             ip_address=ap_ip_address,
+            socket_pool=socket_pool,
+            ssl_context=ssl_context,
             wifi_radio=wifi_radio,
             connection_manager_module=connection_manager_module,
             errors=(),

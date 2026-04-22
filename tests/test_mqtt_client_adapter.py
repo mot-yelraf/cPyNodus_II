@@ -30,6 +30,8 @@ def _run_direct_tests():
         test_poll_mqtt_client_marks_transport_disconnected_on_oserror,
         test_disconnect_mqtt_client_swallow_shutdown_publish_oserror,
         test_disconnect_mqtt_client_reports_disconnect_oserror,
+        test_poll_mqtt_client_tolerates_disconnect_callback_with_two_args,
+        test_poll_mqtt_client_does_not_retry_internal_typeerror,
     )
     for test in tests:
         test()
@@ -99,6 +101,23 @@ class _PollFailMQTTClient(_FakeMQTTClient):
 class _DisconnectFailMQTTClient(_FakeMQTTClient):
     def disconnect(self):
         raise OSError(9)
+
+
+class _CallbackDisconnectMQTTClient(_FakeMQTTClient):
+    def loop(self, timeout=0.0):
+        callback = getattr(self, "on_disconnect", None)
+        if callable(callback):
+            callback(self, 7)
+
+
+class _InternalTypeErrorMQTTClient(_FakeMQTTClient):
+    def loop(self, timeout=0.0):
+        raise TypeError("simulated internal mqtt failure")
+
+
+class _CallbackArityFailMQTTClient(_FakeMQTTClient):
+    def loop(self, timeout=0.0):
+        raise TypeError("function takes 3 positional arguments but 2 were given")
 
 
 def _runtime_config():
@@ -390,6 +409,61 @@ def test_disconnect_mqtt_client_reports_disconnect_oserror():
     assert disconnect_result.phase == "disconnected"
     assert transport.connected is False
     assert "mqtt_disconnect_failed:9" in disconnect_result.errors
+
+
+def test_poll_mqtt_client_tolerates_disconnect_callback_with_two_args():
+    runtime_config = _runtime_config()
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connect_requested()
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=object(),
+        modules={"mqtt_cls": _CallbackDisconnectMQTTClient},
+    )
+
+    connect_result = connect_mqtt_client(adapter, transport)
+    poll_result = poll_mqtt_client(connect_result.adapter, transport)
+
+    assert poll_result.phase == "polled"
+    assert transport.connected is False
+
+
+def test_poll_mqtt_client_does_not_retry_internal_typeerror():
+    import pytest
+
+    runtime_config = _runtime_config()
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connect_requested()
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=object(),
+        modules={"mqtt_cls": _InternalTypeErrorMQTTClient},
+    )
+
+    connect_result = connect_mqtt_client(adapter, transport)
+
+    with pytest.raises(TypeError, match="simulated internal mqtt failure"):
+        poll_mqtt_client(connect_result.adapter, transport)
+
+
+def test_poll_mqtt_client_marks_transport_disconnected_on_callback_arity_typeerror():
+    runtime_config = _runtime_config()
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connect_requested()
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=object(),
+        modules={"mqtt_cls": _CallbackArityFailMQTTClient},
+    )
+
+    connect_result = connect_mqtt_client(adapter, transport)
+    poll_result = poll_mqtt_client(connect_result.adapter, transport)
+
+    assert poll_result.phase == "error"
+    assert transport.connected is False
+    assert poll_result.errors == (
+        "mqtt_poll_callback_failed:function takes 3 positional arguments but 2 were given",
+    )
 
 
 if __name__ == "__main__":

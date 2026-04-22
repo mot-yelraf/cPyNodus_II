@@ -36,20 +36,20 @@ The architecture is split into three layers:
   - MQTT is enabled.
   - Broker settings come from `[MQTT]`.
   - Runtime metadata and sensor data are published over MQTT.
+  - NTP sync is started.
   - The normal-mode webserver is intentionally skipped in this profile.
-  - NTP sync is not started.
 - `weewx` is a networked MQTT profile.
   - MQTT is enabled.
   - Broker settings come from `[MQTT]`.
   - The normal-mode webserver is intentionally skipped in this profile.
-  - NTP sync is not started.
+  - NTP sync is started.
 - `homeassistant` is a networked MQTT profile.
   - MQTT is enabled.
   - Broker settings come from `[MQTT]`.
   - Home Assistant behavior is further configured in `[HomeAssistant]`.
   - The normal-mode webserver is intentionally skipped in this profile.
   - Devices are expected to be provisioned through AP/nodusweb mode before switching into this profile.
-  - NTP sync is not started.
+  - NTP sync is started.
 - `nodusweb` is the default local-only profile.
   - MQTT startup is skipped.
   - NTP sync is started after normal network bring-up.
@@ -68,4 +68,4 @@ The architecture is split into three layers:
 - After startup, accepted runtime config writes are mirrored to Sensorius through non-retained `nodus/<device_id>/meta/patch` only; config writes do not trigger another full retained `meta` publish.
 - Runtime liveness and device materialization should come from MQTT heartbeat/availability/data topics.
 - `GET /itaot-meta` remains as optional fallback metadata for user-initiated enrichment, not background polling.
-
+- `nodusweb` remains the only normal-mode profile that starts the built-in web server.

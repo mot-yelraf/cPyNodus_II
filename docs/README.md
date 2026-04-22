@@ -182,15 +182,14 @@ In normal mode the device:
   - Broker settings come from `[MQTT]`.
   - Sensor metrics and runtime metadata are published over MQTT.
   - In normal mode, the built-in webserver is intentionally not started in this profile.
-  - NTP sync is not started in this profile.
 - `weewx` is a networked MQTT profile using the shared `[MQTT]` connection settings.
   - MQTT is enabled.
   - In normal mode, the built-in webserver is intentionally not started in this profile.
-  - NTP sync is not started in this profile.
+  - Periodic NTP sync is started after normal network bring-up.
 - `homeassistant` is a networked MQTT profile using the shared `[MQTT]` connection settings.
   - MQTT is enabled.
   - Home Assistant behavior is configured in `[HomeAssistant]`.
-  - NTP sync is not started in this profile.
+  - Periodic NTP sync is started after normal network bring-up.
   - In normal mode, the built-in webserver is intentionally not started in this profile.
   - Provision the device in `nodusweb`/AP mode first, then reboot into `homeassistant`.
   - Once the device is operating in `homeassistant`, changes are currently expected through `settings.toml` edits or by returning the device to provisioning mode.

@@ -31,6 +31,8 @@ Manual fallback:
 2. Browse to `http://192.168.4.1:8000/setup`.
 3. Save settings to reboot into normal mode.
 
+Implementation note:
+- In `cPyNodus_II`, the bootstrap route pair (`/itaot-init` and `/itaot-meta`) is the intended first web-services slice for the rebuild.
 
 ## Tips
 

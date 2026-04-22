@@ -279,12 +279,32 @@ def poll_mqtt_client(adapter, transport):
         timeout = _poll_timeout_for_client(adapter.client)
         try:
             loop(timeout=timeout)
-        except TypeError:
+        except TypeError as exc:
+            if not _is_loop_timeout_signature_error(exc):
+                if _is_callback_arity_error(exc):
+                    transport.mark_disconnected()
+                    return MQTTClientSyncResult(
+                        phase="error",
+                        adapter=adapter,
+                        received_count=0,
+                        errors=("mqtt_poll_callback_failed:{}".format(exc),),
+                    )
+                raise
             loop()
         except ValueError:
             try:
                 loop(timeout=max(1.0, timeout))
-            except TypeError:
+            except TypeError as exc:
+                if not _is_loop_timeout_signature_error(exc):
+                    if _is_callback_arity_error(exc):
+                        transport.mark_disconnected()
+                        return MQTTClientSyncResult(
+                            phase="error",
+                            adapter=adapter,
+                            received_count=0,
+                            errors=("mqtt_poll_callback_failed:{}".format(exc),),
+                        )
+                    raise
                 loop()
         except OSError as exc:
             transport.mark_disconnected()
@@ -426,12 +446,40 @@ def _is_positive_number(value):
         return False
 
 
+def _is_loop_timeout_signature_error(exc):
+    text = str(exc or "").lower()
+    if "keyword" in text:
+        return True
+    if "unexpected" in text and "timeout" in text:
+        return True
+    if "positional argument" in text and "timeout" in text:
+        return True
+    return False
+
+
+def _is_callback_arity_error(exc):
+    text = str(exc or "").lower()
+    if "positional argument" in text and "given" in text:
+        return True
+    if "required positional argument" in text:
+        return True
+    return False
+
+
 def _bind_on_message(client, transport):
     def _on_message(_client, topic, message):
         transport.receive(topic, _coerce_payload_text(message))
 
     try:
         client.on_message = _on_message
+    except Exception:
+        pass
+
+    def _on_disconnect(_client=None, _userdata=None, _return_code=None):
+        transport.mark_disconnected()
+
+    try:
+        client.on_disconnect = _on_disconnect
     except Exception:
         pass
 

@@ -38,6 +38,7 @@ from cpynodus_ii.features import (
     snapshot_switch_states,
     start_sensor_service,
     start_switch_service,
+    WebRuntimeController,
 )
 
 
@@ -102,6 +103,39 @@ def _memory_summary():
     return "free_mem={} mem_alloc={}".format(free_mem, mem_alloc)
 
 
+def _collect_garbage():
+    """Run best-effort garbage collection for constrained heap recovery."""
+    try:
+        gc.collect()
+    except Exception:
+        return False
+    return True
+
+
+def _collect_garbage_with_log(start_monotonic, phase):
+    """Run GC and emit a compact REPL log for the attempt."""
+    collected = _collect_garbage()
+    _print_log(
+        "gc",
+        "phase={} collected={} {}".format(
+            str(phase or "unknown"),
+            collected,
+            _memory_summary(),
+        ),
+        start_monotonic=start_monotonic,
+    )
+    return collected
+
+
+def _log_memory_checkpoint(start_monotonic, phase):
+    """Log a compact memory checkpoint for startup and diagnostics."""
+    _print_log(
+        "memory",
+        "phase={} {}".format(str(phase or "unknown"), _memory_summary()),
+        start_monotonic=start_monotonic,
+    )
+
+
 def _filesystem_mode_label(fs_writable):
     """Return a compact filesystem mode label for logs."""
     if fs_writable is True:
@@ -141,7 +175,28 @@ def _soft_reboot():
     reload_runtime()
 
 
-async def main():
+def _hard_reboot():
+    try:
+        import microcontroller  # type: ignore
+    except ImportError as exc:
+        raise RuntimeError("microcontroller_unavailable") from exc
+    reset = getattr(microcontroller, "reset", None)
+    if not callable(reset):
+        raise RuntimeError("microcontroller_reset_unavailable")
+    reset()
+
+
+def _resolve_startup_plan(runtime_config, startup_plan_override=None):
+    """Build the startup plan, applying an optional test override."""
+    plan = StartupPlan.from_runtime_config(runtime_config)
+    if callable(startup_plan_override):
+        overridden = startup_plan_override(plan)
+        if overridden is not None:
+            return overridden
+    return plan
+
+
+async def main(*, startup_plan_override=None):
     """Run the current scaffold runtime."""
     start_monotonic = time.monotonic()
     settings_root = "."
@@ -160,7 +215,10 @@ async def main():
     if startup_ap_fallback:
         runtime_config = _enter_ap_recovery_mode(runtime_config)
         network_stack = build_network_stack(runtime_config)
-    plan = StartupPlan.from_runtime_config(runtime_config)
+    plan = _resolve_startup_plan(
+        runtime_config,
+        startup_plan_override=startup_plan_override,
+    )
     transport = MQTTTransport.from_settings(settings)
     mqtt_adapter = build_mqtt_client_adapter(
         runtime_config,
@@ -184,6 +242,7 @@ async def main():
         phase="ap" if network_stack.phase == "ap" else "idle",
         phase_started_at=float(start_monotonic) if network_stack.phase == "ap" else -1.0,
     )
+    web_runtime = None
     last_health_at = float(start_monotonic)
     last_mqtt_connect_attempt_at = float(start_monotonic)
 
@@ -239,6 +298,8 @@ async def main():
         ),
         start_monotonic=start_monotonic,
     )
+    _collect_garbage_with_log(start_monotonic, "post_runtime_init")
+    _log_memory_checkpoint(start_monotonic, "post_runtime_init")
     _print_log(
         "cPyNodus_II",
         "network ssid={} ipv4={} hostname={}".format(
@@ -248,6 +309,32 @@ async def main():
         ),
         start_monotonic=start_monotonic,
     )
+    if plan.web_enabled:
+        _log_memory_checkpoint(start_monotonic, "pre_web_start")
+        web_runtime = WebRuntimeController(
+            runtime_config,
+            network_stack,
+            version=__version__,
+            sensor_service=sensor_service,
+            switch_service=switch_service,
+            settings_root=writable_settings_root,
+            reboot_callbacks={
+                "soft": _soft_reboot,
+                "hard": _hard_reboot,
+            },
+        ).start()
+        _print_log(
+            "web",
+            "phase={} routes={} port={} errors={}".format(
+                web_runtime.phase,
+                ",".join(web_runtime.route_paths) if web_runtime.route_paths else "none",
+                runtime_config.network.http_port,
+                ",".join(web_runtime.errors) if web_runtime.errors else "none",
+            ),
+            start_monotonic=start_monotonic,
+        )
+        _collect_garbage_with_log(start_monotonic, "post_web_start")
+        _log_memory_checkpoint(start_monotonic, "post_web_start")
     if startup_ap_fallback:
         _print_log(
             "recovery",
@@ -272,6 +359,16 @@ async def main():
         while True:
             now_monotonic = time.monotonic()
             network_stack = refresh_network_stack(network_stack)
+            if web_runtime is not None:
+                web_runtime.update_context(
+                    runtime_config=runtime_config,
+                    network_stack=network_stack,
+                    sensor_service=sensor_service,
+                    switch_service=switch_service,
+                    version=__version__,
+                )
+                web_runtime.poll()
+                runtime_config = web_runtime.runtime_config
             previous_phase = recovery_state.phase
             recovery_decision = advance_recovery_state(
                 recovery_state,
@@ -353,6 +450,9 @@ async def main():
                     ),
                     start_monotonic=start_monotonic,
                 )
+                if ntp_result.phase == "synced":
+                    _collect_garbage_with_log(start_monotonic, "post_ntp_sync")
+                    _log_memory_checkpoint(start_monotonic, "post_ntp_sync")
             if (
                 plan.mqtt_enabled
                 and not transport.connected
@@ -391,6 +491,8 @@ async def main():
                             ),
                             start_monotonic=start_monotonic,
                         )
+                    _collect_garbage_with_log(start_monotonic, "post_mqtt_connect")
+                    _log_memory_checkpoint(start_monotonic, "post_mqtt_connect")
             if transport.connected:
                 poll_result = poll_mqtt_client(mqtt_adapter, transport)
                 mqtt_adapter = poll_result.adapter

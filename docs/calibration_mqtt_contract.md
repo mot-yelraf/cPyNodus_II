@@ -25,7 +25,7 @@ This contract is available only when:
 
 Notes:
 
-- `homeassistant` and `weewx` profiles do not start the normal-mode webserver, but MQTT calibration still works there if MQTT is connected.
+- `sensorius`, `homeassistant`, and `weewx` profiles do not start the normal-mode webserver, but MQTT calibration still works there if MQTT is connected.
 - `nodusweb` keeps the HTTP calibration routes for local/manual use.
 
 ## Topics

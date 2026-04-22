@@ -67,6 +67,30 @@ from cpynodus_ii.features.switch_service import (
     start_switch_service,
     stop_switch_service,
 )
+from cpynodus_ii.features.web_services import (
+    ItaotInitResult,
+    apply_itaot_init_payload,
+    bootstrap_routes_enabled,
+    build_itaot_init_updates,
+    build_itaot_meta_payload,
+    load_onboarding_state,
+    normalize_itaot_init_payload,
+)
+from cpynodus_ii.features.web_config import (
+    WebConfigDecision,
+    WebConfigResult,
+    apply_web_config_updates,
+    apply_web_switch_override,
+    classify_web_update,
+)
+from cpynodus_ii.features.web_routes import WebRoute, build_web_route_table, route_paths
+from cpynodus_ii.features.web_handlers import (
+    build_setup_payload,
+    build_status_payload,
+    handle_switch_state_request,
+    handle_web_config_request,
+)
+from cpynodus_ii.features.web_runtime import WebRuntimeController
 
 __all__ = [
     "SensorInitialization",
@@ -98,6 +122,11 @@ __all__ = [
     "build_sensor_data_payload",
     "build_switch_runtime",
     "build_switch_state_payload",
+    "build_itaot_init_updates",
+    "build_itaot_meta_payload",
+    "build_setup_payload",
+    "build_status_payload",
+    "build_web_route_table",
     "parse_calibration_command",
     "parse_device_config_command",
     "parse_switch_command",
@@ -122,4 +151,19 @@ __all__ = [
     "SteadyStateResult",
     "subscribe_runtime_topics",
     "SwitchCommand",
+    "ItaotInitResult",
+    "apply_itaot_init_payload",
+    "apply_web_config_updates",
+    "apply_web_switch_override",
+    "bootstrap_routes_enabled",
+    "classify_web_update",
+    "handle_switch_state_request",
+    "handle_web_config_request",
+    "load_onboarding_state",
+    "normalize_itaot_init_payload",
+    "route_paths",
+    "WebConfigDecision",
+    "WebConfigResult",
+    "WebRuntimeController",
+    "WebRoute",
 ]

@@ -4,6 +4,7 @@ import os
 
 from cpynodus_ii.core.config import (
     DetectedSensor,
+    DisplayConfig,
     HomeAssistantConfig,
     I2CConfig,
     MQTTConfig,
@@ -230,10 +231,18 @@ class Settings:
         soil_scale_doc = sensor_soil_doc.get("SoilSensorScales", {})
         soil_deficit_doc = sensor_soil_doc.get("SoilDeficit", {})
         soil_stress_doc = sensor_soil_doc.get("SoilStress", {})
+        soil_display_doc = sensor_soil_doc.get("Display", {})
+        soil_display_style_doc = sensor_soil_doc.get("Display.Style", {})
+        if not soil_display_style_doc and isinstance(soil_display_doc, dict):
+            soil_display_style_doc = soil_display_doc.get("Style", {})
         soil_calibration_doc = sensor_soil_doc.get("Calibration", {})
         soil_device_cal_doc = soil_calibration_doc.get("Device", {})
         i2c_sensor_doc = sensor_i2c_doc.get("Sensor", {})
         i2c_bus_doc = sensor_i2c_doc.get("I2Cbus", {})
+        i2c_display_doc = sensor_i2c_doc.get("Display", {})
+        i2c_display_style_doc = sensor_i2c_doc.get("Display.Style", {})
+        if not i2c_display_style_doc and isinstance(i2c_display_doc, dict):
+            i2c_display_style_doc = i2c_display_doc.get("Style", {})
         i2c_calibration_doc = sensor_i2c_doc.get("Calibration", {})
         i2c_system_cal_doc = i2c_calibration_doc.get("System", {})
         i2c_device_cal_doc = i2c_calibration_doc.get("Device", {})
@@ -287,6 +296,10 @@ class Settings:
                     moisture_weight_pct=float(soil_stress_doc.get("SSI_MOISTURE_WEIGHT_PCT", 70.0)),
                     temp_weight_pct=float(soil_stress_doc.get("SSI_TEMP_WEIGHT_PCT", 30.0)),
                 ),
+                display=DisplayConfig(
+                    metrics=tuple(soil_display_doc.get(f"METRIC_{index}", "") for index in range(1, 7)),
+                    styles=tuple(soil_display_style_doc.get(f"METRIC_{index}", "") for index in range(1, 7)),
+                ),
                 calibration_device=SensorCalibration(
                     soil_temp_cal_val=float(soil_device_cal_doc.get("SOIL_TEMP_CAL_VAL", 0.0)),
                     soil_temp_moist_val=float(soil_device_cal_doc.get("SOIL_TEMP_MOIST_VAL", 0.0)),
@@ -309,6 +322,10 @@ class Settings:
                     scl_pin=i2c_bus_doc.get("I2C_SCL", ""),
                     sda_pin=i2c_bus_doc.get("I2C_SDA", ""),
                     address=i2c_bus_doc.get("I2C_ADDR", 0),
+                ),
+                display=DisplayConfig(
+                    metrics=tuple(i2c_display_doc.get(f"METRIC_{index}", "") for index in range(1, 7)),
+                    styles=tuple(i2c_display_style_doc.get(f"METRIC_{index}", "") for index in range(1, 7)),
                 ),
                 calibration_system=SensorCalibration(
                     temp_offset=float(i2c_system_cal_doc.get("TEMP_OFFSET", 0.0)),

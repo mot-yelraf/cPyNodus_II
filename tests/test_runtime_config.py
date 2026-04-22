@@ -88,6 +88,15 @@ def test_settings_from_directory_loads_sensor_switch_runtime_config():
     assert runtime_config.sensor.i2c.scl_pin == "GP1"
     assert runtime_config.sensor.i2c.sda_pin == "GP0"
     assert runtime_config.sensor.i2c.address == 119
+    assert runtime_config.sensor.display.metrics[:3] == (
+        "Air Quality",
+        "Temperature",
+        "Rel-Humidity",
+    )
+    assert runtime_config.sensor.display.styles[:2] == (
+        "Graph24hr",
+        "Graph24hr",
+    )
     assert runtime_config.switch_config_present is True
     assert runtime_config.switch.channel_count == 2
     assert runtime_config.switch.channels[0].key == "SWITCH_1"

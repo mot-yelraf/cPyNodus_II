@@ -142,6 +142,24 @@ class SensorCalibration:
 
 
 @dataclass
+class DisplayConfig:
+    """Normalized display metric and style selections."""
+
+    metrics: tuple = ()
+    styles: tuple = ()
+
+    def __post_init__(self):
+        metrics = tuple(_clean_str(value) for value in (self.metrics or ()))
+        styles = tuple(_clean_str(value) for value in (self.styles or ()))
+        while len(metrics) < 6:
+            metrics = metrics + ("",)
+        while len(styles) < 6:
+            styles = styles + ("",)
+        _raw_setattr(self, "metrics", metrics[:6])
+        _raw_setattr(self, "styles", styles[:6])
+
+
+@dataclass
 class NetworkConfig:
     """Normalized network and AP bootstrap settings."""
 
@@ -249,6 +267,7 @@ class DetectedSensor:
     soil_stress: SoilStressConfig | None = None
     calibration_system: SensorCalibration = field(default_factory=SensorCalibration)
     calibration_device: SensorCalibration = field(default_factory=SensorCalibration)
+    display: DisplayConfig = field(default_factory=DisplayConfig)
 
     def __post_init__(self):
         family = str(self.family or "").strip().lower()
@@ -363,7 +382,12 @@ class RuntimeConfig:
 
     @property
     def ntp_enabled(self):
-        return (not self.ap_mode) and self.active_profile in {"nodusweb", "sensorius"}
+        return (not self.ap_mode) and self.active_profile in {
+            "nodusweb",
+            "sensorius",
+            "weewx",
+            "homeassistant",
+        }
 
     @property
     def calibration_mqtt_available(self):

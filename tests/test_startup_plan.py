@@ -20,7 +20,7 @@ def test_nodusweb_profile_disables_mqtt_and_keeps_web_enabled():
     assert plan.onboarding_allowed is True
 
 
-def test_mqtt_profile_enables_transport_and_disables_steady_state_web():
+def test_sensorius_profile_enables_transport_and_ntp_without_web():
     settings = Settings(active_profile="sensorius", switch_enabled=True)
     plan = StartupPlan.from_settings(settings)
     assert plan.profile == "sensorius"
@@ -89,12 +89,12 @@ def test_ap_mode_keeps_web_enabled_and_disables_ntp_even_for_mqtt_profile():
     assert plan.mqtt_enabled is True
 
 
-def test_homeassistant_profile_keeps_mqtt_but_disables_web_and_ntp():
+def test_homeassistant_profile_keeps_mqtt_and_ntp_but_disables_web():
     runtime_config = RuntimeConfig(active_profile="homeassistant")
     plan = StartupPlan.from_runtime_config(runtime_config)
     assert plan.profile == "homeassistant"
     assert plan.mqtt_enabled is True
     assert plan.web_enabled is False
-    assert plan.ntp_enabled is False
+    assert plan.ntp_enabled is True
     assert plan.calibration_mqtt_available is True
     assert plan.onboarding_allowed is False
