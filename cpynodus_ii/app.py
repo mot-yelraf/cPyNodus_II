@@ -9,6 +9,7 @@ from dataclasses import replace
 from cpynodus_ii import __version__
 from cpynodus_ii.hardware import bind_sensor_hardware, bind_switch_hardware
 from cpynodus_ii.core.mqtt import MQTTTransport
+from cpynodus_ii.core.reboot_log import append_reboot_reason_traceback
 from cpynodus_ii.core import (
     NTPState,
     RecoveryPolicy,
@@ -164,7 +165,13 @@ def _enter_ap_recovery_mode(runtime_config):
     return replace(runtime_config, active_profile="nodusweb", ap_mode=True)
 
 
-def _soft_reboot():
+def _soft_reboot(*, reason="soft_reboot", start_monotonic=None):
+    if start_monotonic is not None:
+        _print_log(
+            "runtime",
+            "action=reload reason={}".format(str(reason or "soft_reboot")),
+            start_monotonic=start_monotonic,
+        )
     try:
         import supervisor  # type: ignore
     except ImportError as exc:
@@ -173,6 +180,25 @@ def _soft_reboot():
     if not callable(reload_runtime):
         raise RuntimeError("supervisor_reload_unavailable")
     reload_runtime()
+
+
+def _log_recovery_soft_reboot(reboot_reason, *, fs_writable):
+    """Persist a recovery reboot traceback when RWFS is available."""
+    if fs_writable is not True:
+        return False
+    return append_reboot_reason_traceback(
+        reboot_reason,
+        header="recovery soft reboot: {}".format(str(reboot_reason or "unknown")),
+    )
+
+
+def _should_log_command_result(result):
+    """Return True when a command result should be emitted to the serial log."""
+    if result is None:
+        return False
+    if getattr(result, "phase", "") == "ignored":
+        return False
+    return getattr(result, "command_type", "") != "switch"
 
 
 def _hard_reboot():
@@ -404,7 +430,16 @@ async def main(*, startup_plan_override=None):
                     "action=soft_reboot reason={}".format(recovery_decision.reboot_reason),
                     start_monotonic=start_monotonic,
                 )
-                _soft_reboot()
+                _log_recovery_soft_reboot(
+                    recovery_decision.reboot_reason,
+                    fs_writable=fs_writable,
+                )
+                _soft_reboot(
+                    reason="recovery:{}".format(
+                        recovery_decision.reboot_reason or "soft_reboot"
+                    ),
+                    start_monotonic=start_monotonic,
+                )
             if recovery_decision.attempt_wifi_reconnect:
                 reconnect_result = reconnect_network_stack(
                     runtime_config,
@@ -537,7 +572,7 @@ async def main(*, startup_plan_override=None):
                     start_monotonic=start_monotonic,
                 )
             for result in iteration.command_results:
-                if result.phase == "ignored":
+                if not _should_log_command_result(result):
                     continue
                 _print_log(
                     "mqtt",

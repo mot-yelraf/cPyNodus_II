@@ -110,6 +110,14 @@ class _CallbackDisconnectMQTTClient(_FakeMQTTClient):
             callback(self, 7)
 
 
+class _TwoArgMessageCallbackMQTTClient(_FakeMQTTClient):
+    def loop(self, timeout=0.0):
+        while self.pending_incoming:
+            topic, payload = self.pending_incoming.pop(0)
+            if callable(self.on_message):
+                self.on_message(topic, payload)
+
+
 class _InternalTypeErrorMQTTClient(_FakeMQTTClient):
     def loop(self, timeout=0.0):
         raise TypeError("simulated internal mqtt failure")
@@ -464,6 +472,25 @@ def test_poll_mqtt_client_marks_transport_disconnected_on_callback_arity_typeerr
     assert poll_result.errors == (
         "mqtt_poll_callback_failed:function takes 3 positional arguments but 2 were given",
     )
+
+
+def test_poll_mqtt_client_tolerates_two_arg_message_callback():
+    runtime_config = _runtime_config()
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connect_requested()
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=object(),
+        modules={"mqtt_cls": _TwoArgMessageCallbackMQTTClient},
+    )
+
+    connect_result = connect_mqtt_client(adapter, transport)
+    connect_result.adapter.client.pending_incoming.append(("nodus/S1-x943fm/config/set", b"OFF"))
+    poll_result = poll_mqtt_client(connect_result.adapter, transport)
+
+    assert poll_result.phase == "polled"
+    assert poll_result.received_count == 1
+    assert transport.received_messages[-1].payload_text == "OFF"
 
 
 if __name__ == "__main__":

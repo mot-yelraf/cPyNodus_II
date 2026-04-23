@@ -314,19 +314,18 @@ def process_soil_calibration_session(
         retain=True,
     )
     published += 1
+    calibration_result_payload = build_calibration_result_payload(
+        session.message_id,
+        applied=True,
+        updated=len(applied_updates),
+        error="",
+        reference_ph=session.reference_ph,
+    )
+    calibration_result_payload["computed_soil_ph_offset"] = float(computed_offset)
+    calibration_result_payload["samples_collected"] = len(samples)
     transport.publish(
         mqtt_topic(updated_runtime_config, _device_id(updated_runtime_config), "calibration", "result"),
-        {
-            **build_calibration_result_payload(
-                session.message_id,
-                applied=True,
-                updated=len(applied_updates),
-                error="",
-                reference_ph=session.reference_ph,
-            ),
-            "computed_soil_ph_offset": float(computed_offset),
-            "samples_collected": len(samples),
-        },
+        calibration_result_payload,
         retain=False,
     )
     published += 1

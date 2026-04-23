@@ -467,7 +467,13 @@ def _is_callback_arity_error(exc):
 
 
 def _bind_on_message(client, transport):
-    def _on_message(_client, topic, message):
+    def _on_message(*args):
+        if len(args) >= 3:
+            _, topic, message = args[-3:]
+        elif len(args) == 2:
+            topic, message = args
+        else:
+            raise TypeError("mqtt_on_message_callback_args_invalid")
         transport.receive(topic, _coerce_payload_text(message))
 
     try:
@@ -475,7 +481,7 @@ def _bind_on_message(client, transport):
     except Exception:
         pass
 
-    def _on_disconnect(_client=None, _userdata=None, _return_code=None):
+    def _on_disconnect(*_args):
         transport.mark_disconnected()
 
     try:
