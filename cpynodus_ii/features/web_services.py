@@ -1,4 +1,9 @@
-"""Helpers for constrained onboarding web services."""
+"""Support constrained onboarding and setup web-service behavior.
+
+The web-service helpers manage onboarding persistence, setup payload shaping,
+and lightweight service decisions used during AP provisioning and normal web
+configuration flows.
+"""
 
 from dataclasses import dataclass
 import json

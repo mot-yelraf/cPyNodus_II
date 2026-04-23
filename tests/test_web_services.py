@@ -1,3 +1,5 @@
+"""Tests for onboarding and setup web-service helpers."""
+
 from pathlib import Path
 from tempfile import TemporaryDirectory
 

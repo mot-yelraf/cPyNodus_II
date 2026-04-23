@@ -1,6 +1,10 @@
-# boot.py — Pico W / CircuitPython 9.x
-# GP14 low  -> app R/W, USB drive disabled, REPL enabled (best for runtime debug)
-# GP14 high -> app R/O, USB drive enabled (best for editing files from the host)
+"""Configure filesystem and USB access before ``code.py`` starts.
+
+This boot hook uses the GP14 guard pin to choose between a runtime/debug mode
+and a host-edit mode. Runtime mode enables application writes while hiding the
+USB mass-storage drive. Edit mode exposes ``CIRCUITPY`` to the host and keeps
+the application filesystem read-only so files can be updated safely.
+"""
 
 import board
 import digitalio

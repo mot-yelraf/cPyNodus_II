@@ -1,4 +1,9 @@
-"""Minimal NTP sync helpers for CircuitPython runtime."""
+"""Handle best-effort RTC synchronization through NTP.
+
+NTP is treated as an opportunistic service rather than a hard dependency, so
+these helpers report sync state and transient errors without destabilizing the
+rest of the runtime.
+"""
 
 from dataclasses import dataclass
 

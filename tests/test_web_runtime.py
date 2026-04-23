@@ -1,3 +1,5 @@
+"""Tests for web runtime startup and polling behavior."""
+
 from pathlib import Path
 from tempfile import TemporaryDirectory
 

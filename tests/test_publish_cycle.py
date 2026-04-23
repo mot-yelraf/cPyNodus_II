@@ -1,3 +1,5 @@
+"""Tests for startup and steady-state MQTT publish-cycle helpers."""
+
 from types import SimpleNamespace
 
 from cpynodus_ii.core.config import (

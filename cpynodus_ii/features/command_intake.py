@@ -1,4 +1,9 @@
-"""Command intake for runtime feature operations."""
+"""Parse and apply inbound runtime commands from MQTT and web flows.
+
+This module translates command payloads into settings updates, calibration
+actions, switch operations, and other runtime side effects while keeping
+command handling testable outside the main loop.
+"""
 
 import json
 from dataclasses import dataclass, replace

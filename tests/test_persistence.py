@@ -1,3 +1,5 @@
+"""Tests for persisted switch state and calibration storage flows."""
+
 from pathlib import Path
 from tempfile import TemporaryDirectory
 

@@ -1,4 +1,9 @@
-"""Lightweight publish-cycle execution for startup and steady state."""
+"""Execute startup and steady-state MQTT publish cycles.
+
+This module coordinates heartbeat, discovery, sensor, switch, and onboarding
+publishes so callers can issue a complete publish pass without duplicating
+topic-level logic.
+"""
 
 from dataclasses import dataclass
 

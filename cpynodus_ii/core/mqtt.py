@@ -1,7 +1,8 @@
-"""Minimal MQTT transport facade for scaffold development.
+"""Provide a small MQTT transport facade for runtime coordination.
 
-This stays intentionally tiny until characterization tests define the required
-behavior of connect, reconnect, publish, and subscription handling.
+The transport model keeps publish, subscribe, and connection state simple so
+feature modules can exchange MQTT work without depending directly on the vendor
+client implementation.
 """
 
 from dataclasses import dataclass

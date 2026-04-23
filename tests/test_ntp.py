@@ -1,3 +1,5 @@
+"""Tests for best-effort NTP synchronization behavior."""
+
 from cpynodus_ii.core.config import NetworkConfig, RuntimeConfig
 from cpynodus_ii.core.ntp import DEFAULT_NTP_SERVER, NTPState, maybe_sync_ntp
 from cpynodus_ii.core.network import NetworkStack

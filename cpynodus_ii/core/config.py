@@ -1,7 +1,8 @@
-"""Normalized runtime configuration models.
+"""Define normalized runtime configuration models for firmware startup.
 
-These models capture cPyNodus_II startup intent without carrying over the
-legacy implementation structure from cPyNodus.
+These dataclasses translate persisted settings and detected hardware into a
+stable in-memory model that the rest of the firmware can consume without
+depending on legacy configuration layout details.
 """
 
 from dataclasses import dataclass, field

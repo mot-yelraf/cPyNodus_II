@@ -1,4 +1,10 @@
-"""CircuitPython runtime entrypoint for cPyNodus_II."""
+"""Run the cPyNodus_II application on CircuitPython boards.
+
+On host Python, this module defers to the standard-library ``code`` module so
+test tooling and local scripts behave normally. On CircuitPython, it starts the
+main async application, records fatal tracebacks when possible, and requests a
+soft reload after an unhandled runtime failure.
+"""
 
 import sys
 

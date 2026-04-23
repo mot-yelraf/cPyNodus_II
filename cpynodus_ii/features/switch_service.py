@@ -1,4 +1,9 @@
-"""Switch service lifecycle on top of hardware adapters."""
+"""Manage switch state application and switch-service snapshots.
+
+This layer translates desired switch states into hardware operations, tracks
+persisted and live state, and exposes small result objects for callers and
+tests.
+"""
 
 from dataclasses import dataclass
 

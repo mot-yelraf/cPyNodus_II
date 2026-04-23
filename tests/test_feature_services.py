@@ -1,3 +1,5 @@
+"""Tests for sensor and switch service behavior over fake adapters."""
+
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace

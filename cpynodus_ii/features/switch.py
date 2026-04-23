@@ -1,4 +1,8 @@
-"""Switch feature initialization planning."""
+"""Plan switch-feature activation for the current boot.
+
+This module decides whether switch control should start and prepares normalized
+channel-level initialization data from the active runtime configuration.
+"""
 
 from dataclasses import dataclass
 

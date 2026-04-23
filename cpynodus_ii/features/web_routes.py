@@ -1,4 +1,8 @@
-"""Declarative web route inventory for supported runtime profiles."""
+"""Describe the web routes exposed by supported runtime profiles.
+
+The route inventory is kept declarative so profile-specific route enablement
+can be reasoned about and tested separately from the HTTP server plumbing.
+"""
 
 from dataclasses import dataclass
 

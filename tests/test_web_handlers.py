@@ -1,3 +1,5 @@
+"""Tests for web handler payloads and route-level actions."""
+
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace

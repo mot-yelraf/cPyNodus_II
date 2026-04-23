@@ -1,3 +1,5 @@
+"""Tests for startup planning, AP fallback, and settings boot behavior."""
+
 from dataclasses import replace
 from types import SimpleNamespace
 

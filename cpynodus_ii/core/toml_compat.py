@@ -1,4 +1,9 @@
-"""Minimal TOML reader/writer for CircuitPython runtime settings files."""
+"""Read and write the limited TOML subset used by firmware settings files.
+
+The implementation intentionally supports only the project schema features
+needed on-device and includes template-driven write ordering so generated TOML
+files remain stable and readable.
+"""
 
 
 def load_file(path):

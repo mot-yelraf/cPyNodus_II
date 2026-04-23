@@ -1,3 +1,5 @@
+"""Regression tests for application logging and reboot-side effects."""
+
 from types import SimpleNamespace
 
 import pytest

@@ -1,4 +1,9 @@
-"""Sensor feature initialization planning."""
+"""Plan whether and how the sensor feature should start for a boot.
+
+The planning helpers in this module inspect runtime configuration and persisted
+files to decide whether sensor services should be activated and what resources
+they require.
+"""
 
 from dataclasses import dataclass
 

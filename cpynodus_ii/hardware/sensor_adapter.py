@@ -1,4 +1,9 @@
-"""Sensor hardware adapter bindings."""
+"""Bind configured sensors to board-level hardware transports.
+
+This module maps normalized sensor configuration to concrete bus objects such
+as I2C and Modbus transports while keeping hardware setup separate from sensor
+service logic.
+"""
 
 from dataclasses import dataclass
 

@@ -1,4 +1,10 @@
-"""Use stdlib dataclasses on host Python and a tiny shim on CircuitPython."""
+"""Provide a ``dataclasses`` import that works on host Python and CircuitPython.
+
+The project relies on standard ``dataclasses`` behavior during host-side test
+execution, but boards may need a much smaller compatibility surface. This
+module dispatches to the host standard library when available and falls back to
+the lightweight local shim on-device.
+"""
 
 import sys
 

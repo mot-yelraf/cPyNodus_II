@@ -1,3 +1,5 @@
+"""Tests for profile-driven web route selection."""
+
 from types import SimpleNamespace
 
 from cpynodus_ii.core.config import RuntimeConfig, SwitchChannelConfig, SwitchConfig

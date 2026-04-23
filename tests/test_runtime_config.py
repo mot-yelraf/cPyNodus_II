@@ -1,3 +1,5 @@
+"""Tests for runtime configuration loading and password handling."""
+
 from pathlib import Path
 from tempfile import TemporaryDirectory
 

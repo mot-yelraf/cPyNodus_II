@@ -1,4 +1,9 @@
-"""Host-testable handler helpers for the web route layer."""
+"""Implement host-testable handlers behind the web route table.
+
+The handler functions assemble payloads and apply actions without depending on
+the concrete web server implementation, which keeps the route layer thin and
+easy to test.
+"""
 
 from cpynodus_ii.core.settings import Settings
 from cpynodus_ii.features.sensor_service import read_sensor_snapshot

@@ -1,4 +1,9 @@
-"""Sensor service lifecycle on top of hardware adapters."""
+"""Own sensor-driver startup and snapshot collection over hardware adapters.
+
+The sensor service layer instantiates device drivers, reads normalized
+snapshots, applies calibration and derived metrics, and reports service state
+back to the rest of the runtime.
+"""
 
 from dataclasses import dataclass
 

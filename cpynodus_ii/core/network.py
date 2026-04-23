@@ -1,4 +1,9 @@
-"""Network stack bootstrap for station and AP runtime modes."""
+"""Build and manage Wi-Fi network state for station and AP modes.
+
+The network helpers in this module create the shared radio, socket pool, and
+HTTP session resources used by web, MQTT, and time-sync features while keeping
+station-mode and access-point behavior explicit.
+"""
 
 from dataclasses import dataclass
 import time

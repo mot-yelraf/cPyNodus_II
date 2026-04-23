@@ -1,3 +1,5 @@
+"""Tests for steady-state behavior across MQTT transport conditions."""
+
 from types import SimpleNamespace
 
 from cpynodus_ii.core.config import DetectedSensor, RuntimeConfig, SwitchChannelConfig, SwitchConfig

@@ -1,3 +1,5 @@
+"""Tests for web-driven configuration updates and switch overrides."""
+
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace

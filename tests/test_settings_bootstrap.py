@@ -1,3 +1,5 @@
+"""Tests for factory bootstrap writes and template-ordered TOML output."""
+
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace

@@ -1,4 +1,9 @@
-"""Password obfuscation compatibility for `obf1:` settings values."""
+"""Encode and decode obfuscated password values stored in settings files.
+
+The obfuscation format is intentionally lightweight and is meant to prevent
+casual disclosure in persisted TOML files rather than provide strong
+cryptographic secrecy.
+"""
 
 import binascii
 import hashlib

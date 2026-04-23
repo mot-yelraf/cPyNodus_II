@@ -1,4 +1,8 @@
-"""Switch hardware adapter bindings."""
+"""Bind configured switch channels to board-level output transports.
+
+The switch hardware adapters keep GPIO and relay-specific details out of the
+service layer and provide a normalized interface for switch state changes.
+"""
 
 from dataclasses import dataclass
 

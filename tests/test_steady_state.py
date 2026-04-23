@@ -1,3 +1,5 @@
+"""Tests for one-pass steady-state runtime coordination."""
+
 from types import SimpleNamespace
 from pathlib import Path
 

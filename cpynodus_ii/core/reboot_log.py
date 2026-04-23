@@ -1,4 +1,9 @@
-"""Helpers for persisting traceback records before a soft reboot."""
+"""Persist bounded reboot diagnostics before requesting a soft reboot.
+
+These helpers append fatal tracebacks and synthetic recovery-reboot records to
+``/_reboot.log`` when the filesystem is writable, then keep the log trimmed to
+the configured size cap.
+"""
 
 import os
 import sys

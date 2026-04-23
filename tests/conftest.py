@@ -1,3 +1,5 @@
+"""Shared pytest configuration for host-side cPyNodus_II tests."""
+
 from pathlib import Path
 import sys
 

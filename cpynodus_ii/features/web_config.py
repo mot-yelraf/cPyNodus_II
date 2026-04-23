@@ -1,4 +1,8 @@
-"""Web configuration policy and live-update helpers."""
+"""Apply configuration changes requested through the web interface.
+
+These helpers bridge web forms into validated runtime and persisted updates,
+including switch overrides and settings writes that may require a reboot.
+"""
 
 from dataclasses import dataclass
 

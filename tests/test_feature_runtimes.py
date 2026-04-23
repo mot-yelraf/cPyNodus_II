@@ -1,3 +1,5 @@
+"""Tests for constructing feature runtime handles from settings."""
+
 from pathlib import Path
 from tempfile import TemporaryDirectory
 

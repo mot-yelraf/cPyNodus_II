@@ -1,3 +1,5 @@
+"""Tests for bounded reboot-log append and trim behavior."""
+
 from pathlib import Path
 
 from cpynodus_ii.core.reboot_log import (

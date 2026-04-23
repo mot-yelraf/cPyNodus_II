@@ -1,3 +1,5 @@
+"""Tests for sensor and switch feature initialization decisions."""
+
 from pathlib import Path
 from tempfile import TemporaryDirectory
 

@@ -1,4 +1,8 @@
-"""Sensor runtime handle construction."""
+"""Construct sensor runtime handles from initialization decisions.
+
+These helpers convert sensor plans into concrete runtime objects that bind
+settings, adapters, and service state for use by the main application loop.
+"""
 
 from dataclasses import dataclass
 

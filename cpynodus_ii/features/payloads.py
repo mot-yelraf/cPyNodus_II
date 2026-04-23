@@ -1,4 +1,9 @@
-"""Payload builders for normalized runtime and MQTT publication."""
+"""Build normalized payloads for MQTT publication and web consumption.
+
+The payload helpers keep topic-specific formatting, discovery metadata, and
+state serialization in one place so publish paths remain consistent across the
+runtime.
+"""
 
 from time import time
 

@@ -1,3 +1,5 @@
+"""Tests for the lightweight MQTT transport facade."""
+
 from pathlib import Path
 import sys
 

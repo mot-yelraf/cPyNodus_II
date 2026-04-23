@@ -1,3 +1,5 @@
+"""Tests for reboot-log writes emitted by managed recovery reboots."""
+
 from cpynodus_ii.app import _log_recovery_soft_reboot
 
 

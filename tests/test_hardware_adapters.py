@@ -1,3 +1,5 @@
+"""Tests for binding runtime configuration to hardware adapters."""
+
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace

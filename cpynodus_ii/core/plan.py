@@ -1,7 +1,8 @@
-"""Startup planning primitives.
+"""Describe startup intent derived from persisted settings.
 
-The startup plan converts raw settings into explicit runtime intent so future
-feature slices can reason about what should and should not start.
+The startup plan converts raw configuration into explicit enablement decisions
+for sensors, switches, networking, MQTT, web services, and time sync so the
+boot path can remain deterministic and easy to test.
 """
 
 from dataclasses import dataclass

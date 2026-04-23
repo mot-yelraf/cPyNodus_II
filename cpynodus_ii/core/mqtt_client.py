@@ -1,4 +1,9 @@
-"""Narrow MQTT client adapter over the configured vendor client."""
+"""Wrap the configured MiniMQTT client in a firmware-friendly adapter.
+
+This module centralizes connect, poll, publish, subscribe, and disconnect
+behavior so the main application can reason about MQTT state through a small
+and testable interface.
+"""
 
 from dataclasses import dataclass
 

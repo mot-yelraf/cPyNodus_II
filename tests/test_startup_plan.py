@@ -1,3 +1,5 @@
+"""Tests for deriving startup plans from settings and runtime intent."""
+
 from cpynodus_ii.core.config import DetectedSensor, RuntimeConfig
 from cpynodus_ii.core.plan import StartupPlan
 from cpynodus_ii.core.settings import Settings

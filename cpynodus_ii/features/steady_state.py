@@ -1,4 +1,9 @@
-"""Steady-state runtime loop helpers."""
+"""Run one iteration of the normal steady-state firmware loop.
+
+The helpers here coordinate inbound command handling, sensor reads, switch
+updates, publish work, and background maintenance once the device has finished
+bootstrapping.
+"""
 
 from dataclasses import dataclass
 

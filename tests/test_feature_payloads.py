@@ -1,3 +1,5 @@
+"""Tests for normalized MQTT and runtime payload generation."""
+
 from types import SimpleNamespace
 
 from cpynodus_ii.core.config import (

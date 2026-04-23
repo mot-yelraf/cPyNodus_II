@@ -1,4 +1,9 @@
-"""Settings facade for the scaffold."""
+"""Load, normalize, bootstrap, and persist firmware settings documents.
+
+This module owns TOML template handling, factory bootstrap writes, hardware
+detection materialization, password obfuscation on write, and conversion from
+raw files into runtime configuration models.
+"""
 
 import os
 import random

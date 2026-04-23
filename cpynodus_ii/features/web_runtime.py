@@ -1,4 +1,8 @@
-"""Minimal web runtime integration for cPyNodus_II."""
+"""Integrate the lightweight web server with runtime handlers and state.
+
+This module starts and polls the constrained web runtime, dispatches requests
+to handler helpers, and reports availability back to the main application loop.
+"""
 
 import json
 

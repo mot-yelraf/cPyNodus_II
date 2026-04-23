@@ -1,4 +1,8 @@
-"""Feature modules for cPyNodus_II slices."""
+"""Expose the feature-layer entry points used by the application runtime.
+
+The feature package groups sensor, switch, web, command, payload, and
+steady-state helpers that sit above the core runtime primitives.
+"""
 
 from cpynodus_ii.features.sensor import SensorInitialization, plan_sensor_initialization
 from cpynodus_ii.features.sensor_runtime import SensorRuntime, build_sensor_runtime

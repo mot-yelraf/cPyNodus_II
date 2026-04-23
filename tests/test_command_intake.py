@@ -1,3 +1,5 @@
+"""Tests for inbound command parsing and runtime settings updates."""
+
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace

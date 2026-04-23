@@ -1,3 +1,5 @@
+"""Tests for the MQTT client adapter wrapper and callback handling."""
+
 from pathlib import Path
 import sys
 

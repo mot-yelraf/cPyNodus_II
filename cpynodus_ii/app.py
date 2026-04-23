@@ -1,4 +1,9 @@
-"""Main application orchestration for the cPyNodus_II scaffold."""
+"""Coordinate startup, recovery, and steady-state runtime behavior.
+
+This module wires together configuration loading, feature initialization,
+network setup, MQTT lifecycle management, web runtime startup, and bounded
+recovery decisions for the main cPyNodus_II application loop.
+"""
 
 import asyncio
 import gc

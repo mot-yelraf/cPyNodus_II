@@ -1,4 +1,9 @@
-"""Core runtime primitives for cPyNodus_II."""
+"""Expose the core runtime primitives used across cPyNodus_II.
+
+The core package contains low-level configuration, network, MQTT, time sync,
+recovery, reboot logging, and persistence helpers that higher-level feature
+modules build on.
+"""
 
 from cpynodus_ii.core.mqtt_client import (
     MQTTClientAdapter,

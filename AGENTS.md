@@ -18,7 +18,7 @@ This is not a general CPython application. Prefer CircuitPython-compatible APIs 
 - Avoid heavy allocations in hot paths.
 - Prefer simple, explicit code over extra abstraction.
 - Use CircuitPython and `adafruit_*` APIs where appropriate.
-- Avoid CPython-only modules or patterns.
+- Avoid CPython-only modules or patterns, circuitpython is not cpython.
 - Avoid large inline HTML or JSON blobs.
 - Add short docstrings to public functions and classes.
 - Do not use concatenated multiline f-strings; use a single f-string or `.format(...)`.

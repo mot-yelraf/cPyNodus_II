@@ -1,4 +1,9 @@
-"""Pure derived metrics for normalized sensor snapshots."""
+"""Compute derived environmental metrics from normalized sensor readings.
+
+These helpers are intentionally pure so feature services can enrich snapshots
+with VPD, dew-point, and related calculated values without embedding the math
+inside hardware-facing code.
+"""
 
 import math
 

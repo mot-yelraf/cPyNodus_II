@@ -1,4 +1,9 @@
-"""Bounded runtime recovery policy for Wi-Fi, MQTT, and AP idle mode."""
+"""Define bounded recovery decisions for Wi-Fi, MQTT, and AP idle runtime.
+
+The recovery policy converts observed transport state into explicit next
+actions, including retry cadence, reconnect gating, and escalation to soft
+reboot when a fault persists beyond configured limits.
+"""
 
 from dataclasses import dataclass
 

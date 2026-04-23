@@ -1,4 +1,9 @@
-"""Switch runtime handle construction."""
+"""Construct switch runtime handles from initialization decisions.
+
+The resulting runtime structures bind channel configuration, hardware adapters,
+and service state so the application loop can drive switch operations with
+minimal branching.
+"""
 
 from dataclasses import dataclass
 
