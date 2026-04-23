@@ -6,6 +6,7 @@ back to the rest of the runtime.
 """
 
 from dataclasses import dataclass
+from time import sleep
 
 from cpynodus_ii.features.derived_metrics import enrich_metrics
 
@@ -43,6 +44,41 @@ class DualBME280Driver:
     plant: object
 
 
+class SoilModbusClient:
+    """Provide minimal Modbus register reads over a UART transport."""
+
+    def __init__(self, uart_transport, *, address):
+        self.uart_transport = uart_transport
+        self.address = int(address or 1)
+
+    def read_registers(self, start, count):
+        """Read one or more holding registers from the configured sensor."""
+        request = bytes(
+            [
+                self.address & 0xFF,
+                0x03,
+                (int(start) >> 8) & 0xFF,
+                int(start) & 0xFF,
+                (int(count) >> 8) & 0xFF,
+                int(count) & 0xFF,
+            ]
+        )
+        crc = _modbus_crc16(request)
+        self.uart_transport.write(request + bytes([crc & 0xFF, (crc >> 8) & 0xFF]))
+        sleep(0.05)
+        response = self.uart_transport.read(5 + (int(count) * 2))
+        registers = _parse_modbus_register_response(response, address=self.address, count=count)
+        if registers is None:
+            return None
+        if int(count) == 1:
+            return registers[0]
+        return registers
+
+    def deinit(self):
+        """Keep shutdown compatible with the generic service stop path."""
+        return None
+
+
 def start_sensor_service(sensor_runtime, sensor_adapter, runtime_config, *, modules=None):
     """Create a sensor service from a bound hardware adapter."""
     if sensor_adapter.phase != "bound":
@@ -63,12 +99,18 @@ def start_sensor_service(sensor_runtime, sensor_adapter, runtime_config, *, modu
         return _start_i2c_sensor_service(sensor, sensor_adapter, modules)
 
     if sensor_runtime.interface == "modbus_rs485":
+        driver = transport
+        if transport is not None and not hasattr(transport, "read_registers"):
+            driver = SoilModbusClient(
+                transport,
+                address=getattr(getattr(sensor, "modbus", None), "address", 1),
+            )
         return SensorService(
             phase="ready",
             device=sensor.device,
             interface=sensor.interface,
             driver_kind="soil_modbus_uart",
-            driver=None,
+            driver=driver,
             transport=transport,
             errors=(),
         )
@@ -252,7 +294,8 @@ def read_sensor_snapshot(sensor_service, runtime_config):
         )
 
     if sensor.device == "soil":
-        metrics = _compact_metrics(_read_soil_metrics(sensor_service.transport, sensor))
+        transport = sensor_service.driver or sensor_service.transport
+        metrics = _compact_metrics(_read_soil_metrics(transport, sensor))
         metrics = enrich_metrics(sensor.device, metrics, runtime_config=runtime_config)
         return SensorSnapshot(
             phase="ready",
@@ -526,3 +569,37 @@ def _scale_register(raw_value, scale, digits):
     if digits is None:
         return numeric
     return round(numeric, digits)
+
+
+def _modbus_crc16(data):
+    crc = 0xFFFF
+    for value in bytes(data):
+        crc ^= value
+        for _ in range(8):
+            if (crc & 1) != 0:
+                crc >>= 1
+                crc ^= 0xA001
+            else:
+                crc >>= 1
+    return crc
+
+
+def _parse_modbus_register_response(response, *, address, count):
+    if not response or len(response) < 5:
+        return None
+    body = response[:-2]
+    crc_low = response[-2]
+    crc_high = response[-1]
+    expected_crc = _modbus_crc16(body)
+    if crc_low != (expected_crc & 0xFF) or crc_high != ((expected_crc >> 8) & 0xFF):
+        return None
+    if response[0] != (int(address) & 0xFF) or response[1] != 0x03:
+        return None
+    byte_count = response[2]
+    expected_byte_count = int(count) * 2
+    if byte_count != expected_byte_count:
+        return None
+    data = response[3 : 3 + byte_count]
+    if len(data) != byte_count:
+        return None
+    return tuple((data[index] << 8) | data[index + 1] for index in range(0, len(data), 2))

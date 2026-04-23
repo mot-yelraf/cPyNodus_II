@@ -48,9 +48,34 @@ class _FakeUART:
         self.baudrate = baudrate
         self.timeout = timeout
         self.deinited = False
+        self._last_write = b""
 
     def deinit(self):
         self.deinited = True
+
+    def write(self, payload):
+        self._last_write = bytes(payload)
+
+    def read(self, _count):
+        if not self._last_write:
+            return None
+        address = self._last_write[0]
+        start = (self._last_write[2] << 8) | self._last_write[3]
+        register_values = {
+            0: 430,
+            1: 215,
+            2: 55,
+            3: 68,
+            4: 11,
+            5: 22,
+            6: 33,
+        }
+        value = register_values.get(start)
+        if value is None:
+            return None
+        body = bytes([address, 0x03, 0x02, (value >> 8) & 0xFF, value & 0xFF])
+        crc = sensor_service_module._modbus_crc16(body)
+        return body + bytes([crc & 0xFF, (crc >> 8) & 0xFF])
 
 
 class _FakeDigitalInOut:
@@ -185,6 +210,50 @@ def test_sensor_service_uses_uart_transport_for_soil_sensor():
     assert sensor_service.phase == "ready"
     assert sensor_service.driver_kind == "soil_modbus_uart"
     assert sensor_service.transport.baudrate == 4800
+    assert hasattr(sensor_service.driver, "read_registers")
+
+
+def test_sensor_service_reads_soil_snapshot_from_wrapped_uart_transport():
+    runtime_config = RuntimeConfig(
+        sensor=DetectedSensor(
+            family="soil",
+            interface="modbus_rs485",
+            active_config_file="sensor_soil.toml",
+            device="soil",
+            sensor_id="soil-bd1234",
+            modbus=SoilModbusConfig(uart_tx="GP4", uart_rx="GP5", baud=4800, address=1),
+            soil_registers=SimpleNamespace(temperature=1, moisture=0, ec=2, ph=3, n=4, p=5, k=6),
+            soil_scales=SimpleNamespace(temperature=10.0, moisture=10.0, ec=1.0, ph=10.0, n=1.0, p=1.0, k=1.0),
+            soil_thresholds=SimpleNamespace(wet_pct=68.0, dry_pct=18.0),
+            soil_stress=SimpleNamespace(
+                temp_low_crit_c=15.0,
+                temp_low_ok_c=18.0,
+                temp_high_ok_c=24.0,
+                temp_high_crit_c=30.0,
+                moisture_weight_pct=70.0,
+                temp_weight_pct=30.0,
+            ),
+        )
+    )
+    sensor_runtime = build_sensor_runtime(
+        plan_sensor_initialization(runtime_config),
+        runtime_config,
+    )
+    sensor_adapter = bind_sensor_hardware(
+        sensor_runtime,
+        runtime_config,
+        board_module=SimpleNamespace(GP4="pin-gp4", GP5="pin-gp5"),
+        busio_module=SimpleNamespace(I2C=_FakeI2C, UART=_FakeUART),
+    )
+    sensor_service = start_sensor_service(sensor_runtime, sensor_adapter, runtime_config)
+
+    snapshot = read_sensor_snapshot(sensor_service, runtime_config)
+
+    assert snapshot.phase == "ready"
+    assert snapshot.metrics["Soil Temp_C"] == 21.5
+    assert snapshot.metrics["Soil Moisture"] == 43.0
+    assert snapshot.metrics["Soil pH"] == 6.8
+    assert snapshot.metrics["Soil Nitrogen"] == 11.0
 
 
 def test_sensor_service_reads_legacy_soil_snapshot():
