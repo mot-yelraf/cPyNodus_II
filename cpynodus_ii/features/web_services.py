@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 import json
+import os
 import time
 
 from cpynodus_ii.core.settings import Settings
@@ -11,7 +12,7 @@ ONBOARDING_STATE_FILE = "onboarding_state.json"
 ITAOT_META_SCHEMA = "itaot-meta/v1"
 
 _DISPLAY_METRICS_BY_DEVICE = {
-    "aqi": ("CO2", "Temperature"),
+    "aqi": ("Air Quality", "Temperature"),
     "co2": ("CO2", "Temperature"),
     "avpd": ("Temperature", "Ambient VPD"),
     "apvpd": ("Temperature", "Ambient VPD"),
@@ -151,6 +152,16 @@ def save_onboarding_state(root, state):
     with open(path, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, separators=(",", ":"))
     return path
+
+
+def clear_onboarding_state(root="."):
+    """Delete any persisted onboarding runtime state."""
+    path = _join_path(root, ONBOARDING_STATE_FILE)
+    try:
+        os.remove(path)
+    except OSError:
+        return False
+    return True
 
 
 @dataclass(frozen=True)

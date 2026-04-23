@@ -1,138 +1,69 @@
 # MQTT
 
-The device can publish sensor metrics and receive switch commands over MQTT to a single MQTT Broker. Sensorius (Automatio Instrumentorum) is the primary broker Nodus was developed for and supports device discovery. Home Assistant is an option for the MQTT Broker.
+This file is now a short overview. The canonical forward-only contract between
+`cPyNodus_II` and Sensorius lives in
+[docs/sensorius_contract.md](./sensorius_contract.md).
 
-## Behavior
+If this page and the contract page ever disagree, `docs/sensorius_contract.md`
+wins.
 
-- By default MQTT uses port 1883 on both Sensorius AI and Home Assistant. 
-- Sensorius AI uses anonymous access; Home Assistant requires a username and password.
-- TLS is enabled when configured or when broker port is 8883.
-- Home Assistant discovery can be enabled with configurable prefixes.
-- Switch control is handled via `/set` topics.
-- Events and state are published to `/event` and `/state` topics.
-- Runtime identity metadata is published as a retained payload on `nodus/<device_id>/meta` (`schema = "nodus-meta/v1"`).
-- Runtime config deltas are published on `nodus/<device_id>/meta/patch` (`schema = "nodus-meta-patch/v1"`).
-- When `ACTIVE_PROFILE = "sensorius"`, `ACTIVE_PROFILE = "homeassistant"`, or `ACTIVE_PROFILE = "weewx"`, Nodus does not start the normal-mode webserver.
-- Provisioning for these MQTT-only profiles is expected to happen in `nodusweb`/AP mode before rebooting into the target profile.
+## Current Contract Summary
 
-## Core Topic Contract (Sensorius)
+- AP bootstrap uses `/itaot-meta` and `/itaot-init`.
+- Runtime device config uses `nodus/<device_id>/config/set`.
+- Runtime switch config uses `nodus/<channel_id>/config/set`.
+- Calibration uses `nodus/<device_id>/calibration/set`.
+- Nodus publishes retained `nodus/<device_id>/meta` on connect/reconnect.
+- Nodus publishes non-retained `nodus/<device_id>/meta/patch` after accepted
+  runtime changes.
+- Sensorius paces ordinary runtime config writes one key at a time per
+  physical Nodus host and waits for `ack` plus successful `result`.
 
-- Device heartbeat:
-  - `nodus/<device_id>/status/heartbeat` (retained online/offline status envelope)
-- Sensor data:
-  - `nodus/<sensor_id>/data`
-- Sensor availability:
-  - `nodus/<sensor_id>/availability` (retained online/offline)
-- Switch channels:
-  - `nodus/<channel_id>/state` (retained `ON`/`OFF`)
-  - `nodus/<channel_id>/config/set` (command topic consumed by Nodus)
-  - `nodus/<channel_id>/config/result` (compact apply result envelope from Nodus)
-  - `nodus/<channel_id>/availability` (retained online/offline)
-- Runtime metadata:
-  - `nodus/<device_id>/meta` (retained; includes location, channel IDs, labels, and per-channel topics)
-  - `nodus/<device_id>/meta/patch` (non-retained; accepted runtime config deltas for Sensorius)
+## Current Topic Families
 
-## Source Of Truth And Sync Model
+- `nodus/<device_id>/status/heartbeat`
+- `nodus/<device_id>/meta`
+- `nodus/<device_id>/meta/patch`
+- `nodus/<device_id>/onboard/hello`
+- `nodus/<device_id>/config/set`
+- `nodus/<device_id>/config/ack`
+- `nodus/<device_id>/config/result`
+- `nodus/<device_id>/calibration/set`
+- `nodus/<device_id>/calibration/ack`
+- `nodus/<device_id>/calibration/result`
+- `nodus/<sensor_id>/data`
+- `nodus/<sensor_id>/availability`
+- `nodus/<channel_id>/state`
+- `nodus/<channel_id>/availability`
+- `nodus/<channel_id>/config/set`
+- `nodus/<channel_id>/config/ack`
+- `nodus/<channel_id>/config/result`
 
-- Nodus TOML files are the source of truth for accepted device configuration.
-- Sensorius should treat retained `nodus/<device_id>/meta` as the authoritative full snapshot used to initialize or rebuild its local copy of Nodus state.
-- Nodus publishes that full retained `meta` payload after successful MQTT connect/reconnect.
-- After startup, Sensorius sends runtime config writes to `nodus/<device_id>/config/set`, typically one accepted key update at a time.
-- Nodus applies those updates to its TOMLs, publishes `config/ack` and `config/result`, and then emits only `nodus/<device_id>/meta/patch` for the accepted delta.
-- Nodus applies calibration offset writes from `nodus/<device_id>/calibration/set` to its TOMLs, publishes `calibration/ack` and a compact `calibration/result`, and then emits `nodus/<device_id>/meta/patch` with `source = "calibration_set"` for the accepted delta.
-- Nodus does not automatically republish the full retained `meta` payload after ordinary runtime config changes.
-- If Sensorius or Nodus restarts later, the next startup/reconnect full `meta` publish re-establishes the authoritative snapshot.
+## Deprecated Doc Shapes
 
-## `nodus-meta/v1` Payload
+The following older doc shapes are deprecated and should not be treated as the
+current contract:
 
-Published retained at `nodus/<device_id>/meta` after successful MQTT connect/reconnect.
+- `nodus/<channel_id>/set`
+- switch-control docs centered on plain `ON` and `OFF`
+- docs that imply ordinary runtime config writes trigger a full retained
+  `meta` republish
 
-```json
-{
-  "schema": "nodus-meta/v1",
-  "device_id": "aqi-x943fm",
-  "hostname": "aqi-x943fm",
-  "serial": "x943fm",
-  "type": "nodus",
-  "version": "vX.Y.Z",
-  "capabilities": {
-    "sensor": true,
-    "switch": true
-  },
-  "sensor": {
-    "sensor_id": "aqi-x943fm",
-    "location": "TestLab",
-    "display_metrics": ["Air Quality", "Temperature", "Rel-Humidity"],
-    "display_styles": ["graph24hr", "graph24hr", "gauge"],
-    "data_topic": "nodus/aqi-x943fm/data",
-    "event_topic": "nodus/aqi-x943fm/event",
-    "availability_topic": "nodus/aqi-x943fm/availability"
-  },
-  "status": {
-    "heartbeat_topic": "nodus/aqi-x943fm/status/heartbeat"
-  },
-  "switch": {
-    "device_id": "switch-x943fm",
-    "location": "TestLab",
-    "channels": [
-      {
-        "index": 1,
-        "label": "Fan",
-        "channel_id": "S1-x943fm",
-        "enable_pin": "GP5",
-        "pin": "GP28",
-        "state": false,
-        "event_topic": "nodus/S1-x943fm/event",
-        "state_topic": "nodus/S1-x943fm/state",
-        "set_topic": "nodus/S1-x943fm/config/set",
-        "result_topic": "nodus/S1-x943fm/config/result",
-        "availability_topic": "nodus/S1-x943fm/availability"
-      },
-      {
-        "index": 2,
-        "label": "Light",
-        "channel_id": "S2-x943fm",
-        "enable_pin": "GP10",
-        "pin": "GP21",
-        "state": false,
-        "event_topic": "nodus/S2-x943fm/event",
-        "state_topic": "nodus/S2-x943fm/state",
-        "set_topic": "nodus/S2-x943fm/config/set",
-        "result_topic": "nodus/S2-x943fm/config/result",
-        "availability_topic": "nodus/S2-x943fm/availability"
-      }
-    ]
-  },
-  "location_group": {
-    "location": "TestLab",
-    "members": ["aqi-x943fm", "S1-x943fm", "S2-x943fm"]
-  },
-  "timestamp": 1763859546
-}
-```
+## Runtime Command Ownership
 
-### Sensorius Consumption Notes
-
-- Prefer MQTT metadata (`nodus/<device_id>/meta`) over `/itaot-meta` for steady-state discovery/materialization.
-- Treat retained `meta` as the full snapshot and `meta/patch` as the steady-state incremental sync stream.
-- Use `switch.channels[*].channel_id` + topic fields as source of truth for switch tile creation.
-- For command confirmation, consume `result_topic` when present and keep retained `state_topic` as the live applied state signal.
-- Group sensor and switch tiles by `location_group.location` (fallback: `switch.location`, then `sensor.location`).
-- `/itaot-meta` remains optional diagnostic enrichment and should not be required for online device rendering.
-
-## Runtime Command Modules
-
-- `cPyMiniMQTT.py` is the local transport shim over Adafruit MiniMQTT. It is intentionally limited to send/recv compatibility fixes and transport diagnostics for Pico2 W socketpool behavior.
-- `cPyMQTTCommandHandler.py` is the lightweight callback wrapper that intercepts device runtime command topics without moving heavy logic onto the MQTT startup path.
-- `cPyMQTTConfigHandler.py` owns runtime `config/set` apply, ack/result publishing, and `meta/patch` emission.
-- `cPyMQTTCalibrationHandler.py` owns calibration command parse/ack/result routing and hands device/system/soil apply work to the narrower calibration worker modules.
-- Full retained `meta` publishing stays out of the runtime config path and belongs to startup/reconnect handling.
+- Startup retained `meta` publishing belongs to startup and reconnect handling.
+- Device config uses `config/set`, `config/ack`, `config/result`, and
+  `meta/patch`.
+- Switch config uses channel-scoped `config/set`, `config/ack`,
+  `config/result`, retained `state`, and `meta/patch`.
+- Calibration uses `calibration/set`, `calibration/ack`,
+  `calibration/result`, and `meta/patch`.
 
 ## Notes
 
 - Keep publish intervals conservative to reduce power usage.
 - If MQTT is disabled, the device still runs locally.
-- Calibration MQTT contract for Sensorius integration: see `docs/calibration_mqtt_contract.md`.
+- Calibration details remain documented in `docs/calibration_mqtt_contract.md`.
 
 ## Troubleshooting
 

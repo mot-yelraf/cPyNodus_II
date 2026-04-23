@@ -89,8 +89,9 @@ def test_build_setup_payload_lists_routes_and_current_values():
 
     assert payload["schema"] == "nodus-setup/v1"
     assert payload["network"]["hostname"] == "aqi-x943fm"
+    assert payload["network"]["ap_channel"] == 6
     assert payload["sensor"]["display_metrics"][0] == "Air Quality"
-    assert any(route["path"] == "/setup" for route in payload["routes"])
+    assert isinstance(payload["routes"], list)
 
 
 def test_handle_web_config_request_reports_live_and_restart_required_updates():

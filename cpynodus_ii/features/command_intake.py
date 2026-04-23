@@ -9,13 +9,16 @@ from cpynodus_ii.features.payloads import (
     build_calibration_ack_payload,
     build_calibration_result_payload,
     build_calibration_status_payload,
+    build_sensor_data_payload,
     build_config_ack_payload,
     build_config_result_payload,
     build_meta_patch_payload,
     mqtt_topic,
 )
 from cpynodus_ii.features.publish_cycle import PublishCycleResult, publish_switch_result
+from cpynodus_ii.features.sensor_service import read_sensor_snapshot
 from cpynodus_ii.features.switch_service import apply_switch_state
+from cpynodus_ii.features.web_services import clear_onboarding_state, load_onboarding_state
 
 
 @dataclass(frozen=True)
@@ -46,6 +49,19 @@ class CalibrationCommand:
     reference_ph: float | None = None
     sample_interval_s: float = 10.0
     sample_count: int = 12
+
+
+@dataclass(frozen=True)
+class SoilPhCalibrationSession:
+    """Describe an active soil pH sampling session."""
+
+    message_id: str
+    reference_ph: float
+    sample_interval_s: float
+    sample_count: int
+    started_at: float
+    next_sample_at: float
+    samples: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -134,6 +150,208 @@ def process_inbound_messages(
             )
 
     return tuple(results)
+
+
+def process_soil_calibration_session(
+    transport,
+    runtime_config,
+    sensor_service,
+    *,
+    now_monotonic,
+    settings_root=None,
+):
+    """Advance one active soil pH calibration session when due."""
+    session = _current_soil_session(transport)
+    if session is None:
+        return CommandResult(
+            phase="ignored",
+            topic="",
+            command_type="calibration_session",
+            published_count=0,
+            errors=(),
+            runtime_config=runtime_config,
+        )
+    if not transport.connected or sensor_service is None:
+        return CommandResult(
+            phase="ignored",
+            topic="",
+            command_type="calibration_session",
+            published_count=0,
+            errors=(),
+            runtime_config=runtime_config,
+            message_id=session.message_id,
+        )
+    if float(now_monotonic) < float(session.next_sample_at):
+        return CommandResult(
+            phase="ignored",
+            topic="",
+            command_type="calibration_session",
+            published_count=0,
+            errors=(),
+            runtime_config=runtime_config,
+            message_id=session.message_id,
+        )
+
+    snapshot = read_sensor_snapshot(sensor_service, runtime_config)
+    ph_value = (snapshot.metrics or {}).get("Soil pH") if snapshot.phase == "ready" else None
+    if ph_value is None:
+        return CommandResult(
+            phase="error",
+            topic="",
+            command_type="calibration_session",
+            published_count=0,
+            errors=("soil_ph_sample_unavailable",),
+            runtime_config=runtime_config,
+            message_id=session.message_id,
+        )
+
+    samples = tuple(session.samples) + (float(ph_value),)
+    sample_index = len(samples)
+    sensor_id = runtime_config.sensor.sensor_id
+    published = 0
+
+    transport.publish(
+        mqtt_topic(runtime_config, sensor_id, "data"),
+        build_sensor_data_payload(runtime_config, snapshot),
+        retain=False,
+    )
+    published += 1
+    transport.publish(
+        mqtt_topic(runtime_config, sensor_id, "event", "calibration_sample"),
+        {
+            "schema": "nodus-calibration-sample/v1",
+            "sensor_id": sensor_id,
+            "message_id": session.message_id,
+            "sample_index": sample_index,
+            "sample_count": int(session.sample_count),
+            "reference_ph": float(session.reference_ph),
+            "soil_ph": float(ph_value),
+            "timestamp": int(now_monotonic),
+        },
+        retain=False,
+    )
+    published += 1
+    transport.publish(
+        mqtt_topic(runtime_config, sensor_id, "event", "calibration_progress"),
+        {
+            "schema": "nodus-calibration-progress/v1",
+            "sensor_id": sensor_id,
+            "message_id": session.message_id,
+            "sample_index": sample_index,
+            "sample_count": int(session.sample_count),
+            "remaining": max(0, int(session.sample_count) - sample_index),
+            "timestamp": int(now_monotonic),
+        },
+        retain=False,
+    )
+    published += 1
+
+    if sample_index < int(session.sample_count):
+        _set_soil_session(
+            transport,
+            replace(
+                session,
+                samples=samples,
+                next_sample_at=float(now_monotonic) + float(session.sample_interval_s),
+            ),
+        )
+        return CommandResult(
+            phase="published",
+            topic=mqtt_topic(runtime_config, sensor_id, "event", "calibration_sample"),
+            command_type="calibration_session",
+            published_count=published,
+            errors=(),
+            runtime_config=runtime_config,
+            message_id=session.message_id,
+        )
+
+    current_offset = float(getattr(runtime_config.sensor.calibration_device, "soil_ph_cal_val", 0.0) or 0.0)
+    average_ph = sum(samples) / float(len(samples) or 1)
+    computed_offset = current_offset + (float(session.reference_ph) - float(average_ph))
+    updates = (
+        {
+            "section": "Calibration.Device",
+            "key": "SOIL_PH_CAL_VAL",
+            "value": computed_offset,
+        },
+    )
+    updated_runtime_config, applied_updates, persistence_errors = apply_runtime_config_updates(
+        runtime_config,
+        updates,
+        settings_root=settings_root,
+    )
+    transport.publish(
+        mqtt_topic(updated_runtime_config, sensor_id, "event", "calibration_status"),
+        build_calibration_status_payload(
+            updated_runtime_config,
+            status="idle",
+            calibrated=True,
+            extra={
+                "soil_calibration_active": False,
+                "soil_calibration_message_id": session.message_id,
+                "soil_calibration_reference_ph": float(session.reference_ph),
+                "soil_calibration_sample_count": int(session.sample_count),
+                "soil_calibration_samples_collected": len(samples),
+                "computed_soil_ph_offset": float(computed_offset),
+            },
+        ),
+        retain=True,
+    )
+    published += 1
+    transport.publish(
+        mqtt_topic(updated_runtime_config, sensor_id, "event", "calibration_result"),
+        {
+            "schema": "nodus-calibration-event-result/v1",
+            "sensor_id": sensor_id,
+            "message_id": session.message_id,
+            "reference_ph": float(session.reference_ph),
+            "sample_count": int(session.sample_count),
+            "samples_collected": len(samples),
+            "average_soil_ph": float(average_ph),
+            "computed_soil_ph_offset": float(computed_offset),
+            "timestamp": int(now_monotonic),
+        },
+        retain=True,
+    )
+    published += 1
+    transport.publish(
+        mqtt_topic(updated_runtime_config, _device_id(updated_runtime_config), "calibration", "result"),
+        {
+            **build_calibration_result_payload(
+                session.message_id,
+                applied=True,
+                updated=len(applied_updates),
+                error="",
+                reference_ph=session.reference_ph,
+            ),
+            "computed_soil_ph_offset": float(computed_offset),
+            "samples_collected": len(samples),
+        },
+        retain=False,
+    )
+    published += 1
+    transport.publish(
+        mqtt_topic(updated_runtime_config, _device_id(updated_runtime_config), "meta", "patch"),
+        build_meta_patch_payload(
+            updated_runtime_config,
+            source="calibration_set",
+            message_id=session.message_id,
+            updates=applied_updates,
+        ),
+        retain=False,
+    )
+    published += 1
+    _set_soil_session(transport, None)
+    return CommandResult(
+        phase="published",
+        topic=mqtt_topic(updated_runtime_config, sensor_id, "event", "calibration_result"),
+        command_type="calibration_session",
+        published_count=published,
+        errors=tuple(persistence_errors),
+        runtime_config=updated_runtime_config,
+        message_id=session.message_id,
+        persistence_mode="volatile" if persistence_errors else "persisted" if settings_root is not None else "",
+    )
 
 
 def process_switch_command_message(
@@ -231,9 +449,36 @@ def process_device_config_message(
             errors=("schema_invalid",),
         )
 
-    duplicate = command.message_id in set(duplicate_message_ids or ())
     ack_topic = mqtt_topic(runtime_config, _device_id(runtime_config), "config", "ack")
     result_topic = mqtt_topic(runtime_config, _device_id(runtime_config), "config", "result")
+    token_error = _validate_onboarding_token(command, settings_root=settings_root)
+    if token_error:
+        transport.publish(
+            ack_topic,
+            build_config_ack_payload(command.message_id, accepted=False, duplicate=False),
+            retain=False,
+        )
+        transport.publish(
+            result_topic,
+            build_config_result_payload(
+                command.message_id,
+                applied=False,
+                updated=0,
+                error=token_error,
+            ),
+            retain=False,
+        )
+        return CommandResult(
+            phase="error",
+            topic=topic,
+            command_type="config",
+            published_count=2,
+            errors=(token_error,),
+            runtime_config=runtime_config,
+            message_id=command.message_id,
+        )
+
+    duplicate = command.message_id in set(duplicate_message_ids or ())
 
     transport.publish(
         ack_topic,
@@ -311,6 +556,8 @@ def process_device_config_message(
         ),
         retain=False,
     )
+    if settings_root is not None:
+        clear_onboarding_state(settings_root)
     return CommandResult(
         phase="published",
         topic=topic,
@@ -447,9 +694,10 @@ def process_calibration_message(
         )
 
     if command.action == "status":
+        status_payload = _calibration_status_payload(runtime_config, transport)
         transport.publish(
             mqtt_topic(runtime_config, device_id, "event", "calibration_status"),
-            build_calibration_status_payload(runtime_config, status="idle", calibrated=False),
+            status_payload,
             retain=True,
         )
         transport.publish(
@@ -459,11 +707,7 @@ def process_calibration_message(
                 applied=True,
                 updated=0,
                 error="",
-                status=build_calibration_status_payload(
-                    runtime_config,
-                    status="idle",
-                    calibrated=False,
-                ),
+                status=status_payload,
             ),
             retain=False,
         )
@@ -477,24 +721,152 @@ def process_calibration_message(
             message_id=command.message_id,
         )
 
-    transport.publish(
-        result_topic,
-        build_calibration_result_payload(
-            command.message_id,
-            applied=False,
-            updated=0,
-            error="calibration_not_supported",
-        ),
-        retain=False,
-    )
-    return CommandResult(
-        phase="error",
+    if command.action == "soil_ph_session_start":
+        if runtime_config.sensor.device != "soil":
+            return _unsupported_calibration_command(
+                transport,
+                topic=topic,
+                result_topic=result_topic,
+                runtime_config=runtime_config,
+                command=command,
+            )
+        if command.reference_ph is None:
+            transport.publish(
+                result_topic,
+                build_calibration_result_payload(
+                    command.message_id,
+                    applied=False,
+                    updated=0,
+                    error="missing_reference_ph",
+                ),
+                retain=False,
+            )
+            return CommandResult(
+                phase="error",
+                topic=topic,
+                command_type="calibration",
+                published_count=published_count + 1,
+                errors=("missing_reference_ph",),
+                runtime_config=runtime_config,
+                message_id=command.message_id,
+            )
+        if _current_soil_session(transport) is not None:
+            transport.publish(
+                result_topic,
+                build_calibration_result_payload(
+                    command.message_id,
+                    applied=False,
+                    updated=0,
+                    error="soil_calibration_already_running",
+                ),
+                retain=False,
+            )
+            return CommandResult(
+                phase="error",
+                topic=topic,
+                command_type="calibration",
+                published_count=published_count + 1,
+                errors=("soil_calibration_already_running",),
+                runtime_config=runtime_config,
+                message_id=command.message_id,
+            )
+        session = SoilPhCalibrationSession(
+            message_id=command.message_id,
+            reference_ph=float(command.reference_ph),
+            sample_interval_s=float(command.sample_interval_s),
+            sample_count=int(command.sample_count),
+            started_at=0.0,
+            next_sample_at=0.0,
+            samples=(),
+        )
+        _set_soil_session(transport, session)
+        status_payload = _calibration_status_payload(runtime_config, transport)
+        transport.publish(
+            mqtt_topic(runtime_config, device_id, "event", "calibration_status"),
+            status_payload,
+            retain=True,
+        )
+        transport.publish(
+            result_topic,
+            build_calibration_result_payload(
+                command.message_id,
+                applied=True,
+                updated=0,
+                error="",
+                started=True,
+                status=status_payload,
+                sample_interval_s=command.sample_interval_s,
+                sample_count=command.sample_count,
+                reference_ph=command.reference_ph,
+            ),
+            retain=False,
+        )
+        return CommandResult(
+            phase="published",
+            topic=topic,
+            command_type="calibration",
+            published_count=published_count + 2,
+            errors=(),
+            runtime_config=runtime_config,
+            message_id=command.message_id,
+        )
+
+    if command.action == "soil_ph_session_cancel":
+        session = _current_soil_session(transport)
+        if session is None:
+            transport.publish(
+                result_topic,
+                build_calibration_result_payload(
+                    command.message_id,
+                    applied=False,
+                    updated=0,
+                    error="soil_calibration_not_running",
+                ),
+                retain=False,
+            )
+            return CommandResult(
+                phase="error",
+                topic=topic,
+                command_type="calibration",
+                published_count=published_count + 1,
+                errors=("soil_calibration_not_running",),
+                runtime_config=runtime_config,
+                message_id=command.message_id,
+            )
+        _set_soil_session(transport, None)
+        status_payload = _calibration_status_payload(runtime_config, transport)
+        transport.publish(
+            mqtt_topic(runtime_config, device_id, "event", "calibration_status"),
+            status_payload,
+            retain=True,
+        )
+        transport.publish(
+            result_topic,
+            build_calibration_result_payload(
+                command.message_id,
+                applied=True,
+                updated=0,
+                error="",
+                status=status_payload,
+            ),
+            retain=False,
+        )
+        return CommandResult(
+            phase="published",
+            topic=topic,
+            command_type="calibration",
+            published_count=published_count + 2,
+            errors=(),
+            runtime_config=runtime_config,
+            message_id=command.message_id,
+        )
+
+    return _unsupported_calibration_command(
+        transport,
         topic=topic,
-        command_type="calibration",
-        published_count=published_count + 1,
-        errors=("calibration_not_supported",),
+        result_topic=result_topic,
         runtime_config=runtime_config,
-        message_id=command.message_id,
+        command=command,
     )
 
 
@@ -624,6 +996,11 @@ def apply_runtime_config_update(runtime_config, section, key, value):
         return replace(
             runtime_config,
             network=replace(runtime_config.network, hostname=str(value or "").strip()),
+        )
+    if section == "Network" and key_upper == "AP_CHANNEL":
+        return replace(
+            runtime_config,
+            network=replace(runtime_config.network, ap_channel=int(value or 6)),
         )
     if section == "Network" and key_upper == "HTTPPORT":
         return replace(
@@ -867,6 +1244,68 @@ def _find_runtime_channel(runtime_config, channel_id):
         if getattr(channel, "channel_id", "") == channel_id:
             return channel
     return None
+
+
+def _current_soil_session(transport):
+    return getattr(transport, "_soil_ph_session", None)
+
+
+def _set_soil_session(transport, session):
+    setattr(transport, "_soil_ph_session", session)
+
+
+def _calibration_status_payload(runtime_config, transport):
+    session = _current_soil_session(transport)
+    extra = None
+    if session is not None:
+        extra = {
+            "soil_calibration_active": True,
+            "soil_calibration_message_id": session.message_id,
+            "soil_calibration_reference_ph": float(session.reference_ph),
+            "soil_calibration_sample_count": int(session.sample_count),
+            "soil_calibration_samples_collected": len(tuple(session.samples or ())),
+        }
+        return build_calibration_status_payload(
+            runtime_config,
+            status="active",
+            calibrated=False,
+            extra=extra,
+        )
+    return build_calibration_status_payload(runtime_config, status="idle", calibrated=False)
+
+
+def _validate_onboarding_token(command, *, settings_root=None):
+    if settings_root is None:
+        return ""
+    state = load_onboarding_state(settings_root)
+    expected = str(state.get("onboard_token", "") or "").strip()
+    if not expected:
+        return ""
+    if str(command.onboard_token or "").strip() == expected:
+        return ""
+    return "onboard_token_invalid"
+
+
+def _unsupported_calibration_command(transport, *, topic, result_topic, runtime_config, command):
+    transport.publish(
+        result_topic,
+        build_calibration_result_payload(
+            command.message_id,
+            applied=False,
+            updated=0,
+            error="calibration_not_supported",
+        ),
+        retain=False,
+    )
+    return CommandResult(
+        phase="error",
+        topic=topic,
+        command_type="calibration",
+        published_count=2,
+        errors=("calibration_not_supported",),
+        runtime_config=runtime_config,
+        message_id=command.message_id,
+    )
 
 
 def _channel_id_from_topic(topic):

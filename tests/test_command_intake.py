@@ -1,6 +1,20 @@
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 
-from cpynodus_ii.core.config import MQTTConfig, RuntimeConfig, SwitchChannelConfig, SwitchConfig
+from cpynodus_ii.core.config import (
+    DetectedSensor,
+    MQTTConfig,
+    RuntimeConfig,
+    SensorCalibration,
+    SoilModbusConfig,
+    SoilRegisterMap,
+    SoilScaleMap,
+    SoilStressConfig,
+    SoilThresholdConfig,
+    SwitchChannelConfig,
+    SwitchConfig,
+)
 from cpynodus_ii.core.mqtt import MQTTTransport
 from cpynodus_ii.features import (
     parse_calibration_command,
@@ -9,9 +23,11 @@ from cpynodus_ii.features import (
     process_calibration_message,
     process_device_config_message,
     process_inbound_messages,
+    process_soil_calibration_session,
     process_switch_command_message,
     subscribe_runtime_topics,
 )
+from cpynodus_ii.features.web_services import save_onboarding_state
 
 
 def _runtime_config():
@@ -37,6 +53,28 @@ def _runtime_config():
                 ),
             ),
         )
+    )
+
+
+def _soil_runtime_config():
+    return RuntimeConfig(
+        sensor=DetectedSensor(
+            family="soil",
+            interface="modbus_rs485",
+            active_config_file="sensor_soil.toml",
+            device="soil",
+            sensor_id="soil-abc123",
+            serial_number="abc123",
+            location="Bed A",
+            modbus=SoilModbusConfig(uart_tx="GP4", uart_rx="GP5", baud=4800, timeout_s=0.3, address=1),
+            soil_registers=SoilRegisterMap(),
+            soil_scales=SoilScaleMap(),
+            soil_thresholds=SoilThresholdConfig(),
+            soil_stress=SoilStressConfig(),
+            calibration_system=SensorCalibration(),
+            calibration_device=SensorCalibration(soil_ph_cal_val=0.0),
+        ),
+        switch=SwitchConfig(),
     )
 
 
@@ -209,6 +247,99 @@ def test_process_inbound_messages_drains_queue_and_ignores_non_command_topics():
     assert len(results) == 1
     assert results[0].phase == "published"
     assert transport.received_messages == []
+
+
+def test_process_device_config_message_rejects_onboarding_token_mismatch():
+    transport = MQTTTransport("broker.local", 1883)
+    with TemporaryDirectory() as tmpdir:
+        save_onboarding_state(tmpdir, {"onboard_token": "expected"})
+        result = process_device_config_message(
+            transport,
+            _runtime_config(),
+            topic="nodus/switch-x943fm/config/set",
+            payload_text='{"message_id":"cfg-1","onboard_token":"wrong","payload":{"updates":[{"section":"Network","key":"HOSTNAME","value":"new"}]}}',
+            settings_root=tmpdir,
+        )
+
+    assert result.phase == "error"
+    assert result.errors == ("onboard_token_invalid",)
+    assert transport.published_messages[0].payload["accepted"] is False
+    assert transport.published_messages[1].payload["error"] == "onboard_token_invalid"
+
+
+def test_process_device_config_message_clears_onboarding_state_after_success():
+    transport = MQTTTransport("broker.local", 1883)
+    with TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        (root / "settings.toml").write_text("[Network]\nHOSTNAME = \"old\"\n", encoding="utf-8")
+        save_onboarding_state(tmpdir, {"onboard_token": "expected"})
+        result = process_device_config_message(
+            transport,
+            _runtime_config(),
+            topic="nodus/switch-x943fm/config/set",
+            payload_text='{"message_id":"cfg-1","onboard_token":"expected","payload":{"updates":[{"section":"Network","key":"HOSTNAME","value":"new-host"}]}}',
+            settings_root=tmpdir,
+        )
+
+    assert result.phase == "published"
+    assert (root / "onboarding_state.json").exists() is False
+
+
+def test_process_calibration_message_starts_soil_ph_session():
+    transport = MQTTTransport("broker.local", 1883)
+    result = process_calibration_message(
+        transport,
+        _soil_runtime_config(),
+        topic="nodus/soil-abc123/calibration/set",
+        payload_text='{"message_id":"soil-1","action":"soil_ph_session_start","payload":{"reference_ph":7.0,"sample_interval_s":5,"sample_count":6}}',
+    )
+
+    assert result.phase == "published"
+    assert transport.published_messages[1].topic == "nodus/soil-abc123/event/calibration_status"
+    assert transport.published_messages[2].payload["started"] is True
+
+
+def test_process_soil_calibration_session_samples_and_completes():
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connected()
+    process_calibration_message(
+        transport,
+        _soil_runtime_config(),
+        topic="nodus/soil-abc123/calibration/set",
+        payload_text='{"message_id":"soil-1","action":"soil_ph_session_start","payload":{"reference_ph":7.0,"sample_interval_s":0.1,"sample_count":6}}',
+    )
+    sensor_service = SimpleNamespace(
+        phase="ready",
+        device="soil",
+        interface="modbus_rs485",
+        driver_kind="fake",
+        driver=None,
+        transport=SimpleNamespace(read_registers=lambda reg, count: {0: 250, 1: 200, 2: 100, 3: 65, 4: 1, 5: 2, 6: 3}[reg]),
+        errors=(),
+    )
+    runtime_config = _soil_runtime_config()
+    published_result = None
+
+    for step in range(8):
+        result = process_soil_calibration_session(
+            transport,
+            runtime_config,
+            sensor_service,
+            now_monotonic=float(step) * 0.1,
+        )
+        if result.runtime_config is not None:
+            runtime_config = result.runtime_config
+        if result.phase != "ignored":
+            published_result = result
+
+    topics = [message.topic for message in transport.published_messages]
+    assert published_result is not None
+    assert published_result.phase == "published"
+    assert "nodus/soil-abc123/event/calibration_sample" in topics
+    assert "nodus/soil-abc123/event/calibration_progress" in topics
+    assert "nodus/soil-abc123/event/calibration_result" in topics
+    assert transport.published_messages[-2].topic == "nodus/soil-abc123/calibration/result"
+    assert runtime_config.sensor.calibration_device.soil_ph_cal_val != 0.0
 
 
 def test_process_switch_command_message_rejects_invalid_payload():

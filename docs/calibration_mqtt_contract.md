@@ -6,7 +6,6 @@ Scope:
 
 - MQTT calibration writes
 - MQTT calibration status queries
-- MQTT-triggered local calibration start for sensors that support it
 - MQTT-triggered soil pH sampling sessions for automatic offset calculation on Nodus
 - MQTT progress/result events published by Nodus
 
@@ -79,9 +78,9 @@ All calibration commands use the same top-level envelope:
 Required fields:
 
 - `message_id`: client-generated unique id for correlation
-- `action`: one of `apply`, `set`, `update`, `status`, `start`, `soil_ph_session_start`, `soil_ph_session_cancel`
+- `action`: one of `apply`, `set`, `update`, `status`, `soil_ph_session_start`, `soil_ph_session_cancel`
 
-`payload` is required for calibration writes and optional for `status` or `start`.
+`payload` is required for calibration writes and optional for `status`.
 
 ## Action: Apply Calibration Values
 
@@ -158,35 +157,6 @@ Behavior:
 
 - Nodus republishes retained `event/calibration_status`
 - Nodus also emits a correlated `calibration/result` response
-
-## Action: Start
-
-Use this to request a local on-device calibration routine.
-
-Example:
-
-```json
-{
-  "message_id": "cal-20260308-start-1",
-  "action": "start"
-}
-```
-
-Behavior:
-
-- Nodus starts the local calibration coroutine only if the active sensor supports it
-- currently this is intended for sensor implementations like APVPD that implement `calibrate_plant_sensor()`
-
-Error cases:
-
-- `calibration_not_supported`
-- `calibration_already_running`
-- `calibration_start_failed`
-
-Important:
-
-- not all sensor types support local calibration start
-- system/device offset writes are broader than local calibration start support
 
 ## Action: Soil pH Session Start
 
@@ -291,23 +261,6 @@ Notes:
 - accepted calibration deltas are mirrored on the correlated `nodus/<device_id>/meta/patch` payload with `source = "calibration_set"`
 - clients should refresh mirrored calibration state from that `meta/patch` delta or from retained `event/calibration_status`
 
-Successful start example:
-
-```json
-{
-  "message_id": "cal-20260308-start-1",
-  "applied": true,
-  "started": true,
-  "status": {
-    "status": "in_progress",
-    "calibrated": false,
-    "sensor_id": "aqi-x943fm",
-    "timestamp": 1772956800
-  },
-  "error": ""
-}
-```
-
 Successful soil pH session start example:
 
 ```json
@@ -338,9 +291,9 @@ Failure example:
 
 ```json
 {
-  "message_id": "cal-20260308-start-1",
+  "message_id": "soil-ph-20260313-1",
   "applied": false,
-  "error": "calibration_not_supported"
+  "error": "missing_reference_ph"
 }
 ```
 
@@ -469,24 +422,25 @@ Topic:
 
 - `nodus/<sensor_id>/event/calibration_progress`
 
-Currently emitted by APVPD local calibration.
+Currently emitted by soil pH sampling sessions.
 
 Example:
 
 ```json
 {
+  "message_id": "soil-ph-20260313-1",
   "status": "in_progress",
-  "sensor_id": "aqi-x943fm",
-  "timestamp": 1772956800,
-  "sample_index": 2,
-  "sample_total": 5
+  "sensor_id": "soil-x943fm",
+  "timestamp": 1773380020,
+  "sample_index": 3,
+  "sample_count": 12
 }
 ```
 
 Notes:
 
 - this is not retained
-- not all sensor drivers emit progress events
+- current progress events are specific to the soil pH session flow
 
 ## Final Result Event
 
@@ -494,8 +448,8 @@ Topic:
 
 - `nodus/<sensor_id>/event/calibration_result`
 
-This is the retained device-state event published by calibration-capable sensor
-implementations. It is distinct from the command-scoped
+This is the retained device-state event published by the soil pH calibration
+session flow. It is distinct from the command-scoped
 `nodus/<device_id>/calibration/result` response used for MQTT `calibration/set`
 commands.
 
@@ -504,11 +458,13 @@ Success example:
 ```json
 {
   "status": "success",
-  "sensor_id": "aqi-x943fm",
-  "timestamp": 1772956800,
+  "sensor_id": "soil-x943fm",
+  "timestamp": 1773380120,
   "calibrated": true,
-  "temp_offset": 1.25,
-  "rh_offset": -2.5
+  "soil_ph_offset": 0.42,
+  "computed_soil_ph_offset": 0.42,
+  "reference_ph": 7.0,
+  "sample_count": 12
 }
 ```
 
@@ -517,18 +473,17 @@ Failure example:
 ```json
 {
   "status": "failed",
-  "sensor_id": "aqi-x943fm",
-  "timestamp": 1772956800,
+  "sensor_id": "soil-x943fm",
+  "timestamp": 1773380120,
   "calibrated": false,
-  "temp_offset": 0.0,
-  "rh_offset": 0.0,
-  "error": "no valid samples"
+  "soil_ph_offset": 0.0,
+  "error": "soil_calibration_not_running"
 }
 ```
 
 Notes:
 
-- this event is published retained by the local calibration-capable sensor implementations
+- this event is published retained by the soil session completion flow
 - Sensorius can use it for final UI state even if it missed intermediate progress
 - manual offset-apply commands do not mirror this full payload on `calibration/result`; those command responses use the compact envelope described below
 
@@ -542,14 +497,6 @@ For offset updates:
 4. Treat `calibration/result` as a compact apply envelope: `message_id`, `applied`, `updated`, `error`.
 5. Apply the correlated `nodus/<device_id>/meta/patch` delta with `source = "calibration_set"` to Sensorius' mirrored TOML state.
 6. Refresh local UI state from the mirrored calibration values or from retained `event/calibration_status`.
-
-For local calibration start:
-
-1. Publish `calibration/set` with `action = "start"`.
-2. Wait for `calibration/ack`.
-3. If `calibration/result.started == true`, transition UI to active state.
-4. Consume `event/calibration_progress`.
-5. Consume retained `event/calibration_result` and retained `event/calibration_status` for completion.
 
 For soil pH session flow:
 
@@ -571,7 +518,6 @@ Recommended behavior:
 
 ## Current Limitations
 
-- No cancel/pause command is implemented.
+- Generic `action = "start"` local calibration is not implemented in the current runtime.
 - No QoS-specific behavior is negotiated; current implementation uses the client defaults.
-- Not all sensor drivers support local calibration start.
 - AP/bootstrap mode does not expose calibration over MQTT; MQTT requires a connected MQTT-enabled runtime profile.

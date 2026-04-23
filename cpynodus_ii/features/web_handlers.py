@@ -100,6 +100,7 @@ def build_setup_payload(runtime_config, *, version):
             "ssid": runtime_config.network.ssid,
             "hostname": runtime_config.network.hostname,
             "http_port": runtime_config.network.http_port,
+            "ap_channel": runtime_config.network.ap_channel,
         },
         "sensor": {
             "present": bool(runtime_config.sensor.present),

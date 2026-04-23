@@ -210,6 +210,12 @@ Duplicate replay behavior (idempotent):
 9. Correlate and deduplicate by `device_id + message_id`, not timestamp.
 10. Do not require NTP-synchronized timestamps for onboarding correctness.
 
+Current `cPyNodus_II` status:
+
+- `onboard_token` is persisted from `/itaot-init`
+- `config/set` is rejected when the persisted token is present and the request token does not match
+- the persisted token is cleared after a successful `config/result.applied == true`
+
 ### Standard Error Values (Recommended)
 Use stable short error strings to keep UI and recovery behavior predictable:
 1. `token_invalid`

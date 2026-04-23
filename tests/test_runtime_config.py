@@ -179,6 +179,7 @@ def test_runtime_config_keeps_minimal_defaults_for_missing_sections():
         runtime_config = settings.runtime_config()
 
     assert runtime_config.network.ap_ssid == "Nodus_Setup"
+    assert runtime_config.network.ap_channel == 6
     assert runtime_config.network.http_port == 8000
     assert runtime_config.mqtt.base_topic == "nodus"
     assert runtime_config.homeassistant.publish_state_retain is True

@@ -42,7 +42,16 @@ def build_network_stack(
                     start_ap(
                         runtime_config.network.ap_ssid,
                         runtime_config.network.ap_password,
+                        channel=int(getattr(runtime_config.network, "ap_channel", 6) or 6),
                     )
+                except TypeError:
+                    try:
+                        start_ap(
+                            runtime_config.network.ap_ssid,
+                            runtime_config.network.ap_password,
+                        )
+                    except Exception:
+                        pass
                 except Exception:
                     pass
             ap_ip_address = _current_ip_address(wifi_radio)

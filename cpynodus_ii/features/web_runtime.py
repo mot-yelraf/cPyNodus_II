@@ -442,6 +442,7 @@ async function saveRestart(){{
   const updates = [
     {{section:'Network', key:'SSID', value:document.getElementById('ssid').value}},
     {{section:'Network', key:'HOSTNAME', value:document.getElementById('hostname').value}},
+    {{section:'Network', key:'AP_CHANNEL', value:document.getElementById('ap_channel').value}},
   ];
   const result = await postJson('/config', {{updates}});
   document.getElementById('restart_status').textContent = JSON.stringify(result);
@@ -455,6 +456,7 @@ async function setSwitch(channelId, state){{
 <div class="card"><h1>Setup {hostname}</h1><div class="status">Profile: {profile}</div></div>
 <div class="card"><h2>Restart-Required</h2>
 <div class="row"><label>SSID</label><input id="ssid" value="{ssid}"><span></span><span></span></div>
+<div class="row"><label>AP Channel</label><input id="ap_channel" value="{ap_channel}"><span></span><span></span></div>
 <div class="row"><label>Hostname</label><input id="hostname" value="{hostname}"><button onclick="saveRestart()">Save</button><span id="restart_status" class="status"></span></div>
 </div>
 <div class="card"><h2>Live Updates</h2>
@@ -467,6 +469,7 @@ async function setSwitch(channelId, state){{
         hostname=_html_escape(payload["network"]["hostname"]),
         profile=_html_escape(payload["profile"]),
         ssid=_html_escape(payload["network"]["ssid"]),
+        ap_channel=_html_escape(payload["network"]["ap_channel"]),
         location=_html_escape(payload["sensor"]["location"] or payload["switch"]["location"]),
         metric_rows="".join(metric_rows),
         switch_rows="".join(switch_sections),

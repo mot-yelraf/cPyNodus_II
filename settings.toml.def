@@ -3,6 +3,7 @@ SSID = ""
 PASSWORD = ""
 AP_SSID = "Nodus_Setup"
 AP_PASSWORD = "password"
+AP_CHANNEL = 6
 HOSTNAME = ""
 HTTPPORT = 8000
 

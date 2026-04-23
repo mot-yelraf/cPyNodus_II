@@ -18,10 +18,14 @@ Copy the templates and edit them:
 - `sensor_soil.toml.def` -> `sensor_soil.toml`
 - `switch.toml.def` -> `switch.toml`
 
+On a clean factory deploy, Nodus uses the root `*.toml.def` files as first-boot
+templates. It creates `settings.toml` and then creates only the live sensor and
+switch TOML files needed for the detected hardware.
+
 ## Switch bootstrap behavior
 
 - `switch.toml` is the normal-runtime switch gate.
-- On a true factory bootstrap, Nodus may detect grounded switch enable pins and create/populate `switch.toml`.
+- On a true factory bootstrap, Nodus detects grounded switch enable pins and creates/populates `switch.toml`.
 - On later boots, if `switch.toml` is absent, grounded enable pins alone do not make the device switch-enabled.
 
 ## Factory reset behavior

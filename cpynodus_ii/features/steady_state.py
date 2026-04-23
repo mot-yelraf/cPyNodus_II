@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 
 from cpynodus_ii.features.command_intake import process_inbound_messages
+from cpynodus_ii.features.command_intake import process_soil_calibration_session
 from cpynodus_ii.features.command_intake import subscribe_runtime_topics
 from cpynodus_ii.features.publish_cycle import publish_sensor_cycle, publish_startup_cycle
 from cpynodus_ii.features.sensor_service import read_sensor_snapshot
@@ -32,6 +33,8 @@ class SteadyStateResult:
     sensor_publish_phase: str
     sensor_published_count: int
     command_published_count: int
+    calibration_session_phase: str
+    calibration_session_published_count: int
     total_published_count: int
     errors: tuple = ()
 
@@ -106,6 +109,16 @@ def run_steady_state_iteration(
     errors.extend(startup_result.errors)
     for result in command_results:
         errors.extend(result.errors)
+    calibration_session_result = process_soil_calibration_session(
+        transport,
+        updated_runtime_config,
+        sensor_service,
+        now_monotonic=now_monotonic,
+        settings_root=settings_root,
+    )
+    if calibration_session_result.runtime_config is not None:
+        updated_runtime_config = calibration_session_result.runtime_config
+    errors.extend(calibration_session_result.errors)
 
     sensor_result = _skipped_publish_result("sensor_poll_interval_not_elapsed")
     should_poll_sensor = (
@@ -149,9 +162,12 @@ def run_steady_state_iteration(
         sensor_publish_phase=sensor_result.phase,
         sensor_published_count=sensor_result.published_count,
         command_published_count=command_published_count,
+        calibration_session_phase=calibration_session_result.phase,
+        calibration_session_published_count=calibration_session_result.published_count,
         total_published_count=(
             startup_result.published_count
             + command_published_count
+            + calibration_session_result.published_count
             + sensor_result.published_count
         ),
         errors=tuple(errors),

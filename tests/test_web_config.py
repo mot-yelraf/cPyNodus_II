@@ -62,10 +62,13 @@ def test_classify_web_update_marks_operational_changes_as_live():
 
 def test_classify_web_update_marks_network_changes_as_restart_required():
     decision = classify_web_update({"section": "Network", "key": "SSID", "value": "NewWiFi"})
+    ap_channel_decision = classify_web_update({"section": "Network", "key": "AP_CHANNEL", "value": 11})
 
     assert decision.accepted is True
     assert decision.applies_live is False
     assert decision.requires_restart is True
+    assert ap_channel_decision.accepted is True
+    assert ap_channel_decision.requires_restart is True
 
 
 def test_apply_web_config_updates_applies_live_display_location_and_switch_label_changes():

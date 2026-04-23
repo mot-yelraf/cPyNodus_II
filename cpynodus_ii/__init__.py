@@ -1,3 +1,3 @@
 """Top-level package for cPyNodus_II."""
 
-__version__ = "v0.26.112.22"
+__version__ = "v0.26.112.24"

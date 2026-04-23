@@ -167,6 +167,7 @@ class NetworkConfig:
     password: str = ""
     ap_ssid: str = "Nodus_Setup"
     ap_password: str = "password"
+    ap_channel: int = 6
     hostname: str = ""
     http_port: int = 8000
 
@@ -175,6 +176,7 @@ class NetworkConfig:
         _raw_setattr(self, "password", _clean_str(self.password))
         _raw_setattr(self, "ap_ssid", _clean_str(self.ap_ssid) or "Nodus_Setup")
         _raw_setattr(self, "ap_password", _clean_str(self.ap_password) or "password")
+        _raw_setattr(self, "ap_channel", max(1, min(11, int(self.ap_channel or 6))))
         _raw_setattr(self, "hostname", _clean_str(self.hostname))
         _raw_setattr(self, "http_port", int(self.http_port or 8000))
 

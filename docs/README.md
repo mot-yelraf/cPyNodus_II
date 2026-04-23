@@ -83,7 +83,9 @@ See `docs/pinout.md` for the Nodus wiring pinout.
 1. Install CircuitPython on the Pico2 W.
 2. Copy this repo to the device filesystem (CIRCUITPY).
 3. `docs/pinout.md` should be used as guidance to connect sensors, switches, RW enable, etc 
-4. Reboot the device and allow about a minute for it to self-configure.
+4. Reboot the device and allow about a minute for it to self-configure. On a
+   clean deploy, Nodus creates `settings.toml` and the detected live sensor and
+   switch TOML files from the root `*.def` templates.
 5. Edit the relavent files for your Nodus:
    - `settings.toml` (configure the wifi credentials)
    - `sensor_i2c.toml`
@@ -134,10 +136,10 @@ Notes:
 1. `boot.py` configures USB/FS access based on a guard pin.
 2. `code.py` initializes settings, sensor, and switch controllers.
 3. Network logic chooses AP mode or normal mode:
-   - **AP mode**: starts an AP SSID named `Nodus_Setup` password is `password` (default channel `6`).
+   - **AP mode**: starts an AP SSID named `Nodus_Setup` password is `password` (default channel `6`, configurable with `Network.AP_CHANNEL`).
    After connecting to the `Nodus_Setup` SSID, browse to `http://192.168.4.1:8000/setup` for the local setup UI. The setup UI exposes pane-based configuration for network, sensor, switch, MQTT, and time settings, and includes manual switch override buttons when switch channels are present.
    - **Normal mode**: connects to Wi‑Fi, configures mDNS, and starts profile-specific runtime services.
-4. TaskSupervisor starts asynchronous tasks (sensor reads, MQTT loop, watchdog, GC, etc.).
+4. The runtime starts its asynchronous sensor, MQTT, recovery, and memory-management loops.
 
 ## AP Mode (Factory / Recovery)
 
@@ -506,23 +508,20 @@ Automations are implemented in Sensorius. Sensorius publishes the desired switch
 
 ## Recovery & Resilience
 
-- **TaskSupervisor**: restarts tasks that exit or throw exceptions.
-- **Watchdog**: software watchdog with optional hardware watchdog feeding.
 - **Wi-Fi outage policy**: when station Wi‑Fi drops, Nodus pauses MQTT reconnect attempts and spends up to 15 minutes retrying SSID reassociation before soft rebooting.
 - **MQTT outage policy**: when Wi‑Fi is still up but MQTT is unhealthy, Nodus retries broker recovery for up to 3 minutes, including bounded socket-pool/MQTT rebuild attempts, before soft rebooting.
 - **AP recovery policy**: if startup cannot join the configured station network, Nodus falls back into AP recovery mode and soft reboots again after 10 minutes of idle AP uptime.
-- **Soft restart policy**: hardware watchdog (HW WDT) remains disabled by default; bounded soft restart remains the preferred recovery path for network failures on Pico2 W.
+- **Soft restart policy**: bounded soft restart remains the preferred recovery path for network failures on Pico2 W.
 
 ## Web Server
 
 - Lightweight `adafruit_httpserver` based server.
-- `WebServerController` monitors socket pool health and can self‑restart.
 - AP mode routes are intentionally minimal to reduce memory pressure.
 
 ## Known Constraints / Notes
 
 - Nodusweb-profile NTP sync is gated on DNS readiness. If DNS ping fails, NTP is skipped to avoid long blocking failures (NTP timeouts can stall coroutines).
-- AP mode uses a fixed SSID/password for factory provisioning and defaults to Wi-Fi channel 6.
+- AP mode uses the configured fallback SSID/password for provisioning and defaults to Wi-Fi channel 6 unless `Network.AP_CHANNEL` overrides it.
 - The system assumes a constrained heap; many routes and handlers are intentionally minimal to avoid memory fragmentation.
 
 ## MQTT + Home Assistant

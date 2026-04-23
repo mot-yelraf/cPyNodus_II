@@ -56,7 +56,7 @@ def classify_web_update(update):
     if section == "Time" and key_upper in {"TZ", "TZ_OFFSET", "TZ_NAME", "NTP_SERVER"}:
         return WebConfigDecision(section, key, value, True, True, False)
 
-    if section == "Network" and key_upper in {"SSID", "PASSWORD", "HOSTNAME", "HTTPPORT"}:
+    if section == "Network" and key_upper in {"SSID", "PASSWORD", "HOSTNAME", "HTTPPORT", "AP_CHANNEL"}:
         return WebConfigDecision(section, key, value, True, False, True, "network_restart_required")
     if section == "MQTT" and key_upper in {
         "BROKER",

@@ -200,6 +200,15 @@ async def main(*, startup_plan_override=None):
     """Run the current scaffold runtime."""
     start_monotonic = time.monotonic()
     settings_root = "."
+    if Settings.apply_factory_profile_reset_if_requested(settings_root):
+        _print_log(
+            "factory_reset",
+            "phase=profile_reset profile=nodusweb action=hard_reboot",
+            start_monotonic=start_monotonic,
+        )
+        _hard_reboot()
+        return
+    Settings.bootstrap_factory_defaults(settings_root)
     settings = Settings.from_working_directory()
     fs_writable = Settings.filesystem_writable(settings_root)
     fs_mode = _filesystem_mode_label(fs_writable)

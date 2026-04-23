@@ -1,6 +1,8 @@
 """Settings facade for the scaffold."""
 
 import os
+import random
+import time
 
 from cpynodus_ii.core.config import (
     DetectedSensor,
@@ -41,6 +43,26 @@ def _join_path(root, name):
     return "{}/{}".format(root_text, name)
 
 
+_FACTORY_I2C_PINS = (
+    ("GP1", "GP0"),
+    ("GP3", "GP2"),
+)
+_FACTORY_RESET_PIN_NAME = "GP17"
+_FACTORY_RESET_HOLD_S = 5.0
+_FACTORY_RESET_SAMPLE_S = 0.25
+_FACTORY_SWITCH_PINS = {
+    1: {"enable": "GP5", "control": "GP28", "label": "Fan"},
+    2: {"enable": "GP10", "control": "GP21", "label": "Light"},
+}
+_FACTORY_SENSOR_DISPLAY_DEFAULTS = {
+    "aqi": ("Air Quality", "Temperature", "Rel-Humidity", "Ambient VPD", "Dew Point Deficit", "DewVPD Risk"),
+    "apvpd": ("Temperature", "Ambient VPD", "Plant Temperature", "Plant VPD", "Dew Point Deficit", "Plant DewVPD Risk"),
+    "avpd": ("Ambient VPD", "Temperature", "Rel-Humidity", "Baro-Pressure", "Dew Point Deficit", "DewVPD Risk"),
+    "co2": ("CO2", "Temperature", "Rel-Humidity", "Ambient VPD", "Dew Point Deficit", "DewVPD Risk"),
+    "lux": ("Light Intensity", "Estimated PPFD", "", "", "", ""),
+}
+
+
 class Settings:
     """Provide a narrow host-testable view of runtime configuration."""
 
@@ -48,6 +70,10 @@ class Settings:
     SENSOR_I2C_FILE = "sensor_i2c.toml"
     SENSOR_SOIL_FILE = "sensor_soil.toml"
     SWITCH_FILE = "switch.toml"
+    SETTINGS_DEF_FILE = "settings.toml.def"
+    SENSOR_I2C_DEF_FILE = "sensor_i2c.toml.def"
+    SENSOR_SOIL_DEF_FILE = "sensor_soil.toml.def"
+    SWITCH_DEF_FILE = "switch.toml.def"
 
     def __init__(
         self,
@@ -106,6 +132,512 @@ class Settings:
         if not _path_exists(path):
             return {}
         return toml_compat.load_file(path)
+
+    @classmethod
+    def _write_toml_file(cls, path, document):
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(cls._dump_toml(document))
+
+    @classmethod
+    def apply_factory_profile_reset_if_requested(
+        cls,
+        root=".",
+        *,
+        board_module=None,
+        digitalio_module=None,
+        time_module=None,
+    ):
+        """Force the live profile back to nodusweb when GP17 is held low at boot."""
+        path = _join_path(str(root or "."), cls.SETTINGS_FILE)
+        if not _path_exists(path):
+            return False
+        if not cls._pin_held_low(
+            _FACTORY_RESET_PIN_NAME,
+            hold_s=_FACTORY_RESET_HOLD_S,
+            sample_s=_FACTORY_RESET_SAMPLE_S,
+            board_module=board_module,
+            digitalio_module=digitalio_module,
+            time_module=time_module,
+        ):
+            return False
+        document = cls._read_toml_file(path)
+        profile_doc = document.setdefault("Profile", {})
+        profile_doc["ACTIVE_PROFILE"] = "nodusweb"
+        cls._write_toml_file(path, document)
+        return True
+
+    @classmethod
+    def make_serial_number(cls, n=6):
+        """Return a short lowercase serial suffix for seeded device IDs."""
+        chars = "abcdefghijklmnopqrstuvwxyz0123456789"
+        return "".join(random.choice(chars) for _ in range(max(1, int(n or 6))))
+
+    @classmethod
+    def bootstrap_factory_defaults(
+        cls,
+        root=".",
+        *,
+        detect_fn=None,
+        board_module=None,
+        busio_module=None,
+        digitalio_module=None,
+    ):
+        """Create first-boot TOML files and seed IDs for detected hardware."""
+        root_path = str(root or ".")
+        cls._ensure_file_from_def(root_path, cls.SETTINGS_DEF_FILE, cls.SETTINGS_FILE)
+
+        is_first_bootstrap = not any(
+            _path_exists(_join_path(root_path, path))
+            for path in (cls.SENSOR_I2C_FILE, cls.SENSOR_SOIL_FILE, cls.SWITCH_FILE)
+        )
+
+        if is_first_bootstrap:
+            detected_device, interfaces = cls._detect_factory_sensor(
+                detect_fn=detect_fn,
+                board_module=board_module,
+                busio_module=busio_module,
+            )
+            if detected_device == "soil":
+                cls._bootstrap_soil_sensor(root_path, interfaces)
+            elif detected_device:
+                cls._bootstrap_i2c_sensor(root_path, detected_device, interfaces)
+
+            active_switches = cls._detect_factory_switch_channels(
+                board_module=board_module,
+                digitalio_module=digitalio_module,
+            )
+            if active_switches:
+                cls._bootstrap_switch(root_path, active_switches)
+
+        cls._ensure_seeded_ids_and_hostname(root_path)
+        return cls.from_directory(root_path).runtime_config()
+
+    @classmethod
+    def clear_onboarding_state(cls, root="."):
+        """Remove any persisted onboarding runtime state file."""
+        path = _join_path(str(root or "."), "onboarding_state.json")
+        try:
+            os.remove(path)
+        except OSError:
+            return False
+        return True
+
+    @classmethod
+    def _ensure_file_from_def(cls, root, def_name, live_name):
+        live_path = _join_path(root, live_name)
+        if _path_exists(live_path):
+            return False
+        def_path = _join_path(root, def_name)
+        if not _path_exists(def_path):
+            return False
+        cls._write_toml_file(live_path, cls._read_toml_file(def_path))
+        return True
+
+    @classmethod
+    def _bootstrap_i2c_sensor(cls, root, device, interfaces):
+        cls._ensure_file_from_def(root, cls.SENSOR_I2C_DEF_FILE, cls.SENSOR_I2C_FILE)
+        path = _join_path(root, cls.SENSOR_I2C_FILE)
+        document = cls._read_toml_file(path)
+        sensor_doc = document.setdefault("Sensor", {})
+        i2c_doc = document.setdefault("I2Cbus", {})
+        display_doc = document.setdefault("Display", {})
+
+        sensor_doc["DEVICE"] = str(device or "").strip().lower()
+        i2c = interfaces.get("i2c", {}) if isinstance(interfaces, dict) else {}
+        if "bus" in i2c:
+            i2c_doc["I2C_BUS"] = int(i2c.get("bus", 0))
+        if i2c.get("scl"):
+            i2c_doc["I2C_SCL"] = i2c.get("scl")
+        if i2c.get("sda"):
+            i2c_doc["I2C_SDA"] = i2c.get("sda")
+        if "addr" in i2c:
+            i2c_doc["I2C_ADDR"] = int(i2c.get("addr", 0))
+
+        metrics = _FACTORY_SENSOR_DISPLAY_DEFAULTS.get(sensor_doc["DEVICE"], ())
+        for index, metric in enumerate(metrics, start=1):
+            key = "METRIC_{}".format(index)
+            if not str(display_doc.get(key, "") or "").strip():
+                display_doc[key] = metric
+
+        cls._write_toml_file(path, document)
+
+    @classmethod
+    def _bootstrap_soil_sensor(cls, root, interfaces):
+        cls._ensure_file_from_def(root, cls.SENSOR_SOIL_DEF_FILE, cls.SENSOR_SOIL_FILE)
+        path = _join_path(root, cls.SENSOR_SOIL_FILE)
+        document = cls._read_toml_file(path)
+        sensor_doc = document.setdefault("Sensor", {})
+        modbus_doc = document.setdefault("Modbus", {})
+
+        sensor_doc["DEVICE"] = "soil"
+        uart = interfaces.get("uart", {}) if isinstance(interfaces, dict) else {}
+        modbus = interfaces.get("modbus", {}) if isinstance(interfaces, dict) else {}
+        if uart.get("tx"):
+            modbus_doc["UART_TX"] = uart.get("tx")
+        if uart.get("rx"):
+            modbus_doc["UART_RX"] = uart.get("rx")
+        if "baud" in modbus:
+            modbus_doc["MODBUS_BAUD"] = int(modbus.get("baud", 9600))
+        if "timeout_s" in modbus:
+            modbus_doc["MODBUS_TIMEOUT_S"] = float(modbus.get("timeout_s", 0.30))
+        if "addr" in modbus:
+            modbus_doc["MODBUS_ADDR"] = int(modbus.get("addr", 1))
+        if modbus.get("soil_variant"):
+            modbus_doc["SOIL_VARIANT"] = str(modbus.get("soil_variant", "canonical"))
+
+        cls._write_toml_file(path, document)
+
+    @classmethod
+    def _bootstrap_switch(cls, root, active_channels):
+        cls._ensure_file_from_def(root, cls.SWITCH_DEF_FILE, cls.SWITCH_FILE)
+        path = _join_path(root, cls.SWITCH_FILE)
+        document = cls._read_toml_file(path)
+        switch_doc = document.setdefault("Switch", {})
+
+        inactive_keys = []
+        for index in (1, 2):
+            if index in active_channels:
+                spec = active_channels[index]
+                switch_doc["SWITCH_{}_ENABLE_PIN".format(index)] = spec.get("enable", "")
+                switch_doc["SWITCH_{}_PIN".format(index)] = spec.get("control", "")
+                if not str(switch_doc.get("SWITCH_{}_LABEL".format(index), "") or "").strip():
+                    switch_doc["SWITCH_{}_LABEL".format(index)] = spec.get("label", "")
+                continue
+            for suffix in ("_LABEL", "_CHANNEL_ID", "_ENABLE_PIN", "_PIN", "_LAST_STATE", "_OVERRIDE_SCRIPT"):
+                inactive_keys.append("SWITCH_{}{}".format(index, suffix))
+
+        for key in inactive_keys:
+            switch_doc.pop(key, None)
+
+        cls._write_toml_file(path, document)
+
+    @classmethod
+    def _ensure_seeded_ids_and_hostname(cls, root):
+        sensor_doc = {}
+        sensor_path = ""
+        for candidate in (cls.SENSOR_SOIL_FILE, cls.SENSOR_I2C_FILE):
+            path = _join_path(root, candidate)
+            document = cls._read_toml_file(path)
+            section = document.get("Sensor", {})
+            device = str(section.get("DEVICE", "") or "").strip().lower()
+            if candidate == cls.SENSOR_SOIL_FILE and device == "soil":
+                sensor_doc = document
+                sensor_path = path
+                break
+            if candidate == cls.SENSOR_I2C_FILE and device:
+                sensor_doc = document
+                sensor_path = path
+                break
+
+        sensor_section = sensor_doc.get("Sensor", {}) if isinstance(sensor_doc, dict) else {}
+        sensor_device = str(sensor_section.get("DEVICE", "") or "").strip().lower()
+        sensor_serial = str(sensor_section.get("SERIAL_NUM", "") or "").strip().lower()
+        sensor_id = str(sensor_section.get("SENSOR_ID", "") or "").strip().lower()
+        if sensor_device:
+            if not sensor_serial:
+                sensor_serial = cls.make_serial_number()
+                sensor_section["SERIAL_NUM"] = sensor_serial
+            if not sensor_id:
+                sensor_id = "{}-{}".format(sensor_device, sensor_serial)
+                sensor_section["SENSOR_ID"] = sensor_id
+            if sensor_path:
+                cls._write_toml_file(sensor_path, sensor_doc)
+
+        switch_path = _join_path(root, cls.SWITCH_FILE)
+        switch_doc = cls._read_toml_file(switch_path)
+        switch_section = switch_doc.get("Switch", {}) if isinstance(switch_doc, dict) else {}
+        has_switch = any(
+            str(switch_section.get("SWITCH_{}_ENABLE_PIN".format(index), "") or "").strip()
+            for index in (1, 2)
+        )
+        if has_switch:
+            switch_serial = str(switch_section.get("DEVICE_SERIAL_NUM", "") or "").strip().lower()
+            if not switch_serial:
+                switch_serial = sensor_serial or cls.make_serial_number()
+                switch_section["DEVICE_SERIAL_NUM"] = switch_serial
+            if not str(switch_section.get("SWITCH_DEVICE_ID", "") or "").strip():
+                switch_section["SWITCH_DEVICE_ID"] = "switch-{}".format(switch_serial)
+            for index in (1, 2):
+                en_key = "SWITCH_{}_ENABLE_PIN".format(index)
+                if not str(switch_section.get(en_key, "") or "").strip():
+                    continue
+                id_key = "SWITCH_{}_CHANNEL_ID".format(index)
+                existing = str(switch_section.get(id_key, "") or "").strip()
+                prefix = "S{}-".format(index)
+                if (not existing) or existing == prefix:
+                    switch_section[id_key] = "{}{}".format(prefix, switch_serial)
+            cls._write_toml_file(switch_path, switch_doc)
+
+        settings_path = _join_path(root, cls.SETTINGS_FILE)
+        settings_doc = cls._read_toml_file(settings_path)
+        network_doc = settings_doc.setdefault("Network", {})
+        if not str(network_doc.get("HOSTNAME", "") or "").strip():
+            if sensor_id:
+                network_doc["HOSTNAME"] = sensor_id
+            elif has_switch:
+                network_doc["HOSTNAME"] = str(switch_section.get("SWITCH_DEVICE_ID", "") or "").strip().lower()
+        cls._write_toml_file(settings_path, settings_doc)
+
+    @classmethod
+    def _detect_factory_sensor(cls, *, detect_fn=None, board_module=None, busio_module=None):
+        if callable(detect_fn):
+            detected = detect_fn()
+            if isinstance(detected, tuple) and len(detected) == 2:
+                return detected[0], detected[1] or {}
+            return "", {}
+
+        board_module = board_module or cls._try_import_module("board")
+        busio_module = busio_module or cls._try_import_module("busio")
+        if board_module is None or busio_module is None:
+            return "", {}
+
+        time.sleep(0.05)
+        scans = {}
+        for bus_index, pins in enumerate(_FACTORY_I2C_PINS):
+            scl_name, sda_name = pins
+            scl = getattr(board_module, scl_name, None)
+            sda = getattr(board_module, sda_name, None)
+            if scl is None or sda is None:
+                continue
+            bus = None
+            try:
+                bus = busio_module.I2C(scl, sda)
+                if hasattr(bus, "try_lock") and callable(bus.try_lock):
+                    started = time.monotonic()
+                    while not bus.try_lock():
+                        if (time.monotonic() - started) > 0.2:
+                            break
+                        time.sleep(0.01)
+                if hasattr(bus, "scan"):
+                    scans[bus_index] = set(bus.scan())
+            except Exception:
+                continue
+            finally:
+                if bus is not None:
+                    try:
+                        if hasattr(bus, "unlock"):
+                            bus.unlock()
+                    except Exception:
+                        pass
+                    try:
+                        if hasattr(bus, "deinit"):
+                            bus.deinit()
+                    except Exception:
+                        pass
+
+        if 0x76 in scans.get(0, set()) and 0x76 in scans.get(1, set()):
+            return "apvpd", {
+                "i2c": {
+                    "bus": 0,
+                    "scl": _FACTORY_I2C_PINS[0][0],
+                    "sda": _FACTORY_I2C_PINS[0][1],
+                    "addr": 0x76,
+                }
+            }
+
+        for address, device in ((0x77, "aqi"), (0x76, "avpd"), (0x62, "co2"), (0x61, "co2"), (0x10, "lux")):
+            for bus_index, pins in enumerate(_FACTORY_I2C_PINS):
+                if address not in scans.get(bus_index, set()):
+                    continue
+                scl_name, sda_name = pins
+                return device, {
+                    "i2c": {
+                        "bus": bus_index,
+                        "scl": scl_name,
+                        "sda": sda_name,
+                        "addr": address,
+                    }
+                }
+
+        soil = cls._probe_soil_rs485(board_module=board_module, busio_module=busio_module)
+        if soil:
+            return "soil", {
+                "uart": {"tx": soil.get("tx"), "rx": soil.get("rx")},
+                "modbus": {
+                    "baud": soil.get("baud", 9600),
+                    "timeout_s": 0.30,
+                    "addr": soil.get("addr", 1),
+                    "soil_variant": soil.get("soil_variant", "canonical"),
+                },
+            }
+
+        return "", {}
+
+    @classmethod
+    def _detect_factory_switch_channels(cls, *, board_module=None, digitalio_module=None):
+        board_module = board_module or cls._try_import_module("board")
+        digitalio_module = digitalio_module or cls._try_import_module("digitalio")
+        if board_module is None or digitalio_module is None:
+            return {}
+
+        active = {}
+        direction = getattr(getattr(digitalio_module, "Direction", None), "INPUT", None)
+        pull = getattr(getattr(digitalio_module, "Pull", None), "UP", None)
+        for index, spec in _FACTORY_SWITCH_PINS.items():
+            pin = getattr(board_module, spec["enable"], None)
+            if pin is None:
+                continue
+            handle = None
+            try:
+                handle = digitalio_module.DigitalInOut(pin)
+                if direction is not None and hasattr(handle, "direction"):
+                    handle.direction = direction
+                if pull is not None and hasattr(handle, "pull"):
+                    handle.pull = pull
+                if getattr(handle, "value", True) is False:
+                    active[index] = dict(spec)
+            except Exception:
+                continue
+            finally:
+                try:
+                    if handle is not None and hasattr(handle, "deinit"):
+                        handle.deinit()
+                except Exception:
+                    pass
+        return active
+
+    @classmethod
+    def _pin_held_low(
+        cls,
+        pin_name,
+        *,
+        hold_s,
+        sample_s,
+        board_module=None,
+        digitalio_module=None,
+        time_module=None,
+    ):
+        board_module = board_module or cls._try_import_module("board")
+        digitalio_module = digitalio_module or cls._try_import_module("digitalio")
+        time_module = time_module or time
+        if board_module is None or digitalio_module is None:
+            return False
+        pin = getattr(board_module, pin_name, None)
+        if pin is None:
+            return False
+        direction = getattr(getattr(digitalio_module, "Direction", None), "INPUT", None)
+        pull = getattr(getattr(digitalio_module, "Pull", None), "UP", None)
+        handle = None
+        try:
+            handle = digitalio_module.DigitalInOut(pin)
+            if direction is not None and hasattr(handle, "direction"):
+                handle.direction = direction
+            if pull is not None and hasattr(handle, "pull"):
+                handle.pull = pull
+            if getattr(handle, "value", True) is not False:
+                return False
+            started = float(time_module.monotonic())
+            while (float(time_module.monotonic()) - started) < float(hold_s):
+                if getattr(handle, "value", True) is not False:
+                    return False
+                time_module.sleep(float(sample_s))
+            return getattr(handle, "value", True) is False
+        except Exception:
+            return False
+        finally:
+            try:
+                if handle is not None and hasattr(handle, "deinit"):
+                    handle.deinit()
+            except Exception:
+                pass
+
+    @classmethod
+    def _probe_soil_rs485(cls, *, board_module=None, busio_module=None):
+        if board_module is None or busio_module is None or not hasattr(busio_module, "UART"):
+            return None
+
+        def _read_regs(uart_obj, addr, start, count):
+            req = bytearray(
+                [
+                    addr,
+                    0x03,
+                    (start >> 8) & 0xFF,
+                    start & 0xFF,
+                    (count >> 8) & 0xFF,
+                    count & 0xFF,
+                ]
+            )
+            crc = cls._modbus_crc16(req)
+            req += bytes([crc & 0xFF, (crc >> 8) & 0xFF])
+            uart_obj.write(req)
+            time.sleep(0.05)
+            resp = uart_obj.read(64)
+            if not resp or len(resp) < 5:
+                return None
+            body, lo, hi = resp[:-2], resp[-2], resp[-1]
+            calc = cls._modbus_crc16(body)
+            if lo != (calc & 0xFF) or hi != ((calc >> 8) & 0xFF):
+                return None
+            if resp[0] != addr or resp[1] != 0x03:
+                return None
+            byte_count = resp[2]
+            if byte_count != int(count) * 2:
+                return None
+            data = resp[3 : 3 + byte_count]
+            if len(data) != byte_count:
+                return None
+            return tuple((data[i] << 8) | data[i + 1] for i in range(0, len(data), 2))
+
+        def _variant_for_probe(uart_obj, addr):
+            regs7 = _read_regs(uart_obj, addr, 0x0000, 7)
+            if regs7 is not None and len(regs7) >= 7:
+                return "soil_7in1"
+            regs4 = _read_regs(uart_obj, addr, 0x0000, 4)
+            if regs4 is not None and len(regs4) >= 4:
+                return "soil_4in1"
+            regs2 = _read_regs(uart_obj, addr, 0x0000, 2)
+            if regs2 is not None and len(regs2) >= 2:
+                return "soil_2in1"
+            return ""
+
+        for tx_name, rx_name in (("GP0", "GP1"), ("GP4", "GP5")):
+            tx = getattr(board_module, tx_name, None)
+            rx = getattr(board_module, rx_name, None)
+            if tx is None or rx is None:
+                continue
+            for baud in (9600, 4800, 2400):
+                uart = None
+                try:
+                    uart = busio_module.UART(tx, rx, baudrate=baud, timeout=0.3)
+                    for addr in range(1, 6):
+                        variant = _variant_for_probe(uart, addr)
+                        if variant:
+                            return {
+                                "tx": tx_name,
+                                "rx": rx_name,
+                                "baud": baud,
+                                "addr": addr,
+                                "soil_variant": variant,
+                            }
+                except Exception:
+                    continue
+                finally:
+                    try:
+                        if uart is not None and hasattr(uart, "deinit"):
+                            uart.deinit()
+                    except Exception:
+                        pass
+        return None
+
+    @staticmethod
+    def _modbus_crc16(data):
+        crc = 0xFFFF
+        for value in bytes(data):
+            crc ^= value
+            for _ in range(8):
+                if (crc & 1) != 0:
+                    crc >>= 1
+                    crc ^= 0xA001
+                else:
+                    crc >>= 1
+        return crc
+
+    @staticmethod
+    def _try_import_module(module_name):
+        try:
+            return __import__(module_name)
+        except ImportError:
+            return None
 
     @classmethod
     def apply_updates_to_directory(cls, root, runtime_config, updates, *, reload_runtime=True):
@@ -191,6 +723,7 @@ class Settings:
                     network_doc.get("AP_PASSWORD", "password"),
                     hostname=network_doc.get("HOSTNAME", ""),
                 ),
+                ap_channel=network_doc.get("AP_CHANNEL", 6),
                 hostname=network_doc.get("HOSTNAME", ""),
                 http_port=network_doc.get("HTTPPORT", 8000),
             ),
