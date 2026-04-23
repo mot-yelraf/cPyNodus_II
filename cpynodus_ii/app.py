@@ -113,21 +113,6 @@ def _collect_garbage():
     return True
 
 
-def _collect_garbage_with_log(start_monotonic, phase):
-    """Run GC and emit a compact REPL log for the attempt."""
-    collected = _collect_garbage()
-    _print_log(
-        "gc",
-        "phase={} collected={} {}".format(
-            str(phase or "unknown"),
-            collected,
-            _memory_summary(),
-        ),
-        start_monotonic=start_monotonic,
-    )
-    return collected
-
-
 def _log_memory_checkpoint(start_monotonic, phase):
     """Log a compact memory checkpoint for startup and diagnostics."""
     _print_log(
@@ -152,10 +137,12 @@ def _should_preflight_broker(adapter):
 
 
 def _should_fallback_to_ap(runtime_config, network_stack):
-    if runtime_config.ap_mode or runtime_config.active_profile == "nodusweb":
+    if runtime_config.ap_mode:
         return False
     if getattr(network_stack, "phase", "") == "ap":
         return False
+    if not runtime_config.network.ssid or not runtime_config.network.password:
+        return True
     if runtime_config.network.ssid:
         return getattr(network_stack, "phase", "") in {"error", "unavailable"}
     return True
@@ -222,11 +209,23 @@ def _resolve_startup_plan(runtime_config, startup_plan_override=None):
     return plan
 
 
+def _load_settings_for_startup(settings_root):
+    """Load settings while skipping write-based bootstrap on ROFS."""
+    fs_writable = Settings.filesystem_writable(settings_root)
+    if fs_writable is not False:
+        if Settings.apply_factory_profile_reset_if_requested(settings_root):
+            return None, fs_writable, True
+        Settings.bootstrap_factory_defaults(settings_root)
+    settings = Settings.from_working_directory()
+    return settings, fs_writable, False
+
+
 async def main(*, startup_plan_override=None):
     """Run the current scaffold runtime."""
     start_monotonic = time.monotonic()
     settings_root = "."
-    if Settings.apply_factory_profile_reset_if_requested(settings_root):
+    settings, fs_writable, profile_reset_requested = _load_settings_for_startup(settings_root)
+    if profile_reset_requested:
         _print_log(
             "factory_reset",
             "phase=profile_reset profile=nodusweb action=hard_reboot",
@@ -234,9 +233,6 @@ async def main(*, startup_plan_override=None):
         )
         _hard_reboot()
         return
-    Settings.bootstrap_factory_defaults(settings_root)
-    settings = Settings.from_working_directory()
-    fs_writable = Settings.filesystem_writable(settings_root)
     fs_mode = _filesystem_mode_label(fs_writable)
     persistence_mode = "persisted" if fs_writable else "volatile" if fs_writable is False else "unknown"
     writable_settings_root = (
@@ -333,8 +329,7 @@ async def main(*, startup_plan_override=None):
         ),
         start_monotonic=start_monotonic,
     )
-    _collect_garbage_with_log(start_monotonic, "post_runtime_init")
-    _log_memory_checkpoint(start_monotonic, "post_runtime_init")
+    _collect_garbage()
     _print_log(
         "cPyNodus_II",
         "network ssid={} ipv4={} hostname={}".format(
@@ -345,7 +340,6 @@ async def main(*, startup_plan_override=None):
         start_monotonic=start_monotonic,
     )
     if plan.web_enabled:
-        _log_memory_checkpoint(start_monotonic, "pre_web_start")
         web_runtime = WebRuntimeController(
             runtime_config,
             network_stack,
@@ -368,8 +362,7 @@ async def main(*, startup_plan_override=None):
             ),
             start_monotonic=start_monotonic,
         )
-        _collect_garbage_with_log(start_monotonic, "post_web_start")
-        _log_memory_checkpoint(start_monotonic, "post_web_start")
+        _collect_garbage()
     if startup_ap_fallback:
         _print_log(
             "recovery",
@@ -410,6 +403,7 @@ async def main(*, startup_plan_override=None):
                 now_monotonic=now_monotonic,
                 policy=recovery_policy,
                 ap_mode=(network_stack.phase == "ap"),
+                mqtt_enabled=bool(plan.mqtt_enabled),
                 wifi_link_ready=network_link_is_ready(network_stack),
                 transport_connected=transport.connected,
             )
@@ -495,8 +489,7 @@ async def main(*, startup_plan_override=None):
                     start_monotonic=start_monotonic,
                 )
                 if ntp_result.phase == "synced":
-                    _collect_garbage_with_log(start_monotonic, "post_ntp_sync")
-                    _log_memory_checkpoint(start_monotonic, "post_ntp_sync")
+                    _collect_garbage()
             if (
                 plan.mqtt_enabled
                 and not transport.connected
@@ -535,7 +528,7 @@ async def main(*, startup_plan_override=None):
                             ),
                             start_monotonic=start_monotonic,
                         )
-                    _collect_garbage_with_log(start_monotonic, "post_mqtt_connect")
+                    _collect_garbage()
                     _log_memory_checkpoint(start_monotonic, "post_mqtt_connect")
             if transport.connected:
                 poll_result = poll_mqtt_client(mqtt_adapter, transport)

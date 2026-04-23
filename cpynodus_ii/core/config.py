@@ -122,6 +122,8 @@ class SensorCalibration:
     gas_offset: float = 0.0
     lux_offset: float = 0.0
     ppfd_offset: float = 0.0
+    apvpd_temp_cal_val: float = 0.0
+    apvpd_rh_cal_val: float = 0.0
     soil_temp_cal_val: float = 0.0
     soil_temp_moist_val: float = 0.0
     soil_ph_cal_val: float = 0.0
@@ -135,6 +137,8 @@ class SensorCalibration:
         _raw_setattr(self, "gas_offset", float(self.gas_offset or 0.0))
         _raw_setattr(self, "lux_offset", float(self.lux_offset or 0.0))
         _raw_setattr(self, "ppfd_offset", float(self.ppfd_offset or 0.0))
+        _raw_setattr(self, "apvpd_temp_cal_val", float(self.apvpd_temp_cal_val or 0.0))
+        _raw_setattr(self, "apvpd_rh_cal_val", float(self.apvpd_rh_cal_val or 0.0))
         _raw_setattr(self, "soil_temp_cal_val", float(self.soil_temp_cal_val or 0.0))
         _raw_setattr(self, "soil_temp_moist_val", float(self.soil_temp_moist_val or 0.0))
         _raw_setattr(self, "soil_ph_cal_val", float(self.soil_ph_cal_val or 0.0))
@@ -262,6 +266,7 @@ class DetectedSensor:
     serial_number: str = ""
     location: str = ""
     i2c: I2CConfig | None = None
+    secondary_i2c: I2CConfig | None = None
     modbus: SoilModbusConfig | None = None
     soil_registers: SoilRegisterMap | None = None
     soil_scales: SoilScaleMap | None = None

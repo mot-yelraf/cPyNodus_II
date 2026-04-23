@@ -42,6 +42,7 @@ def advance_recovery_state(
     now_monotonic,
     policy=None,
     ap_mode=False,
+    mqtt_enabled=True,
     wifi_link_ready=True,
     transport_connected=False,
 ):
@@ -65,6 +66,12 @@ def advance_recovery_state(
         return RecoveryDecision(
             state=RecoveryState(),
             allow_mqtt_connect=True,
+        )
+
+    if not mqtt_enabled:
+        return RecoveryDecision(
+            state=RecoveryState(),
+            allow_mqtt_connect=False,
         )
 
     if not wifi_link_ready:

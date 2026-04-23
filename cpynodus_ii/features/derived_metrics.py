@@ -12,6 +12,14 @@ def enrich_metrics(device, metrics, *, runtime_config):
 
     if device in {"aqi", "co2", "avpd", "apvpd"}:
         _add_temp_humidity_derivatives(enriched, humidity_digits=3 if device == "co2" else 1)
+    if device == "apvpd":
+        _add_prefixed_temp_humidity_derivatives(
+            enriched,
+            temp_key="Plant Temperature",
+            rh_key="Plant Rel-Humidity",
+            prefix="Plant",
+            humidity_digits=1,
+        )
 
     if device == "aqi":
         enriched["Air Quality"] = estimate_aqi(
@@ -164,26 +172,40 @@ def estimate_ppfd_from_lux(lux, factor=DEFAULT_PPFD_LUX_FACTOR):
 
 
 def _add_temp_humidity_derivatives(metrics, *, humidity_digits):
-    temp_c = metrics.get("Temperature")
-    rh_pct = metrics.get("Rel-Humidity")
+    _add_prefixed_temp_humidity_derivatives(
+        metrics,
+        temp_key="Temperature",
+        rh_key="Rel-Humidity",
+        prefix="",
+        humidity_digits=humidity_digits,
+    )
+
+
+def _add_prefixed_temp_humidity_derivatives(metrics, *, temp_key, rh_key, prefix, humidity_digits):
+    temp_c = metrics.get(temp_key)
+    rh_pct = metrics.get(rh_key)
+    label_prefix = "{} ".format(prefix) if prefix else ""
     if temp_c is not None:
-        metrics["Temperature_F"] = round((float(temp_c) * 9.0 / 5.0) + 32.0, 1)
+        metrics["{}Temperature_F".format(label_prefix)] = round((float(temp_c) * 9.0 / 5.0) + 32.0, 1)
     absolute_humidity = calculate_absolute_humidity(temp_c, rh_pct)
     if absolute_humidity is not None:
-        metrics["Humidity"] = round(absolute_humidity, humidity_digits)
+        metrics["{}Humidity".format(label_prefix)] = round(absolute_humidity, humidity_digits)
     vpd_kpa = calculate_vpd(temp_c, rh_pct)
     if vpd_kpa is not None:
-        metrics["Ambient VPD"] = round(max(0.0, min(vpd_kpa, 5.0)), 3)
+        metrics["Ambient VPD" if not prefix else "{} VPD".format(prefix)] = round(max(0.0, min(vpd_kpa, 5.0)), 3)
     dewpoint_c = calculate_dewpoint(temp_c, rh_pct)
     if dewpoint_c is not None:
-        metrics["Dew Point"] = round(dewpoint_c, 2)
-        metrics["Dew Point_F"] = round((dewpoint_c * 9.0 / 5.0) + 32.0, 1)
+        metrics["{}Dew Point".format(label_prefix)] = round(dewpoint_c, 2)
+        metrics["{}Dew Point_F".format(label_prefix)] = round((dewpoint_c * 9.0 / 5.0) + 32.0, 1)
     dew_deficit = calculate_dewpoint_deficit(temp_c, rh_pct)
     if dew_deficit is not None:
-        metrics["Dew Point Deficit"] = round(dew_deficit, 2)
+        metrics["{}Dew Point Deficit".format(label_prefix)] = round(dew_deficit, 2)
     dew_vpd_risk = calculate_dewvpd_risk(temp_c, rh_pct, vpd_kpa)
     if dew_vpd_risk is not None:
-        metrics["DewVPD Risk"] = round(max(0.0, min(dew_vpd_risk, 100.0)), 1)
+        metrics["DewVPD Risk" if not prefix else "{} DewVPD Risk".format(prefix)] = round(
+            max(0.0, min(dew_vpd_risk, 100.0)),
+            1,
+        )
 
 
 def _add_soil_derivatives(metrics, runtime_config):

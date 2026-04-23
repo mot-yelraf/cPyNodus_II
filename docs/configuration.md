@@ -9,6 +9,13 @@ Configuration is stored as TOML files at the project root. Defaults are provided
 - `sensor_soil.toml`: UART/Modbus soil sensor
 - `switch.toml`: switch/relay configuration
 
+For `apvpd`, `sensor_i2c.toml` carries two BME280 definitions:
+
+- `[I2Cbus]`: ambient sensor
+- `[I2Cbus.Plant]`: plant sensor
+
+Both may use the default BME280 address `118` (`0x76`) because they live on separate buses.
+
 ## Templates
 
 Copy the templates and edit them:

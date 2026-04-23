@@ -2,6 +2,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 
+from cpynodus_ii.core.obfuscation import encode_password
 from cpynodus_ii.core.settings import Settings
 
 
@@ -180,4 +181,94 @@ def test_factory_sensor_detect_finds_apvpd_when_bme280_on_both_buses():
     )
 
     assert detected_device == "apvpd"
-    assert interfaces["i2c"]["bus"] == 0
+    assert interfaces["i2c0"]["bus"] == 0
+    assert interfaces["i2c1"]["bus"] == 1
+
+
+def test_factory_bootstrap_writes_dual_i2c_sections_for_apvpd():
+    with TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        _copy_defs(tmpdir_path)
+
+        Settings.bootstrap_factory_defaults(
+            tmpdir_path,
+            detect_fn=lambda: (
+                "apvpd",
+                {
+                    "i2c0": {"bus": 0, "scl": "GP1", "sda": "GP0", "addr": 0x76},
+                    "i2c1": {"bus": 1, "scl": "GP3", "sda": "GP2", "addr": 0x76},
+                },
+            ),
+            board_module=SimpleNamespace(),
+            digitalio_module=SimpleNamespace(
+                DigitalInOut=_ProbePin,
+                Direction=SimpleNamespace(INPUT="input"),
+                Pull=SimpleNamespace(UP="up"),
+            ),
+        )
+
+        sensor_doc = Settings._read_toml_file(tmpdir_path / "sensor_i2c.toml")
+
+    assert sensor_doc["Sensor"]["DEVICE"] == "apvpd"
+    assert sensor_doc["I2Cbus"]["I2C_BUS"] == 0
+    assert sensor_doc["I2Cbus"]["I2C_SCL"] == "GP1"
+    assert sensor_doc["I2Cbus"]["I2C_SDA"] == "GP0"
+    assert sensor_doc["I2Cbus"]["I2C_ADDR"] == 0x76
+    assert sensor_doc["I2Cbus"]["Plant"]["I2C_BUS"] == 1
+    assert sensor_doc["I2Cbus"]["Plant"]["I2C_SCL"] == "GP3"
+    assert sensor_doc["I2Cbus"]["Plant"]["I2C_SDA"] == "GP2"
+    assert sensor_doc["I2Cbus"]["Plant"]["I2C_ADDR"] == 0x76
+
+
+def test_write_toml_file_preserves_template_section_and_key_order():
+    with TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        _copy_defs(tmpdir_path)
+        document = Settings._read_toml_file(tmpdir_path / "settings.toml.def")
+        document["Network"]["HOSTNAME"] = "apvpd-uv9he6"
+
+        Settings._write_toml_file(tmpdir_path / "settings.toml", document)
+        text = (tmpdir_path / "settings.toml").read_text(encoding="utf-8")
+
+    assert text.index("[Network]") < text.index("[Profile]") < text.index("[MQTT]") < text.index("[HomeAssistant]") < text.index("[Time]")
+    assert text.index('SSID = ""') < text.index('PASSWORD = ') < text.index('AP_SSID = "Nodus_Setup"') < text.index('AP_PASSWORD = ') < text.index('AP_CHANNEL = 6') < text.index('HOSTNAME = "apvpd-uv9he6"') < text.index("HTTPPORT = 8000")
+
+
+def test_apply_updates_preserves_template_order_in_settings_file():
+    with TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        _copy_defs(tmpdir_path)
+        document = Settings._read_toml_file(tmpdir_path / "settings.toml.def")
+        Settings._write_toml_file(tmpdir_path / "settings.toml", document)
+        runtime_config = Settings.from_directory(tmpdir_path).runtime_config()
+
+        Settings.apply_updates_to_directory(
+            tmpdir_path,
+            runtime_config,
+            (
+                {"section": "Network", "key": "HOSTNAME", "value": "apvpd-uv9he6"},
+                {"section": "MQTT", "key": "BROKER", "value": "samhain.local"},
+            ),
+        )
+        text = (tmpdir_path / "settings.toml").read_text(encoding="utf-8")
+
+    assert text.index("[Network]") < text.index("[Profile]") < text.index("[MQTT]") < text.index("[HomeAssistant]") < text.index("[Time]")
+    assert text.index('BROKER = "samhain.local"') < text.index('BROKER_IP = ""') < text.index("PORT = 1883")
+
+
+def test_write_toml_file_obfuscates_settings_password_fields():
+    with TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        _copy_defs(tmpdir_path)
+        document = Settings._read_toml_file(tmpdir_path / "settings.toml.def")
+        document["Network"]["HOSTNAME"] = "apvpd-uv9he6"
+        document["Network"]["PASSWORD"] = "wifi-secret"
+        document["Network"]["AP_PASSWORD"] = "ap-secret"
+        document["MQTT"]["PASSWORD"] = "mqtt-secret"
+
+        Settings._write_toml_file(tmpdir_path / "settings.toml", document)
+        text = (tmpdir_path / "settings.toml").read_text(encoding="utf-8")
+
+    assert 'PASSWORD = "{}"'.format(encode_password("wifi-secret", hostname="apvpd-uv9he6")) in text
+    assert 'AP_PASSWORD = "{}"'.format(encode_password("ap-secret", hostname="apvpd-uv9he6")) in text
+    assert text.count('PASSWORD = "{}"'.format(encode_password("mqtt-secret", hostname="apvpd-uv9he6"))) == 1

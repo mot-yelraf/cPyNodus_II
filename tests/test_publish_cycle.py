@@ -177,6 +177,52 @@ def test_startup_cycle_uses_configured_base_topic():
     assert "greenhouse/aqi-x943fm/data" in result.topics
 
 
+def test_startup_cycle_publishes_onboarding_hello_when_state_present():
+    transport = MQTTTransport("broker.local", 1883)
+    runtime_config = RuntimeConfig(
+        network=NetworkConfig(hostname="aqi-x943fm"),
+        mqtt=MQTTConfig(broker="broker.local", base_topic="nodus"),
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            device="aqi",
+            sensor_id="aqi-x943fm",
+            serial_number="x943fm",
+        ),
+        switch=SwitchConfig(
+            present=True,
+            device_id="switch-x943fm",
+            serial_number="x943fm",
+        ),
+    )
+
+    result = publish_startup_cycle(
+        transport,
+        runtime_config,
+        version="v0.26.114.1",
+        onboarding_state={"onboard_token": "token-123"},
+        sensor_snapshot=SimpleNamespace(phase="ready", metrics={"Temperature": 24.5}),
+        switch_snapshot={},
+    )
+
+    assert "nodus/aqi-x943fm/onboard/hello" in result.topics
+    hello_message = next(
+        message
+        for message in transport.published_messages
+        if message.topic == "nodus/aqi-x943fm/onboard/hello"
+    )
+    assert hello_message.retain is False
+    assert hello_message.payload == {
+        "onboard_token": "token-123",
+        "device_id": "aqi-x943fm",
+        "hostname": "aqi-x943fm",
+        "serial": "x943fm",
+        "type": "pico2w",
+        "version": "v0.26.114.1",
+        "capabilities": {"sensor": True, "switch": True},
+    }
+
+
 def test_shutdown_cycle_publishes_offline_heartbeat_and_availability():
     transport = MQTTTransport("broker.local", 1883)
     runtime_config = RuntimeConfig(

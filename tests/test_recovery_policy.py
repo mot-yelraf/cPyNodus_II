@@ -66,3 +66,20 @@ def test_ap_mode_requests_soft_reboot_after_timeout():
     assert decision.allow_mqtt_connect is False
     assert decision.request_soft_reboot is True
     assert decision.reboot_reason == "ap_idle_timeout"
+
+
+def test_mqtt_disabled_profile_stays_out_of_mqtt_recovery():
+    decision = advance_recovery_state(
+        RecoveryState(phase="mqtt", phase_started_at=0.0, last_mqtt_rebuild_at=0.0),
+        now_monotonic=181.0,
+        policy=RecoveryPolicy(mqtt_timeout_s=180.0, mqtt_rebuild_interval_s=30.0),
+        ap_mode=False,
+        mqtt_enabled=False,
+        wifi_link_ready=True,
+        transport_connected=False,
+    )
+
+    assert decision.state.phase == "idle"
+    assert decision.allow_mqtt_connect is False
+    assert decision.attempt_mqtt_rebuild is False
+    assert decision.request_soft_reboot is False

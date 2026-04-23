@@ -182,6 +182,32 @@ def build_runtime_meta_payload(runtime_config, *, version, active_broker=""):
     return payload
 
 
+def build_onboarding_hello_payload(runtime_config, onboarding_state, *, version):
+    """Build the MQTT onboarding hello payload when bootstrap state exists."""
+    state = onboarding_state if isinstance(onboarding_state, dict) else {}
+    onboard_token = str(state.get("onboard_token", "") or "").strip()
+    if not onboard_token:
+        return None
+
+    sensor = runtime_config.sensor
+    switch = runtime_config.switch
+    device_id = sensor.sensor_id or switch.device_id or runtime_config.network.hostname
+    serial_number = sensor.serial_number or switch.serial_number
+
+    return {
+        "onboard_token": onboard_token,
+        "device_id": device_id,
+        "hostname": runtime_config.network.hostname,
+        "serial": serial_number,
+        "type": "pico2w",
+        "version": version,
+        "capabilities": {
+            "sensor": bool(sensor.present),
+            "switch": bool(switch.present),
+        },
+    }
+
+
 def build_homeassistant_discovery_plan(
     runtime_config,
     *,

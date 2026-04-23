@@ -72,6 +72,20 @@ class _FakeBME680:
         self.gas = 12345.0
 
 
+class _FakeBME280:
+    def __init__(self, transport, *, address):
+        self.transport = transport
+        self.address = address
+        if getattr(transport, "scl", "") == "pin-gp3":
+            self.temperature = 22.0
+            self.relative_humidity = 61.0
+            self.pressure = 100650.0
+        else:
+            self.temperature = 24.5
+            self.relative_humidity = 55.25
+            self.pressure = 100850.0
+
+
 def test_sensor_service_starts_bme680_for_aqi_config():
     docs_root = Path(__file__).resolve().parents[1] / "docs" / "sensor+switch"
     with TemporaryDirectory() as tmpdir:
@@ -261,6 +275,125 @@ def test_sensor_service_reads_legacy_lux_snapshot_with_ppfd():
     assert snapshot.phase == "ready"
     assert snapshot.metrics["Light Intensity"] == 5400.0
     assert snapshot.metrics["Estimated PPFD"] == 100.0
+
+
+def test_sensor_service_starts_bme280_for_avpd_config():
+    runtime_config = RuntimeConfig(
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            active_config_file="sensor_i2c.toml",
+            device="avpd",
+            sensor_id="avpd-1",
+            i2c=I2CConfig(bus=0, scl_pin="GP1", sda_pin="GP0", address=0x76),
+        )
+    )
+    sensor_runtime = build_sensor_runtime(
+        plan_sensor_initialization(runtime_config),
+        runtime_config,
+    )
+    sensor_adapter = bind_sensor_hardware(
+        sensor_runtime,
+        runtime_config,
+        board_module=SimpleNamespace(GP0="pin-gp0", GP1="pin-gp1"),
+        busio_module=SimpleNamespace(I2C=_FakeI2C, UART=_FakeUART),
+    )
+    sensor_service = start_sensor_service(
+        sensor_runtime,
+        sensor_adapter,
+        runtime_config,
+        modules={"adafruit_bme280.basic": SimpleNamespace(Adafruit_BME280_I2C=_FakeBME280)},
+    )
+
+    assert sensor_service.phase == "ready"
+    assert sensor_service.driver_kind == "adafruit_bme280"
+    assert sensor_service.driver.address == 0x76
+
+
+def test_sensor_service_reads_dual_bme280_snapshot_for_apvpd():
+    runtime_config = RuntimeConfig(
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            active_config_file="sensor_i2c.toml",
+            device="apvpd",
+            sensor_id="apvpd-1",
+            i2c=I2CConfig(bus=0, scl_pin="GP1", sda_pin="GP0", address=0x76),
+            secondary_i2c=I2CConfig(bus=1, scl_pin="GP3", sda_pin="GP2", address=0x76),
+            calibration_device=SensorCalibration(apvpd_temp_cal_val=0.5, apvpd_rh_cal_val=-1.0),
+        )
+    )
+    sensor_runtime = build_sensor_runtime(
+        plan_sensor_initialization(runtime_config),
+        runtime_config,
+    )
+    sensor_adapter = bind_sensor_hardware(
+        sensor_runtime,
+        runtime_config,
+        board_module=SimpleNamespace(GP0="pin-gp0", GP1="pin-gp1", GP2="pin-gp2", GP3="pin-gp3"),
+        busio_module=SimpleNamespace(I2C=_FakeI2C, UART=_FakeUART),
+    )
+    sensor_service = start_sensor_service(
+        sensor_runtime,
+        sensor_adapter,
+        runtime_config,
+        modules={"adafruit_bme280.basic": SimpleNamespace(Adafruit_BME280_I2C=_FakeBME280)},
+    )
+    snapshot = read_sensor_snapshot(sensor_service, runtime_config)
+
+    assert sensor_service.phase == "ready"
+    assert snapshot.phase == "ready"
+    assert snapshot.metrics["Temperature"] == 24.5
+    assert snapshot.metrics["Ambient VPD"] > 0
+    assert snapshot.metrics["Plant Temperature"] == 22.5
+    assert snapshot.metrics["Plant Rel-Humidity"] == 60.0
+    assert snapshot.metrics["Plant VPD"] > 0
+    assert snapshot.metrics["Plant DewVPD Risk"] >= 0
+
+
+def test_sensor_service_stop_deinits_dual_i2c_transports_for_apvpd():
+    runtime_config = RuntimeConfig(
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            active_config_file="sensor_i2c.toml",
+            device="apvpd",
+            sensor_id="apvpd-1",
+            i2c=I2CConfig(bus=0, scl_pin="GP1", sda_pin="GP0", address=0x76),
+            secondary_i2c=I2CConfig(bus=1, scl_pin="GP3", sda_pin="GP2", address=0x76),
+        )
+    )
+    sensor_runtime = build_sensor_runtime(
+        plan_sensor_initialization(runtime_config),
+        runtime_config,
+    )
+    sensor_adapter = bind_sensor_hardware(
+        sensor_runtime,
+        runtime_config,
+        board_module=SimpleNamespace(GP0="pin-gp0", GP1="pin-gp1", GP2="pin-gp2", GP3="pin-gp3"),
+        busio_module=SimpleNamespace(I2C=_FakeI2C, UART=_FakeUART),
+    )
+    sensor_service = start_sensor_service(
+        sensor_runtime,
+        sensor_adapter,
+        runtime_config,
+        modules={"adafruit_bme280.basic": SimpleNamespace(Adafruit_BME280_I2C=_FakeBME280)},
+    )
+
+    stop_sensor_service(sensor_service)
+
+    assert sensor_service.transport.deinited is True
+    assert sensor_service.secondary_transport.deinited is True
+
+
+def test_load_module_resolves_dotted_modules_without_fromlist_keywords(monkeypatch):
+    root_module = SimpleNamespace(basic=SimpleNamespace(Adafruit_BME280_I2C=_FakeBME280))
+
+    monkeypatch.setattr("builtins.__import__", lambda name: root_module)
+
+    module = sensor_service_module._load_module("adafruit_bme280.basic", {}, "missing_adafruit_bme280")
+
+    assert module.Adafruit_BME280_I2C is _FakeBME280
 
 
 def test_sensor_service_uses_keyword_snapshot_construction_for_co2(monkeypatch):

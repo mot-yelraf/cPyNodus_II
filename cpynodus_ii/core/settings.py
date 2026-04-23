@@ -22,7 +22,7 @@ from cpynodus_ii.core.config import (
     SwitchChannelConfig,
     TimeConfig,
 )
-from cpynodus_ii.core.obfuscation import decode_password
+from cpynodus_ii.core.obfuscation import decode_password, encode_password
 from cpynodus_ii.core import toml_compat
 
 
@@ -135,8 +135,9 @@ class Settings:
 
     @classmethod
     def _write_toml_file(cls, path, document):
+        serialized_document = cls._document_for_write(path, document)
         with open(path, "w", encoding="utf-8") as handle:
-            handle.write(cls._dump_toml(document))
+            handle.write(cls._dump_toml_for_path(path, serialized_document))
 
     @classmethod
     def apply_factory_profile_reset_if_requested(
@@ -240,18 +241,17 @@ class Settings:
         document = cls._read_toml_file(path)
         sensor_doc = document.setdefault("Sensor", {})
         i2c_doc = document.setdefault("I2Cbus", {})
+        plant_i2c_doc = i2c_doc.setdefault("Plant", {})
         display_doc = document.setdefault("Display", {})
 
         sensor_doc["DEVICE"] = str(device or "").strip().lower()
-        i2c = interfaces.get("i2c", {}) if isinstance(interfaces, dict) else {}
-        if "bus" in i2c:
-            i2c_doc["I2C_BUS"] = int(i2c.get("bus", 0))
-        if i2c.get("scl"):
-            i2c_doc["I2C_SCL"] = i2c.get("scl")
-        if i2c.get("sda"):
-            i2c_doc["I2C_SDA"] = i2c.get("sda")
-        if "addr" in i2c:
-            i2c_doc["I2C_ADDR"] = int(i2c.get("addr", 0))
+        if str(device or "").strip().lower() == "apvpd":
+            cls._apply_i2c_bootstrap(i2c_doc, interfaces.get("i2c0", {}) if isinstance(interfaces, dict) else {})
+            cls._apply_i2c_bootstrap(plant_i2c_doc, interfaces.get("i2c1", {}) if isinstance(interfaces, dict) else {})
+        else:
+            cls._apply_i2c_bootstrap(i2c_doc, interfaces.get("i2c", {}) if isinstance(interfaces, dict) else {})
+            for key in tuple(plant_i2c_doc.keys()):
+                plant_i2c_doc.pop(key, None)
 
         metrics = _FACTORY_SENSOR_DISPLAY_DEFAULTS.get(sensor_doc["DEVICE"], ())
         for index, metric in enumerate(metrics, start=1):
@@ -260,6 +260,20 @@ class Settings:
                 display_doc[key] = metric
 
         cls._write_toml_file(path, document)
+
+    @staticmethod
+    def _apply_i2c_bootstrap(target_doc, i2c):
+        if not isinstance(target_doc, dict):
+            return
+        i2c = i2c if isinstance(i2c, dict) else {}
+        if "bus" in i2c:
+            target_doc["I2C_BUS"] = int(i2c.get("bus", 0))
+        if i2c.get("scl"):
+            target_doc["I2C_SCL"] = i2c.get("scl")
+        if i2c.get("sda"):
+            target_doc["I2C_SDA"] = i2c.get("sda")
+        if "addr" in i2c:
+            target_doc["I2C_ADDR"] = int(i2c.get("addr", 0))
 
     @classmethod
     def _bootstrap_soil_sensor(cls, root, interfaces):
@@ -427,10 +441,16 @@ class Settings:
 
         if 0x76 in scans.get(0, set()) and 0x76 in scans.get(1, set()):
             return "apvpd", {
-                "i2c": {
+                "i2c0": {
                     "bus": 0,
                     "scl": _FACTORY_I2C_PINS[0][0],
                     "sda": _FACTORY_I2C_PINS[0][1],
+                    "addr": 0x76,
+                },
+                "i2c1": {
+                    "bus": 1,
+                    "scl": _FACTORY_I2C_PINS[1][0],
+                    "sda": _FACTORY_I2C_PINS[1][1],
                     "addr": 0x76,
                 }
             }
@@ -661,8 +681,9 @@ class Settings:
                 for update in file_updates:
                     if cls._apply_update_to_document(document, update):
                         applied_updates.append(update)
+                serialized_document = cls._document_for_write(path, document)
                 with open(path, "w", encoding="utf-8") as handle:
-                    handle.write(cls._dump_toml(document))
+                    handle.write(cls._dump_toml_for_path(path, serialized_document))
         except OSError as exc:
             code = getattr(exc, "errno", None)
             if code in {30} or "read-only" in str(exc).lower():
@@ -772,6 +793,7 @@ class Settings:
         soil_device_cal_doc = soil_calibration_doc.get("Device", {})
         i2c_sensor_doc = sensor_i2c_doc.get("Sensor", {})
         i2c_bus_doc = sensor_i2c_doc.get("I2Cbus", {})
+        i2c_plant_bus_doc = i2c_bus_doc.get("Plant", {}) if isinstance(i2c_bus_doc, dict) else {}
         i2c_display_doc = sensor_i2c_doc.get("Display", {})
         i2c_display_style_doc = sensor_i2c_doc.get("Display.Style", {})
         if not i2c_display_style_doc and isinstance(i2c_display_doc, dict):
@@ -856,6 +878,7 @@ class Settings:
                     sda_pin=i2c_bus_doc.get("I2C_SDA", ""),
                     address=i2c_bus_doc.get("I2C_ADDR", 0),
                 ),
+                secondary_i2c=cls._optional_i2c_config(i2c_plant_bus_doc),
                 display=DisplayConfig(
                     metrics=tuple(i2c_display_doc.get(f"METRIC_{index}", "") for index in range(1, 7)),
                     styles=tuple(i2c_display_style_doc.get(f"METRIC_{index}", "") for index in range(1, 7)),
@@ -873,10 +896,27 @@ class Settings:
                     gas_offset=float(i2c_device_cal_doc.get("GAS_OFFSET", 0.0)),
                     lux_offset=float(i2c_device_cal_doc.get("LUX_OFFSET", 0.0)),
                     ppfd_offset=float(i2c_device_cal_doc.get("PPFD_OFFSET", 0.0)),
+                    apvpd_temp_cal_val=float(i2c_device_cal_doc.get("APVPD_TEMP_CAL_VAL", 0.0)),
+                    apvpd_rh_cal_val=float(i2c_device_cal_doc.get("APVPD_RH_CAL_VAL", 0.0)),
                 ),
             )
 
         return DetectedSensor()
+
+    @staticmethod
+    def _optional_i2c_config(document):
+        if not isinstance(document, dict):
+            return None
+        has_pin = bool(str(document.get("I2C_SCL", "") or "").strip() or str(document.get("I2C_SDA", "") or "").strip())
+        has_addr = int(document.get("I2C_ADDR", 0) or 0) > 0
+        if not (has_pin or has_addr):
+            return None
+        return I2CConfig(
+            bus=document.get("I2C_BUS", 0),
+            scl_pin=document.get("I2C_SCL", ""),
+            sda_pin=document.get("I2C_SDA", ""),
+            address=document.get("I2C_ADDR", 0),
+        )
 
     @staticmethod
     def _detect_switch(*, switch_doc):
@@ -951,6 +991,72 @@ class Settings:
     @classmethod
     def _dump_toml(cls, document):
         return toml_compat.dumps(document)
+
+    @classmethod
+    def _dump_toml_for_path(cls, path, document):
+        template_path = cls._template_path_for_live_path(path)
+        if template_path and _path_exists(template_path):
+            try:
+                with open(template_path, "r", encoding="utf-8") as handle:
+                    return toml_compat.dumps_with_template(document, handle.read())
+            except OSError:
+                pass
+        return cls._dump_toml(document)
+
+    @classmethod
+    def _document_for_write(cls, path, document):
+        copied = cls._deep_copy_document(document)
+        filename = str(path or "").split("/")[-1]
+        if filename == cls.SETTINGS_FILE:
+            cls._obfuscate_settings_passwords(copied)
+        return copied
+
+    @staticmethod
+    def _deep_copy_document(value):
+        if isinstance(value, dict):
+            copied = {}
+            for key, item in value.items():
+                copied[key] = Settings._deep_copy_document(item)
+            return copied
+        return value
+
+    @staticmethod
+    def _obfuscate_settings_passwords(document):
+        if not isinstance(document, dict):
+            return
+        network_doc = document.get("Network", {})
+        mqtt_doc = document.get("MQTT", {})
+        hostname = ""
+        if isinstance(network_doc, dict):
+            hostname = str(network_doc.get("HOSTNAME", "") or "").strip()
+            for key in ("PASSWORD", "AP_PASSWORD"):
+                if key in network_doc:
+                    network_doc[key] = encode_password(
+                        network_doc.get(key, ""),
+                        hostname=hostname,
+                    )
+        if isinstance(mqtt_doc, dict) and "PASSWORD" in mqtt_doc:
+            mqtt_doc["PASSWORD"] = encode_password(
+                mqtt_doc.get("PASSWORD", ""),
+                hostname=hostname,
+            )
+
+    @classmethod
+    def _template_path_for_live_path(cls, path):
+        filename = str(path or "").split("/")[-1]
+        template_name = {
+            cls.SETTINGS_FILE: cls.SETTINGS_DEF_FILE,
+            cls.SENSOR_I2C_FILE: cls.SENSOR_I2C_DEF_FILE,
+            cls.SENSOR_SOIL_FILE: cls.SENSOR_SOIL_DEF_FILE,
+            cls.SWITCH_FILE: cls.SWITCH_DEF_FILE,
+        }.get(filename, "")
+        if not template_name:
+            return ""
+        path_text = str(path or "")
+        if "/" not in path_text:
+            return template_name
+        parent = path_text.rsplit("/", 1)[0]
+        return _join_path(parent, template_name)
 
     def active_profile(self):
         return self._runtime_config.active_profile

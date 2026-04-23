@@ -7,6 +7,7 @@ from cpynodus_ii.features.command_intake import process_soil_calibration_session
 from cpynodus_ii.features.command_intake import subscribe_runtime_topics
 from cpynodus_ii.features.publish_cycle import publish_sensor_cycle, publish_startup_cycle
 from cpynodus_ii.features.sensor_service import read_sensor_snapshot
+from cpynodus_ii.features.web_services import load_onboarding_state
 
 
 @dataclass(frozen=True)
@@ -60,17 +61,21 @@ def run_steady_state_iteration(
     if transport.connected and transport.connection_generation != state.connection_generation:
         sensor_snapshot = None
         switch_snapshot = {}
+        onboarding_state = {}
         if sensor_service is not None:
             sensor_snapshot = read_sensor_snapshot(sensor_service, runtime_config)
         if switch_service is not None:
             from cpynodus_ii.features.switch_service import snapshot_switch_states
 
             switch_snapshot = snapshot_switch_states(switch_service)
+        if settings_root is not None:
+            onboarding_state = load_onboarding_state(settings_root)
         subscribed_topics = subscribe_runtime_topics(transport, runtime_config)
         startup_result = publish_startup_cycle(
             transport,
             runtime_config,
             version=version,
+            onboarding_state=onboarding_state,
             sensor_snapshot=sensor_snapshot,
             switch_snapshot=switch_snapshot,
             active_broker=active_broker,

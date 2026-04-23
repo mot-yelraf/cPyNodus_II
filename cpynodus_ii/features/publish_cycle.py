@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from cpynodus_ii.features.payloads import (
     build_device_heartbeat_payload,
     build_homeassistant_discovery_plan,
+    build_onboarding_hello_payload,
     build_runtime_meta_payload,
     build_sensor_availability_payload,
     build_sensor_data_payload,
@@ -28,6 +29,7 @@ def publish_startup_cycle(
     runtime_config,
     *,
     version,
+    onboarding_state=None,
     sensor_snapshot=None,
     switch_snapshot=None,
     active_broker="",
@@ -52,6 +54,19 @@ def publish_startup_cycle(
         retain=True,
     )
     topics.append(meta.topic)
+
+    hello_payload = build_onboarding_hello_payload(
+        runtime_config,
+        onboarding_state,
+        version=version,
+    )
+    if hello_payload is not None:
+        hello = transport.publish(
+            mqtt_topic(runtime_config, device_id, "onboard", "hello"),
+            hello_payload,
+            retain=False,
+        )
+        topics.append(hello.topic)
 
     discovery_plan = build_homeassistant_discovery_plan(
         runtime_config,

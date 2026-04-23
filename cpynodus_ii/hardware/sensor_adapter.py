@@ -12,6 +12,7 @@ class SensorHardwareAdapter:
     transport_kind: str
     transport_target: str
     transport: object | None = None
+    secondary_transport: object | None = None
     errors: tuple = ()
 
 
@@ -42,6 +43,21 @@ def bind_sensor_hardware(sensor_runtime, runtime_config, *, board_module=None, b
     if sensor_runtime.interface == "i2c" and sensor.i2c is not None:
         scl = _resolve_pin(board_module, sensor.i2c.scl_pin, "missing_i2c_scl_pin_object", errors)
         sda = _resolve_pin(board_module, sensor.i2c.sda_pin, "missing_i2c_sda_pin_object", errors)
+        secondary_scl = None
+        secondary_sda = None
+        if sensor.device == "apvpd" and sensor.secondary_i2c is not None:
+            secondary_scl = _resolve_pin(
+                board_module,
+                sensor.secondary_i2c.scl_pin,
+                "missing_secondary_i2c_scl_pin_object",
+                errors,
+            )
+            secondary_sda = _resolve_pin(
+                board_module,
+                sensor.secondary_i2c.sda_pin,
+                "missing_secondary_i2c_sda_pin_object",
+                errors,
+            )
         if errors:
             return SensorHardwareAdapter(
                 phase="error",
@@ -51,12 +67,16 @@ def bind_sensor_hardware(sensor_runtime, runtime_config, *, board_module=None, b
                 errors=tuple(errors),
             )
         transport = busio_module.I2C(scl, sda)
+        secondary_transport = None
+        if sensor.device == "apvpd" and sensor.secondary_i2c is not None:
+            secondary_transport = busio_module.I2C(secondary_scl, secondary_sda)
         return SensorHardwareAdapter(
             phase="bound",
             interface=sensor_runtime.interface,
-            transport_kind="i2c",
+            transport_kind="i2c_dual" if secondary_transport is not None else "i2c",
             transport_target=sensor_runtime.transport_target,
             transport=transport,
+            secondary_transport=secondary_transport,
             errors=(),
         )
 

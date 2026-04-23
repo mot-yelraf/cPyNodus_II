@@ -26,7 +26,16 @@ class SensorService:
     driver_kind: str
     driver: object | None = None
     transport: object | None = None
+    secondary_transport: object | None = None
     errors: tuple = ()
+
+
+@dataclass(frozen=True)
+class DualBME280Driver:
+    """Capture ambient and plant BME280 drivers for APVPD."""
+
+    ambient: object
+    plant: object
 
 
 def start_sensor_service(sensor_runtime, sensor_adapter, runtime_config, *, modules=None):
@@ -46,7 +55,7 @@ def start_sensor_service(sensor_runtime, sensor_adapter, runtime_config, *, modu
     transport = sensor_adapter.transport
 
     if sensor_runtime.interface == "i2c":
-        return _start_i2c_sensor_service(sensor, transport, modules)
+        return _start_i2c_sensor_service(sensor, sensor_adapter, modules)
 
     if sensor_runtime.interface == "modbus_rs485":
         return SensorService(
@@ -75,6 +84,7 @@ def stop_sensor_service(sensor_service):
     transport = getattr(sensor_service, "transport", None)
     if transport is not getattr(sensor_service, "driver", None):
         _safe_deinit(transport)
+    _safe_deinit(getattr(sensor_service, "secondary_transport", None))
 
 
 def read_sensor_snapshot(sensor_service, runtime_config):
@@ -181,13 +191,15 @@ def read_sensor_snapshot(sensor_service, runtime_config):
         )
 
     if sensor.device in {"avpd", "apvpd"}:
+        driver = sensor_service.driver
+        ambient_driver = driver if sensor.device == "avpd" else driver.ambient
         temp_c = _apply_linear_calibration(
-            getattr(sensor_service.driver, "temperature", None),
+            getattr(ambient_driver, "temperature", None),
             sensor.calibration_system.temp_offset,
             sensor.calibration_device.temp_offset,
         )
         rh_pct = _apply_linear_calibration(
-            getattr(sensor_service.driver, "relative_humidity", None),
+            getattr(ambient_driver, "relative_humidity", None),
             sensor.calibration_system.rh_offset,
             sensor.calibration_device.rh_offset,
         )
@@ -196,11 +208,34 @@ def read_sensor_snapshot(sensor_service, runtime_config):
                 "Temperature": _maybe_round(temp_c, 2),
                 "Rel-Humidity": _maybe_round(rh_pct, 0),
                 "Baro-Pressure": _maybe_round(
-                    _scale_pressure_hpa(getattr(sensor_service.driver, "pressure", None)),
+                    _scale_pressure_hpa(getattr(ambient_driver, "pressure", None)),
                     None,
                 ),
             }
         )
+        if sensor.device == "apvpd":
+            metrics.update(
+                _compact_metrics(
+                    {
+                        "Plant Temperature": _maybe_round(
+                            _apply_linear_calibration(
+                                getattr(driver.plant, "temperature", None),
+                                0.0,
+                                sensor.calibration_device.apvpd_temp_cal_val,
+                            ),
+                            2,
+                        ),
+                        "Plant Rel-Humidity": _maybe_round(
+                            _apply_linear_calibration(
+                                getattr(driver.plant, "relative_humidity", None),
+                                0.0,
+                                sensor.calibration_device.apvpd_rh_cal_val,
+                            ),
+                            0,
+                        ),
+                    }
+                )
+            )
         metrics = enrich_metrics(sensor.device, metrics, runtime_config=runtime_config)
         _apply_post_enrichment_calibration(metrics, sensor)
         return SensorSnapshot(
@@ -231,8 +266,9 @@ def read_sensor_snapshot(sensor_service, runtime_config):
     )
 
 
-def _start_i2c_sensor_service(sensor, transport, modules):
+def _start_i2c_sensor_service(sensor, sensor_adapter, modules):
     device = sensor.device
+    transport = sensor_adapter.transport
     if device == "aqi":
         module = _load_module("adafruit_bme680", modules, "missing_adafruit_bme680")
         if module is None:
@@ -293,10 +329,30 @@ def _start_i2c_sensor_service(sensor, transport, modules):
         )
 
     if device in {"avpd", "apvpd"}:
-        module = _load_module("adafruit_bme280", modules, "missing_adafruit_bme280")
+        module = _load_module("adafruit_bme280.basic", modules, "missing_adafruit_bme280")
         if module is None:
             return _sensor_service_error(device, sensor.interface, transport, "missing_adafruit_bme280")
-        driver = module.Adafruit_BME280_I2C(transport, address=sensor.i2c.address)
+        if device == "avpd":
+            driver = module.Adafruit_BME280_I2C(transport, address=sensor.i2c.address)
+            return SensorService(
+                phase="ready",
+                device=device,
+                interface=sensor.interface,
+                driver_kind="adafruit_bme280",
+                driver=driver,
+                transport=transport,
+                errors=(),
+            )
+        secondary_transport = getattr(sensor_adapter, "secondary_transport", None)
+        if secondary_transport is None or sensor.secondary_i2c is None:
+            return _sensor_service_error(device, sensor.interface, transport, "missing_apvpd_secondary_i2c")
+        driver = DualBME280Driver(
+            ambient=module.Adafruit_BME280_I2C(transport, address=sensor.i2c.address),
+            plant=module.Adafruit_BME280_I2C(
+                secondary_transport,
+                address=sensor.secondary_i2c.address,
+            ),
+        )
         return SensorService(
             phase="ready",
             device=device,
@@ -304,6 +360,7 @@ def _start_i2c_sensor_service(sensor, transport, modules):
             driver_kind="adafruit_bme280",
             driver=driver,
             transport=transport,
+            secondary_transport=secondary_transport,
             errors=(),
         )
 
@@ -314,7 +371,13 @@ def _load_module(name, modules, error_code):
     if name in modules:
         return modules[name]
     try:
-        return __import__(name)
+        module = __import__(name)
+        if "." not in str(name or ""):
+            return module
+        current = module
+        for part in str(name).split(".")[1:]:
+            current = getattr(current, part)
+        return current
     except ImportError:
         return None
 
