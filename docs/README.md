@@ -227,6 +227,7 @@ Nodus currently supports these sensor device types: `apvpd`, `aqi`, `avpd`, `co2
 - `Plant Rel-Humidity` (`%`)
 - `Plant Humidity` (`g/m³`)
 - `Plant VPD` (`kPa`)
+- `Plant Baro-Pressure` (`hPa`)
 - `Plant Dew Point` (`°C`)
 - `Plant Dew Point_F` (`°F`)
 - `Plant Dew Point Deficit` (`°C`)
@@ -277,8 +278,8 @@ Nodus currently supports these sensor device types: `apvpd`, `aqi`, `avpd`, `co2
 
 - `Light Intensity` (`lux`)
 - `Auto Light` (`lux`)
-- `PPFD` (`µmol/m²/s`)
-- `DLI` (`mol/m²/day`)
+- `Estimated PPFD` (`µmol/m²/s`)
+- `Visible Light Intensity` (`mol/m²/day`)
 
 ## It is strongly suggested to use HaliSense soil sensors for capatibility (known register layout)
 ### `soil` (RS485 Modbus 2-in-1)

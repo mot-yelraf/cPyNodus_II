@@ -314,6 +314,7 @@ def test_sensor_service_reads_legacy_lux_snapshot_with_ppfd():
             self.transport = transport
             self.address = address
             self.lux = 5400.0
+            self.autolux = 5480.0
 
     runtime_config = RuntimeConfig(
         sensor=DetectedSensor(
@@ -345,7 +346,9 @@ def test_sensor_service_reads_legacy_lux_snapshot_with_ppfd():
 
     assert snapshot.phase == "ready"
     assert snapshot.metrics["Light Intensity"] == 5400.0
+    assert snapshot.metrics["Auto Light"] == 5480.0
     assert snapshot.metrics["Estimated PPFD"] == 100.0
+    assert snapshot.metrics["Visible Light Intensity"] == 8.64
 
 
 def test_sensor_service_starts_bme280_for_avpd_config():
@@ -418,6 +421,7 @@ def test_sensor_service_reads_dual_bme280_snapshot_for_apvpd():
     assert snapshot.metrics["Ambient VPD"] > 0
     assert snapshot.metrics["Plant Temperature"] == 22.5
     assert snapshot.metrics["Plant Rel-Humidity"] == 60.0
+    assert snapshot.metrics["Plant Baro-Pressure"] == 1006.5
     assert snapshot.metrics["Plant VPD"] > 0
     assert snapshot.metrics["Plant DewVPD Risk"] >= 0
 
@@ -565,6 +569,7 @@ def test_sensor_service_applies_device_calibration_offsets_for_aqi_and_lux():
     class _FakeLuxDriver:
         def __init__(self):
             self.lux = 5400.0
+            self.autolux = 5480.0
 
     lux_service = SimpleNamespace(phase="ready", driver=_FakeLuxDriver(), errors=())
     lux_snapshot = sensor_service_module.read_sensor_snapshot(lux_service, lux_runtime)
@@ -572,7 +577,9 @@ def test_sensor_service_applies_device_calibration_offsets_for_aqi_and_lux():
     assert aqi_snapshot.metrics["Gas"] == 12445.0
     assert aqi_snapshot.metrics["Air Quality"] >= 25.0
     assert lux_snapshot.metrics["Light Intensity"] == 5500.0
+    assert lux_snapshot.metrics["Auto Light"] == 5580.0
     assert lux_snapshot.metrics["Estimated PPFD"] == 107.0
+    assert lux_snapshot.metrics["Visible Light Intensity"] == 9.24
 
 
 def test_sensor_service_applies_soil_calibration_offsets():

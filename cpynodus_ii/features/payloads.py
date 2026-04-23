@@ -242,8 +242,11 @@ def build_homeassistant_discovery_plan(
         "Humidity": "%",
         "CO2": "ppm",
         "Air Quality": "%",
-        "Lux": "lx",
+        "Light Intensity": "lx",
+        "Auto Light": "lx",
         "PPFD": "umol/m2/s",
+        "Estimated PPFD": "umol/m2/s",
+        "Visible Light Intensity": "mol/m2/day",
         "Pressure": "Pa",
     }
     used_object_ids = set()

@@ -8,7 +8,7 @@ back to the rest of the runtime.
 from dataclasses import dataclass
 from time import sleep
 
-from cpynodus_ii.features.derived_metrics import enrich_metrics
+from cpynodus_ii.features.derived_metrics import enrich_metrics, estimate_dli_from_ppfd
 
 
 @dataclass(frozen=True)
@@ -222,9 +222,15 @@ def read_sensor_snapshot(sensor_service, runtime_config):
             0.0,
             sensor.calibration_device.lux_offset,
         )
+        auto_light = _apply_linear_calibration(
+            getattr(sensor_service.driver, "autolux", None),
+            0.0,
+            sensor.calibration_device.lux_offset,
+        )
         metrics = _compact_metrics(
             {
                 "Light Intensity": _maybe_round(lux, 0),
+                "Auto Light": _maybe_round(auto_light, 0),
             }
         )
         metrics = enrich_metrics(sensor.device, metrics, runtime_config=runtime_config)
@@ -279,6 +285,10 @@ def read_sensor_snapshot(sensor_service, runtime_config):
                                 sensor.calibration_device.apvpd_rh_cal_val,
                             ),
                             0,
+                        ),
+                        "Plant Baro-Pressure": _maybe_round(
+                            _scale_pressure_hpa(getattr(driver.plant, "pressure", None)),
+                            None,
                         ),
                     }
                 )
@@ -502,6 +512,7 @@ def _apply_post_enrichment_calibration(metrics, sensor):
             _apply_linear_calibration(metrics.get("Estimated PPFD"), calibration.ppfd_offset),
             0,
         )
+        metrics["Visible Light Intensity"] = estimate_dli_from_ppfd(metrics.get("Estimated PPFD"))
 
 
 def _compact_metrics(metrics):

@@ -64,7 +64,7 @@ _FACTORY_SENSOR_DISPLAY_DEFAULTS = {
     "apvpd": ("Temperature", "Ambient VPD", "Plant Temperature", "Plant VPD", "Dew Point Deficit", "Plant DewVPD Risk"),
     "avpd": ("Ambient VPD", "Temperature", "Rel-Humidity", "Baro-Pressure", "Dew Point Deficit", "DewVPD Risk"),
     "co2": ("CO2", "Temperature", "Rel-Humidity", "Ambient VPD", "Dew Point Deficit", "DewVPD Risk"),
-    "lux": ("Light Intensity", "Estimated PPFD", "", "", "", ""),
+    "lux": ("Light Intensity", "Auto Light", "Estimated PPFD", "Visible Light Intensity", "", ""),
 }
 
 

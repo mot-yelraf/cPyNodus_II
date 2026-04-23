@@ -9,6 +9,7 @@ import math
 
 
 DEFAULT_PPFD_LUX_FACTOR = 54.0
+DLI_SECONDS_PER_DAY_MICROMOL = 0.0864
 
 
 def enrich_metrics(device, metrics, *, runtime_config):
@@ -37,6 +38,7 @@ def enrich_metrics(device, metrics, *, runtime_config):
         ppfd = estimate_ppfd_from_lux(lux)
         if ppfd is not None:
             enriched["Estimated PPFD"] = round(ppfd, 0)
+            enriched["Visible Light Intensity"] = estimate_dli_from_ppfd(enriched["Estimated PPFD"])
 
     if device == "soil":
         _add_soil_derivatives(enriched, runtime_config)
@@ -173,6 +175,16 @@ def estimate_ppfd_from_lux(lux, factor=DEFAULT_PPFD_LUX_FACTOR):
     try:
         return float(lux) / float(factor)
     except (TypeError, ValueError, ZeroDivisionError):
+        return None
+
+
+def estimate_dli_from_ppfd(ppfd):
+    """Estimate mol/m2/day from the current PPFD value."""
+    if ppfd is None:
+        return None
+    try:
+        return round(float(ppfd) * DLI_SECONDS_PER_DAY_MICROMOL, 2)
+    except (TypeError, ValueError):
         return None
 
 

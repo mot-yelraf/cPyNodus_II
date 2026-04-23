@@ -21,7 +21,7 @@ _DISPLAY_METRICS_BY_DEVICE = {
     "co2": ("CO2", "Temperature"),
     "avpd": ("Temperature", "Ambient VPD"),
     "apvpd": ("Temperature", "Ambient VPD"),
-    "lux": ("Lux", "PPFD"),
+    "lux": ("Light Intensity", "Estimated PPFD"),
     "soil": ("Soil Moisture", "Soil Temp_C"),
 }
 
