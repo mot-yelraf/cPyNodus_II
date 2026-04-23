@@ -81,7 +81,14 @@ If you report verification, state exactly which test routines ran and whether th
 
 ## Versioning Rule
 
-When you make a code change, update `__version__` in `__init__.py` using:
+Update `cpynodus_ii/__init__.py::__version__` only when changing runtime code
+that affects firmware behavior on-device.
+
+Do not bump the version for docs-only changes, test-only changes, comments,
+formatting, or other non-runtime repository edits.
+
+If a change touches both runtime code and docs/tests, bump the version once,
+using:
 
 `v0.<year>.<doy>.<x>`
 
@@ -109,4 +116,3 @@ Example:
 - Prefer targeted edits over broad rewrites.
 - Treat web UI, MQTT reconnect logic, and config persistence as stability-sensitive areas.
 - Do not silently change public config keys, MQTT topics, or recovery semantics.
-
