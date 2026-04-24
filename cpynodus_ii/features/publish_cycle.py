@@ -14,6 +14,7 @@ from cpynodus_ii.features.payloads import (
     build_runtime_meta_payload,
     build_sensor_availability_payload,
     build_sensor_data_payload,
+    build_switch_event_payload,
     build_switch_state_payload,
     mqtt_topic,
 )
@@ -221,6 +222,7 @@ def publish_switch_result(transport, runtime_config, apply_result, *, message_id
             errors=("switch_channel_not_found",),
         )
     result_topic = mqtt_topic(runtime_config, channel.channel_id, "config", "result")
+    event_topic = mqtt_topic(runtime_config, channel.channel_id, "event")
     state_topic = mqtt_topic(runtime_config, channel.channel_id, "state")
     result_payload = {
         "message_id": str(message_id or ""),
@@ -231,11 +233,21 @@ def publish_switch_result(transport, runtime_config, apply_result, *, message_id
     }
     state_payload = "ON" if apply_result.applied_state else "OFF"
     result_message = transport.publish(result_topic, result_payload, retain=False)
+    event_message = transport.publish(
+        event_topic,
+        build_switch_event_payload(
+            runtime_config,
+            channel,
+            bool(apply_result.applied_state),
+            message_id=message_id,
+        ),
+        retain=False,
+    )
     state_message = transport.publish(state_topic, state_payload, retain=True)
     return PublishCycleResult(
         phase="published",
-        published_count=2,
-        topics=(result_message.topic, state_message.topic),
+        published_count=3,
+        topics=(result_message.topic, event_message.topic, state_message.topic),
         errors=(),
     )
 

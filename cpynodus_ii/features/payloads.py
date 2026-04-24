@@ -7,6 +7,8 @@ runtime.
 
 from time import time
 
+from cpynodus_ii.core.obfuscation import encode_password
+
 
 def _slugify(value):
     text = str(value or "").strip().lower()
@@ -107,6 +109,19 @@ def build_switch_state_payload(runtime_config, switch_state_snapshot):
     return payloads
 
 
+def build_switch_event_payload(runtime_config, channel, state, *, message_id=""):
+    """Build a non-retained switch event payload for accepted state changes."""
+    return {
+        "schema": "nodus-switch-event/v1",
+        "device_id": runtime_config.switch.device_id,
+        "channel_id": channel.channel_id,
+        "label": channel.label,
+        "state": "ON" if state else "OFF",
+        "message_id": str(message_id or ""),
+        "timestamp": int(time()),
+    }
+
+
 def build_device_heartbeat_payload(runtime_config, *, online):
     """Build the compact heartbeat payload for device liveness."""
     device_id = runtime_config.sensor.sensor_id or runtime_config.switch.device_id or runtime_config.network.hostname
@@ -140,11 +155,23 @@ def build_runtime_meta_payload(runtime_config, *, version, active_broker=""):
         "status": {
             "heartbeat_topic": mqtt_topic(runtime_config, device_id, "status", "heartbeat"),
         },
+        "network": {
+            "ssid": runtime_config.network.ssid,
+            "password": _obfuscated_password(runtime_config.network.password, runtime_config),
+            "hostname": runtime_config.network.hostname,
+        },
+        "profile": {
+            "active_profile": runtime_config.active_profile,
+        },
         "mqtt": {
             "broker": runtime_config.mqtt.broker,
             "broker_ip": runtime_config.mqtt.broker_ip,
             "active_broker": str(active_broker or runtime_config.mqtt.preferred_host or ""),
             "port": runtime_config.mqtt.port,
+            "use_tls": bool(runtime_config.mqtt.use_tls),
+            "username": runtime_config.mqtt.username,
+            "password": _obfuscated_password(runtime_config.mqtt.password, runtime_config),
+            "base_topic": runtime_config.mqtt.base_topic,
         },
         "location_group": {
             "location": location,
@@ -157,6 +184,8 @@ def build_runtime_meta_payload(runtime_config, *, version, active_broker=""):
         payload["sensor"] = {
             "sensor_id": sensor.sensor_id,
             "location": sensor.location,
+            "display_metrics": _display_metrics_for_meta(sensor),
+            "display_styles": _display_styles_for_meta(sensor),
             "data_topic": mqtt_topic(runtime_config, sensor.sensor_id, "data"),
             "event_topic": mqtt_topic(runtime_config, sensor.sensor_id, "event"),
             "availability_topic": mqtt_topic(runtime_config, sensor.sensor_id, "availability"),
@@ -172,6 +201,8 @@ def build_runtime_meta_payload(runtime_config, *, version, active_broker=""):
                     "channel_id": channel.channel_id,
                     "enable_pin": channel.enable_pin,
                     "pin": channel.control_pin,
+                    "state": bool(channel.last_state),
+                    "event_topic": mqtt_topic(runtime_config, channel.channel_id, "event"),
                     "state_topic": mqtt_topic(runtime_config, channel.channel_id, "state"),
                     "set_topic": mqtt_topic(runtime_config, channel.channel_id, "config", "set"),
                     "result_topic": mqtt_topic(runtime_config, channel.channel_id, "config", "result"),
@@ -185,6 +216,31 @@ def build_runtime_meta_payload(runtime_config, *, version, active_broker=""):
         }
 
     return payload
+
+
+def _display_metrics_for_meta(sensor):
+    metrics = tuple(getattr(getattr(sensor, "display", None), "metrics", ()) or ())
+    return [
+        str(metric or "").strip()
+        for metric in metrics
+        if str(metric or "").strip()
+    ]
+
+
+def _display_styles_for_meta(sensor):
+    styles = tuple(getattr(getattr(sensor, "display", None), "styles", ()) or ())
+    return [
+        str(style or "").strip()
+        for style in styles
+        if str(style or "").strip()
+    ]
+
+
+def _obfuscated_password(password, runtime_config):
+    return encode_password(
+        str(password or ""),
+        hostname=getattr(getattr(runtime_config, "network", None), "hostname", ""),
+    )
 
 
 def build_onboarding_hello_payload(runtime_config, onboarding_state, *, version):

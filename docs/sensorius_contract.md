@@ -62,6 +62,7 @@ Bootstrap rules:
 - `nodus/<device_id>/meta`
 - `nodus/<sensor_id>/availability`
 - `nodus/<sensor_id>/data`
+- `nodus/<channel_id>/event`
 - `nodus/<channel_id>/state`
 - `nodus/<channel_id>/availability`
 
@@ -84,6 +85,7 @@ Bootstrap rules:
 - `nodus/<channel_id>/config/set`
 - `nodus/<channel_id>/config/ack`
 - `nodus/<channel_id>/config/result`
+- `nodus/<channel_id>/event`
 - retained `nodus/<channel_id>/state`
 - `nodus/<device_id>/meta/patch`
 
@@ -173,13 +175,21 @@ The payload must include:
 - top-level `schema`, `device_id`, `hostname`, `serial`, `version`, `type`
 - `capabilities`
 - `status.heartbeat_topic`
-- `mqtt.broker`, `mqtt.broker_ip`, `mqtt.active_broker`, `mqtt.port`
+- `network.ssid`, `network.password`, `network.hostname`
+- `profile.active_profile`
+- `mqtt.broker`, `mqtt.broker_ip`, `mqtt.active_broker`, `mqtt.port`,
+  `mqtt.use_tls`, `mqtt.username`, `mqtt.password`, `mqtt.base_topic`
 - `location_group.location`, `location_group.members`
 - `sensor.sensor_id`, `sensor.location`, `sensor.data_topic`,
-  `sensor.event_topic`, `sensor.availability_topic`
+  `sensor.event_topic`, `sensor.availability_topic`,
+  `sensor.display_metrics`, `sensor.display_styles`
 - `switch.device_id`, `switch.location`
 - per-channel `index`, `label`, `channel_id`, `enable_pin`, `pin`,
-  `state_topic`, `set_topic`, `result_topic`, `availability_topic`
+  `state`, `event_topic`, `state_topic`, `set_topic`, `result_topic`,
+  `availability_topic`
+
+Password fields in retained `meta` use the same `obf1:` obfuscation format as
+persisted TOML password fields. They are not plaintext.
 
 ## Ordinary `config/set`
 
@@ -309,4 +319,3 @@ These shapes are deprecated and should not be treated as canonical:
 - switch-control docs centered on plain `ON` and `OFF`
 - docs that imply ordinary runtime config writes trigger a full retained `meta`
   refresh
-

@@ -87,7 +87,9 @@ def _runtime_config():
         tmpdir_path = Path(tmpdir)
         for name in ("settings.toml", "sensor_i2c.toml", "switch.toml"):
             (tmpdir_path / name).write_text((docs_root / name).read_text(), encoding="utf-8")
-        return Settings.from_directory(tmpdir_path).runtime_config()
+        runtime_config = Settings.from_directory(tmpdir_path).runtime_config()
+        runtime_config.active_profile = "nodusweb"
+        return runtime_config
 
 
 def test_ap_mode_network_stack_includes_socket_artifacts_for_web_runtime():

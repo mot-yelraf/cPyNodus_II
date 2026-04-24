@@ -24,6 +24,7 @@ from cpynodus_ii.features.payloads import (
     build_runtime_meta_payload,
     build_sensor_availability_payload,
     build_sensor_data_payload,
+    build_switch_event_payload,
     build_switch_state_payload,
 )
 from cpynodus_ii.features.publish_cycle import (
@@ -127,6 +128,7 @@ __all__ = [
     "build_runtime_meta_payload",
     "build_sensor_availability_payload",
     "build_sensor_data_payload",
+    "build_switch_event_payload",
     "build_switch_runtime",
     "build_switch_state_payload",
     "build_itaot_init_updates",

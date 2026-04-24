@@ -179,18 +179,21 @@ def test_process_switch_command_message_applies_state_and_publishes_result():
     )
 
     assert result.phase == "published"
-    assert result.published_count == 5
+    assert result.published_count == 6
     assert [message.topic for message in transport.published_messages] == [
         "nodus/S1-x943fm/config/ack",
         "nodus/S1-x943fm/config/result",
+        "nodus/S1-x943fm/event",
         "nodus/S1-x943fm/state",
         "nodus/switch-x943fm/meta/patch",
         "nodus/S1-x943fm/config/set",
     ]
     assert transport.published_messages[0].payload["message_id"] == ""
-    assert transport.published_messages[2].payload == "ON"
-    assert transport.published_messages[3].payload["source"] == "switch_set"
-    assert transport.published_messages[4].payload == ""
+    assert transport.published_messages[2].payload["schema"] == "nodus-switch-event/v1"
+    assert transport.published_messages[2].payload["state"] == "ON"
+    assert transport.published_messages[3].payload == "ON"
+    assert transport.published_messages[4].payload["source"] == "switch_set"
+    assert transport.published_messages[5].payload == ""
 
 
 def test_process_switch_command_message_accepts_device_style_updates_payload():
@@ -206,8 +209,9 @@ def test_process_switch_command_message_accepts_device_style_updates_payload():
     assert result.phase == "published"
     assert result.message_id == "cfg-1"
     assert transport.published_messages[0].payload["message_id"] == "cfg-1"
-    assert transport.published_messages[2].payload == "ON"
-    assert transport.published_messages[3].payload["updates"][0]["key"] == "SWITCH_1_LAST_STATE"
+    assert transport.published_messages[2].payload["state"] == "ON"
+    assert transport.published_messages[3].payload == "ON"
+    assert transport.published_messages[4].payload["updates"][0]["key"] == "SWITCH_1_LAST_STATE"
 
 
 def test_process_switch_command_message_uses_configured_base_topic():
@@ -229,6 +233,7 @@ def test_process_switch_command_message_uses_configured_base_topic():
     assert [message.topic for message in transport.published_messages] == [
         "greenhouse/S1-x943fm/config/ack",
         "greenhouse/S1-x943fm/config/result",
+        "greenhouse/S1-x943fm/event",
         "greenhouse/S1-x943fm/state",
         "greenhouse/switch-x943fm/meta/patch",
         "greenhouse/S1-x943fm/config/set",

@@ -140,8 +140,12 @@ def test_switch_result_publishes_result_and_retained_state():
     result = publish_switch_result(transport, runtime_config, apply_result, message_id="cfg-1")
 
     assert result.phase == "published"
-    assert result.published_count == 2
-    assert result.topics == ("nodus/S1-x943fm/config/result", "nodus/S1-x943fm/state")
+    assert result.published_count == 3
+    assert result.topics == (
+        "nodus/S1-x943fm/config/result",
+        "nodus/S1-x943fm/event",
+        "nodus/S1-x943fm/state",
+    )
     assert transport.published_messages[-1].retain is True
     assert transport.published_messages[0].payload == {
         "message_id": "cfg-1",
@@ -150,6 +154,10 @@ def test_switch_result_publishes_result_and_retained_state():
         "duplicate": False,
         "error": "",
     }
+    assert transport.published_messages[1].retain is False
+    assert transport.published_messages[1].payload["schema"] == "nodus-switch-event/v1"
+    assert transport.published_messages[1].payload["state"] == "ON"
+    assert transport.published_messages[1].payload["message_id"] == "cfg-1"
     assert transport.published_messages[-1].payload == "ON"
 
 

@@ -4,11 +4,14 @@ from types import SimpleNamespace
 
 from cpynodus_ii.core.config import (
     DetectedSensor,
+    DisplayConfig,
+    MQTTConfig,
     NetworkConfig,
     RuntimeConfig,
     SwitchChannelConfig,
     SwitchConfig,
 )
+from cpynodus_ii.core.obfuscation import decode_password
 from cpynodus_ii.features import (
     build_calibration_ack_payload,
     build_calibration_result_payload,
@@ -79,7 +82,21 @@ def test_switch_state_payloads_use_channel_ids_and_states():
 
 def test_runtime_meta_payload_includes_sensor_and_switch_topics():
     runtime_config = RuntimeConfig(
-        network=NetworkConfig(hostname="aqi-x943fm"),
+        active_profile="sensorius",
+        network=NetworkConfig(
+            ssid="PeaceHill",
+            password="wifi-secret",
+            hostname="aqi-x943fm",
+        ),
+        mqtt=MQTTConfig(
+            broker="broker.local",
+            broker_ip="10.0.0.20",
+            port=1885,
+            use_tls=True,
+            base_topic="nodus",
+            username="nodus-user",
+            password="mqtt-secret",
+        ),
         sensor=DetectedSensor(
             family="i2c",
             interface="i2c",
@@ -87,6 +104,10 @@ def test_runtime_meta_payload_includes_sensor_and_switch_topics():
             sensor_id="aqi-x943fm",
             serial_number="x943fm",
             location="TestLab",
+            display=DisplayConfig(
+                metrics=("Air Quality", "Temperature", "", "Rel-Humidity"),
+                styles=("graph24hr", "graph24hr", "", "gauge"),
+            ),
         ),
         switch=SwitchConfig(
             present=True,
@@ -95,7 +116,14 @@ def test_runtime_meta_payload_includes_sensor_and_switch_topics():
             location="TestLab",
             channel_count=1,
             channels=(
-                SwitchChannelConfig(key="SWITCH_1", channel_id="S1-x943fm", label="Fan", enable_pin="GP5", control_pin="GP28"),
+                SwitchChannelConfig(
+                    key="SWITCH_1",
+                    channel_id="S1-x943fm",
+                    label="Fan",
+                    enable_pin="GP5",
+                    control_pin="GP28",
+                    last_state=True,
+                ),
             ),
         ),
     )
@@ -107,9 +135,31 @@ def test_runtime_meta_payload_includes_sensor_and_switch_topics():
     )
     assert payload["schema"] == "nodus-meta/v1"
     assert payload["device_id"] == "aqi-x943fm"
+    assert payload["network"]["ssid"] == "PeaceHill"
+    assert payload["network"]["hostname"] == "aqi-x943fm"
+    assert payload["network"]["password"] != "wifi-secret"
+    assert decode_password(payload["network"]["password"], hostname="aqi-x943fm") == "wifi-secret"
+    assert payload["profile"]["active_profile"] == "sensorius"
+    assert payload["mqtt"]["broker"] == "broker.local"
+    assert payload["mqtt"]["broker_ip"] == "10.0.0.20"
     assert payload["mqtt"]["active_broker"] == "sensoria-hub-0.local"
+    assert payload["mqtt"]["port"] == 1885
+    assert payload["mqtt"]["use_tls"] is True
+    assert payload["mqtt"]["username"] == "nodus-user"
+    assert payload["mqtt"]["base_topic"] == "nodus"
+    assert payload["mqtt"]["password"] != "mqtt-secret"
+    assert decode_password(payload["mqtt"]["password"], hostname="aqi-x943fm") == "mqtt-secret"
+    assert payload["sensor"]["display_metrics"] == [
+        "Air Quality",
+        "Temperature",
+        "Rel-Humidity",
+    ]
+    assert payload["sensor"]["display_styles"] == ["graph24hr", "graph24hr", "gauge"]
     assert payload["sensor"]["data_topic"] == "nodus/aqi-x943fm/data"
+    assert payload["sensor"]["event_topic"] == "nodus/aqi-x943fm/event"
+    assert payload["switch"]["channels"][0]["event_topic"] == "nodus/S1-x943fm/event"
     assert payload["switch"]["channels"][0]["state_topic"] == "nodus/S1-x943fm/state"
+    assert payload["switch"]["channels"][0]["state"] is True
     assert payload["location_group"]["members"] == ["aqi-x943fm", "S1-x943fm"]
 
 

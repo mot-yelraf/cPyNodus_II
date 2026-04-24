@@ -33,6 +33,7 @@ wins.
 - `nodus/<device_id>/calibration/result`
 - `nodus/<sensor_id>/data`
 - `nodus/<sensor_id>/availability`
+- `nodus/<channel_id>/event`
 - `nodus/<channel_id>/state`
 - `nodus/<channel_id>/availability`
 - `nodus/<channel_id>/config/set`

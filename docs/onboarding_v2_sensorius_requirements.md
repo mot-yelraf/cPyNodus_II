@@ -228,10 +228,13 @@ Use stable short error strings to keep UI and recovery behavior predictable:
 
 ### `meta` Payload Field Notes
 `nodus/<device_id>/meta` (`schema = "nodus-meta/v1"`) includes:
-1. `sensor.display_metrics` for Sensorius TOML `[Display]` materialization.
-2. `sensor.display_styles` for Sensorius TOML `[Display.Style]` materialization.
-3. `switch.channels[*]` with `channel_id`, `event_topic`, `state_topic`, `set_topic`, and `availability_topic`.
-4. `location_group` grouping metadata.
+1. `network`, `profile`, and `mqtt` shadow fields for Sensorius TOML materialization.
+2. `sensor.display_metrics` for Sensorius TOML `[Display]` materialization.
+3. `sensor.display_styles` for Sensorius TOML `[Display.Style]` materialization.
+4. `switch.channels[*]` with `channel_id`, `state`, `event_topic`, `state_topic`, `set_topic`, and `availability_topic`.
+5. `location_group` grouping metadata.
+
+Password fields in `meta` must be `obf1:` obfuscated, not plaintext.
 
 Sensorius should treat `meta` as eventual (it may be deferred briefly on low memory) and should not block onboarding success on immediate meta arrival.
 
