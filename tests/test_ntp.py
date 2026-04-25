@@ -42,7 +42,11 @@ class _FakeRTC:
 def _runtime_config():
     return RuntimeConfig(
         active_profile="nodusweb",
-        network=NetworkConfig(ssid="PeaceHill", password="secretpass", hostname="aqi-x943fm"),
+        network=NetworkConfig(
+            ssid="PeaceHill",
+            password="secretpass",
+            hostname="aqi-x943fm",
+        ),
     )
 
 
@@ -114,6 +118,60 @@ def test_maybe_sync_ntp_defers_until_hostname_resolution_is_ready():
     assert result.phase == "deferred"
     assert result.errors[0].startswith("ntp_dns_unready:")
     assert _FakeNTP.instances == []
+
+
+def test_maybe_sync_ntp_disables_after_repeated_dns_not_found_errors():
+    _FakeNTP.instances = []
+    state = NTPState()
+    for attempt in range(3):
+        result = maybe_sync_ntp(
+            _runtime_config(),
+            _network_stack(_ResolveFailPool()),
+            state=state,
+            now_monotonic=10.0 + (attempt * 60.0),
+            modules={"ntp_cls": _FakeNTP, "rtc_factory": _FakeRTC},
+        )
+        state = result.state
+
+    assert result.phase == "disabled"
+    assert result.state.failure_count == 3
+    assert result.errors[0].startswith("ntp_dns_unready:")
+
+    skipped = maybe_sync_ntp(
+        _runtime_config(),
+        _network_stack(_ResolveFailPool()),
+        state=state,
+        now_monotonic=300.0,
+        modules={"ntp_cls": _FakeNTP, "rtc_factory": _FakeRTC},
+    )
+
+    assert skipped.phase == "skipped"
+    assert skipped.errors == ("ntp_disabled_after_dns_failures",)
+    assert _FakeNTP.instances == []
+
+
+def test_maybe_sync_ntp_retries_when_server_changes_after_disable():
+    state = NTPState(
+        phase="disabled",
+        server=DEFAULT_NTP_SERVER,
+        last_attempt_at=120.0,
+        failure_count=3,
+        errors=("ntp_dns_unready:-2",),
+    )
+    runtime_config = _runtime_config()
+    runtime_config.time.ntp_server = "10.0.0.2"
+
+    result = maybe_sync_ntp(
+        runtime_config,
+        _network_stack(_ResolveOKPool()),
+        state=state,
+        now_monotonic=180.0,
+        modules={"ntp_cls": _FakeNTP, "rtc_factory": _FakeRTC},
+    )
+
+    assert result.phase == "synced"
+    assert result.state.server == "10.0.0.2"
+    assert result.state.failure_count == 0
 
 
 def test_maybe_sync_ntp_resyncs_after_86400_seconds():

@@ -101,7 +101,11 @@ The shared MQTT connection is configured in `[MQTT]`:
 - `USERNAME`
 - `PASSWORD`
 
-`BROKER_IP` is optional. When set, it provides a direct broker IP override alongside the hostname in `BROKER`.
+`BROKER_IP` is optional. Devices first try `BROKER`; after a successful
+hostname-based MQTT connection, a writable runtime persists the resolved address
+to `BROKER_IP` so later reconnects can fall back to the direct IP. The same
+settings rewrite obfuscates any plaintext passwords that were manually entered
+in `settings.toml`.
 
 ## Local setup UI
 
@@ -145,7 +149,12 @@ Time is configured in the `[Time]` section of `settings.toml`:
 - `TZ_NAME` (e.g., `MST`)
 - `NTP_SERVER` (optional hostname or IP; defaults to `pool.ntp.org` when blank)
 
-`NTP_SERVER` may be left blank to use the default pool host. NTP sync is deferred until hostname resolution is available; this avoids early boot failures when DNS/mDNS is not ready yet.
+`NTP_SERVER` may be left blank to use the default pool host. NTP sync is deferred
+until hostname resolution is available; this avoids early boot failures when
+DNS/mDNS is not ready yet. If hostname lookup repeatedly returns `-2`, Nodus
+disables further NTP attempts for that configured server. MQTT availability and
+heartbeat status do not require NTP; unsynced devices continue publishing online
+state with best-effort timestamps.
 
 ## Soil deficit thresholds
 

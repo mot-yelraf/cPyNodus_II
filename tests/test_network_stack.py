@@ -19,6 +19,27 @@ class _FakeRadio:
         self.ap_started.append((ssid, password))
 
 
+class _RadioNotConnectedAfterConnect:
+    def __init__(self):
+        self.connect_calls = []
+        self.ap_started = []
+        self.hostname = ""
+        self.ipv4_address = "192.168.1.44"
+        self.ipv4_address_ap = "192.168.4.1"
+
+    def connect(self, ssid, password):
+        self.connect_calls.append((ssid, password))
+
+    @property
+    def connected(self):
+        return False
+
+
+class _FakeAPInfo:
+    def __init__(self, ssid):
+        self.ssid = ssid
+
+
 class _FakeConnMgr:
     @staticmethod
     def get_radio_socketpool(radio):
@@ -40,6 +61,12 @@ class _FlakyRadio:
         self.connected.append((ssid, password))
         if self.failures:
             raise self.failures.pop(0)
+
+
+class _NotImplementedAPInfoRadio(_FlakyRadio):
+    @property
+    def ap_info(self):
+        raise NotImplementedError()
 
 
 def test_build_network_stack_connects_station_mode_and_returns_socket_artifacts():
@@ -84,7 +111,7 @@ def test_build_network_stack_returns_ap_mode_when_requested():
     assert stack.phase == "ap"
     assert stack.mode == "ap"
     assert stack.ssid == "Nodus_Setup"
-    assert stack.ip_address == "192.168.1.44"
+    assert stack.ip_address == "192.168.4.1"
     assert radio.ap_started == [("Nodus_Setup", "password")]
 
 
@@ -126,6 +153,8 @@ def test_build_network_stack_retries_transient_failures_and_then_succeeds():
 
 def test_build_network_stack_fails_fast_on_authentication_error():
     radio = _FlakyRadio([ConnectionError("Authentication failure")])
+    radio.ipv4_address = "10.0.0.252"
+    radio.ipv4_address_ap = "192.168.4.1"
     runtime_config = RuntimeConfig(
         active_profile="sensorius",
         network=NetworkConfig(ssid="TestWiFi", password="badpass", hostname="aqi-x943fm"),
@@ -140,8 +169,33 @@ def test_build_network_stack_fails_fast_on_authentication_error():
     )
 
     assert stack.phase == "error"
+    assert stack.ip_address == "10.0.0.252"
     assert "network_auth_failed" in stack.errors
+    assert "exception=ConnectionError" in stack.errors
+    assert "station_ip=10.0.0.252" in stack.errors
+    assert "ap_ip=192.168.4.1" in stack.errors
     assert len(radio.connected) == 1
+
+
+def test_build_network_stack_diagnostics_ignore_unimplemented_ap_info():
+    radio = _NotImplementedAPInfoRadio([ConnectionError("temporary network failure")])
+    radio.ipv4_address = "10.0.0.252"
+    runtime_config = RuntimeConfig(
+        active_profile="sensorius",
+        network=NetworkConfig(ssid="TestWiFi", password="secretpass", hostname="aqi-x943fm"),
+    )
+
+    stack = build_network_stack(
+        runtime_config,
+        wifi_radio=radio,
+        connection_manager_module=_FakeConnMgr,
+        max_attempts=1,
+        retry_delay_s=0.0,
+    )
+
+    assert stack.phase == "error"
+    assert "network_connect_failed" in stack.errors
+    assert "station_ip=10.0.0.252" in stack.errors
 
 
 def test_build_network_stack_reports_missing_ssid_for_station_mode():
@@ -158,6 +212,72 @@ def test_build_network_stack_reports_missing_ssid_for_station_mode():
 
     assert stack.phase == "error"
     assert stack.errors == ("network_ssid_missing",)
+
+
+def test_build_network_stack_rejects_unconnected_radio_after_connect_call():
+    radio = _RadioNotConnectedAfterConnect()
+    runtime_config = RuntimeConfig(
+        active_profile="sensorius",
+        network=NetworkConfig(ssid="PeaceHill", password="secretpass", hostname="co2-29j39c"),
+    )
+
+    stack = build_network_stack(
+        runtime_config,
+        wifi_radio=radio,
+        connection_manager_module=_FakeConnMgr,
+    )
+
+    assert stack.phase == "error"
+    assert "network_not_connected" in stack.errors
+    assert "connected=False" in stack.errors
+
+
+def test_build_network_stack_rejects_wrong_station_ssid():
+    radio = _FakeRadio()
+    radio.ap_info = _FakeAPInfo("Nodus_Setup")
+    runtime_config = RuntimeConfig(
+        active_profile="sensorius",
+        network=NetworkConfig(
+            ssid="PeaceHill",
+            password="secretpass",
+            ap_ssid="Nodus_Setup",
+            hostname="co2-29j39c",
+        ),
+    )
+
+    stack = build_network_stack(
+        runtime_config,
+        wifi_radio=radio,
+        connection_manager_module=_FakeConnMgr,
+    )
+
+    assert stack.phase == "error"
+    assert "network_wrong_ssid" in stack.errors
+    assert "actual_ssid=Nodus_Setup" in stack.errors
+
+
+def test_build_network_stack_rejects_nodus_ap_subnet_for_station_mode():
+    radio = _FakeRadio()
+    radio.ipv4_address = "192.168.4.16"
+    runtime_config = RuntimeConfig(
+        active_profile="sensorius",
+        network=NetworkConfig(
+            ssid="PeaceHill",
+            password="secretpass",
+            ap_ssid="Nodus_Setup",
+            hostname="co2-29j39c",
+        ),
+    )
+
+    stack = build_network_stack(
+        runtime_config,
+        wifi_radio=radio,
+        connection_manager_module=_FakeConnMgr,
+    )
+
+    assert stack.phase == "error"
+    assert "network_ap_subnet_suspect" in stack.errors
+    assert "station_ip=192.168.4.16" in stack.errors
 
 
 def test_reconnect_network_stack_preserves_socket_artifacts_until_rebuild_requested():

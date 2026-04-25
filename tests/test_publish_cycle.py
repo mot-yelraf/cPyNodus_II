@@ -110,6 +110,30 @@ def test_sensor_cycle_skips_when_snapshot_not_ready():
     assert "sensor_snapshot_not_ready" in result.errors
 
 
+def test_sensor_cycle_preserves_snapshot_errors_when_skipped():
+    transport = MQTTTransport("broker.local", 1883)
+    runtime_config = RuntimeConfig(
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            device="co2",
+            sensor_id="co2-29j39c",
+        ),
+    )
+    sensor_snapshot = SimpleNamespace(
+        phase="error",
+        metrics={},
+        errors=("sensor_metrics_empty",),
+    )
+
+    result = publish_sensor_cycle(transport, runtime_config, sensor_snapshot)
+
+    assert result.phase == "skipped"
+    assert result.published_count == 0
+    assert result.errors == ("sensor_metrics_empty",)
+    assert transport.published_messages == []
+
+
 def test_switch_result_publishes_result_and_retained_state():
     transport = MQTTTransport("broker.local", 1883)
     runtime_config = RuntimeConfig(

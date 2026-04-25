@@ -96,7 +96,15 @@ def start_sensor_service(sensor_runtime, sensor_adapter, runtime_config, *, modu
     transport = sensor_adapter.transport
 
     if sensor_runtime.interface == "i2c":
-        return _start_i2c_sensor_service(sensor, sensor_adapter, modules)
+        try:
+            return _start_i2c_sensor_service(sensor, sensor_adapter, modules)
+        except Exception:
+            return _sensor_service_error(
+                sensor.device,
+                sensor.interface,
+                transport,
+                "sensor_not_found",
+            )
 
     if sensor_runtime.interface == "modbus_rs485":
         driver = transport
@@ -175,15 +183,18 @@ def read_sensor_snapshot(sensor_service, runtime_config):
         )
         metrics = enrich_metrics(sensor.device, metrics, runtime_config=runtime_config)
         _apply_post_enrichment_calibration(metrics, sensor)
-        return SensorSnapshot(
-            phase="ready",
-            sensor_id=sensor.sensor_id,
-            device=sensor.device,
-            metrics=metrics,
-            errors=(),
-        )
+        return _ready_sensor_snapshot(sensor, metrics)
 
     if sensor.device == "co2":
+        if getattr(sensor_service, "driver_kind", "") == "adafruit_scd4x":
+            if not _sensor_data_ready(sensor_service.driver):
+                return SensorSnapshot(
+                    phase="waiting",
+                    sensor_id=sensor.sensor_id,
+                    device=sensor.device,
+                    metrics={},
+                    errors=("sensor_data_not_ready",),
+                )
         co2_ppm = _apply_linear_calibration(
             getattr(sensor_service.driver, "CO2", None),
             sensor.calibration_system.co2_offset,
@@ -208,13 +219,7 @@ def read_sensor_snapshot(sensor_service, runtime_config):
         )
         metrics = enrich_metrics(sensor.device, metrics, runtime_config=runtime_config)
         _apply_post_enrichment_calibration(metrics, sensor)
-        return SensorSnapshot(
-            phase="ready",
-            sensor_id=sensor.sensor_id,
-            device=sensor.device,
-            metrics=metrics,
-            errors=(),
-        )
+        return _ready_sensor_snapshot(sensor, metrics)
 
     if sensor.device == "lux":
         lux = _apply_linear_calibration(
@@ -235,13 +240,7 @@ def read_sensor_snapshot(sensor_service, runtime_config):
         )
         metrics = enrich_metrics(sensor.device, metrics, runtime_config=runtime_config)
         _apply_post_enrichment_calibration(metrics, sensor)
-        return SensorSnapshot(
-            phase="ready",
-            sensor_id=sensor.sensor_id,
-            device=sensor.device,
-            metrics=metrics,
-            errors=(),
-        )
+        return _ready_sensor_snapshot(sensor, metrics)
 
     if sensor.device == "aht":
         temp_c = _apply_linear_calibration(
@@ -262,13 +261,7 @@ def read_sensor_snapshot(sensor_service, runtime_config):
         )
         metrics = enrich_metrics(sensor.device, metrics, runtime_config=runtime_config)
         _apply_post_enrichment_calibration(metrics, sensor)
-        return SensorSnapshot(
-            phase="ready",
-            sensor_id=sensor.sensor_id,
-            device=sensor.device,
-            metrics=metrics,
-            errors=(),
-        )
+        return _ready_sensor_snapshot(sensor, metrics)
 
     if sensor.device in {"avpd", "apvpd", "apvpd_aht"}:
         driver = sensor_service.driver
@@ -322,25 +315,13 @@ def read_sensor_snapshot(sensor_service, runtime_config):
             )
         metrics = enrich_metrics(sensor.device, metrics, runtime_config=runtime_config)
         _apply_post_enrichment_calibration(metrics, sensor)
-        return SensorSnapshot(
-            phase="ready",
-            sensor_id=sensor.sensor_id,
-            device=sensor.device,
-            metrics=metrics,
-            errors=(),
-        )
+        return _ready_sensor_snapshot(sensor, metrics)
 
     if sensor.device == "soil":
         transport = sensor_service.driver or sensor_service.transport
         metrics = _compact_metrics(_read_soil_metrics(transport, sensor))
         metrics = enrich_metrics(sensor.device, metrics, runtime_config=runtime_config)
-        return SensorSnapshot(
-            phase="ready",
-            sensor_id=sensor.sensor_id,
-            device=sensor.device,
-            metrics=metrics,
-            errors=(),
-        )
+        return _ready_sensor_snapshot(sensor, metrics)
 
     return SensorSnapshot(
         phase="error",
@@ -374,7 +355,8 @@ def _start_i2c_sensor_service(sensor, sensor_adapter, modules):
             module = _load_module("adafruit_scd4x", modules, "missing_adafruit_scd4x")
             if module is None:
                 return _sensor_service_error(device, sensor.interface, transport, "missing_adafruit_scd4x")
-            driver = module.SCD4X(transport)
+            driver = module.SCD4X(transport, address=sensor.i2c.address)
+            driver.start_periodic_measurement()
             return SensorService(
                 phase="ready",
                 device=device,
@@ -520,6 +502,36 @@ def _load_module(name, modules, error_code):
         return current
     except ImportError:
         return None
+
+
+def _sensor_data_ready(driver):
+    """Return True when a driver either has ready data or no ready flag."""
+    try:
+        ready = getattr(driver, "data_ready")
+    except Exception:
+        return False
+    if ready is None:
+        return True
+    return bool(ready)
+
+
+def _ready_sensor_snapshot(sensor, metrics):
+    """Return a ready snapshot or an explicit empty-metrics sensor error."""
+    if not metrics:
+        return SensorSnapshot(
+            phase="error",
+            sensor_id=sensor.sensor_id,
+            device=sensor.device,
+            metrics={},
+            errors=("sensor_metrics_empty",),
+        )
+    return SensorSnapshot(
+        phase="ready",
+        sensor_id=sensor.sensor_id,
+        device=sensor.device,
+        metrics=metrics,
+        errors=(),
+    )
 
 
 def _sensor_service_error(device, interface, transport, error):

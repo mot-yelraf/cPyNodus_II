@@ -109,6 +109,29 @@ def _memory_summary():
     return "free_mem={} mem_alloc={}".format(free_mem, mem_alloc)
 
 
+def _sensor_error_text(*parts):
+    """Return a compact sensor error string for startup and poll logs."""
+    errors = []
+    for part in parts:
+        for error in tuple(getattr(part, "errors", ()) or ()):
+            text = str(error or "").strip()
+            if text and text not in errors:
+                errors.append(text)
+    return ",".join(errors) if errors else "none"
+
+
+def _sensor_issue_text(errors):
+    """Return sensor-specific poll errors, omitting normal skipped cadences."""
+    issue_errors = []
+    for error in tuple(errors or ()):
+        text = str(error or "").strip()
+        if not text or text == "sensor_poll_interval_not_elapsed":
+            continue
+        if text.startswith("sensor_") and text not in issue_errors:
+            issue_errors.append(text)
+    return ",".join(issue_errors) if issue_errors else ""
+
+
 def _collect_garbage():
     """Run best-effort garbage collection for constrained heap recovery."""
     try:
@@ -149,8 +172,52 @@ def _should_fallback_to_ap(runtime_config, network_stack):
     if not runtime_config.network.ssid or not runtime_config.network.password:
         return True
     if runtime_config.network.ssid:
+        if _station_ip_looks_recoverable(runtime_config, network_stack):
+            return False
         return getattr(network_stack, "phase", "") in {"error", "unavailable"}
     return True
+
+
+def _station_ip_looks_recoverable(runtime_config, network_stack):
+    """Return True when station has a non-AP IP and recovery should proceed."""
+    if getattr(network_stack, "phase", "") not in {"error", "unavailable"}:
+        return False
+    ip_address = str(getattr(network_stack, "ip_address", "") or "").strip()
+    if not ip_address:
+        return False
+    if ip_address.startswith("192.168.4.") and runtime_config.network.ssid != runtime_config.network.ap_ssid:
+        return False
+    return True
+
+
+def _persist_learned_broker_ip(runtime_config, mqtt_adapter, *, settings_root=None):
+    """Persist a resolved MQTT broker IP when the hostname connection succeeds."""
+    learned_ip = str(getattr(mqtt_adapter, "resolved_broker_ip", "") or "").strip()
+    broker = str(getattr(runtime_config.mqtt, "broker", "") or "").strip()
+    active_broker = str(getattr(mqtt_adapter, "active_broker", "") or "").strip()
+    if not settings_root or not learned_ip or not broker or active_broker != broker:
+        return runtime_config, "skipped", ()
+    if learned_ip == str(getattr(runtime_config.mqtt, "broker_ip", "") or "").strip():
+        return runtime_config, "unchanged", ()
+    updated_runtime, applied_updates, errors = Settings.apply_updates_to_directory(
+        settings_root,
+        runtime_config,
+        ({"section": "MQTT", "key": "BROKER_IP", "value": learned_ip},),
+        reload_runtime=True,
+    )
+    if errors:
+        return runtime_config, "error", tuple(errors)
+    if applied_updates:
+        return updated_runtime, "persisted", ()
+    return runtime_config, "skipped", ()
+
+
+def _startup_ap_fallback_reason(station_errors):
+    """Return the original station failure reason for AP fallback logs."""
+    errors = tuple(station_errors or ())
+    if errors:
+        return ",".join(str(error) for error in errors)
+    return "network_startup_failed"
 
 
 def _enter_ap_recovery_mode(runtime_config):
@@ -248,6 +315,7 @@ async def main(*, startup_plan_override=None):
     runtime_config = settings.runtime_config()
     network_stack = build_network_stack(runtime_config)
     startup_ap_fallback = _should_fallback_to_ap(runtime_config, network_stack)
+    startup_ap_fallback_errors = tuple(network_stack.errors)
     if startup_ap_fallback:
         runtime_config = _enter_ap_recovery_mode(runtime_config)
         network_stack = build_network_stack(runtime_config)
@@ -307,7 +375,10 @@ async def main(*, startup_plan_override=None):
     )
     _print_log(
         "cPyNodus_II",
-        "sensor enabled={} family={} interface={} file={} phase={} target={} adapter={} service={} metrics={}".format(
+        (
+            "sensor enabled={} family={} interface={} file={} phase={} target={} "
+            "adapter={} service={} metrics={} errors={}"
+        ).format(
             plan.sensor_enabled,
             plan.sensor_family or "none",
             plan.sensor_interface or "none",
@@ -317,6 +388,12 @@ async def main(*, startup_plan_override=None):
             sensor_adapter.phase,
             sensor_service.phase,
             len((sensor_snapshot.metrics or {})),
+            _sensor_error_text(
+                sensor_runtime,
+                sensor_adapter,
+                sensor_service,
+                sensor_snapshot,
+            ),
         ),
         start_monotonic=start_monotonic,
     )
@@ -372,7 +449,7 @@ async def main(*, startup_plan_override=None):
         _print_log(
             "recovery",
             "startup action=ap_fallback reason={}".format(
-                ",".join(network_stack.errors) if network_stack.errors else "network_startup_failed",
+                _startup_ap_fallback_reason(startup_ap_fallback_errors),
             ),
             start_monotonic=start_monotonic,
         )
@@ -512,6 +589,22 @@ async def main(*, startup_plan_override=None):
                 connect_phase = connect_result.phase
                 last_mqtt_connect_attempt_at = float(now_monotonic)
                 if connect_phase == "connected":
+                    runtime_config, broker_ip_phase, broker_ip_errors = _persist_learned_broker_ip(
+                        runtime_config,
+                        mqtt_adapter,
+                        settings_root=writable_settings_root,
+                    )
+                    if broker_ip_phase in {"persisted", "error"}:
+                        _print_log(
+                            "mqtt",
+                            "broker_ip phase={} host={} ip={} errors={}".format(
+                                broker_ip_phase,
+                                runtime_config.mqtt.broker or "none",
+                                mqtt_adapter.resolved_broker_ip or "none",
+                                ",".join(broker_ip_errors) if broker_ip_errors else "none",
+                            ),
+                            start_monotonic=start_monotonic,
+                        )
                     _print_log(
                         "mqtt",
                         "connect phase={} broker={}".format(
@@ -561,6 +654,17 @@ async def main(*, startup_plan_override=None):
             )
             steady_state = iteration.state
             runtime_config = iteration.runtime_config
+            sensor_issue = _sensor_issue_text(iteration.errors)
+            if sensor_issue:
+                _print_log(
+                    "sensor",
+                    "poll phase={} published={} errors={}".format(
+                        iteration.sensor_publish_phase,
+                        iteration.sensor_published_count,
+                        sensor_issue,
+                    ),
+                    start_monotonic=start_monotonic,
+                )
             if iteration.subscribed_topics:
                 _print_log(
                     "mqtt",

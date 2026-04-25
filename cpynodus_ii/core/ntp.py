@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 
 DEFAULT_NTP_SERVER = "pool.ntp.org"
+DEFAULT_NTP_MAX_DNS_FAILURES = 3
 
 
 @dataclass(frozen=True)
@@ -20,6 +21,7 @@ class NTPState:
     datetime_text: str = ""
     last_attempt_at: float = -1.0
     last_sync_at: float = -1.0
+    failure_count: int = 0
     errors: tuple = ()
 
 
@@ -40,37 +42,52 @@ def maybe_sync_ntp(
     now_monotonic=0.0,
     retry_interval_s=60.0,
     sync_interval_s=86400.0,
+    max_dns_failures=DEFAULT_NTP_MAX_DNS_FAILURES,
     modules=None,
 ):
     """Attempt an NTP sync when enabled, due, and hostname resolution is ready."""
     state = state or NTPState()
-    server = str(runtime_config.time.ntp_server or DEFAULT_NTP_SERVER).strip()
+    server = str(runtime_config.time.ntp_server or "").strip() or DEFAULT_NTP_SERVER
     now_value = float(now_monotonic or 0.0)
+    same_server = state.server == server
     if not runtime_config.ntp_enabled:
         return NTPResult(phase="skipped", state=state, errors=("ntp_disabled",))
-    if getattr(network_stack, "phase", "") != "ready" or network_stack.socket_pool is None:
+    if (
+        getattr(network_stack, "phase", "") != "ready"
+        or network_stack.socket_pool is None
+    ):
         return NTPResult(phase="skipped", state=state, errors=("network_not_ready",))
+    if same_server and state.phase == "disabled":
+        return NTPResult(
+            phase="skipped",
+            state=state,
+            errors=("ntp_disabled_after_dns_failures",),
+        )
     if not _sync_due(state, now_value, retry_interval_s, sync_interval_s):
         return NTPResult(phase="skipped", state=state, errors=("ntp_not_due",))
 
-    next_state = NTPState(
-        phase="pending",
-        server=server,
-        datetime_text=state.datetime_text,
-        last_attempt_at=now_value,
-        last_sync_at=state.last_sync_at,
-        errors=(),
-    )
+    failure_count = state.failure_count if same_server else 0
     resolve_error = _preflight_hostname(network_stack.socket_pool, server)
     if resolve_error:
+        failure_count = _next_failure_count(
+            resolve_error,
+            failure_count,
+            max_dns_failures,
+        )
+        phase = (
+            "disabled"
+            if _dns_failure_limit_reached(failure_count, max_dns_failures)
+            else "deferred"
+        )
         return NTPResult(
-            phase="deferred",
+            phase=phase,
             state=NTPState(
-                phase="deferred",
+                phase=phase,
                 server=server,
                 datetime_text=state.datetime_text,
                 last_attempt_at=now_value,
                 last_sync_at=state.last_sync_at,
+                failure_count=failure_count,
                 errors=(resolve_error,),
             ),
             errors=(resolve_error,),
@@ -92,14 +109,21 @@ def maybe_sync_ntp(
         datetime_text = _format_datetime(current_datetime)
     except Exception as exc:
         error = "ntp_sync_failed:{}".format(exc)
+        failure_count = _next_failure_count(error, failure_count, max_dns_failures)
+        phase = (
+            "disabled"
+            if _dns_failure_limit_reached(failure_count, max_dns_failures)
+            else "error"
+        )
         return NTPResult(
-            phase="error",
+            phase=phase,
             state=NTPState(
-                phase="error",
+                phase=phase,
                 server=server,
                 datetime_text=state.datetime_text,
                 last_attempt_at=now_value,
                 last_sync_at=state.last_sync_at,
+                failure_count=failure_count,
                 errors=(error,),
             ),
             errors=(error,),
@@ -113,17 +137,39 @@ def maybe_sync_ntp(
             datetime_text=datetime_text,
             last_attempt_at=now_value,
             last_sync_at=now_value,
+            failure_count=0,
             errors=(),
         ),
         errors=(),
     )
 
 
+def _next_failure_count(error, current_count, max_dns_failures):
+    if max_dns_failures <= 0 or not _is_dns_not_found_error(error):
+        return 0
+    return int(current_count or 0) + 1
+
+
+def _dns_failure_limit_reached(failure_count, max_dns_failures):
+    return int(max_dns_failures or 0) > 0 and int(failure_count or 0) >= int(
+        max_dns_failures
+    )
+
+
+def _is_dns_not_found_error(error):
+    text = str(error or "")
+    return ":-2" in text or "Errno -2" in text or text.strip() == "-2"
+
+
 def _sync_due(state, now_monotonic, retry_interval_s, sync_interval_s):
     if state.last_sync_at >= 0.0:
-        return (float(now_monotonic) - float(state.last_sync_at)) >= float(sync_interval_s)
+        return (float(now_monotonic) - float(state.last_sync_at)) >= float(
+            sync_interval_s
+        )
     if state.last_attempt_at >= 0.0:
-        return (float(now_monotonic) - float(state.last_attempt_at)) >= float(retry_interval_s)
+        return (float(now_monotonic) - float(state.last_attempt_at)) >= float(
+            retry_interval_s
+        )
     return True
 
 

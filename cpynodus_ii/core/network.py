@@ -59,7 +59,7 @@ def build_network_stack(
                         pass
                 except Exception:
                     pass
-            ap_ip_address = _current_ip_address(wifi_radio)
+            ap_ip_address = _current_ap_ip_address(wifi_radio)
             if connection_manager_module is not None:
                 try:
                     socket_pool = connection_manager_module.get_radio_socketpool(wifi_radio)
@@ -142,7 +142,7 @@ def build_network_stack(
             mode="station",
             ssid=runtime_config.network.ssid,
             hostname=runtime_config.network.hostname,
-            ip_address="",
+            ip_address=connect_result["ip_address"],
             wifi_radio=wifi_radio,
             connection_manager_module=connection_manager_module,
             errors=connect_result["errors"],
@@ -194,7 +194,7 @@ def reconnect_network_stack(
             mode="station",
             ssid=runtime_config.network.ssid,
             hostname=runtime_config.network.hostname,
-            ip_address="",
+            ip_address=connect_result["ip_address"],
             socket_pool=None if rebuild_socket_artifacts else network_stack.socket_pool,
             ssl_context=None if rebuild_socket_artifacts else network_stack.ssl_context,
             wifi_radio=wifi_radio,
@@ -320,9 +320,44 @@ def _connect_station(runtime_config, wifi_radio, *, max_attempts, retry_delay_s)
                     wifi_radio.hostname = runtime_config.network.hostname
                 except Exception:
                     pass
+            connected = _safe_radio_attr(wifi_radio, "connected")
+            if connected is False:
+                return {
+                    "phase": "error",
+                    "ip_address": _current_ip_address(wifi_radio),
+                    "errors": (
+                        "network_not_connected",
+                        "expected={}".format(runtime_config.network.ssid),
+                    )
+                    + _network_diagnostic_tokens(wifi_radio),
+                }
+            actual_ssid = _current_station_ssid(wifi_radio)
+            if actual_ssid and actual_ssid != runtime_config.network.ssid:
+                return {
+                    "phase": "error",
+                    "ip_address": "",
+                    "errors": (
+                        "network_wrong_ssid",
+                        actual_ssid,
+                        "expected={}".format(runtime_config.network.ssid),
+                    )
+                    + _network_diagnostic_tokens(wifi_radio),
+                }
+            ip_address = _current_ip_address(wifi_radio)
+            if _looks_like_nodus_ap_station_ip(ip_address, runtime_config):
+                return {
+                    "phase": "error",
+                    "ip_address": "",
+                    "errors": (
+                        "network_ap_subnet_suspect",
+                        ip_address,
+                        "expected_ssid={}".format(runtime_config.network.ssid),
+                    )
+                    + _network_diagnostic_tokens(wifi_radio),
+                }
             return {
                 "phase": "ready",
-                "ip_address": _current_ip_address(wifi_radio),
+                "ip_address": ip_address,
                 "errors": (),
             }
         except Exception as exc:
@@ -330,12 +365,14 @@ def _connect_station(runtime_config, wifi_radio, *, max_attempts, retry_delay_s)
             if _looks_auth_failure(exc):
                 return {
                     "phase": "error",
-                    "ip_address": "",
+                    "ip_address": _current_ip_address(wifi_radio),
                     "errors": (
                         "network_auth_failed",
+                        _exception_label(exc),
                         str(exc),
                         "attempt={}".format(attempt),
-                    ),
+                    )
+                    + _network_diagnostic_tokens(wifi_radio),
                 }
             if attempt < attempts:
                 try:
@@ -344,18 +381,79 @@ def _connect_station(runtime_config, wifi_radio, *, max_attempts, retry_delay_s)
                     pass
     return {
         "phase": "error",
-        "ip_address": "",
+        "ip_address": _current_ip_address(wifi_radio),
         "errors": (
             "network_connect_failed",
+            _exception_label(last_exc),
             str(last_exc or ""),
             "attempts={}".format(attempts),
-        ),
+        )
+        + _network_diagnostic_tokens(wifi_radio),
     }
 
 
 def _current_ip_address(wifi_radio):
     for attr_name in ("ipv4_address", "ipv4_address_ap"):
-        value = getattr(wifi_radio, attr_name, "")
+        value = _safe_radio_attr(wifi_radio, attr_name)
         if value:
             return str(value)
     return ""
+
+
+def _station_ip_address(wifi_radio):
+    value = _safe_radio_attr(wifi_radio, "ipv4_address")
+    if value:
+        return str(value)
+    return ""
+
+
+def _current_ap_ip_address(wifi_radio):
+    value = _safe_radio_attr(wifi_radio, "ipv4_address_ap")
+    if value:
+        return str(value)
+    return ""
+
+
+def _current_station_ssid(wifi_radio):
+    ap_info = _safe_radio_attr(wifi_radio, "ap_info")
+    ssid = _safe_radio_attr(ap_info, "ssid")
+    if ssid:
+        return str(ssid)
+    return ""
+
+
+def _safe_radio_attr(target, name):
+    try:
+        return getattr(target, name, "")
+    except Exception:
+        return ""
+
+
+def _network_diagnostic_tokens(wifi_radio):
+    tokens = ()
+    connected = _safe_radio_attr(wifi_radio, "connected")
+    station_ip = _station_ip_address(wifi_radio)
+    ap_ip = _current_ap_ip_address(wifi_radio)
+    actual_ssid = _current_station_ssid(wifi_radio)
+    if isinstance(connected, bool):
+        tokens += ("connected={}".format(connected),)
+    if station_ip:
+        tokens += ("station_ip={}".format(station_ip),)
+    if ap_ip:
+        tokens += ("ap_ip={}".format(ap_ip),)
+    if actual_ssid:
+        tokens += ("actual_ssid={}".format(actual_ssid),)
+    return tokens
+
+
+def _exception_label(exc):
+    if exc is None:
+        return "exception=none"
+    return "exception={}".format(type(exc).__name__)
+
+
+def _looks_like_nodus_ap_station_ip(ip_address, runtime_config):
+    text = str(ip_address or "").strip()
+    if not text.startswith("192.168.4."):
+        return False
+    return runtime_config.network.ssid != runtime_config.network.ap_ssid

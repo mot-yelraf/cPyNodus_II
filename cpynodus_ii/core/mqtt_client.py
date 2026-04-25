@@ -18,6 +18,7 @@ class MQTTClientAdapter:
     port: int
     broker_targets: tuple = ()
     active_broker: str = ""
+    resolved_broker_ip: str = ""
     client: object | None = None
     client_class: object | None = None
     client_kwargs: dict | None = None
@@ -78,8 +79,9 @@ def build_mqtt_client_adapter(
         )
 
     broker_targets = runtime_config.mqtt.connection_targets or (runtime_config.mqtt.preferred_host,)
+    mqtt_socket_pool = _wrap_minimqtt_socket_pool(socket_pool)
     kwargs = {
-        "socket_pool": socket_pool,
+        "socket_pool": mqtt_socket_pool,
         "port": runtime_config.mqtt.port,
         "keep_alive": 60,
     }
@@ -130,12 +132,11 @@ def connect_mqtt_client(adapter, transport, *, preflight=True):
     active_adapter = adapter
     connected = False
     for index, broker in enumerate(adapter.broker_targets or (adapter.active_broker or adapter.broker,)):
-        if preflight:
-            preflight_error = _preflight_broker_target(adapter, broker)
-            if preflight_error:
-                errors.append(preflight_error)
-                transport.mark_disconnected()
-                continue
+        resolve_error, resolved_ip = _resolve_broker_target(active_adapter, broker)
+        if preflight and resolve_error:
+            errors.append(resolve_error)
+            transport.mark_disconnected()
+            continue
         if index > 0:
             try:
                 client = _instantiate_client(
@@ -153,6 +154,7 @@ def connect_mqtt_client(adapter, transport, *, preflight=True):
                 port=adapter.port,
                 broker_targets=adapter.broker_targets,
                 active_broker=broker,
+                resolved_broker_ip=resolved_ip,
                 client=client,
                 client_class=adapter.client_class,
                 client_kwargs=dict(adapter.client_kwargs or {}),
@@ -163,6 +165,7 @@ def connect_mqtt_client(adapter, transport, *, preflight=True):
         _bind_on_message(active_adapter.client, transport)
         try:
             active_adapter.client.connect()
+            _ensure_minimqtt_socket_compat(active_adapter.client)
             transport.mark_connected()
             connected = True
             break
@@ -179,7 +182,21 @@ def connect_mqtt_client(adapter, transport, *, preflight=True):
 
     return MQTTClientSyncResult(
         phase="connected",
-        adapter=active_adapter,
+        adapter=MQTTClientAdapter(
+            phase=active_adapter.phase,
+            driver_kind=active_adapter.driver_kind,
+            broker=active_adapter.broker,
+            port=active_adapter.port,
+            broker_targets=active_adapter.broker_targets,
+            active_broker=active_adapter.active_broker,
+            resolved_broker_ip=resolved_ip,
+            client=active_adapter.client,
+            client_class=active_adapter.client_class,
+            client_kwargs=active_adapter.client_kwargs,
+            published_index=active_adapter.published_index,
+            subscription_index=active_adapter.subscription_index,
+            errors=active_adapter.errors,
+        ),
         errors=(),
     )
 
@@ -225,6 +242,7 @@ def sync_transport_to_client(adapter, transport):
                     port=adapter.port,
                     broker_targets=adapter.broker_targets,
                     active_broker=adapter.active_broker,
+                    resolved_broker_ip=adapter.resolved_broker_ip,
                     client=adapter.client,
                     client_class=adapter.client_class,
                     client_kwargs=adapter.client_kwargs,
@@ -251,6 +269,7 @@ def sync_transport_to_client(adapter, transport):
         port=adapter.port,
         broker_targets=adapter.broker_targets,
         active_broker=adapter.active_broker,
+        resolved_broker_ip=adapter.resolved_broker_ip,
         client=adapter.client,
         client_class=adapter.client_class,
         client_kwargs=adapter.client_kwargs,
@@ -279,6 +298,7 @@ def poll_mqtt_client(adapter, transport):
     before = len(transport.received_messages)
     loop = getattr(adapter.client, "loop", None)
     if callable(loop):
+        _ensure_minimqtt_socket_compat(adapter.client)
         timeout = _poll_timeout_for_client(adapter.client)
         try:
             loop(timeout=timeout)
@@ -290,7 +310,7 @@ def poll_mqtt_client(adapter, transport):
                         phase="error",
                         adapter=adapter,
                         received_count=0,
-                        errors=("mqtt_poll_failed:minimqtt_socket:{}".format(exc),),
+                        errors=(_minimqtt_socket_error(adapter.client, exc),),
                     )
                 if _is_callback_arity_error(exc):
                     transport.mark_disconnected()
@@ -313,7 +333,7 @@ def poll_mqtt_client(adapter, transport):
                             phase="error",
                             adapter=adapter,
                             received_count=0,
-                            errors=("mqtt_poll_failed:minimqtt_socket:{}".format(exc),),
+                            errors=(_minimqtt_socket_error(adapter.client, exc),),
                         )
                     if _is_callback_arity_error(exc):
                         transport.mark_disconnected()
@@ -408,6 +428,56 @@ def _instantiate_client(client_class, kwargs, broker):
     return client_class(**kwargs)
 
 
+class _MiniMQTTSocketPoolCompat:
+    def __init__(self, socket_pool):
+        self._socket_pool = socket_pool
+
+    def socket(self, *args, **kwargs):
+        socket_obj = self._socket_pool.socket(*args, **kwargs)
+        return _MiniMQTTSocketCompat(socket_obj)
+
+    def __getattr__(self, name):
+        return getattr(self._socket_pool, name)
+
+
+class _MiniMQTTSocketCompat:
+    def __init__(self, socket_obj):
+        self._socket_obj = socket_obj
+
+    def recv_into(self, buffer, nbytes=None):
+        recv_into = getattr(self._socket_obj, "recv_into")
+        if nbytes is None:
+            try:
+                return recv_into(buffer)
+            except TypeError as exc:
+                if not _is_recv_into_nbytes_required_error(exc):
+                    raise
+                return recv_into(buffer, len(buffer))
+        return recv_into(buffer, nbytes)
+
+    def __getattr__(self, name):
+        return getattr(self._socket_obj, name)
+
+
+def _wrap_minimqtt_socket_pool(socket_pool):
+    if socket_pool is None or isinstance(socket_pool, _MiniMQTTSocketPoolCompat):
+        return socket_pool
+    if not callable(getattr(socket_pool, "socket", None)):
+        return socket_pool
+    return _MiniMQTTSocketPoolCompat(socket_pool)
+
+
+def _ensure_minimqtt_socket_compat(client):
+    socket_obj = getattr(client, "_sock", None)
+    if socket_obj is None or isinstance(socket_obj, _MiniMQTTSocketCompat):
+        return
+    try:
+        client._sock = _MiniMQTTSocketCompat(socket_obj)
+        client._backwards_compatible_sock = False
+    except Exception:
+        pass
+
+
 def _poll_timeout_for_client(client):
     for attr_name in ("socket_timeout", "_socket_timeout", "recv_timeout", "_recv_timeout"):
         value = getattr(client, attr_name, None)
@@ -422,27 +492,41 @@ def _poll_timeout_for_client(client):
 
 
 def _preflight_broker_target(adapter, broker):
+    error, _ip_address = _resolve_broker_target(adapter, broker)
+    return error
+
+
+def _resolve_broker_target(adapter, broker):
     broker_text = str(broker or "").strip()
     if not broker_text:
-        return "mqtt_connect_failed:empty_broker"
+        return "mqtt_connect_failed:empty_broker", ""
     if _looks_like_ip_literal(broker_text):
-        return ""
+        return "", broker_text
 
     socket_pool = None
     if isinstance(adapter.client_kwargs, dict):
         socket_pool = adapter.client_kwargs.get("socket_pool")
     if socket_pool is None:
-        return ""
+        return "", ""
 
     getaddrinfo = getattr(socket_pool, "getaddrinfo", None)
     if not callable(getaddrinfo):
-        return ""
+        return "", ""
 
     try:
-        getaddrinfo(broker_text, adapter.port)
+        resolved = getaddrinfo(broker_text, adapter.port)
     except Exception as exc:
-        return "mqtt_resolve_failed:{}:{}".format(broker_text, exc)
-    return ""
+        return "mqtt_resolve_failed:{}:{}".format(broker_text, exc), ""
+    return "", _ip_from_getaddrinfo_result(resolved)
+
+
+def _ip_from_getaddrinfo_result(resolved):
+    try:
+        first = resolved[0]
+        sockaddr = first[-1]
+        return str(sockaddr[0] or "").strip()
+    except Exception:
+        return ""
 
 
 def _looks_like_ip_literal(value):
@@ -489,6 +573,24 @@ def _is_callback_arity_error(exc):
 
 def _is_minimqtt_wrapped_socket_error(exc):
     text = str(exc or "").lower()
+    return text == "function takes 3 positional arguments but 2 were given"
+
+
+def _minimqtt_socket_error(client, exc):
+    socket_obj = getattr(client, "_sock", None)
+    socket_state = "wrapped" if isinstance(socket_obj, _MiniMQTTSocketCompat) else "raw"
+    backwards = 1 if getattr(client, "_backwards_compatible_sock", False) else 0
+    return "mqtt_poll_failed:minimqtt_socket:sock={} backcompat={} error={}".format(
+        socket_state,
+        backwards,
+        exc,
+    )
+
+
+def _is_recv_into_nbytes_required_error(exc):
+    text = str(exc or "").lower()
+    if "recv_into" in text and "argument" in text:
+        return True
     return text == "function takes 3 positional arguments but 2 were given"
 
 

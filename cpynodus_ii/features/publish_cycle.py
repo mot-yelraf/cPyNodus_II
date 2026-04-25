@@ -139,11 +139,18 @@ def publish_startup_cycle(
 def publish_sensor_cycle(transport, runtime_config, sensor_snapshot):
     """Publish one non-retained sensor data cycle when a ready snapshot exists."""
     if sensor_snapshot is None or sensor_snapshot.phase != "ready":
+        errors = (
+            getattr(sensor_snapshot, "errors", ())
+            if sensor_snapshot is not None
+            else ()
+        )
+        if not errors:
+            errors = ("sensor_snapshot_not_ready",)
         return PublishCycleResult(
             phase="skipped",
             published_count=0,
             topics=(),
-            errors=("sensor_snapshot_not_ready",),
+            errors=tuple(errors),
         )
     topic = mqtt_topic(runtime_config, runtime_config.sensor.sensor_id, "data")
     message = transport.publish(

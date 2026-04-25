@@ -125,6 +125,25 @@ class _FakeAHTx0:
             self.relative_humidity = 55.25
 
 
+class _FakeSCD4X:
+    def __init__(self, transport, *, address=0x62):
+        self.transport = transport
+        self.address = address
+        self.data_ready = True
+        self.CO2 = 845.4
+        self.temperature = 23.5
+        self.relative_humidity = 47.0
+        self.periodic_started = False
+
+    def start_periodic_measurement(self):
+        self.periodic_started = True
+
+
+class _MissingSensorDriver:
+    def __init__(self, *_args, **_kwargs):
+        raise OSError("no i2c device")
+
+
 def test_sensor_service_starts_bme680_for_aqi_config():
     docs_root = Path(__file__).resolve().parents[1] / "docs" / "sensor+switch"
     with TemporaryDirectory() as tmpdir:
@@ -153,6 +172,125 @@ def test_sensor_service_starts_bme680_for_aqi_config():
     assert sensor_service.phase == "ready"
     assert sensor_service.driver_kind == "adafruit_bme680"
     assert sensor_service.driver.address == 119
+
+
+def test_sensor_service_reports_missing_i2c_sensor_at_startup():
+    runtime_config = RuntimeConfig(
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            active_config_file="sensor_i2c.toml",
+            device="co2",
+            sensor_id="co2-29j39c",
+            i2c=I2CConfig(bus=1, scl_pin="GP3", sda_pin="GP2", address=0x61),
+        )
+    )
+    sensor_runtime = build_sensor_runtime(
+        plan_sensor_initialization(runtime_config),
+        runtime_config,
+    )
+    sensor_adapter = bind_sensor_hardware(
+        sensor_runtime,
+        runtime_config,
+        board_module=SimpleNamespace(GP2="pin-gp2", GP3="pin-gp3"),
+        busio_module=SimpleNamespace(I2C=_FakeI2C, UART=_FakeUART),
+    )
+
+    sensor_service = start_sensor_service(
+        sensor_runtime,
+        sensor_adapter,
+        runtime_config,
+        modules={"adafruit_scd30": SimpleNamespace(SCD30=_MissingSensorDriver)},
+    )
+
+    assert sensor_service.phase == "error"
+    assert "sensor_not_found" in sensor_service.errors
+
+
+def test_sensor_snapshot_reports_empty_metrics_as_error():
+    runtime_config = RuntimeConfig(
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            active_config_file="sensor_i2c.toml",
+            device="co2",
+            sensor_id="co2-29j39c",
+            i2c=I2CConfig(bus=1, scl_pin="GP3", sda_pin="GP2", address=0x61),
+        )
+    )
+    sensor_service = SimpleNamespace(
+        phase="ready",
+        driver=SimpleNamespace(CO2=None, temperature=None, relative_humidity=None),
+        errors=(),
+    )
+
+    snapshot = read_sensor_snapshot(sensor_service, runtime_config)
+
+    assert snapshot.phase == "error"
+    assert snapshot.metrics == {}
+    assert "sensor_metrics_empty" in snapshot.errors
+
+
+def test_sensor_service_starts_periodic_measurement_for_scd41():
+    runtime_config = RuntimeConfig(
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            active_config_file="sensor_i2c.toml",
+            device="co2",
+            sensor_id="co2-29j39c",
+            i2c=I2CConfig(bus=0, scl_pin="GP1", sda_pin="GP0", address=0x62),
+        )
+    )
+    sensor_runtime = build_sensor_runtime(
+        plan_sensor_initialization(runtime_config),
+        runtime_config,
+    )
+    sensor_adapter = bind_sensor_hardware(
+        sensor_runtime,
+        runtime_config,
+        board_module=SimpleNamespace(GP0="pin-gp0", GP1="pin-gp1"),
+        busio_module=SimpleNamespace(I2C=_FakeI2C, UART=_FakeUART),
+    )
+
+    sensor_service = start_sensor_service(
+        sensor_runtime,
+        sensor_adapter,
+        runtime_config,
+        modules={"adafruit_scd4x": SimpleNamespace(SCD4X=_FakeSCD4X)},
+    )
+
+    assert sensor_service.phase == "ready"
+    assert sensor_service.driver_kind == "adafruit_scd4x"
+    assert sensor_service.driver.periodic_started is True
+    assert sensor_service.driver.address == 0x62
+
+
+def test_scd41_snapshot_waits_until_data_ready():
+    runtime_config = RuntimeConfig(
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            active_config_file="sensor_i2c.toml",
+            device="co2",
+            sensor_id="co2-29j39c",
+            i2c=I2CConfig(bus=0, scl_pin="GP1", sda_pin="GP0", address=0x62),
+        )
+    )
+    driver = _FakeSCD4X(None)
+    driver.data_ready = False
+    sensor_service = SimpleNamespace(
+        phase="ready",
+        driver_kind="adafruit_scd4x",
+        driver=driver,
+        errors=(),
+    )
+
+    snapshot = read_sensor_snapshot(sensor_service, runtime_config)
+
+    assert snapshot.phase == "waiting"
+    assert snapshot.metrics == {}
+    assert "sensor_data_not_ready" in snapshot.errors
 
 
 def test_sensor_service_reads_legacy_aqi_snapshot():
