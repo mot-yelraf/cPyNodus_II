@@ -7,8 +7,6 @@ and testable interface.
 
 from dataclasses import dataclass
 
-from cpynodus_ii.features.publish_cycle import publish_shutdown_cycle
-
 
 @dataclass(frozen=True)
 class MQTTClientAdapter:
@@ -286,6 +284,14 @@ def poll_mqtt_client(adapter, transport):
             loop(timeout=timeout)
         except TypeError as exc:
             if not _is_loop_timeout_signature_error(exc):
+                if _is_minimqtt_wrapped_socket_error(exc):
+                    transport.mark_disconnected()
+                    return MQTTClientSyncResult(
+                        phase="error",
+                        adapter=adapter,
+                        received_count=0,
+                        errors=("mqtt_poll_failed:minimqtt_socket:{}".format(exc),),
+                    )
                 if _is_callback_arity_error(exc):
                     transport.mark_disconnected()
                     return MQTTClientSyncResult(
@@ -301,6 +307,14 @@ def poll_mqtt_client(adapter, transport):
                 loop(timeout=max(1.0, timeout))
             except TypeError as exc:
                 if not _is_loop_timeout_signature_error(exc):
+                    if _is_minimqtt_wrapped_socket_error(exc):
+                        transport.mark_disconnected()
+                        return MQTTClientSyncResult(
+                            phase="error",
+                            adapter=adapter,
+                            received_count=0,
+                            errors=("mqtt_poll_failed:minimqtt_socket:{}".format(exc),),
+                        )
                     if _is_callback_arity_error(exc):
                         transport.mark_disconnected()
                         return MQTTClientSyncResult(
@@ -330,6 +344,8 @@ def poll_mqtt_client(adapter, transport):
 
 def disconnect_mqtt_client(adapter, transport, runtime_config):
     """Publish retained offline status, flush it, then disconnect the client."""
+    from cpynodus_ii.features.publish_cycle import publish_shutdown_cycle
+
     if adapter.phase != "ready" or adapter.client is None:
         transport.mark_disconnected()
         return MQTTClientSyncResult(
@@ -469,6 +485,11 @@ def _is_callback_arity_error(exc):
     if "required positional argument" in text:
         return True
     return False
+
+
+def _is_minimqtt_wrapped_socket_error(exc):
+    text = str(exc or "").lower()
+    return text == "function takes 3 positional arguments but 2 were given"
 
 
 def _bind_on_message(client, transport):

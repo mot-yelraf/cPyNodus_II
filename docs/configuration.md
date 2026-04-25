@@ -16,6 +16,25 @@ For `apvpd`, `sensor_i2c.toml` carries two BME280 definitions:
 
 Both may use the default BME280 address `118` (`0x76`) because they live on separate buses.
 
+For `apvpd_aht`, `sensor_i2c.toml` uses the same two-bus layout for an ambient
+and plant AHT10/AHT20 pair:
+
+- `[I2Cbus]`: ambient sensor
+- `[I2Cbus.Plant]`: plant sensor
+
+Both may use the default AHTx0 address `56` (`0x38`) because they live on
+separate buses.
+
+Supported I2C `DEVICE` values:
+
+- `aht`: AHT10/AHT20 temperature and relative humidity
+- `apvpd_aht`: dual AHT10/AHT20 ambient and plant temperature/RH
+- `apvpd`: dual BME280 ambient and plant temperature/RH/pressure
+- `aqi`: BME680 air quality
+- `avpd`: BME280 ambient temperature/RH/pressure
+- `co2`: SCD30/SCD4x CO2
+- `lux`: VEML7700 light
+
 ## Templates
 
 Copy the templates and edit them:

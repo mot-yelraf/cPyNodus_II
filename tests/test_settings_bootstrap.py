@@ -50,6 +50,32 @@ class _ScanI2C:
         return
 
 
+class _ScanAHTI2C:
+    def __init__(self, scl, sda):
+        self._pins = (scl, sda)
+
+    def try_lock(self):
+        return True
+
+    def scan(self):
+        if self._pins in {("GP1", "GP0"), ("GP3", "GP2")}:
+            return (0x38,)
+        return ()
+
+    def unlock(self):
+        return
+
+    def deinit(self):
+        return
+
+
+class _ScanSingleAHTI2C(_ScanAHTI2C):
+    def scan(self):
+        if self._pins == ("GP1", "GP0"):
+            return (0x38,)
+        return ()
+
+
 def _copy_defs(tmpdir_path):
     root = Path(__file__).resolve().parents[1]
     for name in (
@@ -187,6 +213,27 @@ def test_factory_sensor_detect_finds_apvpd_when_bme280_on_both_buses():
     assert interfaces["i2c1"]["bus"] == 1
 
 
+def test_factory_sensor_detect_finds_apvpd_aht_when_aht_on_both_buses():
+    detected_device, interfaces = Settings._detect_factory_sensor(
+        board_module=SimpleNamespace(GP0="GP0", GP1="GP1", GP2="GP2", GP3="GP3"),
+        busio_module=SimpleNamespace(I2C=_ScanAHTI2C),
+    )
+
+    assert detected_device == "apvpd_aht"
+    assert interfaces["i2c0"]["addr"] == 0x38
+    assert interfaces["i2c1"]["addr"] == 0x38
+
+
+def test_factory_sensor_detect_finds_aht_when_aht_on_one_bus():
+    detected_device, interfaces = Settings._detect_factory_sensor(
+        board_module=SimpleNamespace(GP0="GP0", GP1="GP1", GP2="GP2", GP3="GP3"),
+        busio_module=SimpleNamespace(I2C=_ScanSingleAHTI2C),
+    )
+
+    assert detected_device == "aht"
+    assert interfaces["i2c"]["addr"] == 0x38
+
+
 def test_factory_bootstrap_writes_dual_i2c_sections_for_apvpd():
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
@@ -220,6 +267,36 @@ def test_factory_bootstrap_writes_dual_i2c_sections_for_apvpd():
     assert sensor_doc["I2Cbus"]["Plant"]["I2C_SCL"] == "GP3"
     assert sensor_doc["I2Cbus"]["Plant"]["I2C_SDA"] == "GP2"
     assert sensor_doc["I2Cbus"]["Plant"]["I2C_ADDR"] == 0x76
+
+
+def test_factory_bootstrap_writes_dual_i2c_sections_for_apvpd_aht():
+    with TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        _copy_defs(tmpdir_path)
+
+        Settings.bootstrap_factory_defaults(
+            tmpdir_path,
+            detect_fn=lambda: (
+                "apvpd_aht",
+                {
+                    "i2c0": {"bus": 0, "scl": "GP1", "sda": "GP0", "addr": 0x38},
+                    "i2c1": {"bus": 1, "scl": "GP3", "sda": "GP2", "addr": 0x38},
+                },
+            ),
+            board_module=SimpleNamespace(),
+            digitalio_module=SimpleNamespace(
+                DigitalInOut=_ProbePin,
+                Direction=SimpleNamespace(INPUT="input"),
+                Pull=SimpleNamespace(UP="up"),
+            ),
+        )
+
+        sensor_doc = Settings._read_toml_file(tmpdir_path / "sensor_i2c.toml")
+
+    assert sensor_doc["Sensor"]["DEVICE"] == "apvpd_aht"
+    assert sensor_doc["I2Cbus"]["I2C_ADDR"] == 0x38
+    assert sensor_doc["I2Cbus"]["Plant"]["I2C_ADDR"] == 0x38
+    assert sensor_doc["Display"]["METRIC_4"] == "Plant VPD"
 
 
 def test_write_toml_file_preserves_template_section_and_key_order():

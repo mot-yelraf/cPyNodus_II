@@ -113,6 +113,18 @@ class _FakeBME280:
             self.pressure = 100850.0
 
 
+class _FakeAHTx0:
+    def __init__(self, transport, *, address=0x38):
+        self.transport = transport
+        self.address = address
+        if getattr(transport, "scl", "") == "pin-gp3":
+            self.temperature = 22.0
+            self.relative_humidity = 61.0
+        else:
+            self.temperature = 24.5
+            self.relative_humidity = 55.25
+
+
 def test_sensor_service_starts_bme680_for_aqi_config():
     docs_root = Path(__file__).resolve().parents[1] / "docs" / "sensor+switch"
     with TemporaryDirectory() as tmpdir:
@@ -384,6 +396,48 @@ def test_sensor_service_starts_bme280_for_avpd_config():
     assert sensor_service.driver.address == 0x76
 
 
+def test_sensor_service_reads_aht_snapshot_with_temp_humidity_derivatives():
+    runtime_config = RuntimeConfig(
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            active_config_file="sensor_i2c.toml",
+            device="aht",
+            sensor_id="aht-1",
+            i2c=I2CConfig(bus=0, scl_pin="GP1", sda_pin="GP0", address=0x38),
+        )
+    )
+    sensor_runtime = build_sensor_runtime(
+        plan_sensor_initialization(runtime_config),
+        runtime_config,
+    )
+    sensor_adapter = bind_sensor_hardware(
+        sensor_runtime,
+        runtime_config,
+        board_module=SimpleNamespace(GP0="pin-gp0", GP1="pin-gp1"),
+        busio_module=SimpleNamespace(I2C=_FakeI2C, UART=_FakeUART),
+    )
+    sensor_service = start_sensor_service(
+        sensor_runtime,
+        sensor_adapter,
+        runtime_config,
+        modules={"adafruit_ahtx0": SimpleNamespace(AHTx0=_FakeAHTx0)},
+    )
+    snapshot = read_sensor_snapshot(sensor_service, runtime_config)
+
+    assert sensor_service.phase == "ready"
+    assert sensor_service.driver_kind == "adafruit_ahtx0"
+    assert sensor_service.driver.address == 0x38
+    assert snapshot.phase == "ready"
+    assert snapshot.metrics["Temperature"] == 24.5
+    assert snapshot.metrics["Rel-Humidity"] == 55.0
+    assert snapshot.metrics["Temperature_F"] == 76.1
+    assert snapshot.metrics["Ambient VPD"] > 0
+    assert snapshot.metrics["Dew Point"] < snapshot.metrics["Temperature"]
+    assert snapshot.metrics["Dew Point Deficit"] > 0
+    assert 0 <= snapshot.metrics["DewVPD Risk"] <= 100
+
+
 def test_sensor_service_reads_dual_bme280_snapshot_for_apvpd():
     runtime_config = RuntimeConfig(
         sensor=DetectedSensor(
@@ -422,6 +476,63 @@ def test_sensor_service_reads_dual_bme280_snapshot_for_apvpd():
     assert snapshot.metrics["Plant Temperature"] == 22.5
     assert snapshot.metrics["Plant Rel-Humidity"] == 60.0
     assert snapshot.metrics["Plant Baro-Pressure"] == 1006.5
+    assert snapshot.metrics["Plant VPD"] > 0
+    assert snapshot.metrics["Plant DewVPD Risk"] >= 0
+
+
+def test_sensor_service_reads_dual_aht_snapshot_for_apvpd_aht():
+    runtime_config = RuntimeConfig(
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            active_config_file="sensor_i2c.toml",
+            device="apvpd_aht",
+            sensor_id="apvpd-aht-1",
+            i2c=I2CConfig(bus=0, scl_pin="GP1", sda_pin="GP0", address=0x38),
+            secondary_i2c=I2CConfig(
+                bus=1,
+                scl_pin="GP3",
+                sda_pin="GP2",
+                address=0x38,
+            ),
+            calibration_device=SensorCalibration(
+                apvpd_temp_cal_val=0.5,
+                apvpd_rh_cal_val=-1.0,
+            ),
+        )
+    )
+    sensor_runtime = build_sensor_runtime(
+        plan_sensor_initialization(runtime_config),
+        runtime_config,
+    )
+    sensor_adapter = bind_sensor_hardware(
+        sensor_runtime,
+        runtime_config,
+        board_module=SimpleNamespace(
+            GP0="pin-gp0",
+            GP1="pin-gp1",
+            GP2="pin-gp2",
+            GP3="pin-gp3",
+        ),
+        busio_module=SimpleNamespace(I2C=_FakeI2C, UART=_FakeUART),
+    )
+    sensor_service = start_sensor_service(
+        sensor_runtime,
+        sensor_adapter,
+        runtime_config,
+        modules={"adafruit_ahtx0": SimpleNamespace(AHTx0=_FakeAHTx0)},
+    )
+    snapshot = read_sensor_snapshot(sensor_service, runtime_config)
+
+    assert sensor_service.phase == "ready"
+    assert sensor_service.driver_kind == "adafruit_ahtx0"
+    assert snapshot.phase == "ready"
+    assert snapshot.metrics["Temperature"] == 24.5
+    assert snapshot.metrics["Ambient VPD"] > 0
+    assert "Baro-Pressure" not in snapshot.metrics
+    assert snapshot.metrics["Plant Temperature"] == 22.5
+    assert snapshot.metrics["Plant Rel-Humidity"] == 60.0
+    assert "Plant Baro-Pressure" not in snapshot.metrics
     assert snapshot.metrics["Plant VPD"] > 0
     assert snapshot.metrics["Plant DewVPD Risk"] >= 0
 

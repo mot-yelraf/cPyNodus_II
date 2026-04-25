@@ -1,5 +1,6 @@
 [Sensor]
 TYPE = "nodus"
+# Supported DEVICE examples: aht, apvpd_aht, apvpd, aqi, avpd, co2, lux
 DEVICE = ""
 SERIAL_NUM = ""
 SENSOR_ID = ""

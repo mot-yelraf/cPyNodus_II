@@ -50,7 +50,7 @@ def bind_sensor_hardware(sensor_runtime, runtime_config, *, board_module=None, b
         sda = _resolve_pin(board_module, sensor.i2c.sda_pin, "missing_i2c_sda_pin_object", errors)
         secondary_scl = None
         secondary_sda = None
-        if sensor.device == "apvpd" and sensor.secondary_i2c is not None:
+        if sensor.device in {"apvpd", "apvpd_aht"} and sensor.secondary_i2c is not None:
             secondary_scl = _resolve_pin(
                 board_module,
                 sensor.secondary_i2c.scl_pin,
@@ -73,7 +73,7 @@ def bind_sensor_hardware(sensor_runtime, runtime_config, *, board_module=None, b
             )
         transport = busio_module.I2C(scl, sda)
         secondary_transport = None
-        if sensor.device == "apvpd" and sensor.secondary_i2c is not None:
+        if sensor.device in {"apvpd", "apvpd_aht"} and sensor.secondary_i2c is not None:
             secondary_transport = busio_module.I2C(secondary_scl, secondary_sda)
         return SensorHardwareAdapter(
             phase="bound",

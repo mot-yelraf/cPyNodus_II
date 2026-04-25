@@ -34,6 +34,8 @@ def _run_direct_tests():
         test_disconnect_mqtt_client_reports_disconnect_oserror,
         test_poll_mqtt_client_tolerates_disconnect_callback_with_two_args,
         test_poll_mqtt_client_does_not_retry_internal_typeerror,
+        test_poll_mqtt_client_marks_transport_disconnected_on_callback_arity_typeerror,
+        test_poll_mqtt_client_labels_minimqtt_wrapped_socket_typeerror,
     )
     for test in tests:
         test()
@@ -126,6 +128,11 @@ class _InternalTypeErrorMQTTClient(_FakeMQTTClient):
 
 
 class _CallbackArityFailMQTTClient(_FakeMQTTClient):
+    def loop(self, timeout=0.0):
+        raise TypeError("missing 1 required positional argument")
+
+
+class _MiniMQTTWrappedSocketFailMQTTClient(_FakeMQTTClient):
     def loop(self, timeout=0.0):
         raise TypeError("function takes 3 positional arguments but 2 were given")
 
@@ -472,7 +479,27 @@ def test_poll_mqtt_client_marks_transport_disconnected_on_callback_arity_typeerr
     assert poll_result.phase == "error"
     assert transport.connected is False
     assert poll_result.errors == (
-        "mqtt_poll_callback_failed:function takes 3 positional arguments but 2 were given",
+        "mqtt_poll_callback_failed:missing 1 required positional argument",
+    )
+
+
+def test_poll_mqtt_client_labels_minimqtt_wrapped_socket_typeerror():
+    runtime_config = _runtime_config()
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connect_requested()
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=object(),
+        modules={"mqtt_cls": _MiniMQTTWrappedSocketFailMQTTClient},
+    )
+
+    connect_result = connect_mqtt_client(adapter, transport)
+    poll_result = poll_mqtt_client(connect_result.adapter, transport)
+
+    assert poll_result.phase == "error"
+    assert transport.connected is False
+    assert poll_result.errors == (
+        "mqtt_poll_failed:minimqtt_socket:function takes 3 positional arguments but 2 were given",
     )
 
 

@@ -209,7 +209,41 @@ In normal mode the device:
 
 ## Supported Sensor Types and Metrics
 
-Nodus currently supports these sensor device types: `apvpd`, `aqi`, `avpd`, `co2`, `lux`, and `soil`.
+Nodus currently supports these sensor device types: `aht`, `apvpd_aht`, `apvpd`,
+`aqi`, `avpd`, `co2`, `lux`, and `soil`.
+
+### `aht` (AHT10/AHT20)
+
+- `Temperature` (`°C`)
+- `Temperature_F` (`°F`)
+- `Rel-Humidity` (`%`)
+- `Humidity` (`g/m³`)
+- `Ambient VPD` (`kPa`)
+- `Dew Point` (`°C`)
+- `Dew Point_F` (`°F`)
+- `Dew Point Deficit` (`°C`)
+- `DewVPD Risk` (`%`)
+
+### `apvpd_aht` (dual AHT10/AHT20: ambient + plant)
+
+- `Temperature` (`°C`)
+- `Temperature_F` (`°F`)
+- `Rel-Humidity` (`%`)
+- `Humidity` (`g/m³`)
+- `Ambient VPD` (`kPa`)
+- `Dew Point` (`°C`)
+- `Dew Point_F` (`°F`)
+- `Dew Point Deficit` (`°C`)
+- `DewVPD Risk` (`%`)
+- `Plant Temperature` (`°C`)
+- `Plant Temperature_F` (`°F`)
+- `Plant Rel-Humidity` (`%`)
+- `Plant Humidity` (`g/m³`)
+- `Plant VPD` (`kPa`)
+- `Plant Dew Point` (`°C`)
+- `Plant Dew Point_F` (`°F`)
+- `Plant Dew Point Deficit` (`°C`)
+- `Plant DewVPD Risk` (`%`)
 
 ### `apvpd` (dual BME280: ambient + plant)
 

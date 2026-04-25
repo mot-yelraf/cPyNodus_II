@@ -37,8 +37,8 @@ class SensorService:
 
 
 @dataclass(frozen=True)
-class DualBME280Driver:
-    """Capture ambient and plant BME280 drivers for APVPD."""
+class DualI2CSensorDriver:
+    """Capture ambient and plant I2C drivers for dual-sensor VPD devices."""
 
     ambient: object
     plant: object
@@ -243,7 +243,34 @@ def read_sensor_snapshot(sensor_service, runtime_config):
             errors=(),
         )
 
-    if sensor.device in {"avpd", "apvpd"}:
+    if sensor.device == "aht":
+        temp_c = _apply_linear_calibration(
+            getattr(sensor_service.driver, "temperature", None),
+            sensor.calibration_system.temp_offset,
+            sensor.calibration_device.temp_offset,
+        )
+        rh_pct = _apply_linear_calibration(
+            getattr(sensor_service.driver, "relative_humidity", None),
+            sensor.calibration_system.rh_offset,
+            sensor.calibration_device.rh_offset,
+        )
+        metrics = _compact_metrics(
+            {
+                "Temperature": _maybe_round(temp_c, 2),
+                "Rel-Humidity": _maybe_round(rh_pct, 0),
+            }
+        )
+        metrics = enrich_metrics(sensor.device, metrics, runtime_config=runtime_config)
+        _apply_post_enrichment_calibration(metrics, sensor)
+        return SensorSnapshot(
+            phase="ready",
+            sensor_id=sensor.sensor_id,
+            device=sensor.device,
+            metrics=metrics,
+            errors=(),
+        )
+
+    if sensor.device in {"avpd", "apvpd", "apvpd_aht"}:
         driver = sensor_service.driver
         ambient_driver = driver if sensor.device == "avpd" else driver.ambient
         temp_c = _apply_linear_calibration(
@@ -266,7 +293,7 @@ def read_sensor_snapshot(sensor_service, runtime_config):
                 ),
             }
         )
-        if sensor.device == "apvpd":
+        if sensor.device in {"apvpd", "apvpd_aht"}:
             metrics.update(
                 _compact_metrics(
                     {
@@ -386,6 +413,26 @@ def _start_i2c_sensor_service(sensor, sensor_adapter, modules):
             errors=(),
         )
 
+    if device == "aht":
+        module = _load_module("adafruit_ahtx0", modules, "missing_adafruit_ahtx0")
+        if module is None:
+            return _sensor_service_error(
+                device,
+                sensor.interface,
+                transport,
+                "missing_adafruit_ahtx0",
+            )
+        driver = module.AHTx0(transport, address=sensor.i2c.address)
+        return SensorService(
+            phase="ready",
+            device=device,
+            interface=sensor.interface,
+            driver_kind="adafruit_ahtx0",
+            driver=driver,
+            transport=transport,
+            errors=(),
+        )
+
     if device in {"avpd", "apvpd"}:
         module = _load_module("adafruit_bme280.basic", modules, "missing_adafruit_bme280")
         if module is None:
@@ -404,7 +451,7 @@ def _start_i2c_sensor_service(sensor, sensor_adapter, modules):
         secondary_transport = getattr(sensor_adapter, "secondary_transport", None)
         if secondary_transport is None or sensor.secondary_i2c is None:
             return _sensor_service_error(device, sensor.interface, transport, "missing_apvpd_secondary_i2c")
-        driver = DualBME280Driver(
+        driver = DualI2CSensorDriver(
             ambient=module.Adafruit_BME280_I2C(transport, address=sensor.i2c.address),
             plant=module.Adafruit_BME280_I2C(
                 secondary_transport,
@@ -416,6 +463,41 @@ def _start_i2c_sensor_service(sensor, sensor_adapter, modules):
             device=device,
             interface=sensor.interface,
             driver_kind="adafruit_bme280",
+            driver=driver,
+            transport=transport,
+            secondary_transport=secondary_transport,
+            errors=(),
+        )
+
+    if device == "apvpd_aht":
+        module = _load_module("adafruit_ahtx0", modules, "missing_adafruit_ahtx0")
+        if module is None:
+            return _sensor_service_error(
+                device,
+                sensor.interface,
+                transport,
+                "missing_adafruit_ahtx0",
+            )
+        secondary_transport = getattr(sensor_adapter, "secondary_transport", None)
+        if secondary_transport is None or sensor.secondary_i2c is None:
+            return _sensor_service_error(
+                device,
+                sensor.interface,
+                transport,
+                "missing_apvpd_secondary_i2c",
+            )
+        driver = DualI2CSensorDriver(
+            ambient=module.AHTx0(transport, address=sensor.i2c.address),
+            plant=module.AHTx0(
+                secondary_transport,
+                address=sensor.secondary_i2c.address,
+            ),
+        )
+        return SensorService(
+            phase="ready",
+            device=device,
+            interface=sensor.interface,
+            driver_kind="adafruit_ahtx0",
             driver=driver,
             transport=transport,
             secondary_transport=secondary_transport,

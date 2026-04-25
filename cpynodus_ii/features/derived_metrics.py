@@ -16,9 +16,9 @@ def enrich_metrics(device, metrics, *, runtime_config):
     """Return a copy of metrics enriched with derived values for the device."""
     enriched = dict(metrics or {})
 
-    if device in {"aqi", "co2", "avpd", "apvpd"}:
+    if device in {"aht", "aqi", "co2", "avpd", "apvpd", "apvpd_aht"}:
         _add_temp_humidity_derivatives(enriched, humidity_digits=3 if device == "co2" else 1)
-    if device == "apvpd":
+    if device in {"apvpd", "apvpd_aht"}:
         _add_prefixed_temp_humidity_derivatives(
             enriched,
             temp_key="Plant Temperature",

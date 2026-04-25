@@ -60,10 +60,54 @@ _FACTORY_SWITCH_PINS = {
     2: {"enable": "GP10", "control": "GP21", "label": "Light"},
 }
 _FACTORY_SENSOR_DISPLAY_DEFAULTS = {
-    "aqi": ("Air Quality", "Temperature", "Rel-Humidity", "Ambient VPD", "Dew Point Deficit", "DewVPD Risk"),
-    "apvpd": ("Temperature", "Ambient VPD", "Plant Temperature", "Plant VPD", "Dew Point Deficit", "Plant DewVPD Risk"),
-    "avpd": ("Ambient VPD", "Temperature", "Rel-Humidity", "Baro-Pressure", "Dew Point Deficit", "DewVPD Risk"),
-    "co2": ("CO2", "Temperature", "Rel-Humidity", "Ambient VPD", "Dew Point Deficit", "DewVPD Risk"),
+    "aht": (
+        "Temperature",
+        "Rel-Humidity",
+        "Ambient VPD",
+        "Dew Point Deficit",
+        "DewVPD Risk",
+        "",
+    ),
+    "aqi": (
+        "Air Quality",
+        "Temperature",
+        "Rel-Humidity",
+        "Ambient VPD",
+        "Dew Point Deficit",
+        "DewVPD Risk",
+    ),
+    "apvpd": (
+        "Temperature",
+        "Ambient VPD",
+        "Plant Temperature",
+        "Plant VPD",
+        "Dew Point Deficit",
+        "Plant DewVPD Risk",
+    ),
+    "apvpd_aht": (
+        "Temperature",
+        "Ambient VPD",
+        "Plant Temperature",
+        "Plant VPD",
+        "Dew Point Deficit",
+        "Plant DewVPD Risk",
+    ),
+    "avpd": (
+        "Ambient VPD",
+        "Temperature",
+        "Rel-Humidity",
+        "Baro-Pressure",
+        "Dew Point Deficit",
+        "DewVPD Risk",
+    ),
+    "co2": (
+        "CO2",
+        "Temperature",
+        "Rel-Humidity",
+        "Ambient VPD",
+        "Dew Point Deficit",
+        "DewVPD Risk",
+    ),
     "lux": ("Light Intensity", "Auto Light", "Estimated PPFD", "Visible Light Intensity", "", ""),
 }
 
@@ -250,9 +294,15 @@ class Settings:
         display_doc = document.setdefault("Display", {})
 
         sensor_doc["DEVICE"] = str(device or "").strip().lower()
-        if str(device or "").strip().lower() == "apvpd":
-            cls._apply_i2c_bootstrap(i2c_doc, interfaces.get("i2c0", {}) if isinstance(interfaces, dict) else {})
-            cls._apply_i2c_bootstrap(plant_i2c_doc, interfaces.get("i2c1", {}) if isinstance(interfaces, dict) else {})
+        if str(device or "").strip().lower() in {"apvpd", "apvpd_aht"}:
+            cls._apply_i2c_bootstrap(
+                i2c_doc,
+                interfaces.get("i2c0", {}) if isinstance(interfaces, dict) else {},
+            )
+            cls._apply_i2c_bootstrap(
+                plant_i2c_doc,
+                interfaces.get("i2c1", {}) if isinstance(interfaces, dict) else {},
+            )
         else:
             cls._apply_i2c_bootstrap(i2c_doc, interfaces.get("i2c", {}) if isinstance(interfaces, dict) else {})
             for key in tuple(plant_i2c_doc.keys()):
@@ -460,7 +510,30 @@ class Settings:
                 }
             }
 
-        for address, device in ((0x77, "aqi"), (0x76, "avpd"), (0x62, "co2"), (0x61, "co2"), (0x10, "lux")):
+        if 0x38 in scans.get(0, set()) and 0x38 in scans.get(1, set()):
+            return "apvpd_aht", {
+                "i2c0": {
+                    "bus": 0,
+                    "scl": _FACTORY_I2C_PINS[0][0],
+                    "sda": _FACTORY_I2C_PINS[0][1],
+                    "addr": 0x38,
+                },
+                "i2c1": {
+                    "bus": 1,
+                    "scl": _FACTORY_I2C_PINS[1][0],
+                    "sda": _FACTORY_I2C_PINS[1][1],
+                    "addr": 0x38,
+                }
+            }
+
+        for address, device in (
+            (0x77, "aqi"),
+            (0x76, "avpd"),
+            (0x62, "co2"),
+            (0x61, "co2"),
+            (0x38, "aht"),
+            (0x10, "lux"),
+        ):
             for bus_index, pins in enumerate(_FACTORY_I2C_PINS):
                 if address not in scans.get(bus_index, set()):
                     continue
