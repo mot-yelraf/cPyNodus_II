@@ -115,7 +115,7 @@ The built-in `/setup` web UI provides pane-based editing for:
 - `Sensor`: shared location, display metrics, and current `[Calibration.Device]` fields
 - `Switch`: switch labels and manual on/off override buttons
 - `MQTT`: active profile and shared broker connection settings
-- `Time`: `TZ`, `TZ_OFFSET`, `TZ_NAME`, and optional `NTP_SERVER`
+- `Time`: `TZ`, `TZ_OFFSET`, `TZ_NAME`, optional `NTP_SERVER`, and optional `NTP_SERVER_IP`
 
 Calibration offsets in `[Calibration.System]` and `[Calibration.Device]` are additive corrections.
 For example, a `CO2_OFFSET = -400.0` reduces the live measured `CO2` value by `400 ppm` before publish.
@@ -147,14 +147,17 @@ Time is configured in the `[Time]` section of `settings.toml`:
 - `TZ` (e.g., `America/Denver`)
 - `TZ_OFFSET` (seconds, or hours if abs <= 14)
 - `TZ_NAME` (e.g., `MST`)
-- `NTP_SERVER` (optional hostname or IP; defaults to `pool.ntp.org` when blank)
+- `NTP_SERVER` (optional hostname or IP; defaults to `us.pool.ntp.org` when blank)
+- `NTP_SERVER_IP` (optional IP fallback used when hostname/DNS sync fails; default `132.163.96.6`)
 
-`NTP_SERVER` may be left blank to use the default pool host. NTP sync is deferred
-until hostname resolution is available; this avoids early boot failures when
-DNS/mDNS is not ready yet. If hostname lookup repeatedly returns `-2`, Nodus
-disables further NTP attempts for that configured server. MQTT availability and
-heartbeat status do not require NTP; unsynced devices continue publishing online
-state with best-effort timestamps.
+`NTP_SERVER` may be left blank to use the default US pool host. If
+`NTP_SERVER_IP` is set, Nodus tries the hostname first and then the IP fallback
+when DNS or the hostname-based sync fails. NTP sync is deferred until hostname
+resolution is available when no fallback succeeds; this avoids early boot
+failures when DNS/mDNS is not ready yet. If hostname lookup repeatedly returns
+`-2`, Nodus disables further NTP attempts for that configured server. MQTT
+availability and heartbeat status do not require NTP; unsynced devices continue
+publishing online state with best-effort timestamps.
 
 ## Soil deficit thresholds
 

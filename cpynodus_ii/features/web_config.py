@@ -57,7 +57,13 @@ def classify_web_update(update):
         return WebConfigDecision(section, key, value, True, True, False)
     if section == "Switch" and key_upper in {"SWITCH_1_LAST_STATE", "SWITCH_2_LAST_STATE"}:
         return WebConfigDecision(section, key, value, True, True, False)
-    if section == "Time" and key_upper in {"TZ", "TZ_OFFSET", "TZ_NAME", "NTP_SERVER"}:
+    if section == "Time" and key_upper in {
+        "TZ",
+        "TZ_OFFSET",
+        "TZ_NAME",
+        "NTP_SERVER",
+        "NTP_SERVER_IP",
+    }:
         return WebConfigDecision(section, key, value, True, True, False)
 
     if section == "Network" and key_upper in {"SSID", "PASSWORD", "HOSTNAME", "HTTPPORT", "AP_CHANNEL"}:

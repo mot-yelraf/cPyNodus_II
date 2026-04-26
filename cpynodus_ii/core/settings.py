@@ -39,6 +39,13 @@ def _path_exists(path):
         return False
 
 
+def _path_size(path):
+    try:
+        return os.stat(path)[6]
+    except OSError:
+        return -1
+
+
 def _join_path(root, name):
     root_text = str(root or ".")
     if not root_text or root_text == ".":
@@ -178,15 +185,17 @@ class Settings:
 
     @staticmethod
     def _read_toml_file(path):
-        if not _path_exists(path):
+        if _path_size(path) <= 0:
+            backup_path = "{}.bak".format(path)
+            if _path_size(backup_path) > 0:
+                return toml_compat.load_file(backup_path)
             return {}
         return toml_compat.load_file(path)
 
     @classmethod
     def _write_toml_file(cls, path, document):
         serialized_document = cls._document_for_write(path, document)
-        with open(path, "w", encoding="utf-8") as handle:
-            handle.write(cls._dump_toml_for_path(path, serialized_document))
+        cls._replace_toml_file(path, cls._dump_toml_for_path(path, serialized_document))
 
     @classmethod
     def apply_factory_profile_reset_if_requested(
@@ -760,8 +769,7 @@ class Settings:
                     if cls._apply_update_to_document(document, update):
                         applied_updates.append(update)
                 serialized_document = cls._document_for_write(path, document)
-                with open(path, "w", encoding="utf-8") as handle:
-                    handle.write(cls._dump_toml_for_path(path, serialized_document))
+                cls._replace_toml_file(path, cls._dump_toml_for_path(path, serialized_document))
         except OSError as exc:
             code = getattr(exc, "errno", None)
             if code in {30} or "read-only" in str(exc).lower():
@@ -850,6 +858,7 @@ class Settings:
                 tz_offset=time_doc.get("TZ_OFFSET", -25200),
                 tz_name=time_doc.get("TZ_NAME", "MST"),
                 ntp_server=time_doc.get("NTP_SERVER", ""),
+                ntp_server_ip=time_doc.get("NTP_SERVER_IP", ""),
             ),
             sensor=sensor,
             switch=switch,
@@ -1080,6 +1089,26 @@ class Settings:
             except OSError:
                 pass
         return cls._dump_toml(document)
+
+    @classmethod
+    def _replace_toml_file(cls, path, text):
+        path_text = str(path or "")
+        tmp_path = "{}.tmp".format(path_text)
+        backup_path = "{}.bak".format(path_text)
+        with open(tmp_path, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            try:
+                handle.flush()
+            except AttributeError:
+                pass
+        if _path_size(tmp_path) <= 0:
+            raise OSError("toml_write_empty_tmp")
+
+        if _path_exists(backup_path):
+            os.remove(backup_path)
+        if _path_exists(path_text):
+            os.rename(path_text, backup_path)
+        os.rename(tmp_path, path_text)
 
     @classmethod
     def _document_for_write(cls, path, document):

@@ -15,7 +15,11 @@ class _ResolveOKPool:
 
 
 class _ResolveFailPool:
+    def __init__(self):
+        self.calls = []
+
     def getaddrinfo(self, host, port):
+        self.calls.append((host, port))
         raise OSError(-2)
 
 
@@ -118,6 +122,28 @@ def test_maybe_sync_ntp_defers_until_hostname_resolution_is_ready():
     assert result.phase == "deferred"
     assert result.errors[0].startswith("ntp_dns_unready:")
     assert _FakeNTP.instances == []
+
+
+def test_maybe_sync_ntp_falls_back_to_ip_when_hostname_dns_fails():
+    _FakeNTP.instances = []
+    _FakeRTC.instances = []
+    pool = _ResolveFailPool()
+    runtime_config = _runtime_config()
+    runtime_config.time.ntp_server = "us.pool.ntp.org"
+    runtime_config.time.ntp_server_ip = "132.163.96.6"
+
+    result = maybe_sync_ntp(
+        runtime_config,
+        _network_stack(pool),
+        now_monotonic=10.0,
+        modules={"ntp_cls": _FakeNTP, "rtc_factory": _FakeRTC},
+    )
+
+    assert result.phase == "synced"
+    assert result.state.server == "132.163.96.6"
+    assert result.errors == ()
+    assert _FakeNTP.instances[0].server == "132.163.96.6"
+    assert pool.calls == [("us.pool.ntp.org", 123)]
 
 
 def test_maybe_sync_ntp_disables_after_repeated_dns_not_found_errors():

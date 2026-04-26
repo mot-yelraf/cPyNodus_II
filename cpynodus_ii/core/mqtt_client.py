@@ -215,7 +215,7 @@ def sync_transport_to_client(adapter, transport):
     for topic in transport.subscriptions[adapter.subscription_index :]:
         try:
             client.subscribe(topic)
-        except OSError as exc:
+        except Exception as exc:
             transport.mark_disconnected()
             return MQTTClientSyncResult(
                 phase="error",
@@ -231,7 +231,7 @@ def sync_transport_to_client(adapter, transport):
         payload = _serialize_payload(message.payload)
         try:
             client.publish(message.topic, payload, retain=message.retain)
-        except OSError as exc:
+        except Exception as exc:
             transport.mark_disconnected()
             return MQTTClientSyncResult(
                 phase="error",
@@ -444,16 +444,52 @@ class _MiniMQTTSocketCompat:
     def __init__(self, socket_obj):
         self._socket_obj = socket_obj
 
+    def send(self, buffer):
+        send = getattr(self._socket_obj, "send")
+        try:
+            return send(buffer)
+        except TypeError as exc:
+            if not _is_socket_nbytes_required_error(exc):
+                raise
+            return send(buffer, len(buffer))
+
     def recv_into(self, buffer, nbytes=None):
         recv_into = getattr(self._socket_obj, "recv_into")
         if nbytes is None:
             try:
                 return recv_into(buffer)
             except TypeError as exc:
-                if not _is_recv_into_nbytes_required_error(exc):
+                if not _is_socket_nbytes_required_error(exc):
                     raise
-                return recv_into(buffer, len(buffer))
-        return recv_into(buffer, nbytes)
+                try:
+                    return recv_into(buffer, len(buffer))
+                except TypeError as retry_exc:
+                    if not _is_socket_nbytes_required_error(retry_exc):
+                        raise
+                    return self._recv_into_from_recv(buffer, len(buffer))
+        try:
+            return recv_into(buffer, nbytes)
+        except TypeError as exc:
+            if not _is_socket_nbytes_required_error(exc):
+                raise
+            try:
+                return recv_into(buffer)
+            except TypeError as retry_exc:
+                if not _is_socket_nbytes_required_error(retry_exc):
+                    raise
+                return self._recv_into_from_recv(buffer, nbytes)
+
+    def recv(self, nbytes):
+        recv = getattr(self._socket_obj, "recv")
+        return recv(nbytes)
+
+    def _recv_into_from_recv(self, buffer, nbytes):
+        recv = getattr(self._socket_obj, "recv")
+        data = recv(nbytes)
+        count = len(data or b"")
+        if count:
+            buffer[:count] = data
+        return count
 
     def __getattr__(self, name):
         return getattr(self._socket_obj, name)
@@ -587,9 +623,9 @@ def _minimqtt_socket_error(client, exc):
     )
 
 
-def _is_recv_into_nbytes_required_error(exc):
+def _is_socket_nbytes_required_error(exc):
     text = str(exc or "").lower()
-    if "recv_into" in text and "argument" in text:
+    if ("recv_into" in text or "send" in text) and "argument" in text:
         return True
     return text == "function takes 3 positional arguments but 2 were given"
 

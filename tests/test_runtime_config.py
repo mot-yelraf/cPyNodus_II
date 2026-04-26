@@ -187,6 +187,7 @@ def test_runtime_config_keeps_minimal_defaults_for_missing_sections():
     assert runtime_config.homeassistant.publish_state_retain is True
     assert runtime_config.time.tz_name == "MST"
     assert runtime_config.time.ntp_server == ""
+    assert runtime_config.time.ntp_server_ip == ""
     assert runtime_config.switch.present is False
 
 

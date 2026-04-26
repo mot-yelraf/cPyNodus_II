@@ -14,6 +14,7 @@ from dataclasses import replace
 from cpynodus_ii import __version__
 from cpynodus_ii.hardware import bind_sensor_hardware, bind_switch_hardware
 from cpynodus_ii.core.mqtt import MQTTTransport
+from cpynodus_ii.core.ntp import DEFAULT_NTP_SERVER
 from cpynodus_ii.core.reboot_log import append_reboot_reason_traceback
 from cpynodus_ii.core import (
     NTPState,
@@ -564,7 +565,7 @@ async def main(*, startup_plan_override=None):
                     "ntp",
                     "phase={} server={} rtc={} errors={}".format(
                         ntp_result.phase,
-                        ntp_state.server or "pool.ntp.org",
+                        ntp_state.server or DEFAULT_NTP_SERVER,
                         ntp_state.datetime_text or "unknown",
                         ",".join(ntp_result.errors) if ntp_result.errors else "none",
                     ),

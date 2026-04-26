@@ -207,3 +207,37 @@ def test_device_config_message_persists_sensor_location_without_reloading_runtim
     assert result.persistence_mode == "persisted"
     assert result.runtime_config.sensor.location == "DeskTest"
     assert sensor_doc["Sensor"]["LOCATION"] == "DeskTest"
+
+
+def test_device_config_message_persists_display_metrics_with_backup(monkeypatch):
+    docs_root = Path(__file__).resolve().parents[1] / "docs" / "sensor+switch"
+    with TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        for name in ("settings.toml", "switch.toml", "sensor_i2c.toml"):
+            (tmpdir_path / name).write_text((docs_root / name).read_text(), encoding="utf-8")
+
+        runtime_config = Settings.from_directory(tmpdir_path).runtime_config()
+        original_text = (tmpdir_path / Settings.SENSOR_I2C_FILE).read_text(encoding="utf-8")
+        transport = MQTTTransport("broker.local", 1883)
+
+        def _fail_on_reload(cls, root):
+            raise AssertionError("display persistence should not reload runtime config")
+
+        monkeypatch.setattr(Settings, "from_directory", classmethod(_fail_on_reload))
+        result = process_device_config_message(
+            transport,
+            runtime_config,
+            topic="nodus/aqi-x943fm/config/set",
+            payload_text='{"message_id":"cfg-1","payload":{"updates":[{"section":"Display","key":"METRIC_1","value":"Plant VPD"},{"section":"Display.Style","key":"METRIC_1","value":"Graph24hr"}]}}',
+            settings_root=tmpdir_path,
+        )
+        sensor_doc = Settings._read_toml_file(tmpdir_path / Settings.SENSOR_I2C_FILE)
+        backup_text = (tmpdir_path / "{}.bak".format(Settings.SENSOR_I2C_FILE)).read_text(encoding="utf-8")
+
+    assert result.phase == "published"
+    assert result.persistence_mode == "persisted"
+    assert result.runtime_config.sensor.display.metrics[0] == "Plant VPD"
+    assert result.runtime_config.sensor.display.styles[0] == "Graph24hr"
+    assert sensor_doc["Display"]["METRIC_1"] == "Plant VPD"
+    assert sensor_doc["Display"]["Style"]["METRIC_1"] == "Graph24hr"
+    assert backup_text == original_text

@@ -335,6 +335,37 @@ def test_apply_updates_preserves_template_order_in_settings_file():
     assert text.index('BROKER = "samhain.local"') < text.index('BROKER_IP = ""') < text.index("PORT = 1883")
 
 
+def test_write_toml_file_keeps_previous_live_file_as_backup():
+    with TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        _copy_defs(tmpdir_path)
+        path = tmpdir_path / "sensor_i2c.toml"
+        path.write_text("[Sensor]\nDEVICE = \"apvpd\"\n", encoding="utf-8")
+        document = Settings._read_toml_file(path)
+        document["Sensor"]["LOCATION"] = "Greenhouse"
+
+        Settings._write_toml_file(path, document)
+
+        backup_text = (tmpdir_path / "sensor_i2c.toml.bak").read_text(encoding="utf-8")
+        live_doc = Settings._read_toml_file(path)
+
+    assert 'DEVICE = "apvpd"' in backup_text
+    assert live_doc["Sensor"]["LOCATION"] == "Greenhouse"
+
+
+def test_read_toml_file_uses_backup_when_live_file_is_empty():
+    with TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        live_path = tmpdir_path / "sensor_i2c.toml"
+        backup_path = tmpdir_path / "sensor_i2c.toml.bak"
+        live_path.write_text("", encoding="utf-8")
+        backup_path.write_text("[Sensor]\nDEVICE = \"apvpd\"\n", encoding="utf-8")
+
+        document = Settings._read_toml_file(live_path)
+
+    assert document["Sensor"]["DEVICE"] == "apvpd"
+
+
 def test_write_toml_file_obfuscates_settings_password_fields():
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)

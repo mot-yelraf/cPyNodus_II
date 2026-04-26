@@ -247,12 +247,14 @@ class TimeConfig:
     tz_offset: int = -25200
     tz_name: str = "MST"
     ntp_server: str = ""
+    ntp_server_ip: str = ""
 
     def __post_init__(self):
         _raw_setattr(self, "tz", _clean_str(self.tz) or "America/Denver")
         _raw_setattr(self, "tz_offset", _normalize_tz_offset(self.tz_offset or -25200))
         _raw_setattr(self, "tz_name", _clean_str(self.tz_name) or "MST")
         _raw_setattr(self, "ntp_server", _clean_str(self.ntp_server))
+        _raw_setattr(self, "ntp_server_ip", _clean_str(self.ntp_server_ip))
 
 
 @dataclass

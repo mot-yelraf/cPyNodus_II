@@ -1067,6 +1067,11 @@ def apply_runtime_config_update(runtime_config, section, key, value):
             runtime_config,
             time=replace(runtime_config.time, ntp_server=str(value or "").strip()),
         )
+    if section == "Time" and key_upper == "NTP_SERVER_IP":
+        return replace(
+            runtime_config,
+            time=replace(runtime_config.time, ntp_server_ip=str(value or "").strip()),
+        )
     if section == "Profile" and key_upper == "ACTIVE_PROFILE":
         return replace(runtime_config, active_profile=str(value or "").strip())
     if section == "Sensor" and key_upper == "LOCATION":

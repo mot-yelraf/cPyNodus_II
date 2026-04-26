@@ -38,6 +38,8 @@ def _run_direct_tests():
         test_poll_mqtt_client_marks_transport_disconnected_on_callback_arity_typeerror,
         test_poll_mqtt_client_adapts_socket_recv_into_without_nbytes,
         test_poll_mqtt_client_adapts_connected_minimqtt_socket_recv_into,
+        test_poll_mqtt_client_falls_back_to_recv_when_recv_into_arity_persists,
+        test_poll_mqtt_client_adapts_connected_minimqtt_socket_send_without_nbytes,
         test_poll_mqtt_client_labels_minimqtt_wrapped_socket_typeerror,
     )
     for test in tests:
@@ -100,6 +102,11 @@ class _PublishFailMQTTClient(_FakeMQTTClient):
         raise OSError(9)
 
 
+class _SubscribeFailMQTTClient(_FakeMQTTClient):
+    def subscribe(self, topic):
+        raise RuntimeError("No data received from broker for 10 seconds.")
+
+
 class _PollFailMQTTClient(_FakeMQTTClient):
     def loop(self, timeout=0.0):
         raise OSError(9)
@@ -151,6 +158,27 @@ class _RecvIntoNeedsNbytesSocket:
         return nbytes
 
 
+class _SendNeedsNbytesSocket:
+    def __init__(self):
+        self.send_calls = []
+
+    def send(self, buffer, nbytes):
+        self.send_calls.append(nbytes)
+        return nbytes
+
+
+class _RecvIntoAlwaysAritySocket:
+    def __init__(self):
+        self.recv_calls = []
+
+    def recv_into(self, *args):
+        raise TypeError("function takes 3 positional arguments but 2 were given")
+
+    def recv(self, nbytes):
+        self.recv_calls.append(nbytes)
+        return b"\x01"[:nbytes]
+
+
 class _RecvIntoNeedsNbytesPool:
     def __init__(self):
         self.socket_obj = _RecvIntoNeedsNbytesSocket()
@@ -178,6 +206,27 @@ class _MiniMQTTConnectedSocketRecvIntoClient(_FakeMQTTClient):
     def loop(self, timeout=0.0):
         buffer = bytearray(1)
         self._sock.recv_into(buffer)
+
+
+class _MiniMQTTConnectedSocketRecvFallbackClient(_FakeMQTTClient):
+    def connect(self):
+        super().connect()
+        self._sock = _RecvIntoAlwaysAritySocket()
+        self._backwards_compatible_sock = True
+
+    def loop(self, timeout=0.0):
+        buffer = bytearray(1)
+        self._sock.recv_into(buffer, 1)
+
+
+class _MiniMQTTConnectedSocketSendClient(_FakeMQTTClient):
+    def connect(self):
+        super().connect()
+        self._sock = _SendNeedsNbytesSocket()
+        self._backwards_compatible_sock = True
+
+    def loop(self, timeout=0.0):
+        self._sock.send(memoryview(bytearray(b"\xc0\0")))
 
 
 def _runtime_config():
@@ -441,6 +490,28 @@ def test_sync_transport_to_client_marks_transport_disconnected_on_publish_oserro
     assert "mqtt_publish_failed:nodus/aqi-x943fm/data" in sync_result.errors[0]
 
 
+def test_sync_transport_to_client_marks_transport_disconnected_on_subscribe_exception():
+    runtime_config = _runtime_config()
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connect_requested()
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=object(),
+        modules={"mqtt_cls": _SubscribeFailMQTTClient},
+    )
+
+    connect_result = connect_mqtt_client(adapter, transport)
+    transport.subscribe("nodus/S1-x943fm/config/set")
+
+    sync_result = sync_transport_to_client(connect_result.adapter, transport)
+
+    assert sync_result.phase == "error"
+    assert transport.connected is False
+    assert sync_result.errors == (
+        "mqtt_subscribe_failed:No data received from broker for 10 seconds.",
+    )
+
+
 def test_poll_mqtt_client_marks_transport_disconnected_on_oserror():
     runtime_config = _runtime_config()
     transport = MQTTTransport("broker.local", 1883)
@@ -589,6 +660,44 @@ def test_poll_mqtt_client_adapts_connected_minimqtt_socket_recv_into():
     assert poll_result.phase == "polled"
     assert transport.connected is True
     assert connect_result.adapter.client._sock._socket_obj.recv_into_calls == [1]
+    assert connect_result.adapter.client._backwards_compatible_sock is False
+
+
+def test_poll_mqtt_client_falls_back_to_recv_when_recv_into_arity_persists():
+    runtime_config = _runtime_config()
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connect_requested()
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=object(),
+        modules={"mqtt_cls": _MiniMQTTConnectedSocketRecvFallbackClient},
+    )
+
+    connect_result = connect_mqtt_client(adapter, transport)
+    poll_result = poll_mqtt_client(connect_result.adapter, transport)
+
+    assert poll_result.phase == "polled"
+    assert transport.connected is True
+    assert connect_result.adapter.client._sock._socket_obj.recv_calls == [1]
+    assert connect_result.adapter.client._backwards_compatible_sock is False
+
+
+def test_poll_mqtt_client_adapts_connected_minimqtt_socket_send_without_nbytes():
+    runtime_config = _runtime_config()
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connect_requested()
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=object(),
+        modules={"mqtt_cls": _MiniMQTTConnectedSocketSendClient},
+    )
+
+    connect_result = connect_mqtt_client(adapter, transport)
+    poll_result = poll_mqtt_client(connect_result.adapter, transport)
+
+    assert poll_result.phase == "polled"
+    assert transport.connected is True
+    assert connect_result.adapter.client._sock._socket_obj.send_calls == [2]
     assert connect_result.adapter.client._backwards_compatible_sock is False
 
 

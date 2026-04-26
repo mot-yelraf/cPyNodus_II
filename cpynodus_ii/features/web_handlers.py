@@ -133,6 +133,7 @@ def build_setup_payload(runtime_config, *, version):
             "tz_offset": runtime_config.time.tz_offset,
             "tz_name": runtime_config.time.tz_name,
             "ntp_server": runtime_config.time.ntp_server,
+            "ntp_server_ip": runtime_config.time.ntp_server_ip,
         },
         "mqtt": {
             "broker": runtime_config.mqtt.broker,

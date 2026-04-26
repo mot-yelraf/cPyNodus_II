@@ -8,7 +8,7 @@ rest of the runtime.
 from dataclasses import dataclass
 
 
-DEFAULT_NTP_SERVER = "pool.ntp.org"
+DEFAULT_NTP_SERVER = "us.pool.ntp.org"
 DEFAULT_NTP_MAX_DNS_FAILURES = 3
 
 
@@ -48,8 +48,9 @@ def maybe_sync_ntp(
     """Attempt an NTP sync when enabled, due, and hostname resolution is ready."""
     state = state or NTPState()
     server = str(runtime_config.time.ntp_server or "").strip() or DEFAULT_NTP_SERVER
+    targets = _ntp_targets(runtime_config.time)
     now_value = float(now_monotonic or 0.0)
-    same_server = state.server == server
+    same_server = state.server in targets
     if not runtime_config.ntp_enabled:
         return NTPResult(phase="skipped", state=state, errors=("ntp_disabled",))
     if (
@@ -67,81 +68,85 @@ def maybe_sync_ntp(
         return NTPResult(phase="skipped", state=state, errors=("ntp_not_due",))
 
     failure_count = state.failure_count if same_server else 0
-    resolve_error = _preflight_hostname(network_stack.socket_pool, server)
-    if resolve_error:
-        failure_count = _next_failure_count(
-            resolve_error,
-            failure_count,
-            max_dns_failures,
-        )
-        phase = (
-            "disabled"
-            if _dns_failure_limit_reached(failure_count, max_dns_failures)
-            else "deferred"
-        )
-        return NTPResult(
-            phase=phase,
-            state=NTPState(
-                phase=phase,
-                server=server,
-                datetime_text=state.datetime_text,
-                last_attempt_at=now_value,
-                last_sync_at=state.last_sync_at,
-                failure_count=failure_count,
-                errors=(resolve_error,),
-            ),
-            errors=(resolve_error,),
-        )
+    errors = []
+    for target in targets:
+        resolve_error = _preflight_hostname(network_stack.socket_pool, target)
+        if resolve_error:
+            errors.append(resolve_error)
+            failure_count = _next_failure_count(
+                resolve_error,
+                failure_count,
+                max_dns_failures,
+            )
+            continue
 
-    try:
-        ntp_client = _build_ntp_client(
-            network_stack.socket_pool,
-            server=server,
-            tz_offset=runtime_config.time.tz_offset,
-            modules=modules,
-        )
-        current_datetime = getattr(ntp_client, "datetime", None)
-        if callable(current_datetime):
-            current_datetime = current_datetime()
-        if current_datetime is None:
-            raise RuntimeError("ntp_datetime_unavailable")
-        _set_rtc_datetime(current_datetime, modules=modules)
-        datetime_text = _format_datetime(current_datetime)
-    except Exception as exc:
-        error = "ntp_sync_failed:{}".format(exc)
-        failure_count = _next_failure_count(error, failure_count, max_dns_failures)
-        phase = (
-            "disabled"
-            if _dns_failure_limit_reached(failure_count, max_dns_failures)
-            else "error"
-        )
-        return NTPResult(
-            phase=phase,
-            state=NTPState(
-                phase=phase,
-                server=server,
-                datetime_text=state.datetime_text,
-                last_attempt_at=now_value,
-                last_sync_at=state.last_sync_at,
-                failure_count=failure_count,
-                errors=(error,),
-            ),
-            errors=(error,),
-        )
+        try:
+            ntp_client = _build_ntp_client(
+                network_stack.socket_pool,
+                server=target,
+                tz_offset=runtime_config.time.tz_offset,
+                modules=modules,
+            )
+            current_datetime = getattr(ntp_client, "datetime", None)
+            if callable(current_datetime):
+                current_datetime = current_datetime()
+            if current_datetime is None:
+                raise RuntimeError("ntp_datetime_unavailable")
+            _set_rtc_datetime(current_datetime, modules=modules)
+            datetime_text = _format_datetime(current_datetime)
+        except Exception as exc:
+            error = "ntp_sync_failed:{}:{}".format(target, exc)
+            errors.append(error)
+            failure_count = _next_failure_count(error, failure_count, max_dns_failures)
+            continue
 
-    return NTPResult(
-        phase="synced",
-        state=NTPState(
+        return NTPResult(
             phase="synced",
-            server=server,
-            datetime_text=datetime_text,
-            last_attempt_at=now_value,
-            last_sync_at=now_value,
-            failure_count=0,
+            state=NTPState(
+                phase="synced",
+                server=target,
+                datetime_text=datetime_text,
+                last_attempt_at=now_value,
+                last_sync_at=now_value,
+                failure_count=0,
+                errors=(),
+            ),
             errors=(),
-        ),
-        errors=(),
+        )
+
+    phase = (
+        "disabled"
+        if _dns_failure_limit_reached(failure_count, max_dns_failures)
+        else _failure_phase(errors)
     )
+    return NTPResult(
+        phase=phase,
+        state=NTPState(
+            phase=phase,
+            server=server,
+            datetime_text=state.datetime_text,
+            last_attempt_at=now_value,
+            last_sync_at=state.last_sync_at,
+            failure_count=failure_count,
+            errors=tuple(errors),
+        ),
+        errors=tuple(errors),
+    )
+
+
+def _ntp_targets(time_config):
+    primary = str(getattr(time_config, "ntp_server", "") or "").strip() or DEFAULT_NTP_SERVER
+    fallback = str(getattr(time_config, "ntp_server_ip", "") or "").strip()
+    if fallback and fallback != primary:
+        return (primary, fallback)
+    return (primary,)
+
+
+def _failure_phase(errors):
+    for error in errors:
+        if not str(error or "").startswith("ntp_dns_unready:"):
+            return "error"
+    return "deferred"
 
 
 def _next_failure_count(error, current_count, max_dns_failures):
