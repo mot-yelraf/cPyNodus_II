@@ -153,7 +153,7 @@ def test_should_not_fallback_to_ap_when_station_error_keeps_lan_ip():
     )
 
 
-def test_should_fallback_to_ap_when_station_error_has_nodus_ap_ip():
+def test_should_not_fallback_to_ap_for_mqtt_profile_station_error_with_ap_ip():
     runtime_config = RuntimeConfig(
         active_profile="sensorius",
         network=replace(
@@ -169,7 +169,7 @@ def test_should_fallback_to_ap_when_station_error_has_nodus_ap_ip():
             runtime_config,
             SimpleNamespace(phase="error", ip_address="192.168.4.16"),
         )
-        is True
+        is False
     )
 
 

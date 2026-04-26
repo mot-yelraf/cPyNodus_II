@@ -140,6 +140,8 @@ def test_runtime_meta_payload_includes_sensor_and_switch_topics():
     assert payload["network"]["password"] != "wifi-secret"
     assert decode_password(payload["network"]["password"], hostname="aqi-x943fm") == "wifi-secret"
     assert payload["profile"]["active_profile"] == "sensorius"
+    assert payload["status"]["state"] == "online"
+    assert payload["status"]["heartbeat_topic"] == "nodus/aqi-x943fm/status/heartbeat"
     assert payload["mqtt"]["broker"] == "broker.local"
     assert payload["mqtt"]["broker_ip"] == "10.0.0.20"
     assert payload["mqtt"]["active_broker"] == "sensoria-hub-0.local"

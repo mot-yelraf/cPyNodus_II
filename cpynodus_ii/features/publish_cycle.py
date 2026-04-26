@@ -94,7 +94,7 @@ def publish_startup_cycle(
     if runtime_config.sensor.present:
         availability = transport.publish(
             mqtt_topic(runtime_config, runtime_config.sensor.sensor_id, "availability"),
-            build_sensor_availability_payload(runtime_config, online=(sensor_snapshot is not None and sensor_snapshot.phase == "ready")),
+            build_sensor_availability_payload(runtime_config, online=True),
             retain=True,
         )
         topics.append(availability.topic)

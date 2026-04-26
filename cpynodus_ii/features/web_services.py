@@ -5,7 +5,6 @@ and lightweight service decisions used during AP provisioning and normal web
 configuration flows.
 """
 
-from dataclasses import dataclass
 import json
 import os
 import time
@@ -169,17 +168,27 @@ def clear_onboarding_state(root="."):
     return True
 
 
-@dataclass(frozen=True)
 class ItaotInitResult:
     """Describe the result of bootstrap payload handling."""
 
-    accepted: bool
-    rebooting: bool
-    status_code: int
-    body: dict
-    runtime_config: object
-    applied_updates: tuple = ()
-    errors: tuple = ()
+    def __init__(
+        self,
+        *,
+        accepted,
+        rebooting,
+        status_code,
+        body,
+        runtime_config,
+        applied_updates=(),
+        errors=(),
+    ):
+        self.accepted = bool(accepted)
+        self.rebooting = bool(rebooting)
+        self.status_code = int(status_code)
+        self.body = body
+        self.runtime_config = runtime_config
+        self.applied_updates = tuple(applied_updates or ())
+        self.errors = tuple(errors or ())
 
 
 def apply_itaot_init_payload(payload, runtime_config, *, settings_root="."):

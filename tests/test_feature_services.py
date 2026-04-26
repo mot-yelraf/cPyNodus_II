@@ -139,6 +139,30 @@ class _FakeSCD4X:
         self.periodic_started = True
 
 
+class _FlakySCD4X(_FakeSCD4X):
+    attempts = 0
+
+    def __init__(self, transport, *, address=0x62):
+        type(self).attempts += 1
+        if type(self).attempts == 1:
+            raise OSError("sensor warming")
+        super().__init__(transport, address=address)
+
+
+class _FakeSCD30:
+    def __init__(self, transport):
+        self.transport = transport
+        self.data_available = True
+        self.co2_reads = 0
+        self.temperature = 23.5
+        self.relative_humidity = 47.0
+
+    @property
+    def CO2(self):
+        self.co2_reads += 1
+        return 845.4
+
+
 class _MissingSensorDriver:
     def __init__(self, *_args, **_kwargs):
         raise OSError("no i2c device")
@@ -266,6 +290,75 @@ def test_sensor_service_starts_periodic_measurement_for_scd41():
     assert sensor_service.driver.address == 0x62
 
 
+def test_sensor_service_retries_scd41_startup_once():
+    _FlakySCD4X.attempts = 0
+    runtime_config = RuntimeConfig(
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            active_config_file="sensor_i2c.toml",
+            device="co2",
+            sensor_id="co2-29j39c",
+            i2c=I2CConfig(bus=0, scl_pin="GP1", sda_pin="GP0", address=0x62),
+        )
+    )
+    sensor_runtime = build_sensor_runtime(
+        plan_sensor_initialization(runtime_config),
+        runtime_config,
+    )
+    sensor_adapter = bind_sensor_hardware(
+        sensor_runtime,
+        runtime_config,
+        board_module=SimpleNamespace(GP0="pin-gp0", GP1="pin-gp1"),
+        busio_module=SimpleNamespace(I2C=_FakeI2C, UART=_FakeUART),
+    )
+
+    sensor_service = start_sensor_service(
+        sensor_runtime,
+        sensor_adapter,
+        runtime_config,
+        modules={"adafruit_scd4x": SimpleNamespace(SCD4X=_FlakySCD4X)},
+    )
+
+    assert sensor_service.phase == "ready"
+    assert sensor_service.driver.periodic_started is True
+    assert _FlakySCD4X.attempts == 2
+
+
+def test_sensor_service_reports_scd41_startup_exception_type():
+    runtime_config = RuntimeConfig(
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            active_config_file="sensor_i2c.toml",
+            device="co2",
+            sensor_id="co2-29j39c",
+            i2c=I2CConfig(bus=0, scl_pin="GP1", sda_pin="GP0", address=0x62),
+        )
+    )
+    sensor_runtime = build_sensor_runtime(
+        plan_sensor_initialization(runtime_config),
+        runtime_config,
+    )
+    sensor_adapter = bind_sensor_hardware(
+        sensor_runtime,
+        runtime_config,
+        board_module=SimpleNamespace(GP0="pin-gp0", GP1="pin-gp1"),
+        busio_module=SimpleNamespace(I2C=_FakeI2C, UART=_FakeUART),
+    )
+
+    sensor_service = start_sensor_service(
+        sensor_runtime,
+        sensor_adapter,
+        runtime_config,
+        modules={"adafruit_scd4x": SimpleNamespace(SCD4X=_MissingSensorDriver)},
+    )
+
+    assert sensor_service.phase == "error"
+    assert "sensor_not_found" in sensor_service.errors
+    assert "sensor_not_found:OSError:no_i2c_device" in sensor_service.errors
+
+
 def test_scd41_snapshot_waits_until_data_ready():
     runtime_config = RuntimeConfig(
         sensor=DetectedSensor(
@@ -290,6 +383,34 @@ def test_scd41_snapshot_waits_until_data_ready():
 
     assert snapshot.phase == "waiting"
     assert snapshot.metrics == {}
+    assert "sensor_data_not_ready" in snapshot.errors
+
+
+def test_scd30_snapshot_waits_until_data_available():
+    runtime_config = RuntimeConfig(
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            active_config_file="sensor_i2c.toml",
+            device="co2",
+            sensor_id="co2-29j39c",
+            i2c=I2CConfig(bus=0, scl_pin="GP1", sda_pin="GP0", address=0x61),
+        )
+    )
+    driver = _FakeSCD30(None)
+    driver.data_available = False
+    sensor_service = SimpleNamespace(
+        phase="ready",
+        driver_kind="adafruit_scd30",
+        driver=driver,
+        errors=(),
+    )
+
+    snapshot = read_sensor_snapshot(sensor_service, runtime_config)
+
+    assert snapshot.phase == "waiting"
+    assert snapshot.metrics == {}
+    assert driver.co2_reads == 0
     assert "sensor_data_not_ready" in snapshot.errors
 
 

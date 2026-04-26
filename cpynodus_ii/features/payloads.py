@@ -153,6 +153,7 @@ def build_runtime_meta_payload(runtime_config, *, version, active_broker=""):
             "switch": switch.present,
         },
         "status": {
+            "state": "online",
             "heartbeat_topic": mqtt_topic(runtime_config, device_id, "status", "heartbeat"),
         },
         "network": {

@@ -98,12 +98,13 @@ def start_sensor_service(sensor_runtime, sensor_adapter, runtime_config, *, modu
     if sensor_runtime.interface == "i2c":
         try:
             return _start_i2c_sensor_service(sensor, sensor_adapter, modules)
-        except Exception:
+        except Exception as exc:
             return _sensor_service_error(
                 sensor.device,
                 sensor.interface,
                 transport,
                 "sensor_not_found",
+                exc,
             )
 
     if sensor_runtime.interface == "modbus_rs485":
@@ -186,7 +187,7 @@ def read_sensor_snapshot(sensor_service, runtime_config):
         return _ready_sensor_snapshot(sensor, metrics)
 
     if sensor.device == "co2":
-        if getattr(sensor_service, "driver_kind", "") == "adafruit_scd4x":
+        if getattr(sensor_service, "driver_kind", "") in {"adafruit_scd30", "adafruit_scd4x"}:
             if not _sensor_data_ready(sensor_service.driver):
                 return SensorSnapshot(
                     phase="waiting",
@@ -355,8 +356,7 @@ def _start_i2c_sensor_service(sensor, sensor_adapter, modules):
             module = _load_module("adafruit_scd4x", modules, "missing_adafruit_scd4x")
             if module is None:
                 return _sensor_service_error(device, sensor.interface, transport, "missing_adafruit_scd4x")
-            driver = module.SCD4X(transport, address=sensor.i2c.address)
-            driver.start_periodic_measurement()
+            driver = _start_scd4x_driver(module, transport, sensor.i2c.address)
             return SensorService(
                 phase="ready",
                 device=device,
@@ -504,12 +504,30 @@ def _load_module(name, modules, error_code):
         return None
 
 
+def _start_scd4x_driver(module, transport, address):
+    last_exc = None
+    for attempt in range(2):
+        try:
+            driver = module.SCD4X(transport, address=address)
+            driver.start_periodic_measurement()
+            return driver
+        except Exception as exc:
+            last_exc = exc
+            if attempt == 0:
+                sleep(0.25)
+    raise last_exc
+
+
 def _sensor_data_ready(driver):
     """Return True when a driver either has ready data or no ready flag."""
-    try:
-        ready = getattr(driver, "data_ready")
-    except Exception:
-        return False
+    ready = None
+    for attr_name in ("data_ready", "data_available"):
+        try:
+            ready = getattr(driver, attr_name)
+        except Exception:
+            ready = None
+        if ready is not None:
+            break
     if ready is None:
         return True
     return bool(ready)
@@ -534,15 +552,26 @@ def _ready_sensor_snapshot(sensor, metrics):
     )
 
 
-def _sensor_service_error(device, interface, transport, error):
+def _sensor_service_error(device, interface, transport, error, exc=None):
+    errors = (error,)
+    if exc is not None:
+        errors += (_exception_error_token(error, exc),)
     return SensorService(
         phase="error",
         device=device,
         interface=interface,
         driver_kind="",
         transport=transport,
-        errors=(error,),
+        errors=errors,
     )
+
+
+def _exception_error_token(error, exc):
+    text = str(exc or "").strip()
+    if text:
+        text = text.replace(",", ";").replace(" ", "_")
+        return "{}:{}:{}".format(error, type(exc).__name__, text[:48])
+    return "{}:{}".format(error, type(exc).__name__)
 
 
 def _safe_deinit(handle):

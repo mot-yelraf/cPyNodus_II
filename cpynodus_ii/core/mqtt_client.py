@@ -454,42 +454,58 @@ class _MiniMQTTSocketCompat:
             return send(buffer, len(buffer))
 
     def recv_into(self, buffer, nbytes=None):
-        recv_into = getattr(self._socket_obj, "recv_into")
         if nbytes is None:
-            try:
-                return recv_into(buffer)
-            except TypeError as exc:
-                if not _is_socket_nbytes_required_error(exc):
-                    raise
-                try:
-                    return recv_into(buffer, len(buffer))
-                except TypeError as retry_exc:
-                    if not _is_socket_nbytes_required_error(retry_exc):
-                        raise
-                    return self._recv_into_from_recv(buffer, len(buffer))
-        try:
-            return recv_into(buffer, nbytes)
-        except TypeError as exc:
-            if not _is_socket_nbytes_required_error(exc):
-                raise
-            try:
-                return recv_into(buffer)
-            except TypeError as retry_exc:
-                if not _is_socket_nbytes_required_error(retry_exc):
-                    raise
-                return self._recv_into_from_recv(buffer, nbytes)
+            return self._recv_into_compatible(
+                self._socket_obj,
+                buffer,
+                len(buffer),
+                True,
+            )
+        return self._recv_into_compatible(self._socket_obj, buffer, nbytes, False)
 
     def recv(self, nbytes):
         recv = getattr(self._socket_obj, "recv")
         return recv(nbytes)
 
-    def _recv_into_from_recv(self, buffer, nbytes):
-        recv = getattr(self._socket_obj, "recv")
+    def _recv_into_from_recv(self, socket_obj, buffer, nbytes):
+        recv = getattr(socket_obj, "recv")
         data = recv(nbytes)
         count = len(data or b"")
         if count:
             buffer[:count] = data
         return count
+
+    def _recv_into_compatible(self, socket_obj, buffer, nbytes, prefer_single_arg):
+        recv_into = getattr(socket_obj, "recv_into", None)
+        if callable(recv_into):
+            if prefer_single_arg:
+                try:
+                    return recv_into(buffer)
+                except TypeError as exc:
+                    if not _is_socket_nbytes_required_error(exc):
+                        raise
+                try:
+                    return recv_into(buffer, nbytes)
+                except TypeError as exc:
+                    if not _is_socket_nbytes_required_error(exc):
+                        raise
+            else:
+                try:
+                    return recv_into(buffer, nbytes)
+                except TypeError as exc:
+                    if not _is_socket_nbytes_required_error(exc):
+                        raise
+                try:
+                    return recv_into(buffer)
+                except TypeError as exc:
+                    if not _is_socket_nbytes_required_error(exc):
+                        raise
+
+        raw_socket = _inner_socket_obj(socket_obj)
+        if raw_socket is not None and raw_socket is not socket_obj:
+            return self._recv_into_compatible(raw_socket, buffer, nbytes, False)
+
+        return self._recv_into_from_recv(socket_obj, buffer, nbytes)
 
     def __getattr__(self, name):
         return getattr(self._socket_obj, name)
@@ -512,6 +528,17 @@ def _ensure_minimqtt_socket_compat(client):
         client._backwards_compatible_sock = False
     except Exception:
         pass
+
+
+def _inner_socket_obj(socket_obj):
+    for attr_name in ("_socket", "_sock", "_socket_obj"):
+        try:
+            inner = getattr(socket_obj, attr_name, None)
+        except Exception:
+            inner = None
+        if inner is not None and inner is not socket_obj:
+            return inner
+    return None
 
 
 def _poll_timeout_for_client(client):
@@ -627,7 +654,9 @@ def _is_socket_nbytes_required_error(exc):
     text = str(exc or "").lower()
     if ("recv_into" in text or "send" in text) and "argument" in text:
         return True
-    return text == "function takes 3 positional arguments but 2 were given"
+    if "positional argument" in text and "given" in text and "takes" in text:
+        return True
+    return False
 
 
 def _bind_on_message(client, transport):

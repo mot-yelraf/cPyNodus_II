@@ -172,6 +172,8 @@ def _should_fallback_to_ap(runtime_config, network_stack):
         return False
     if not runtime_config.network.ssid or not runtime_config.network.password:
         return True
+    if runtime_config.active_profile != "nodusweb":
+        return False
     if runtime_config.network.ssid:
         if _station_ip_looks_recoverable(runtime_config, network_stack):
             return False

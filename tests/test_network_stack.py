@@ -40,6 +40,52 @@ class _FakeAPInfo:
         self.ssid = ssid
 
 
+class _StaleAPStationRadio:
+    def __init__(self):
+        self.ap_info = _FakeAPInfo("Nodus_Setup")
+        self.connected = True
+        self.connect_calls = []
+        self.disconnect_calls = 0
+        self.start_station_calls = 0
+        self.stop_ap_calls = 0
+        self.stop_station_calls = 0
+        self.hostname = ""
+        self.ipv4_address = "192.168.4.17"
+        self.ipv4_address_ap = "192.168.4.1"
+
+    def disconnect(self):
+        self.disconnect_calls += 1
+        self.ap_info = None
+        self.ipv4_address = ""
+
+    def start_station(self):
+        self.start_station_calls += 1
+
+    def stop_ap(self):
+        self.stop_ap_calls += 1
+        self.ipv4_address_ap = ""
+
+    def stop_station(self):
+        self.stop_station_calls += 1
+        self.ap_info = None
+        self.ipv4_address = ""
+
+    def connect(self, ssid, password):
+        self.connect_calls.append((ssid, password))
+        self.ap_info = _FakeAPInfo(ssid)
+        self.ipv4_address = "10.0.0.252"
+
+
+class _APSubnetStationRadio(_StaleAPStationRadio):
+    def __init__(self):
+        super().__init__()
+        self.ap_info = None
+
+    def connect(self, ssid, password):
+        self.connect_calls.append((ssid, password))
+        self.ipv4_address = "192.168.4.17"
+
+
 class _FakeConnMgr:
     @staticmethod
     def get_radio_socketpool(radio):
@@ -256,7 +302,7 @@ def test_build_network_stack_rejects_wrong_station_ssid():
     assert "actual_ssid=Nodus_Setup" in stack.errors
 
 
-def test_build_network_stack_rejects_nodus_ap_subnet_for_station_mode():
+def test_build_network_stack_rejects_ap_subnet_station_ip_without_wrong_ssid():
     radio = _FakeRadio()
     radio.ipv4_address = "192.168.4.16"
     runtime_config = RuntimeConfig(
@@ -276,8 +322,68 @@ def test_build_network_stack_rejects_nodus_ap_subnet_for_station_mode():
     )
 
     assert stack.phase == "error"
+    assert stack.ip_address == "192.168.4.16"
     assert "network_ap_subnet_suspect" in stack.errors
     assert "station_ip=192.168.4.16" in stack.errors
+
+
+def test_build_network_stack_disconnects_stale_ap_station_link_before_join():
+    radio = _StaleAPStationRadio()
+    runtime_config = RuntimeConfig(
+        active_profile="sensorius",
+        network=NetworkConfig(
+            ssid="PeaceHill",
+            password="secretpass",
+            ap_ssid="Nodus_Setup",
+            hostname="co2-29j39c",
+        ),
+    )
+
+    stack = build_network_stack(
+        runtime_config,
+        wifi_radio=radio,
+        connection_manager_module=_FakeConnMgr,
+    )
+
+    assert stack.phase == "ready"
+    assert stack.ip_address == "10.0.0.252"
+    assert radio.disconnect_calls == 1
+    assert radio.stop_ap_calls == 1
+    assert radio.stop_station_calls == 1
+    assert radio.start_station_calls == 1
+    assert radio.connect_calls == [("PeaceHill", "secretpass")]
+
+
+def test_build_network_stack_retries_ap_subnet_station_ip():
+    radio = _APSubnetStationRadio()
+    runtime_config = RuntimeConfig(
+        active_profile="sensorius",
+        network=NetworkConfig(
+            ssid="PeaceHill",
+            password="secretpass",
+            ap_ssid="Nodus_Setup",
+            hostname="co2-29j39c",
+        ),
+    )
+
+    stack = build_network_stack(
+        runtime_config,
+        wifi_radio=radio,
+        connection_manager_module=_FakeConnMgr,
+        max_attempts=3,
+        retry_delay_s=0.0,
+    )
+
+    assert stack.phase == "error"
+    assert "network_ap_subnet_suspect" in stack.errors
+    assert radio.connect_calls == [
+        ("PeaceHill", "secretpass"),
+        ("PeaceHill", "secretpass"),
+        ("PeaceHill", "secretpass"),
+    ]
+    assert radio.stop_ap_calls == 3
+    assert radio.stop_station_calls == 2
+    assert radio.start_station_calls == 2
 
 
 def test_reconnect_network_stack_preserves_socket_artifacts_until_rebuild_requested():

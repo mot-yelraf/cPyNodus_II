@@ -110,6 +110,38 @@ def test_sensor_cycle_skips_when_snapshot_not_ready():
     assert "sensor_snapshot_not_ready" in result.errors
 
 
+def test_startup_cycle_publishes_online_availability_before_sensor_ready():
+    transport = MQTTTransport("broker.local", 1883)
+    runtime_config = RuntimeConfig(
+        network=NetworkConfig(hostname="co2-29j39c"),
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            device="co2",
+            sensor_id="co2-29j39c",
+        ),
+    )
+    sensor_snapshot = SimpleNamespace(phase="error", metrics={})
+
+    result = publish_startup_cycle(
+        transport,
+        runtime_config,
+        version="v0.26.116.3",
+        sensor_snapshot=sensor_snapshot,
+        switch_snapshot={},
+    )
+
+    assert "nodus/co2-29j39c/availability" in result.topics
+    assert "nodus/co2-29j39c/data" not in result.topics
+    availability = next(
+        message
+        for message in transport.published_messages
+        if message.topic == "nodus/co2-29j39c/availability"
+    )
+    assert availability.retain is True
+    assert availability.payload["status"] == "online"
+
+
 def test_sensor_cycle_preserves_snapshot_errors_when_skipped():
     transport = MQTTTransport("broker.local", 1883)
     runtime_config = RuntimeConfig(

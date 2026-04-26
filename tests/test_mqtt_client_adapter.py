@@ -39,6 +39,7 @@ def _run_direct_tests():
         test_poll_mqtt_client_adapts_socket_recv_into_without_nbytes,
         test_poll_mqtt_client_adapts_connected_minimqtt_socket_recv_into,
         test_poll_mqtt_client_falls_back_to_recv_when_recv_into_arity_persists,
+        test_poll_mqtt_client_uses_raw_socket_when_wrapped_recv_still_has_arity_error,
         test_poll_mqtt_client_adapts_connected_minimqtt_socket_send_without_nbytes,
         test_poll_mqtt_client_labels_minimqtt_wrapped_socket_typeerror,
     )
@@ -179,6 +180,19 @@ class _RecvIntoAlwaysAritySocket:
         return b"\x01"[:nbytes]
 
 
+class _WrappedSocketWithRawRecvInto:
+    def __init__(self):
+        self._socket = _RecvIntoNeedsNbytesSocket()
+
+    def recv_into(self, buffer):
+        return self._socket.recv_into(buffer)
+
+    def recv(self, nbytes):
+        buffer = bytearray(nbytes)
+        count = self.recv_into(buffer)
+        return bytes(buffer[:count])
+
+
 class _RecvIntoNeedsNbytesPool:
     def __init__(self):
         self.socket_obj = _RecvIntoNeedsNbytesSocket()
@@ -212,6 +226,17 @@ class _MiniMQTTConnectedSocketRecvFallbackClient(_FakeMQTTClient):
     def connect(self):
         super().connect()
         self._sock = _RecvIntoAlwaysAritySocket()
+        self._backwards_compatible_sock = True
+
+    def loop(self, timeout=0.0):
+        buffer = bytearray(1)
+        self._sock.recv_into(buffer, 1)
+
+
+class _MiniMQTTConnectedWrappedRawSocketClient(_FakeMQTTClient):
+    def connect(self):
+        super().connect()
+        self._sock = _WrappedSocketWithRawRecvInto()
         self._backwards_compatible_sock = True
 
     def loop(self, timeout=0.0):
@@ -679,6 +704,26 @@ def test_poll_mqtt_client_falls_back_to_recv_when_recv_into_arity_persists():
     assert poll_result.phase == "polled"
     assert transport.connected is True
     assert connect_result.adapter.client._sock._socket_obj.recv_calls == [1]
+    assert connect_result.adapter.client._backwards_compatible_sock is False
+
+
+def test_poll_mqtt_client_uses_raw_socket_when_wrapped_recv_still_has_arity_error():
+    runtime_config = _runtime_config()
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connect_requested()
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=object(),
+        modules={"mqtt_cls": _MiniMQTTConnectedWrappedRawSocketClient},
+    )
+
+    connect_result = connect_mqtt_client(adapter, transport)
+    poll_result = poll_mqtt_client(connect_result.adapter, transport)
+
+    assert poll_result.phase == "polled"
+    assert transport.connected is True
+    raw_socket = connect_result.adapter.client._sock._socket_obj._socket
+    assert raw_socket.recv_into_calls == [1]
     assert connect_result.adapter.client._backwards_compatible_sock is False
 
 
