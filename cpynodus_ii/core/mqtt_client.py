@@ -233,6 +233,13 @@ def sync_transport_to_client(adapter, transport):
             client.publish(message.topic, payload, retain=message.retain)
         except Exception as exc:
             transport.mark_disconnected()
+            drop_failed = not bool(message.retain)
+            transport.compact(
+                published_keep_from=adapter.published_index
+                + published_count
+                + (1 if drop_failed else 0),
+                subscriptions_keep_from=adapter.subscription_index + subscribed_count,
+            )
             return MQTTClientSyncResult(
                 phase="error",
                 adapter=MQTTClientAdapter(
@@ -246,13 +253,19 @@ def sync_transport_to_client(adapter, transport):
                     client=adapter.client,
                     client_class=adapter.client_class,
                     client_kwargs=adapter.client_kwargs,
-                    published_index=adapter.published_index + published_count,
-                    subscription_index=adapter.subscription_index + subscribed_count,
+                    published_index=0,
+                    subscription_index=0,
                     errors=adapter.errors,
                 ),
                 published_count=published_count,
                 subscribed_count=subscribed_count,
-                errors=("mqtt_publish_failed:{}:{}".format(message.topic, exc),),
+                errors=(
+                    "mqtt_publish_failed:{}:bytes={}:{}".format(
+                        message.topic,
+                        _payload_size(payload),
+                        exc,
+                    ),
+                ),
             )
         published_count += 1
 
@@ -689,6 +702,13 @@ def _serialize_payload(payload):
     if isinstance(payload, str):
         return payload
     return json.dumps(dict(payload or {}), separators=(",", ":"))
+
+
+def _payload_size(payload):
+    try:
+        return len(payload)
+    except Exception:
+        return 0
 
 
 def _coerce_payload_text(message):

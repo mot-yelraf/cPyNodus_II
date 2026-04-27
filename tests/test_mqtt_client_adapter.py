@@ -103,6 +103,13 @@ class _PublishFailMQTTClient(_FakeMQTTClient):
         raise OSError(9)
 
 
+class _PublishFailSecondMQTTClient(_FakeMQTTClient):
+    def publish(self, topic, payload, retain=False):
+        if self.published:
+            raise OSError(5)
+        super().publish(topic, payload, retain=retain)
+
+
 class _SubscribeFailMQTTClient(_FakeMQTTClient):
     def subscribe(self, topic):
         raise RuntimeError("No data received from broker for 10 seconds.")
@@ -513,6 +520,53 @@ def test_sync_transport_to_client_marks_transport_disconnected_on_publish_oserro
     assert sync_result.phase == "error"
     assert transport.connected is False
     assert "mqtt_publish_failed:nodus/aqi-x943fm/data" in sync_result.errors[0]
+    assert ":bytes=" in sync_result.errors[0]
+    assert transport.published_messages == []
+
+
+def test_sync_transport_to_client_keeps_failed_retained_publish_for_retry():
+    runtime_config = _runtime_config()
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connect_requested()
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=object(),
+        modules={"mqtt_cls": _PublishFailMQTTClient},
+    )
+
+    connect_result = connect_mqtt_client(adapter, transport)
+    transport.publish(
+        "nodus/aqi-x943fm/availability",
+        {"status": "online"},
+        retain=True,
+    )
+
+    sync_result = sync_transport_to_client(connect_result.adapter, transport)
+
+    assert sync_result.phase == "error"
+    assert len(transport.published_messages) == 1
+    assert transport.published_messages[0].topic == "nodus/aqi-x943fm/availability"
+
+
+def test_sync_transport_to_client_compacts_successes_before_failed_publish():
+    runtime_config = _runtime_config()
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connect_requested()
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=object(),
+        modules={"mqtt_cls": _PublishFailSecondMQTTClient},
+    )
+
+    connect_result = connect_mqtt_client(adapter, transport)
+    transport.publish("nodus/aqi-x943fm/availability", {"status": "online"}, retain=True)
+    transport.publish("nodus/aqi-x943fm/data", {"schema": "nodus-sensor/v1"}, retain=False)
+
+    sync_result = sync_transport_to_client(connect_result.adapter, transport)
+
+    assert sync_result.phase == "error"
+    assert sync_result.published_count == 1
+    assert transport.published_messages == []
 
 
 def test_sync_transport_to_client_marks_transport_disconnected_on_subscribe_exception():
