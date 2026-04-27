@@ -159,8 +159,10 @@ def test_maybe_sync_ntp_disables_after_repeated_dns_not_found_errors():
         )
         state = result.state
 
-    assert result.phase == "disabled"
-    assert result.state.failure_count == 3
+    assert result.phase == "cooldown"
+    assert result.state.failure_count == 0
+    assert result.state.failure_window == 2
+    assert result.state.cooldown_until == 3730.0
     assert result.errors[0].startswith("ntp_dns_unready:")
 
     skipped = maybe_sync_ntp(
@@ -172,7 +174,7 @@ def test_maybe_sync_ntp_disables_after_repeated_dns_not_found_errors():
     )
 
     assert skipped.phase == "skipped"
-    assert skipped.errors == ("ntp_disabled_after_dns_failures",)
+    assert skipped.errors == ("ntp_cooldown_active",)
     assert _FakeNTP.instances == []
 
 
@@ -182,6 +184,7 @@ def test_maybe_sync_ntp_retries_when_server_changes_after_disable():
         server=DEFAULT_NTP_SERVER,
         last_attempt_at=120.0,
         failure_count=3,
+        failure_window=2,
         errors=("ntp_dns_unready:-2",),
     )
     runtime_config = _runtime_config()
@@ -198,6 +201,42 @@ def test_maybe_sync_ntp_retries_when_server_changes_after_disable():
     assert result.phase == "synced"
     assert result.state.server == "10.0.0.2"
     assert result.state.failure_count == 0
+
+
+def test_maybe_sync_ntp_disables_after_second_failure_window():
+    state = NTPState(
+        phase="cooldown",
+        server=DEFAULT_NTP_SERVER,
+        last_attempt_at=130.0,
+        failure_count=0,
+        failure_window=2,
+        cooldown_until=200.0,
+        errors=("ntp_sync_failed:132.163.96.6:[Errno 118] EHOSTUNREACH",),
+    )
+    for attempt in range(3):
+        result = maybe_sync_ntp(
+            _runtime_config(),
+            _network_stack(_ResolveFailPool()),
+            state=state,
+            now_monotonic=200.0 + (attempt * 60.0),
+            modules={"ntp_cls": _FakeNTP, "rtc_factory": _FakeRTC},
+        )
+        state = result.state
+
+    assert result.phase == "disabled"
+    assert result.state.failure_window == 2
+    assert result.state.failure_count == 3
+
+    skipped = maybe_sync_ntp(
+        _runtime_config(),
+        _network_stack(_ResolveFailPool()),
+        state=state,
+        now_monotonic=1000.0,
+        modules={"ntp_cls": _FakeNTP, "rtc_factory": _FakeRTC},
+    )
+
+    assert skipped.phase == "skipped"
+    assert skipped.errors == ("ntp_disabled_after_dns_failures",)
 
 
 def test_maybe_sync_ntp_resyncs_after_86400_seconds():

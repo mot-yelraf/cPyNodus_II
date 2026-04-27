@@ -573,6 +573,23 @@ async def main(*, startup_plan_override=None):
                     ),
                     start_monotonic=start_monotonic,
                 )
+                if ntp_result.phase == "cooldown":
+                    _print_log(
+                        "ntp",
+                        "marker=cooldown_entered server={} retry_after_s={}".format(
+                            ntp_state.server or DEFAULT_NTP_SERVER,
+                            int(max(float(ntp_state.cooldown_until) - float(now_monotonic), 0.0)),
+                        ),
+                        start_monotonic=start_monotonic,
+                    )
+                elif ntp_result.phase == "disabled":
+                    _print_log(
+                        "ntp",
+                        "marker=disabled server={} reason=attempt_limit_exhausted".format(
+                            ntp_state.server or DEFAULT_NTP_SERVER
+                        ),
+                        start_monotonic=start_monotonic,
+                    )
                 if ntp_result.phase == "synced":
                     _collect_garbage()
             if (

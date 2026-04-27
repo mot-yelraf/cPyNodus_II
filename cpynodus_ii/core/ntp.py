@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 DEFAULT_NTP_SERVER = "us.pool.ntp.org"
 DEFAULT_NTP_MAX_DNS_FAILURES = 3
+DEFAULT_NTP_COOLDOWN_S = 3600.0
 
 
 @dataclass(frozen=True)
@@ -22,6 +23,8 @@ class NTPState:
     last_attempt_at: float = -1.0
     last_sync_at: float = -1.0
     failure_count: int = 0
+    failure_window: int = 1
+    cooldown_until: float = -1.0
     errors: tuple = ()
 
 
@@ -43,6 +46,7 @@ def maybe_sync_ntp(
     retry_interval_s=60.0,
     sync_interval_s=86400.0,
     max_dns_failures=DEFAULT_NTP_MAX_DNS_FAILURES,
+    cooldown_interval_s=DEFAULT_NTP_COOLDOWN_S,
     modules=None,
 ):
     """Attempt an NTP sync when enabled, due, and hostname resolution is ready."""
@@ -58,6 +62,24 @@ def maybe_sync_ntp(
         or network_stack.socket_pool is None
     ):
         return NTPResult(phase="skipped", state=state, errors=("network_not_ready",))
+    if same_server and state.phase == "cooldown":
+        if float(now_value) < float(state.cooldown_until):
+            return NTPResult(
+                phase="skipped",
+                state=state,
+                errors=("ntp_cooldown_active",),
+            )
+        state = NTPState(
+            phase="idle",
+            server=state.server,
+            datetime_text=state.datetime_text,
+            last_attempt_at=state.last_attempt_at,
+            last_sync_at=state.last_sync_at,
+            failure_count=0,
+            failure_window=2,
+            cooldown_until=-1.0,
+            errors=state.errors,
+        )
     if same_server and state.phase == "disabled":
         return NTPResult(
             phase="skipped",
@@ -68,16 +90,12 @@ def maybe_sync_ntp(
         return NTPResult(phase="skipped", state=state, errors=("ntp_not_due",))
 
     failure_count = state.failure_count if same_server else 0
+    failure_window = state.failure_window if same_server else 1
     errors = []
     for target in targets:
         resolve_error = _preflight_hostname(network_stack.socket_pool, target)
         if resolve_error:
             errors.append(resolve_error)
-            failure_count = _next_failure_count(
-                resolve_error,
-                failure_count,
-                max_dns_failures,
-            )
             continue
 
         try:
@@ -97,7 +115,6 @@ def maybe_sync_ntp(
         except Exception as exc:
             error = "ntp_sync_failed:{}:{}".format(target, exc)
             errors.append(error)
-            failure_count = _next_failure_count(error, failure_count, max_dns_failures)
             continue
 
         return NTPResult(
@@ -109,15 +126,49 @@ def maybe_sync_ntp(
                 last_attempt_at=now_value,
                 last_sync_at=now_value,
                 failure_count=0,
+                failure_window=1,
+                cooldown_until=-1.0,
                 errors=(),
             ),
             errors=(),
         )
 
+    failure_count = int(failure_count or 0) + 1
+    if int(max_dns_failures or 0) > 0 and failure_count >= int(max_dns_failures or 0):
+        if int(failure_window or 1) <= 1:
+            return NTPResult(
+                phase="cooldown",
+                state=NTPState(
+                    phase="cooldown",
+                    server=server,
+                    datetime_text=state.datetime_text,
+                    last_attempt_at=now_value,
+                    last_sync_at=state.last_sync_at,
+                    failure_count=0,
+                    failure_window=2,
+                    cooldown_until=now_value + float(cooldown_interval_s or 0.0),
+                    errors=tuple(errors),
+                ),
+                errors=tuple(errors),
+            )
+        return NTPResult(
+            phase="disabled",
+            state=NTPState(
+                phase="disabled",
+                server=server,
+                datetime_text=state.datetime_text,
+                last_attempt_at=now_value,
+                last_sync_at=state.last_sync_at,
+                failure_count=failure_count,
+                failure_window=failure_window,
+                cooldown_until=-1.0,
+                errors=tuple(errors),
+            ),
+            errors=tuple(errors),
+        )
+
     phase = (
-        "disabled"
-        if _dns_failure_limit_reached(failure_count, max_dns_failures)
-        else _failure_phase(errors)
+        "deferred" if _all_dns_not_found(errors) else _failure_phase(errors)
     )
     return NTPResult(
         phase=phase,
@@ -128,6 +179,8 @@ def maybe_sync_ntp(
             last_attempt_at=now_value,
             last_sync_at=state.last_sync_at,
             failure_count=failure_count,
+            failure_window=failure_window,
+            cooldown_until=-1.0,
             errors=tuple(errors),
         ),
         errors=tuple(errors),
@@ -149,16 +202,13 @@ def _failure_phase(errors):
     return "deferred"
 
 
-def _next_failure_count(error, current_count, max_dns_failures):
-    if max_dns_failures <= 0 or not _is_dns_not_found_error(error):
-        return 0
-    return int(current_count or 0) + 1
-
-
-def _dns_failure_limit_reached(failure_count, max_dns_failures):
-    return int(max_dns_failures or 0) > 0 and int(failure_count or 0) >= int(
-        max_dns_failures
-    )
+def _all_dns_not_found(errors):
+    if not errors:
+        return False
+    for error in errors:
+        if not _is_dns_not_found_error(error):
+            return False
+    return True
 
 
 def _is_dns_not_found_error(error):

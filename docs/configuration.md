@@ -154,8 +154,10 @@ Time is configured in the `[Time]` section of `settings.toml`:
 `NTP_SERVER_IP` is set, Nodus tries the hostname first and then the IP fallback
 when DNS or the hostname-based sync fails. NTP sync is deferred until hostname
 resolution is available when no fallback succeeds; this avoids early boot
-failures when DNS/mDNS is not ready yet. If hostname lookup repeatedly returns
-`-2`, Nodus disables further NTP attempts for that configured server. MQTT
+failures when DNS/mDNS is not ready yet. Nodus attempts startup sync up to
+three times (60s spacing), then pauses NTP for one hour. After the cooldown it
+performs one final three-attempt window, then disables further NTP attempts for
+that configured server. MQTT
 availability and heartbeat status do not require NTP; unsynced devices continue
 publishing online state with best-effort timestamps.
 
