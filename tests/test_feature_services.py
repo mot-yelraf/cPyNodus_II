@@ -163,6 +163,13 @@ class _FakeSCD30:
         return 845.4
 
 
+class _FakeSCD30BothFlags(_FakeSCD30):
+    def __init__(self, transport):
+        super().__init__(transport)
+        self.data_ready = False
+        self.data_available = True
+
+
 class _MissingSensorDriver:
     def __init__(self, *_args, **_kwargs):
         raise OSError("no i2c device")
@@ -412,6 +419,32 @@ def test_scd30_snapshot_waits_until_data_available():
     assert snapshot.metrics == {}
     assert driver.co2_reads == 0
     assert "sensor_data_not_ready" in snapshot.errors
+
+
+def test_scd30_snapshot_prefers_data_available_over_data_ready():
+    runtime_config = RuntimeConfig(
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            active_config_file="sensor_i2c.toml",
+            device="co2",
+            sensor_id="co2-29j39c",
+            i2c=I2CConfig(bus=0, scl_pin="GP1", sda_pin="GP0", address=0x61),
+        )
+    )
+    driver = _FakeSCD30BothFlags(None)
+    sensor_service = SimpleNamespace(
+        phase="ready",
+        driver_kind="adafruit_scd30",
+        driver=driver,
+        errors=(),
+    )
+
+    snapshot = read_sensor_snapshot(sensor_service, runtime_config)
+
+    assert snapshot.phase == "ready"
+    assert snapshot.metrics["CO2"] == 845.0
+    assert driver.co2_reads == 1
 
 
 def test_sensor_service_reads_legacy_aqi_snapshot():

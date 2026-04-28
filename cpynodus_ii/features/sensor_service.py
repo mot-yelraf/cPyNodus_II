@@ -187,8 +187,9 @@ def read_sensor_snapshot(sensor_service, runtime_config):
         return _ready_sensor_snapshot(sensor, metrics)
 
     if sensor.device == "co2":
-        if getattr(sensor_service, "driver_kind", "") in {"adafruit_scd30", "adafruit_scd4x"}:
-            if not _sensor_data_ready(sensor_service.driver):
+        driver_kind = getattr(sensor_service, "driver_kind", "")
+        if driver_kind in {"adafruit_scd30", "adafruit_scd4x"}:
+            if not _sensor_data_ready(sensor_service.driver, driver_kind=driver_kind):
                 return SensorSnapshot(
                     phase="waiting",
                     sensor_id=sensor.sensor_id,
@@ -518,19 +519,34 @@ def _start_scd4x_driver(module, transport, address):
     raise last_exc
 
 
-def _sensor_data_ready(driver):
+def _sensor_data_ready(driver, *, driver_kind=""):
     """Return True when a driver either has ready data or no ready flag."""
-    ready = None
-    for attr_name in ("data_ready", "data_available"):
-        try:
-            ready = getattr(driver, attr_name)
-        except Exception:
-            ready = None
+    attr_names = ("data_ready", "data_available")
+    if str(driver_kind or "") == "adafruit_scd30":
+        attr_names = ("data_available", "data_ready")
+    for attr_name in attr_names:
+        ready = _read_ready_attr(driver, attr_name)
         if ready is not None:
-            break
-    if ready is None:
-        return True
-    return bool(ready)
+            return bool(ready)
+    return True
+
+
+def _read_ready_attr(driver, attr_name):
+    """Read one sensor ready flag, supporting property and zero-arg callable forms."""
+    try:
+        value = getattr(driver, attr_name)
+    except Exception:
+        return None
+    if value is None:
+        return None
+    if callable(value):
+        try:
+            value = value()
+        except Exception:
+            return None
+    if value is None:
+        return None
+    return value
 
 
 def _ready_sensor_snapshot(sensor, metrics):
