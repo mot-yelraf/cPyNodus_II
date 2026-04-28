@@ -5,4 +5,4 @@ services, and configuration helpers used by Nodus sensor and switch firmware on
 CircuitPython-powered Pico 2 W hardware.
 """
 
-__version__ = "v0.26.117.2"
+__version__ = "v0.26.118.1"

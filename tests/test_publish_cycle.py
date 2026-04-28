@@ -376,7 +376,13 @@ def test_homeassistant_startup_cycle_publishes_discovery_topics():
     }
     assert discovery_messages["homeassistant/sensor/co2_ykdvea/co2/config"].retain is True
     assert discovery_messages["homeassistant/sensor/co2_ykdvea/co2/config"].payload["state_topic"] == "nodus/co2-ykdvea/data"
+    assert discovery_messages["homeassistant/sensor/co2_ykdvea/co2/config"].payload["availability_template"] == (
+        "{{ value_json['status'] }}"
+    )
     assert discovery_messages["homeassistant/switch/co2_ykdvea/s1_ykdvea/config"].payload["command_topic"] == "nodus/S1-ykdvea/config/set"
+    assert discovery_messages["homeassistant/switch/co2_ykdvea/s1_ykdvea/config"].payload["availability_template"] == (
+        "{{ value_json['status'] }}"
+    )
 
 
 def test_homeassistant_startup_cycle_clears_stale_discovery_topics():
