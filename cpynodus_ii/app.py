@@ -133,6 +133,15 @@ def _sensor_issue_text(errors):
     return ",".join(issue_errors) if issue_errors else ""
 
 
+def _is_recoverable_mqtt_poll_error(errors):
+    """Return True when poll errors match known recoverable MiniMQTT noise."""
+    for error in tuple(errors or ()):
+        text = str(error or "").strip()
+        if text.startswith("mqtt_poll_failed:minimqtt_socket:"):
+            return True
+    return False
+
+
 def _collect_garbage():
     """Run best-effort garbage collection for constrained heap recovery."""
     try:
@@ -651,7 +660,10 @@ async def main(*, startup_plan_override=None):
             if transport.connected:
                 poll_result = poll_mqtt_client(mqtt_adapter, transport)
                 mqtt_adapter = poll_result.adapter
-                if poll_result.phase == "error":
+                if (
+                    poll_result.phase == "error"
+                    and not _is_recoverable_mqtt_poll_error(poll_result.errors)
+                ):
                     _print_log(
                         "mqtt",
                         "poll phase={} received={} errors={}".format(
