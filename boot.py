@@ -10,6 +10,7 @@ import board
 import digitalio
 import microcontroller
 import storage
+import time
 import usb_cdc
 
 # ---------- user-configurable pins ----------
@@ -21,6 +22,31 @@ _boot_warnings = []
 
 def _warn(msg):
     _boot_warnings.append(msg)
+
+
+def _stamp():
+    try:
+        now = time.localtime()
+    except Exception:
+        now = None
+    if now is not None:
+        try:
+            if int(now[0]) >= 2023:
+                return "{:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}".format(
+                    int(now[0]),
+                    int(now[1]),
+                    int(now[2]),
+                    int(now[3]),
+                    int(now[4]),
+                    int(now[5]),
+                )
+        except Exception:
+            pass
+    try:
+        elapsed = max(0, int(time.monotonic()))
+    except Exception:
+        elapsed = 0
+    return "{}s".format(elapsed)
 
 
 # ---------- read the guard pin ----------
@@ -83,4 +109,4 @@ if guard_pin is not None:
 
 if _boot_warnings:
     for msg in _boot_warnings:
-        print("[boot.py] {msg}".format(msg=msg))
+        print("{} [boot.py] {msg}".format(_stamp(), msg=msg))

@@ -121,6 +121,18 @@ def _sensor_error_text(*parts):
     return ",".join(errors) if errors else "none"
 
 
+def _sensor_target_addr(sensor_runtime):
+    """Return a compact sensor target address for startup logs."""
+    target = str(getattr(sensor_runtime, "transport_target", "") or "").strip()
+    if not target:
+        return "none"
+    if "@" in target:
+        address = target.rsplit("@", 1)[-1].strip()
+        if address:
+            return address.lower() if address.lower().startswith("0x") else address
+    return target
+
+
 def _sensor_issue_text(errors):
     """Return sensor-specific poll errors, omitting normal skipped cadences."""
     issue_errors = []
@@ -325,12 +337,12 @@ async def main(*, startup_plan_override=None):
         else None
     )
     runtime_config = settings.runtime_config()
-    network_stack = build_network_stack(runtime_config)
+    network_stack = build_network_stack(runtime_config, log_start_monotonic=start_monotonic)
     startup_ap_fallback = _should_fallback_to_ap(runtime_config, network_stack)
     startup_ap_fallback_errors = tuple(network_stack.errors)
     if startup_ap_fallback:
         runtime_config = _enter_ap_recovery_mode(runtime_config)
-        network_stack = build_network_stack(runtime_config)
+        network_stack = build_network_stack(runtime_config, log_start_monotonic=start_monotonic)
     plan = _resolve_startup_plan(
         runtime_config,
         startup_plan_override=startup_plan_override,
@@ -388,7 +400,7 @@ async def main(*, startup_plan_override=None):
     _print_log(
         "cPyNodus_II",
         (
-            "sensor enabled={} family={} interface={} file={} phase={} target={} "
+            "sensor enabled={} family={} interface={} file={} phase={} target_addr={} "
             "adapter={} service={} metrics={} errors={}"
         ).format(
             plan.sensor_enabled,
@@ -396,7 +408,7 @@ async def main(*, startup_plan_override=None):
             plan.sensor_interface or "none",
             plan.active_sensor_file or "none",
             sensor_runtime.phase,
-            sensor_runtime.transport_target or "none",
+            _sensor_target_addr(sensor_runtime),
             sensor_adapter.phase,
             sensor_service.phase,
             len((sensor_snapshot.metrics or {})),
@@ -535,6 +547,7 @@ async def main(*, startup_plan_override=None):
                     max_attempts=1,
                     retry_delay_s=0.0,
                     rebuild_socket_artifacts=False,
+                    log_start_monotonic=start_monotonic,
                 )
                 network_stack = reconnect_result
                 if network_link_is_ready(network_stack):
@@ -550,6 +563,7 @@ async def main(*, startup_plan_override=None):
                     max_attempts=1,
                     retry_delay_s=0.0,
                     rebuild_socket_artifacts=True,
+                    log_start_monotonic=start_monotonic,
                 )
                 mqtt_adapter = build_mqtt_client_adapter(
                     runtime_config,

@@ -92,6 +92,8 @@ def test_steady_state_iteration_processes_commands_and_publishes_sensor_cycle():
     assert result.command_published_count == 6
     assert result.sensor_publish_phase == "published"
     assert result.sensor_published_count == 1
+    assert result.availability_refresh_phase == "skipped"
+    assert result.availability_refresh_published_count == 0
     assert result.total_published_count == 13
     assert transport.published_messages[-1].topic == "nodus/aqi-x943fm/data"
 
@@ -116,6 +118,8 @@ def test_steady_state_iteration_skips_sensor_cycle_when_polling_disabled():
     assert result.command_published_count == 0
     assert result.sensor_publish_phase == "skipped"
     assert result.sensor_published_count == 0
+    assert result.availability_refresh_phase == "skipped"
+    assert result.availability_refresh_published_count == 0
     assert result.total_published_count == 0
 
 
@@ -147,6 +151,8 @@ def test_steady_state_iteration_loads_onboarding_state_for_startup_publish(tmp_p
 
     assert result.startup_publish_phase == "published"
     assert result.startup_published_count == 4
+    assert result.availability_refresh_phase == "skipped"
+    assert result.availability_refresh_published_count == 0
     hello_message = next(
         message
         for message in transport.published_messages

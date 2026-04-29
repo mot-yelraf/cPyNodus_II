@@ -18,9 +18,34 @@ if getattr(sys.implementation, "name", "") != "circuitpython":
 else:
     import asyncio
     import sys
+    import time
 
     from cpynodus_ii.app import main
     from cpynodus_ii.core.reboot_log import append_reboot_traceback
+
+    def _stamp():
+        try:
+            now = time.localtime()
+        except Exception:
+            now = None
+        if now is not None:
+            try:
+                if int(now[0]) >= 2023:
+                    return "{:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}".format(
+                        int(now[0]),
+                        int(now[1]),
+                        int(now[2]),
+                        int(now[3]),
+                        int(now[4]),
+                        int(now[5]),
+                    )
+            except Exception:
+                pass
+        try:
+            elapsed = max(0, int(time.monotonic()))
+        except Exception:
+            elapsed = 0
+        return "{}s".format(elapsed)
 
     try:
         asyncio.run(main())
@@ -37,8 +62,9 @@ else:
             reload_runtime = getattr(supervisor, "reload", None)
             if callable(reload_runtime):
                 print(
-                    "runtime action=reload reason=unhandled_exception:{}".format(
-                        type(exc).__name__
+                    "{} runtime action=reload reason=unhandled_exception:{}".format(
+                        _stamp(),
+                        type(exc).__name__,
                     )
                 )
                 reload_runtime()

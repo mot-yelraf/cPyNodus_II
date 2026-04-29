@@ -13,6 +13,7 @@ from cpynodus_ii.core.config import (
 )
 from cpynodus_ii.core.mqtt import MQTTTransport
 from cpynodus_ii.features import (
+    publish_availability_refresh_cycle,
     publish_sensor_cycle,
     publish_shutdown_cycle,
     publish_startup_cycle,
@@ -140,6 +141,46 @@ def test_startup_cycle_publishes_online_availability_before_sensor_ready():
     )
     assert availability.retain is True
     assert availability.payload["status"] == "online"
+
+
+def test_availability_refresh_cycle_republishes_retained_online_topics():
+    transport = MQTTTransport("broker.local", 1883)
+    runtime_config = RuntimeConfig(
+        network=NetworkConfig(hostname="aqi-x943fm"),
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            device="aqi",
+            sensor_id="aqi-x943fm",
+        ),
+        switch=SwitchConfig(
+            present=True,
+            device_id="switch-x943fm",
+            channel_count=1,
+            channels=(
+                SwitchChannelConfig(
+                    key="SWITCH_1",
+                    channel_id="S1-x943fm",
+                    label="Fan",
+                    enable_pin="GP5",
+                    control_pin="GP28",
+                ),
+            ),
+        ),
+    )
+
+    result = publish_availability_refresh_cycle(transport, runtime_config)
+
+    assert result.phase == "published"
+    assert result.published_count == 2
+    assert result.topics == (
+        "nodus/aqi-x943fm/availability",
+        "nodus/S1-x943fm/availability",
+    )
+    assert transport.published_messages[0].retain is True
+    assert transport.published_messages[1].retain is True
+    assert transport.published_messages[0].payload["status"] == "online"
+    assert transport.published_messages[1].payload["status"] == "online"
 
 
 def test_sensor_cycle_preserves_snapshot_errors_when_skipped():

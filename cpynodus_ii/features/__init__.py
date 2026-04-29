@@ -29,6 +29,7 @@ from cpynodus_ii.features.payloads import (
 )
 from cpynodus_ii.features.publish_cycle import (
     PublishCycleResult,
+    publish_availability_refresh_cycle,
     publish_sensor_cycle,
     publish_shutdown_cycle,
     publish_startup_cycle,
@@ -141,6 +142,7 @@ __all__ = [
     "parse_switch_command",
     "plan_sensor_initialization",
     "plan_switch_initialization",
+    "publish_availability_refresh_cycle",
     "publish_sensor_cycle",
     "publish_shutdown_cycle",
     "publish_startup_cycle",

@@ -111,6 +111,7 @@ def test_steady_state_resubscribes_and_republishes_on_connect_generation_change(
     )
     assert result.state.connection_generation == 1
     assert result.state.last_sensor_publish_at == 10.0
+    assert result.state.last_availability_publish_at == 10.0
     assert transport.subscriptions == list(result.subscribed_topics)
 
 
@@ -159,6 +160,50 @@ def test_steady_state_respects_sensor_publish_interval():
     assert third.sensor_publish_phase == "published"
     assert third.sensor_published_count == 1
     assert third.state.last_sensor_publish_at == 41.0
+
+
+def test_steady_state_refreshes_availability_on_interval():
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connect_requested()
+    transport.mark_connected()
+    runtime_config = _runtime_config()
+
+    first = run_steady_state_iteration(
+        transport,
+        runtime_config,
+        _switch_service(),
+        _sensor_service(),
+        state=SteadyState(sensor_interval_s=300.0, availability_interval_s=15.0),
+        version="0.1.0",
+        now_monotonic=10.0,
+    )
+    published_after_first = len(transport.published_messages)
+
+    second = run_steady_state_iteration(
+        transport,
+        runtime_config,
+        _switch_service(),
+        _sensor_service(),
+        state=first.state,
+        version="0.1.0",
+        now_monotonic=20.0,
+    )
+    assert second.availability_refresh_phase == "skipped"
+    assert second.availability_refresh_published_count == 0
+    assert len(transport.published_messages) == published_after_first
+
+    third = run_steady_state_iteration(
+        transport,
+        runtime_config,
+        _switch_service(),
+        _sensor_service(),
+        state=second.state,
+        version="0.1.0",
+        now_monotonic=26.0,
+    )
+    assert third.availability_refresh_phase == "published"
+    assert third.availability_refresh_published_count == 2
+    assert third.state.last_availability_publish_at == 26.0
 
 
 def test_steady_state_bounds_handled_message_ids():

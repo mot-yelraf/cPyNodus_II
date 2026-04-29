@@ -6,6 +6,7 @@ topic-level logic.
 """
 
 from dataclasses import dataclass
+from time import time
 
 from cpynodus_ii.features.payloads import (
     build_device_heartbeat_payload,
@@ -199,6 +200,48 @@ def publish_shutdown_cycle(transport, runtime_config):
             )
             topics.append(availability.topic)
 
+    return PublishCycleResult(
+        phase="published",
+        published_count=len(topics),
+        topics=tuple(topics),
+        errors=(),
+    )
+
+
+def publish_availability_refresh_cycle(transport, runtime_config):
+    """Republish retained online availability payloads during steady-state."""
+    topics = []
+    if runtime_config.sensor.present:
+        availability = transport.publish(
+            mqtt_topic(runtime_config, runtime_config.sensor.sensor_id, "availability"),
+            build_sensor_availability_payload(runtime_config, online=True),
+            retain=True,
+        )
+        topics.append(availability.topic)
+
+    if runtime_config.switch.present:
+        timestamp = int(time())
+        for channel in runtime_config.switch.channels:
+            payload = {
+                "schema": "nodus-availability/v1",
+                "channel_id": channel.channel_id,
+                "status": "online",
+                "timestamp": timestamp,
+            }
+            availability = transport.publish(
+                mqtt_topic(runtime_config, channel.channel_id, "availability"),
+                payload,
+                retain=True,
+            )
+            topics.append(availability.topic)
+
+    if not topics:
+        return PublishCycleResult(
+            phase="skipped",
+            published_count=0,
+            topics=(),
+            errors=("availability_not_supported",),
+        )
     return PublishCycleResult(
         phase="published",
         published_count=len(topics),

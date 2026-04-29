@@ -197,8 +197,14 @@ def test_build_network_stack_retries_transient_failures_and_then_succeeds():
     assert stack.ip_address == "192.168.1.99"
 
 
-def test_build_network_stack_fails_fast_on_authentication_error():
-    radio = _FlakyRadio([ConnectionError("Authentication failure")])
+def test_build_network_stack_retries_authentication_error_before_failing():
+    radio = _FlakyRadio(
+        [
+            ConnectionError("Authentication failure"),
+            ConnectionError("Authentication failure"),
+            ConnectionError("Authentication failure"),
+        ]
+    )
     radio.ipv4_address = "10.0.0.252"
     radio.ipv4_address_ap = "192.168.4.1"
     runtime_config = RuntimeConfig(
@@ -220,7 +226,27 @@ def test_build_network_stack_fails_fast_on_authentication_error():
     assert "exception=ConnectionError" in stack.errors
     assert "station_ip=10.0.0.252" in stack.errors
     assert "ap_ip=192.168.4.1" in stack.errors
-    assert len(radio.connected) == 1
+    assert len(radio.connected) == 3
+
+
+def test_build_network_stack_recovers_after_transient_authentication_error():
+    radio = _FlakyRadio([ConnectionError("Authentication failure")])
+    runtime_config = RuntimeConfig(
+        active_profile="sensorius",
+        network=NetworkConfig(ssid="TestWiFi", password="secretpass", hostname="aqi-x943fm"),
+    )
+
+    stack = build_network_stack(
+        runtime_config,
+        wifi_radio=radio,
+        connection_manager_module=_FakeConnMgr,
+        max_attempts=3,
+        retry_delay_s=0.0,
+    )
+
+    assert stack.phase == "ready"
+    assert stack.ip_address == "192.168.1.99"
+    assert len(radio.connected) == 2
 
 
 def test_build_network_stack_diagnostics_ignore_unimplemented_ap_info():

@@ -9,6 +9,41 @@ from dataclasses import dataclass
 import time
 
 
+def _network_log(message, *, start_monotonic=None):
+    """Print a network diagnostic line with a compact timestamp prefix."""
+    try:
+        now = time.localtime()
+    except Exception:
+        now = None
+    if now is not None:
+        try:
+            if int(now[0]) >= 2023:
+                stamp = "{:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}".format(
+                    int(now[0]),
+                    int(now[1]),
+                    int(now[2]),
+                    int(now[3]),
+                    int(now[4]),
+                    int(now[5]),
+                )
+                print("{} {}".format(stamp, message))
+                return
+        except Exception:
+            pass
+    try:
+        now_mono = float(time.monotonic())
+    except Exception:
+        now_mono = 0.0
+    if start_monotonic is None:
+        elapsed = max(0, int(now_mono))
+    else:
+        try:
+            elapsed = max(0, int(now_mono - float(start_monotonic)))
+        except Exception:
+            elapsed = max(0, int(now_mono))
+    print("{}s {}".format(elapsed, message))
+
+
 @dataclass(frozen=True)
 class NetworkStack:
     """Describe the active network bootstrap state."""
@@ -32,6 +67,7 @@ def build_network_stack(
     connection_manager_module=None,
     max_attempts=3,
     retry_delay_s=1.0,
+    log_start_monotonic=None,
 ):
     """Build the runtime network stack needed by MQTT and networked profiles."""
     if runtime_config.ap_mode:
@@ -135,6 +171,7 @@ def build_network_stack(
         wifi_radio,
         max_attempts=max_attempts,
         retry_delay_s=retry_delay_s,
+        log_start_monotonic=log_start_monotonic,
     )
     if connect_result["phase"] != "ready":
         return NetworkStack(
@@ -171,6 +208,7 @@ def reconnect_network_stack(
     max_attempts=1,
     retry_delay_s=0.0,
     rebuild_socket_artifacts=False,
+    log_start_monotonic=None,
 ):
     """Reconnect station Wi-Fi, preserving socket artifacts when allowed."""
     wifi_radio = getattr(network_stack, "wifi_radio", None)
@@ -180,6 +218,7 @@ def reconnect_network_stack(
             runtime_config,
             max_attempts=max_attempts,
             retry_delay_s=retry_delay_s,
+            log_start_monotonic=log_start_monotonic,
         )
 
     connect_result = _connect_station(
@@ -187,6 +226,7 @@ def reconnect_network_stack(
         wifi_radio,
         max_attempts=max_attempts,
         retry_delay_s=retry_delay_s,
+        log_start_monotonic=log_start_monotonic,
     )
     if connect_result["phase"] != "ready":
         return NetworkStack(
@@ -306,12 +346,26 @@ def _resolve_connection_manager(connection_manager_module):
     return connection_manager_module
 
 
-def _connect_station(runtime_config, wifi_radio, *, max_attempts, retry_delay_s):
+def _connect_station(
+    runtime_config,
+    wifi_radio,
+    *,
+    max_attempts,
+    retry_delay_s,
+    log_start_monotonic=None,
+):
     connect = getattr(wifi_radio, "connect", None)
     set_hostname = getattr(wifi_radio, "hostname", None)
     last_exc = None
     attempts = max(1, int(max_attempts or 1))
     for attempt in range(1, attempts + 1):
+        _network_log(
+            "network connect attempt={} ssid={}".format(
+                attempt,
+                runtime_config.network.ssid,
+            ),
+            start_monotonic=log_start_monotonic,
+        )
         try:
             _prepare_station_mode(runtime_config, wifi_radio)
             _reset_stale_station_link(runtime_config, wifi_radio)
@@ -349,6 +403,13 @@ def _connect_station(runtime_config, wifi_radio, *, max_attempts, retry_delay_s)
             if _station_ip_is_ap_subnet(ip_address, runtime_config):
                 last_exc = RuntimeError("network_ap_subnet_suspect")
                 if attempt < attempts:
+                    _network_log(
+                        "network connect retry attempt={} reason=ap_subnet ip={}".format(
+                            attempt,
+                            ip_address or "none",
+                        ),
+                        start_monotonic=log_start_monotonic,
+                    )
                     _reset_station_mode(wifi_radio)
                     try:
                         time.sleep(float(retry_delay_s or 0.0))
@@ -365,6 +426,13 @@ def _connect_station(runtime_config, wifi_radio, *, max_attempts, retry_delay_s)
                     )
                     + _network_diagnostic_tokens(wifi_radio),
                 }
+            _network_log(
+                "network connect ready attempt={} ip={}".format(
+                    attempt,
+                    ip_address or "none",
+                ),
+                start_monotonic=log_start_monotonic,
+            )
             return {
                 "phase": "ready",
                 "ip_address": ip_address,
@@ -373,6 +441,27 @@ def _connect_station(runtime_config, wifi_radio, *, max_attempts, retry_delay_s)
         except Exception as exc:
             last_exc = exc
             if _looks_auth_failure(exc):
+                if attempt < attempts:
+                    _network_log(
+                        "network connect auth_retry attempt={} error={}".format(
+                            attempt,
+                            str(exc),
+                        ),
+                        start_monotonic=log_start_monotonic,
+                    )
+                    _reset_station_mode(wifi_radio)
+                    try:
+                        time.sleep(float(retry_delay_s or 0.0))
+                    except Exception:
+                        pass
+                    continue
+                _network_log(
+                    "network connect auth_error attempt={} error={}".format(
+                        attempt,
+                        str(exc),
+                    ),
+                    start_monotonic=log_start_monotonic,
+                )
                 return {
                     "phase": "error",
                     "ip_address": _current_ip_address(wifi_radio),
@@ -385,10 +474,25 @@ def _connect_station(runtime_config, wifi_radio, *, max_attempts, retry_delay_s)
                     + _network_diagnostic_tokens(wifi_radio),
                 }
             if attempt < attempts:
+                _network_log(
+                    "network connect retry attempt={} error={}".format(
+                        attempt,
+                        str(exc),
+                    ),
+                    start_monotonic=log_start_monotonic,
+                )
+                _reset_station_mode(wifi_radio)
                 try:
                     time.sleep(float(retry_delay_s or 0.0))
                 except Exception:
                     pass
+    _network_log(
+        "network connect error attempts={} error={}".format(
+            attempts,
+            str(last_exc or ""),
+        ),
+        start_monotonic=log_start_monotonic,
+    )
     return {
         "phase": "error",
         "ip_address": _current_ip_address(wifi_radio),
