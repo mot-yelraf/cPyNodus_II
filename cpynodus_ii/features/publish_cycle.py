@@ -62,6 +62,31 @@ def publish_startup_cycle(
     )
     topics.append(meta.topic)
 
+    # Publish online availability early so stale retained offline status is
+    # cleared even if later startup publishes fail.
+    if runtime_config.sensor.present:
+        availability = transport.publish(
+            mqtt_topic(runtime_config, runtime_config.sensor.sensor_id, "availability"),
+            build_sensor_availability_payload(runtime_config, online=True),
+            retain=True,
+        )
+        topics.append(availability.topic)
+
+    if runtime_config.switch.present:
+        availability_timestamp = int(time())
+        for channel in runtime_config.switch.channels:
+            availability = transport.publish(
+                mqtt_topic(runtime_config, channel.channel_id, "availability"),
+                {
+                    "schema": "nodus-availability/v1",
+                    "channel_id": channel.channel_id,
+                    "status": "online",
+                    "timestamp": availability_timestamp,
+                },
+                retain=True,
+            )
+            topics.append(availability.topic)
+
     hello_payload = build_onboarding_hello_payload(
         runtime_config,
         onboarding_state,
@@ -93,12 +118,6 @@ def publish_startup_cycle(
         transport._ha_last_retained_discovery_topics = retained_topics
 
     if runtime_config.sensor.present:
-        availability = transport.publish(
-            mqtt_topic(runtime_config, runtime_config.sensor.sensor_id, "availability"),
-            build_sensor_availability_payload(runtime_config, online=True),
-            retain=True,
-        )
-        topics.append(availability.topic)
         if sensor_snapshot is not None and sensor_snapshot.phase == "ready":
             data = transport.publish(
                 mqtt_topic(runtime_config, runtime_config.sensor.sensor_id, "data"),
@@ -117,17 +136,6 @@ def publish_startup_cycle(
                 retain=True,
             )
             topics.append(message.topic)
-            availability = transport.publish(
-                mqtt_topic(runtime_config, channel.channel_id, "availability"),
-                {
-                    "schema": "nodus-availability/v1",
-                    "channel_id": channel.channel_id,
-                    "status": "online",
-                    "timestamp": payload["timestamp"],
-                },
-                retain=True,
-            )
-            topics.append(availability.topic)
 
     return PublishCycleResult(
         phase="published",

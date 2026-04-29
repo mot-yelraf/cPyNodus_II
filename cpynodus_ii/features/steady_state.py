@@ -53,6 +53,15 @@ class SteadyStateResult:
     errors: tuple = ()
 
 
+@dataclass(frozen=True)
+class _SkippedPublishResult:
+    """Represent a skipped publish cycle without dynamic type creation."""
+
+    phase: str = "skipped"
+    published_count: int = 0
+    errors: tuple = ()
+
+
 def run_steady_state_iteration(
     transport,
     runtime_config,
@@ -237,8 +246,4 @@ def run_steady_state_iteration(
 
 
 def _skipped_publish_result(error):
-    return type(
-        "_SkippedPublishResult",
-        (),
-        {"phase": "skipped", "published_count": 0, "errors": (error,)},
-    )()
+    return _SkippedPublishResult(errors=(error,))

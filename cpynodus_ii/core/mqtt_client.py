@@ -558,12 +558,12 @@ def _poll_timeout_for_client(client):
     for attr_name in ("socket_timeout", "_socket_timeout", "recv_timeout", "_recv_timeout"):
         value = getattr(client, attr_name, None)
         if _is_positive_number(value):
-            return float(value)
+            return max(0.1, min(1.0, float(value)))
     socket_obj = getattr(client, "_socket", None)
     for attr_name in ("timeout", "_timeout"):
         value = getattr(socket_obj, attr_name, None)
         if _is_positive_number(value):
-            return float(value)
+            return max(0.1, min(1.0, float(value)))
     return 1.0
 
 

@@ -110,6 +110,23 @@ def _memory_summary():
     return "free_mem={} mem_alloc={}".format(free_mem, mem_alloc)
 
 
+def _transport_queue_summary(transport):
+    """Return compact queue depth counters for MQTT transport buffers."""
+    try:
+        published = len(getattr(transport, "published_messages", ()))
+    except Exception:
+        published = -1
+    try:
+        subscriptions = len(getattr(transport, "subscriptions", ()))
+    except Exception:
+        subscriptions = -1
+    try:
+        received = len(getattr(transport, "received_messages", ()))
+    except Exception:
+        received = -1
+    return "queues pub={} sub={} rx={}".format(published, subscriptions, received)
+
+
 def _sensor_error_text(*parts):
     """Return a compact sensor error string for startup and poll logs."""
     errors = []
@@ -371,7 +388,8 @@ async def main(*, startup_plan_override=None):
         phase_started_at=float(start_monotonic) if network_stack.phase == "ap" else -1.0,
     )
     web_runtime = None
-    last_health_at = float(start_monotonic)
+    next_health_at = float(start_monotonic) + 300.0
+    next_periodic_gc_at = float(start_monotonic) + 60.0
     last_mqtt_connect_attempt_at = float(start_monotonic)
 
     connect_phase = "deferred" if plan.mqtt_enabled else "skipped"
@@ -671,22 +689,6 @@ async def main(*, startup_plan_override=None):
                         )
                     _collect_garbage()
                     _log_memory_checkpoint(start_monotonic, "post_mqtt_connect")
-            if transport.connected:
-                poll_result = poll_mqtt_client(mqtt_adapter, transport)
-                mqtt_adapter = poll_result.adapter
-                if (
-                    poll_result.phase == "error"
-                    and not _is_recoverable_mqtt_poll_error(poll_result.errors)
-                ):
-                    _print_log(
-                        "mqtt",
-                        "poll phase={} received={} errors={}".format(
-                            poll_result.phase,
-                            poll_result.received_count,
-                            ",".join(poll_result.errors) if poll_result.errors else "none",
-                        ),
-                        start_monotonic=start_monotonic,
-                    )
             iteration = run_steady_state_iteration(
                 transport,
                 runtime_config,
@@ -735,10 +737,10 @@ async def main(*, startup_plan_override=None):
                     ),
                     start_monotonic=start_monotonic,
                 )
-            if (float(now_monotonic) - float(last_health_at)) >= 300.0:
+            if float(now_monotonic) >= float(next_health_at):
                 _print_log(
                     "cPyNodus_II",
-                    "health network_phase={} recovery_phase={} ssid={} ipv4={} mqtt_connected={} active_broker={} {}".format(
+                    "health network_phase={} recovery_phase={} ssid={} ipv4={} mqtt_connected={} active_broker={} {} {}".format(
                         network_stack.phase,
                         recovery_state.phase,
                         network_stack.ssid or "none",
@@ -746,10 +748,27 @@ async def main(*, startup_plan_override=None):
                         transport.connected,
                         mqtt_adapter.active_broker or "none",
                         _memory_summary(),
+                        _transport_queue_summary(transport),
                     ),
                     start_monotonic=start_monotonic,
                 )
-                last_health_at = float(now_monotonic)
+                while float(next_health_at) <= float(now_monotonic):
+                    next_health_at += 300.0
+            if float(now_monotonic) >= float(next_periodic_gc_at):
+                before = _memory_summary()
+                _collect_garbage()
+                after = _memory_summary()
+                _print_log(
+                    "memory",
+                    "phase=periodic_gc before={} after={} {}".format(
+                        before,
+                        after,
+                        _transport_queue_summary(transport),
+                    ),
+                    start_monotonic=start_monotonic,
+                )
+                while float(next_periodic_gc_at) <= float(now_monotonic):
+                    next_periodic_gc_at += 60.0
             if transport.connected:
                 sync_result = sync_transport_to_client(mqtt_adapter, transport)
                 mqtt_adapter = sync_result.adapter
@@ -761,6 +780,21 @@ async def main(*, startup_plan_override=None):
                             sync_result.published_count,
                             sync_result.subscribed_count,
                             ",".join(sync_result.errors) if sync_result.errors else "none",
+                        ),
+                        start_monotonic=start_monotonic,
+                    )
+                poll_result = poll_mqtt_client(mqtt_adapter, transport)
+                mqtt_adapter = poll_result.adapter
+                if (
+                    poll_result.phase == "error"
+                    and not _is_recoverable_mqtt_poll_error(poll_result.errors)
+                ):
+                    _print_log(
+                        "mqtt",
+                        "poll phase={} received={} errors={}".format(
+                            poll_result.phase,
+                            poll_result.received_count,
+                            ",".join(poll_result.errors) if poll_result.errors else "none",
                         ),
                         start_monotonic=start_monotonic,
                     )
