@@ -52,14 +52,21 @@ def plan_sensor_initialization(runtime_config):
         if sensor.modbus is None:
             errors.append("missing_modbus_config")
         else:
-            if not sensor.modbus.uart_tx:
-                errors.append("missing_modbus_uart_tx")
-            if not sensor.modbus.uart_rx:
-                errors.append("missing_modbus_uart_rx")
-            if sensor.modbus.address <= 0:
-                errors.append("missing_modbus_address")
-            if sensor.modbus.baud <= 0:
-                errors.append("invalid_modbus_baud")
+            channels = tuple(getattr(sensor.modbus, "channels", ()) or ())
+            if not channels:
+                channels = (sensor.modbus,)
+            if not channels:
+                errors.append("missing_modbus_channels")
+            for channel in channels:
+                prefix = "{}:".format(getattr(channel, "name", "") or "MODBUS")
+                if not getattr(channel, "uart_tx", ""):
+                    errors.append("{}missing_modbus_uart_tx".format(prefix))
+                if not getattr(channel, "uart_rx", ""):
+                    errors.append("{}missing_modbus_uart_rx".format(prefix))
+                if int(getattr(channel, "address", 0) or 0) <= 0:
+                    errors.append("{}missing_modbus_address".format(prefix))
+                if int(getattr(channel, "baud", 0) or 0) <= 0:
+                    errors.append("{}invalid_modbus_baud".format(prefix))
     else:
         errors.append("unsupported_sensor_interface")
 

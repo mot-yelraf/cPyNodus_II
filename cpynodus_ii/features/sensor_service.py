@@ -47,9 +47,10 @@ class DualI2CSensorDriver:
 class SoilModbusClient:
     """Provide minimal Modbus register reads over a UART transport."""
 
-    def __init__(self, uart_transport, *, address):
+    def __init__(self, uart_transport, *, address, channel_name=""):
         self.uart_transport = uart_transport
         self.address = int(address or 1)
+        self.channel_name = str(channel_name or "").strip().upper()
 
     def read_registers(self, start, count):
         """Read one or more holding registers from the configured sensor."""
@@ -109,10 +110,26 @@ def start_sensor_service(sensor_runtime, sensor_adapter, runtime_config, *, modu
 
     if sensor_runtime.interface == "modbus_rs485":
         driver = transport
-        if transport is not None and not hasattr(transport, "read_registers"):
+        if isinstance(transport, tuple):
+            driver = tuple(
+                (
+                    channel,
+                    item if hasattr(item, "read_registers") else SoilModbusClient(
+                        item,
+                        address=getattr(channel, "address", 1),
+                        channel_name=getattr(channel, "name", ""),
+                    ),
+                )
+                for channel, item in transport
+            )
+        elif transport is not None and not hasattr(transport, "read_registers"):
+            channels = getattr(getattr(sensor, "modbus", None), "channels", ())
+            channel = tuple(channels or (None,))[0]
+            fallback_address = getattr(getattr(sensor, "modbus", None), "address", 1)
             driver = SoilModbusClient(
                 transport,
-                address=getattr(getattr(sensor, "modbus", None), "address", 1),
+                address=getattr(channel, "address", fallback_address),
+                channel_name=getattr(channel, "name", ""),
             )
         return SensorService(
             phase="ready",
@@ -321,7 +338,7 @@ def read_sensor_snapshot(sensor_service, runtime_config):
 
     if sensor.device == "soil":
         transport = sensor_service.driver or sensor_service.transport
-        metrics = _compact_metrics(_read_soil_metrics(transport, sensor))
+        metrics = _read_soil_snapshot_metrics(transport, sensor)
         metrics = enrich_metrics(sensor.device, metrics, runtime_config=runtime_config)
         return _ready_sensor_snapshot(sensor, metrics)
 
@@ -593,6 +610,13 @@ def _exception_error_token(error, exc):
 def _safe_deinit(handle):
     if handle is None:
         return
+    if isinstance(handle, tuple):
+        for item in handle:
+            if isinstance(item, tuple) and len(item) >= 2:
+                _safe_deinit(item[1])
+            else:
+                _safe_deinit(item)
+        return
     deinit = getattr(handle, "deinit", None)
     if callable(deinit):
         try:
@@ -656,6 +680,32 @@ def _apply_post_enrichment_calibration(metrics, sensor):
 
 def _compact_metrics(metrics):
     return {key: value for key, value in metrics.items() if value is not None}
+
+
+def _read_soil_snapshot_metrics(transport, sensor):
+    if isinstance(transport, tuple):
+        result = {}
+        active = []
+        for item in transport:
+            if not isinstance(item, tuple) or len(item) < 2:
+                continue
+            channel, channel_transport = item[0], item[1]
+            metrics = _compact_metrics(_read_soil_metrics(channel_transport, sensor))
+            if metrics:
+                active.append(
+                    (
+                        getattr(channel, "name", "") or "CH{}".format(len(active) + 1),
+                        metrics,
+                    )
+                )
+        if len(active) == 1:
+            return active[0][1]
+        for name, metrics in active:
+            prefix = "{} ".format(str(name or "").strip().upper())
+            for key, value in metrics.items():
+                result["{}{}".format(prefix, key)] = value
+        return result
+    return _compact_metrics(_read_soil_metrics(transport, sensor))
 
 
 def _read_soil_metrics(transport, sensor):

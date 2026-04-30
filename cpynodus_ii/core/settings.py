@@ -18,6 +18,7 @@ from cpynodus_ii.core.config import (
     NetworkConfig,
     RuntimeConfig,
     SensorCalibration,
+    SoilModbusChannelConfig,
     SoilModbusConfig,
     SoilRegisterMap,
     SoilScaleMap,
@@ -362,6 +363,35 @@ class Settings:
             modbus_doc["MODBUS_ADDR"] = int(modbus.get("addr", 1))
         if modbus.get("soil_variant"):
             modbus_doc["SOIL_VARIANT"] = str(modbus.get("soil_variant", "canonical"))
+        channels = (
+            interfaces.get("modbus_channels", ())
+            if isinstance(interfaces, dict)
+            else ()
+        )
+        if channels:
+            for name in ("CH1", "CH2"):
+                channel_doc = modbus_doc.setdefault(name, {})
+                channel_doc["UART_TX"] = ""
+                channel_doc["UART_RX"] = ""
+        for channel in channels or ():
+            name = str(channel.get("name", "") or "").strip().upper()
+            if name not in {"CH1", "CH2"}:
+                continue
+            channel_doc = modbus_doc.setdefault(name, {})
+            if channel.get("tx"):
+                channel_doc["UART_TX"] = channel.get("tx")
+            if channel.get("rx"):
+                channel_doc["UART_RX"] = channel.get("rx")
+            if "baud" in channel:
+                channel_doc["MODBUS_BAUD"] = int(channel.get("baud", 9600))
+            if "timeout_s" in channel:
+                channel_doc["MODBUS_TIMEOUT_S"] = float(channel.get("timeout_s", 0.30))
+            if "addr" in channel:
+                channel_doc["MODBUS_ADDR"] = int(channel.get("addr", 1))
+            if channel.get("soil_variant"):
+                channel_doc["SOIL_VARIANT"] = str(
+                    channel.get("soil_variant", "canonical")
+                )
 
         cls._write_toml_file(path, document)
 
@@ -556,16 +586,21 @@ class Settings:
                     }
                 }
 
-        soil = cls._probe_soil_rs485(board_module=board_module, busio_module=busio_module)
-        if soil:
+        soil_channels = cls._probe_soil_rs485(
+            board_module=board_module,
+            busio_module=busio_module,
+        )
+        if soil_channels:
+            first = soil_channels[0]
             return "soil", {
-                "uart": {"tx": soil.get("tx"), "rx": soil.get("rx")},
+                "uart": {"tx": first.get("tx"), "rx": first.get("rx")},
                 "modbus": {
-                    "baud": soil.get("baud", 9600),
+                    "baud": first.get("baud", 9600),
                     "timeout_s": 0.30,
-                    "addr": soil.get("addr", 1),
-                    "soil_variant": soil.get("soil_variant", "canonical"),
+                    "addr": first.get("addr", 1),
+                    "soil_variant": first.get("soil_variant", "canonical"),
                 },
+                "modbus_channels": soil_channels,
             }
 
         return "", {}
@@ -697,25 +732,33 @@ class Settings:
                 return "soil_2in1"
             return ""
 
-        for tx_name, rx_name in (("GP0", "GP1"), ("GP4", "GP5")):
+        found = []
+        for channel_name, tx_name, rx_name in (
+            ("CH1", "GP0", "GP1"),
+            ("CH2", "GP4", "GP5"),
+        ):
             tx = getattr(board_module, tx_name, None)
             rx = getattr(board_module, rx_name, None)
             if tx is None or rx is None:
                 continue
             for baud in (9600, 4800, 2400):
                 uart = None
+                found_channel = False
                 try:
                     uart = busio_module.UART(tx, rx, baudrate=baud, timeout=0.3)
                     for addr in range(1, 6):
                         variant = _variant_for_probe(uart, addr)
                         if variant:
-                            return {
+                            found.append({
+                                "name": channel_name,
                                 "tx": tx_name,
                                 "rx": rx_name,
                                 "baud": baud,
                                 "addr": addr,
                                 "soil_variant": variant,
-                            }
+                            })
+                            found_channel = True
+                            break
                 except Exception:
                     continue
                 finally:
@@ -724,7 +767,9 @@ class Settings:
                             uart.deinit()
                     except Exception:
                         pass
-        return None
+                if found_channel:
+                    break
+        return tuple(found)
 
     @staticmethod
     def _modbus_crc16(data):
@@ -907,6 +952,7 @@ class Settings:
                     timeout_s=soil_modbus_doc.get("MODBUS_TIMEOUT_S", 0.30),
                     address=soil_modbus_doc.get("MODBUS_ADDR", 1),
                     variant=soil_modbus_doc.get("SOIL_VARIANT", "canonical"),
+                    channels=cls._soil_modbus_channels(soil_modbus_doc),
                 ),
                 soil_registers=SoilRegisterMap(
                     temperature=int(soil_register_doc.get("TEMPERATURE_REG", 0)),
@@ -989,6 +1035,44 @@ class Settings:
             )
 
         return DetectedSensor()
+
+    @staticmethod
+    def _soil_modbus_channels(modbus_doc):
+        channels = []
+        for name in ("CH1", "CH2"):
+            channel_doc = (
+                modbus_doc.get(name, {}) if isinstance(modbus_doc, dict) else {}
+            )
+            if not isinstance(channel_doc, dict) or not channel_doc:
+                continue
+            tx = channel_doc.get("UART_TX", "")
+            rx = channel_doc.get("UART_RX", "")
+            if not (str(tx or "").strip() or str(rx or "").strip()):
+                continue
+            channels.append(
+                SoilModbusChannelConfig(
+                    name=name,
+                    uart_tx=tx,
+                    uart_rx=rx,
+                    baud=channel_doc.get(
+                        "MODBUS_BAUD",
+                        modbus_doc.get("MODBUS_BAUD", 9600),
+                    ),
+                    timeout_s=channel_doc.get(
+                        "MODBUS_TIMEOUT_S",
+                        modbus_doc.get("MODBUS_TIMEOUT_S", 0.30),
+                    ),
+                    address=channel_doc.get(
+                        "MODBUS_ADDR",
+                        modbus_doc.get("MODBUS_ADDR", 1),
+                    ),
+                    variant=channel_doc.get(
+                        "SOIL_VARIANT",
+                        modbus_doc.get("SOIL_VARIANT", "canonical"),
+                    ),
+                )
+            )
+        return tuple(channels)
 
     @staticmethod
     def _optional_i2c_config(document):

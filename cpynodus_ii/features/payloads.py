@@ -305,6 +305,11 @@ def build_homeassistant_discovery_plan(
         "Estimated PPFD": "umol/m2/s",
         "Visible Light Intensity": "mol/m2/day",
         "Pressure": "Pa",
+        "Soil Temp_C": "C",
+        "Soil Temp_F": "F",
+        "Soil Moisture": "%",
+        "Soil Moisture Deficit": "%",
+        "Soil Stress Index": "%",
     }
     used_object_ids = set()
     if runtime_config.sensor.present:
@@ -332,6 +337,8 @@ def build_homeassistant_discovery_plan(
                 "device": device,
             }
             unit = unit_map.get(metric_text)
+            if unit is None:
+                unit = _prefixed_soil_unit(metric_text, unit_map)
             if unit:
                 payload["unit_of_measurement"] = unit
             messages.append((topic, payload, bool(retain), False))
@@ -368,6 +375,13 @@ def build_homeassistant_discovery_plan(
         for topic in stale_topics:
             messages.append((topic, "", True, True))
     return tuple(messages)
+
+
+def _prefixed_soil_unit(metric_text, unit_map):
+    for suffix, unit in unit_map.items():
+        if str(metric_text or "").endswith(" {}".format(suffix)):
+            return unit
+    return None
 
 
 def build_config_ack_payload(message_id, *, accepted=True, duplicate=False):

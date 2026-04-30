@@ -51,17 +51,6 @@ def publish_startup_cycle(
     )
     topics.append(heartbeat.topic)
 
-    meta = transport.publish(
-        mqtt_topic(runtime_config, device_id, "meta"),
-        build_runtime_meta_payload(
-            runtime_config,
-            version=version,
-            active_broker=active_broker,
-        ),
-        retain=True,
-    )
-    topics.append(meta.topic)
-
     # Publish online availability early so stale retained offline status is
     # cleared even if later startup publishes fail.
     if runtime_config.sensor.present:
@@ -86,6 +75,26 @@ def publish_startup_cycle(
                 retain=True,
             )
             topics.append(availability.topic)
+
+    meta = transport.publish(
+        mqtt_topic(runtime_config, device_id, "meta"),
+        build_runtime_meta_payload(
+            runtime_config,
+            version=version,
+            active_broker=active_broker,
+        ),
+        retain=True,
+    )
+    topics.append(meta.topic)
+
+    if runtime_config.sensor.present:
+        if sensor_snapshot is not None and sensor_snapshot.phase == "ready":
+            data = transport.publish(
+                mqtt_topic(runtime_config, runtime_config.sensor.sensor_id, "data"),
+                build_sensor_data_payload(runtime_config, sensor_snapshot),
+                retain=False,
+            )
+            topics.append(data.topic)
 
     hello_payload = build_onboarding_hello_payload(
         runtime_config,
@@ -116,15 +125,6 @@ def publish_startup_cycle(
             topic for topic, _payload, retain_flag, is_clear in discovery_plan if retain_flag and not is_clear
         }
         transport._ha_last_retained_discovery_topics = retained_topics
-
-    if runtime_config.sensor.present:
-        if sensor_snapshot is not None and sensor_snapshot.phase == "ready":
-            data = transport.publish(
-                mqtt_topic(runtime_config, runtime_config.sensor.sensor_id, "data"),
-                build_sensor_data_payload(runtime_config, sensor_snapshot),
-                retain=False,
-            )
-            topics.append(data.topic)
 
     if runtime_config.switch.present:
         state_payloads = build_switch_state_payload(runtime_config, switch_snapshot or {})

@@ -155,6 +155,8 @@ def test_settings_from_directory_prefers_soil_sensor_file_when_soil_config_is_ac
     assert runtime_config.sensor.modbus.timeout_s == 0.5
     assert runtime_config.sensor.modbus.address == 3
     assert runtime_config.sensor.modbus.variant == "soil_7in1"
+    assert len(runtime_config.sensor.modbus.channels) == 1
+    assert runtime_config.sensor.modbus.channels[0].name == "CH1"
     assert runtime_config.sensor.soil_registers is not None
     assert runtime_config.sensor.soil_registers.temperature == 11
     assert runtime_config.sensor.soil_registers.moisture == 12
@@ -167,6 +169,38 @@ def test_settings_from_directory_prefers_soil_sensor_file_when_soil_config_is_ac
     assert runtime_config.sensor.soil_stress is not None
     assert runtime_config.sensor.soil_stress.temp_low_crit_c == 15.0
     assert runtime_config.sensor.soil_stress.moisture_weight_pct == 70.0
+
+
+def test_settings_from_directory_loads_dual_soil_modbus_channels():
+    with TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        (tmpdir_path / "settings.toml").write_text(
+            "[Profile]\nACTIVE_PROFILE = \"homeassistant\"\n",
+            encoding="utf-8",
+        )
+        (tmpdir_path / "sensor_soil.toml").write_text(
+            (
+                "[Sensor]\nDEVICE = \"soil\"\nSENSOR_ID = \"soil-1\"\n"
+                "[Modbus]\nUART_TX = \"GP0\"\nUART_RX = \"GP1\"\n"
+                "MODBUS_BAUD = 9600\nMODBUS_ADDR = 1\n"
+                "[Modbus.CH1]\nUART_TX = \"GP0\"\nUART_RX = \"GP1\"\n"
+                "MODBUS_BAUD = 9600\nMODBUS_ADDR = 1\n"
+                "[Modbus.CH2]\nUART_TX = \"GP4\"\nUART_RX = \"GP5\"\n"
+                "MODBUS_BAUD = 4800\nMODBUS_ADDR = 3\n"
+                "SOIL_VARIANT = \"soil_7in1\"\n"
+            ),
+            encoding="utf-8",
+        )
+
+        runtime_config = Settings.from_directory(tmpdir_path).runtime_config()
+
+    channels = runtime_config.sensor.modbus.channels
+    assert [channel.name for channel in channels] == ["CH1", "CH2"]
+    assert channels[0].uart_tx == "GP0"
+    assert channels[0].baud == 9600
+    assert channels[1].uart_rx == "GP5"
+    assert channels[1].baud == 4800
+    assert channels[1].address == 3
 
 
 def test_runtime_config_keeps_minimal_defaults_for_missing_sections():

@@ -47,6 +47,28 @@ class I2CConfig:
 
 
 @dataclass
+class SoilModbusChannelConfig:
+    """Normalized soil sensor Modbus settings for one RS485 channel."""
+
+    name: str = ""
+    uart_tx: str = "GP0"
+    uart_rx: str = "GP1"
+    baud: int = 9600
+    timeout_s: float = 0.30
+    address: int = 1
+    variant: str = "canonical"
+
+    def __post_init__(self):
+        _raw_setattr(self, "name", _clean_str(self.name).upper())
+        _raw_setattr(self, "uart_tx", _clean_str(self.uart_tx) or "GP0")
+        _raw_setattr(self, "uart_rx", _clean_str(self.uart_rx) or "GP1")
+        _raw_setattr(self, "baud", int(self.baud or 9600))
+        _raw_setattr(self, "timeout_s", float(self.timeout_s or 0.30))
+        _raw_setattr(self, "address", int(self.address or 1))
+        _raw_setattr(self, "variant", _clean_str(self.variant) or "canonical")
+
+
+@dataclass
 class SoilModbusConfig:
     """Normalized soil sensor Modbus transport settings."""
 
@@ -56,6 +78,7 @@ class SoilModbusConfig:
     timeout_s: float = 0.30
     address: int = 1
     variant: str = "canonical"
+    channels: tuple = ()
 
     def __post_init__(self):
         _raw_setattr(self, "uart_tx", _clean_str(self.uart_tx) or "GP0")
@@ -64,6 +87,20 @@ class SoilModbusConfig:
         _raw_setattr(self, "timeout_s", float(self.timeout_s or 0.30))
         _raw_setattr(self, "address", int(self.address or 1))
         _raw_setattr(self, "variant", _clean_str(self.variant) or "canonical")
+        channels = tuple(self.channels or ())
+        if not channels:
+            channels = (
+                SoilModbusChannelConfig(
+                    name="CH1",
+                    uart_tx=self.uart_tx,
+                    uart_rx=self.uart_rx,
+                    baud=self.baud,
+                    timeout_s=self.timeout_s,
+                    address=self.address,
+                    variant=self.variant,
+                ),
+            )
+        _raw_setattr(self, "channels", channels)
 
 
 @dataclass

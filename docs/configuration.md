@@ -6,7 +6,7 @@ Configuration is stored as TOML files at the project root. Defaults are provided
 
 - `settings.toml`: network, profile, time, Home Assistant
 - `sensor_i2c.toml`: I2C sensors
-- `sensor_soil.toml`: UART/Modbus soil sensor
+- `sensor_soil.toml`: UART/Modbus soil sensor, including optional CH1/CH2 RS485 soil channels
 - `switch.toml`: switch/relay configuration
 
 For `apvpd`, `sensor_i2c.toml` carries two BME280 definitions:
@@ -160,6 +160,33 @@ performs one final three-attempt window, then disables further NTP attempts for
 that configured server. MQTT
 availability and heartbeat status do not require NTP; unsynced devices continue
 publishing online state with best-effort timestamps.
+
+## Soil RS485 channels
+
+`sensor_soil.toml` supports one or two soil sensors on a dual-channel RS485 hat.
+
+- `[Modbus]` remains supported for existing single-sensor configurations.
+- `[Modbus.CH1]` configures CH1, normally `GP0` TX and `GP1` RX.
+- `[Modbus.CH2]` configures CH2, normally `GP4` TX and `GP5` RX.
+- Leave a channel's `UART_TX` and `UART_RX` blank to disable that channel.
+- Factory bootstrap probes both CH1 and CH2 and writes whichever soil channels respond.
+
+Each channel uses the same keys:
+
+```toml
+UART_TX = "GP0"
+UART_RX = "GP1"
+MODBUS_ADDR = 1
+MODBUS_BAUD = 9600
+MODBUS_TIMEOUT_S = 0.30
+SOIL_VARIANT = "canonical"
+```
+
+When exactly one soil channel is active, payload metric names stay unchanged,
+for example `Soil Moisture` and `Soil Temp_C`. When both channels are active,
+Nodus prefixes metric names with the channel, for example `CH1 Soil Moisture`
+and `CH2 Soil Moisture`, so Home Assistant and Sensorius receive distinct
+values.
 
 ## Soil deficit thresholds
 

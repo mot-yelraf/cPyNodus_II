@@ -42,6 +42,8 @@ def enrich_metrics(device, metrics, *, runtime_config):
 
     if device == "soil":
         _add_soil_derivatives(enriched, runtime_config)
+        for prefix in _soil_metric_prefixes(enriched):
+            _add_soil_derivatives(enriched, runtime_config, prefix=prefix)
 
     return {key: value for key, value in enriched.items() if value is not None}
 
@@ -225,27 +227,58 @@ def _add_prefixed_temp_humidity_derivatives(metrics, *, temp_key, rh_key, prefix
         )
 
 
-def _add_soil_derivatives(metrics, runtime_config):
+def _soil_metric_prefixes(metrics):
+    prefixes = []
+    suffixes = (" Soil Temp_C", " Soil Moisture")
+    for key in tuple(metrics.keys()):
+        text = str(key or "")
+        for suffix in suffixes:
+            if text.endswith(suffix):
+                prefix = text[: -len(suffix)]
+                if prefix and prefix not in prefixes:
+                    prefixes.append(prefix)
+    return tuple(prefixes)
+
+
+def _add_soil_derivatives(metrics, runtime_config, prefix=""):
     soil = runtime_config.sensor
-    temp_c = metrics.get("Soil Temp_C")
-    moisture = metrics.get("Soil Moisture")
+    label_prefix = "{} ".format(prefix) if prefix else ""
+    temp_c = metrics.get("{}Soil Temp_C".format(label_prefix))
+    moisture = metrics.get("{}Soil Moisture".format(label_prefix))
     if temp_c is not None:
-        metrics["Soil Temp_F"] = (float(temp_c) * 9.0 / 5.0) + 32.0
+        metrics["{}Soil Temp_F".format(label_prefix)] = (
+            (float(temp_c) * 9.0 / 5.0) + 32.0
+        )
 
     wet = getattr(getattr(soil, "soil_thresholds", None), "wet_pct", None)
     dry = getattr(getattr(soil, "soil_thresholds", None), "dry_pct", None)
-    if moisture is not None and wet is not None and dry is not None and float(wet) > float(dry):
+    if (
+        moisture is not None
+        and wet is not None
+        and dry is not None
+        and float(wet) > float(dry)
+    ):
         deficit = 100.0 * ((float(wet) - float(moisture)) / (float(wet) - float(dry)))
-        metrics["Soil Moisture Deficit"] = round(min(max(deficit, 0.0), 100.0), 1)
+        metrics["{}Soil Moisture Deficit".format(label_prefix)] = round(
+            min(max(deficit, 0.0), 100.0),
+            1,
+        )
 
     stress = getattr(soil, "soil_stress", None)
-    deficit = metrics.get("Soil Moisture Deficit")
+    deficit = metrics.get("{}Soil Moisture Deficit".format(label_prefix))
     temp_stress = _soil_temp_stress_pct(temp_c, stress)
     if deficit is not None and temp_stress is not None and stress is not None:
         total = float(stress.moisture_weight_pct) + float(stress.temp_weight_pct)
         if total > 0:
-            ssi = ((float(deficit) * float(stress.moisture_weight_pct)) + (temp_stress * float(stress.temp_weight_pct))) / total
-            metrics["Soil Stress Index"] = round(min(max(ssi, 0.0), 100.0), 1)
+            ssi = (
+                (
+                    float(deficit) * float(stress.moisture_weight_pct)
+                ) + (temp_stress * float(stress.temp_weight_pct))
+            ) / total
+            metrics["{}Soil Stress Index".format(label_prefix)] = round(
+                min(max(ssi, 0.0), 100.0),
+                1,
+            )
 
 
 def _soil_temp_stress_pct(temp_c, stress):

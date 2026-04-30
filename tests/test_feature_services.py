@@ -10,6 +10,7 @@ from cpynodus_ii.core.config import (
     I2CConfig,
     RuntimeConfig,
     SensorCalibration,
+    SoilModbusChannelConfig,
     SoilModbusConfig,
     SwitchChannelConfig,
     SwitchConfig,
@@ -558,6 +559,107 @@ def test_sensor_service_reads_soil_snapshot_from_wrapped_uart_transport():
     assert snapshot.metrics["Soil Moisture"] == 43.0
     assert snapshot.metrics["Soil pH"] == 6.8
     assert snapshot.metrics["Soil Nitrogen"] == 11.0
+
+
+def test_sensor_service_reads_dual_soil_snapshots_with_channel_prefixes():
+    class _FakeSoilTransport:
+        def __init__(self, values):
+            self.values = values
+
+        def read_registers(self, start, count):
+            return self.values.get(start)
+
+        def deinit(self):
+            pass
+
+    runtime_config = RuntimeConfig(
+        sensor=DetectedSensor(
+            family="soil",
+            interface="modbus_rs485",
+            active_config_file="sensor_soil.toml",
+            device="soil",
+            sensor_id="soil-1",
+            modbus=SoilModbusConfig(
+                channels=(
+                    SoilModbusChannelConfig(
+                        name="CH1",
+                        uart_tx="GP0",
+                        uart_rx="GP1",
+                        baud=9600,
+                        address=1,
+                    ),
+                    SoilModbusChannelConfig(
+                        name="CH2",
+                        uart_tx="GP4",
+                        uart_rx="GP5",
+                        baud=4800,
+                        address=3,
+                    ),
+                )
+            ),
+            soil_registers=SimpleNamespace(
+                temperature=0,
+                moisture=1,
+                ec=2,
+                ph=3,
+                n=4,
+                p=5,
+                k=6,
+            ),
+            soil_scales=SimpleNamespace(
+                temperature=10.0,
+                moisture=10.0,
+                ec=1.0,
+                ph=10.0,
+                n=1.0,
+                p=1.0,
+                k=1.0,
+            ),
+            soil_thresholds=SimpleNamespace(wet_pct=38.0, dry_pct=18.0),
+            soil_stress=SimpleNamespace(
+                temp_low_crit_c=15.0,
+                temp_low_ok_c=18.0,
+                temp_high_ok_c=24.0,
+                temp_high_crit_c=30.0,
+                moisture_weight_pct=70.0,
+                temp_weight_pct=30.0,
+            ),
+        )
+    )
+    channels = runtime_config.sensor.modbus.channels
+    sensor_service = start_sensor_service(
+        build_sensor_runtime(plan_sensor_initialization(runtime_config), runtime_config),
+        SimpleNamespace(
+            phase="bound",
+            transport=(
+                (
+                    channels[0],
+                    _FakeSoilTransport(
+                        {0: 215, 1: 430, 2: 55, 3: 68, 4: 11, 5: 22, 6: 33}
+                    ),
+                ),
+                (
+                    channels[1],
+                    _FakeSoilTransport(
+                        {0: 201, 1: 250, 2: 44, 3: 71, 4: 12, 5: 23, 6: 34}
+                    ),
+                ),
+            ),
+            errors=(),
+            interface="modbus_rs485",
+        ),
+        runtime_config,
+    )
+
+    snapshot = read_sensor_snapshot(sensor_service, runtime_config)
+
+    assert snapshot.phase == "ready"
+    assert snapshot.metrics["CH1 Soil Moisture"] == 43.0
+    assert snapshot.metrics["CH2 Soil Moisture"] == 25.0
+    assert snapshot.metrics["CH1 Soil pH"] == 6.8
+    assert snapshot.metrics["CH2 Soil pH"] == 7.1
+    assert snapshot.metrics["CH1 Soil Moisture Deficit"] == 0.0
+    assert snapshot.metrics["CH2 Soil Moisture Deficit"] == 65.0
 
 
 def test_sensor_service_reads_legacy_soil_snapshot():

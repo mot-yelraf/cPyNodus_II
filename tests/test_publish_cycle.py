@@ -67,6 +67,8 @@ def test_startup_cycle_publishes_heartbeat_meta_sensor_and_switch_topics():
     assert "nodus/aqi-x943fm/data" in result.topics
     assert "nodus/S1-x943fm/state" in result.topics
     assert transport.published_messages[0].retain is True
+    topics = [message.topic for message in transport.published_messages]
+    assert topics.index("nodus/aqi-x943fm/meta") < topics.index("nodus/aqi-x943fm/data")
 
 
 def test_sensor_cycle_publishes_non_retained_sensor_data():

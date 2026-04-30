@@ -13,6 +13,7 @@ from cpynodus_ii.core import (
     connect_mqtt_client,
     disconnect_mqtt_client,
     poll_mqtt_client,
+    preflight_mqtt_broker,
     sync_transport_to_client,
 )
 from cpynodus_ii.core.config import DetectedSensor, MQTTConfig, RuntimeConfig, SwitchChannelConfig, SwitchConfig
@@ -113,6 +114,16 @@ class _PublishFailSecondMQTTClient(_FakeMQTTClient):
 class _SubscribeFailMQTTClient(_FakeMQTTClient):
     def subscribe(self, topic):
         raise RuntimeError("No data received from broker for 10 seconds.")
+
+
+class _SettleBeforeSubscribeFailMQTTClient(_SubscribeFailMQTTClient):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.loop_count = 0
+
+    def loop(self, timeout=0.0):
+        self.loop_count += 1
+        super().loop(timeout=timeout)
 
 
 class _PollFailMQTTClient(_FakeMQTTClient):
@@ -338,10 +349,15 @@ def test_connect_sync_poll_and_disconnect_flow():
     transport.publish("nodus/aqi-x943fm/data", {"schema": "nodus-sensor/v1"}, retain=False)
     sync_result = sync_transport_to_client(connect_result.adapter, transport)
     assert sync_result.phase == "synced"
-    assert sync_result.subscribed_count == 1
+    assert sync_result.subscribed_count == 0
     assert sync_result.published_count == 1
-    assert sync_result.adapter.client.subscribed == ["nodus/S1-x943fm/config/set"]
     assert sync_result.adapter.client.published[0][0] == "nodus/aqi-x943fm/data"
+
+    sync_result = sync_transport_to_client(sync_result.adapter, transport)
+    assert sync_result.phase == "synced"
+    assert sync_result.subscribed_count == 1
+    assert sync_result.published_count == 0
+    assert sync_result.adapter.client.subscribed == ["nodus/S1-x943fm/config/set"]
 
     sync_result.adapter.client.pending_incoming.append(("nodus/S1-x943fm/config/set", b"ON"))
     poll_result = poll_mqtt_client(sync_result.adapter, transport)
@@ -482,6 +498,91 @@ def test_connect_mqtt_client_learns_hostname_ip_without_required_preflight():
     assert connect_result.adapter.resolved_broker_ip == "10.0.0.4"
 
 
+def test_connect_mqtt_client_uses_resolved_ip_for_non_tls_hostname_preflight():
+    class _ResolveOKPool:
+        def getaddrinfo(self, host, port):
+            assert host == "ha.local"
+            return [(None, None, None, None, ("10.0.0.4", port))]
+
+    runtime_config = RuntimeConfig(
+        active_profile="sensorius",
+        mqtt=MQTTConfig(
+            broker="ha.local",
+            port=1883,
+        ),
+    )
+    transport = MQTTTransport("ha.local", 1883)
+    transport.mark_connect_requested()
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=_ResolveOKPool(),
+        modules={"mqtt_cls": _FakeMQTTClient},
+    )
+
+    connect_result = connect_mqtt_client(adapter, transport)
+
+    assert connect_result.phase == "connected"
+    assert connect_result.adapter.active_broker == "ha.local"
+    assert connect_result.adapter.resolved_broker_ip == "10.0.0.4"
+    assert connect_result.adapter.client.kwargs["broker"] == "10.0.0.4"
+
+
+def test_connect_mqtt_client_keeps_tls_hostname_after_preflight():
+    class _ResolveOKPool:
+        def getaddrinfo(self, host, port):
+            assert host == "ha.local"
+            return [(None, None, None, None, ("10.0.0.4", port))]
+
+    runtime_config = RuntimeConfig(
+        active_profile="homeassistant",
+        mqtt=MQTTConfig(
+            broker="ha.local",
+            port=8883,
+            use_tls=True,
+        ),
+    )
+    transport = MQTTTransport("ha.local", 8883)
+    transport.mark_connect_requested()
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=_ResolveOKPool(),
+        ssl_context=object(),
+        modules={"mqtt_cls": _FakeMQTTClient},
+    )
+
+    connect_result = connect_mqtt_client(adapter, transport)
+
+    assert connect_result.phase == "connected"
+    assert connect_result.adapter.active_broker == "ha.local"
+    assert connect_result.adapter.resolved_broker_ip == "10.0.0.4"
+    assert connect_result.adapter.client.kwargs["broker"] == "ha.local"
+
+
+def test_preflight_mqtt_broker_returns_resolved_ip():
+    class _ResolveOKPool:
+        def getaddrinfo(self, host, port):
+            assert host == "ha.local"
+            return [(None, None, None, None, ("10.0.0.4", port))]
+
+    runtime_config = RuntimeConfig(
+        active_profile="sensorius",
+        mqtt=MQTTConfig(
+            broker="ha.local",
+            port=1883,
+        ),
+    )
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=_ResolveOKPool(),
+        modules={"mqtt_cls": _FakeMQTTClient},
+    )
+
+    error, resolved_ip = preflight_mqtt_broker(adapter)
+
+    assert error == ""
+    assert resolved_ip == "10.0.0.4"
+
+
 def test_poll_mqtt_client_uses_timeout_compatible_with_socket_timeout():
     runtime_config = _runtime_config()
     transport = MQTTTransport("broker.local", 1883)
@@ -589,6 +690,36 @@ def test_sync_transport_to_client_marks_transport_disconnected_on_subscribe_exce
     assert sync_result.errors == (
         "mqtt_subscribe_failed:No data received from broker for 10 seconds.",
     )
+
+
+def test_sync_transport_to_client_publishes_before_subscribe_exception():
+    runtime_config = _runtime_config()
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connect_requested()
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=object(),
+        modules={"mqtt_cls": _SettleBeforeSubscribeFailMQTTClient},
+    )
+
+    connect_result = connect_mqtt_client(adapter, transport)
+    transport.publish("nodus/aqi-x943fm/data", {"schema": "nodus-sensor/v1"})
+    transport.subscribe("nodus/S1-x943fm/config/set")
+
+    publish_result = sync_transport_to_client(connect_result.adapter, transport)
+
+    assert publish_result.phase == "synced"
+    assert publish_result.published_count == 1
+    assert publish_result.subscribed_count == 0
+    assert publish_result.adapter.client.published[0][0] == "nodus/aqi-x943fm/data"
+    assert publish_result.adapter.client.loop_count == 1
+    assert transport.published_messages == []
+    assert transport.subscriptions == ["nodus/S1-x943fm/config/set"]
+
+    sync_result = sync_transport_to_client(publish_result.adapter, transport)
+    assert sync_result.phase == "error"
+    assert sync_result.published_count == 0
+    assert sync_result.subscribed_count == 0
 
 
 def test_poll_mqtt_client_marks_transport_disconnected_on_oserror():

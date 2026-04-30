@@ -137,12 +137,13 @@ def connect_mqtt_client(adapter, transport, *, preflight=True):
             errors.append(resolve_error)
             transport.mark_disconnected()
             continue
-        if index > 0:
+        connect_broker = _connect_broker_for_target(active_adapter, broker, resolved_ip, preflight)
+        if index > 0 or connect_broker != active_adapter.active_broker:
             try:
                 client = _instantiate_client(
                     adapter.client_class,
                     dict(adapter.client_kwargs or {}),
-                    broker,
+                    connect_broker,
                 )
             except Exception as exc:
                 errors.append("mqtt_client_init_failed:{}".format(exc))
@@ -210,23 +211,9 @@ def sync_transport_to_client(adapter, transport):
             errors=adapter.errors if adapter.phase != "ready" else ("transport_not_connected",),
         )
 
-    client = adapter.client
     subscribed_count = 0
-    for topic in transport.subscriptions[adapter.subscription_index :]:
-        try:
-            client.subscribe(topic)
-        except Exception as exc:
-            transport.mark_disconnected()
-            return MQTTClientSyncResult(
-                phase="error",
-                adapter=adapter,
-                published_count=0,
-                subscribed_count=subscribed_count,
-                errors=("mqtt_subscribe_failed:{}".format(exc),),
-            )
-        subscribed_count += 1
-
     published_count = 0
+    client = adapter.client
     for message in transport.published_messages[adapter.published_index :]:
         payload = _serialize_payload(message.payload)
         try:
@@ -272,6 +259,58 @@ def sync_transport_to_client(adapter, transport):
     if subscribed_count or published_count:
         transport.compact(
             published_keep_from=adapter.published_index + published_count,
+            subscriptions_keep_from=adapter.subscription_index + subscribed_count,
+        )
+    if published_count:
+        settle_error = _settle_client_after_publish(client)
+        if settle_error:
+            transport.mark_disconnected()
+            return MQTTClientSyncResult(
+                phase="error",
+                adapter=adapter,
+                published_count=published_count,
+                subscribed_count=subscribed_count,
+                errors=(settle_error,),
+            )
+        return MQTTClientSyncResult(
+            phase="synced",
+            adapter=MQTTClientAdapter(
+                phase=adapter.phase,
+                driver_kind=adapter.driver_kind,
+                broker=adapter.broker,
+                port=adapter.port,
+                broker_targets=adapter.broker_targets,
+                active_broker=adapter.active_broker,
+                resolved_broker_ip=adapter.resolved_broker_ip,
+                client=adapter.client,
+                client_class=adapter.client_class,
+                client_kwargs=adapter.client_kwargs,
+                published_index=0,
+                subscription_index=0,
+                errors=adapter.errors,
+            ),
+            published_count=published_count,
+            subscribed_count=0,
+            errors=(),
+        )
+
+    for topic in transport.subscriptions[adapter.subscription_index :]:
+        try:
+            client.subscribe(topic)
+        except Exception as exc:
+            transport.mark_disconnected()
+            return MQTTClientSyncResult(
+                phase="error",
+                adapter=adapter,
+                published_count=published_count,
+                subscribed_count=subscribed_count,
+                errors=("mqtt_subscribe_failed:{}".format(exc),),
+            )
+        subscribed_count += 1
+
+    if subscribed_count:
+        transport.compact(
+            published_keep_from=0,
             subscriptions_keep_from=adapter.subscription_index + subscribed_count,
         )
 
@@ -373,6 +412,38 @@ def poll_mqtt_client(adapter, transport):
         received_count=max(0, received_count),
         errors=(),
     )
+
+
+def _settle_client_after_publish(client):
+    loop = getattr(client, "loop", None)
+    if not callable(loop):
+        return ""
+    _ensure_minimqtt_socket_compat(client)
+    timeout = _poll_timeout_for_client(client)
+    try:
+        loop(timeout=timeout)
+    except TypeError as exc:
+        if not _is_loop_timeout_signature_error(exc):
+            if _is_minimqtt_wrapped_socket_error(exc):
+                return _minimqtt_socket_error(client, exc)
+            if _is_callback_arity_error(exc):
+                return "mqtt_publish_settle_callback_failed:{}".format(exc)
+            raise
+        loop()
+    except ValueError:
+        try:
+            loop(timeout=max(1.0, timeout))
+        except TypeError as exc:
+            if not _is_loop_timeout_signature_error(exc):
+                if _is_minimqtt_wrapped_socket_error(exc):
+                    return _minimqtt_socket_error(client, exc)
+                if _is_callback_arity_error(exc):
+                    return "mqtt_publish_settle_callback_failed:{}".format(exc)
+                raise
+            loop()
+    except OSError as exc:
+        return "mqtt_publish_settle_failed:{}".format(exc)
+    return ""
 
 
 def disconnect_mqtt_client(adapter, transport, runtime_config):
@@ -570,6 +641,23 @@ def _poll_timeout_for_client(client):
 def _preflight_broker_target(adapter, broker):
     error, _ip_address = _resolve_broker_target(adapter, broker)
     return error
+
+
+def preflight_mqtt_broker(adapter, broker=None):
+    """Resolve an MQTT broker target without opening a client socket."""
+    target = broker or getattr(adapter, "active_broker", "") or getattr(adapter, "broker", "")
+    return _resolve_broker_target(adapter, target)
+
+
+def _connect_broker_for_target(adapter, broker, resolved_ip, preflight):
+    """Return the broker address MiniMQTT should open directly."""
+    if not preflight or not resolved_ip:
+        return broker
+    if _looks_like_ip_literal(str(broker or "")):
+        return broker
+    if isinstance(adapter.client_kwargs, dict) and adapter.client_kwargs.get("ssl_context"):
+        return broker
+    return resolved_ip
 
 
 def _resolve_broker_target(adapter, broker):
