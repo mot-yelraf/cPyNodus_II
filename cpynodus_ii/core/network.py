@@ -57,8 +57,6 @@ class NetworkStack:
     ssl_context: object | None = None
     wifi_radio: object | None = None
     connection_manager_module: object | None = None
-    mdns_server: object | None = None
-    mdns_errors: tuple = ()
     errors: tuple = ()
 
 
@@ -67,7 +65,6 @@ def build_network_stack(
     *,
     wifi_radio=None,
     connection_manager_module=None,
-    mdns_module=None,
     max_attempts=3,
     retry_delay_s=1.0,
     log_start_monotonic=None,
@@ -75,9 +72,7 @@ def build_network_stack(
     """Build the runtime network stack needed by MQTT and networked profiles."""
     if runtime_config.ap_mode:
         wifi_radio = _resolve_wifi_radio(wifi_radio)
-        connection_manager_module = _resolve_connection_manager(
-            connection_manager_module
-        )
+        connection_manager_module = _resolve_connection_manager(connection_manager_module)
         ap_ip_address = ""
         socket_pool = None
         ssl_context = None
@@ -88,9 +83,7 @@ def build_network_stack(
                     start_ap(
                         runtime_config.network.ap_ssid,
                         runtime_config.network.ap_password,
-                        channel=int(
-                            getattr(runtime_config.network, "ap_channel", 6) or 6
-                        ),
+                        channel=int(getattr(runtime_config.network, "ap_channel", 6) or 6),
                     )
                 except TypeError:
                     try:
@@ -105,12 +98,8 @@ def build_network_stack(
             ap_ip_address = _current_ap_ip_address(wifi_radio)
             if connection_manager_module is not None:
                 try:
-                    socket_pool = connection_manager_module.get_radio_socketpool(
-                        wifi_radio
-                    )
-                    ssl_context = connection_manager_module.get_radio_ssl_context(
-                        wifi_radio
-                    )
+                    socket_pool = connection_manager_module.get_radio_socketpool(wifi_radio)
+                    ssl_context = connection_manager_module.get_radio_ssl_context(wifi_radio)
                 except Exception:
                     socket_pool = None
                     ssl_context = None
@@ -127,11 +116,7 @@ def build_network_stack(
             errors=(),
         )
 
-    if not (
-        runtime_config.mqtt_enabled
-        or runtime_config.web_enabled
-        or runtime_config.ntp_enabled
-    ):
+    if not (runtime_config.mqtt_enabled or runtime_config.web_enabled or runtime_config.ntp_enabled):
         return NetworkStack(
             phase="inactive",
             mode="inactive",
@@ -202,12 +187,6 @@ def build_network_stack(
 
     socket_pool = connection_manager_module.get_radio_socketpool(wifi_radio)
     ssl_context = connection_manager_module.get_radio_ssl_context(wifi_radio)
-    mdns_server, mdns_errors = _start_mdns_server_if_enabled(
-        runtime_config,
-        wifi_radio,
-        mdns_module=mdns_module,
-        log_start_monotonic=log_start_monotonic,
-    )
     return NetworkStack(
         phase="ready",
         mode="station",
@@ -218,8 +197,6 @@ def build_network_stack(
         ssl_context=ssl_context,
         wifi_radio=wifi_radio,
         connection_manager_module=connection_manager_module,
-        mdns_server=mdns_server,
-        mdns_errors=mdns_errors,
         errors=(),
     )
 
@@ -231,20 +208,14 @@ def reconnect_network_stack(
     max_attempts=1,
     retry_delay_s=0.0,
     rebuild_socket_artifacts=False,
-    mdns_module=None,
     log_start_monotonic=None,
 ):
     """Reconnect station Wi-Fi, preserving socket artifacts when allowed."""
     wifi_radio = getattr(network_stack, "wifi_radio", None)
-    connection_manager_module = getattr(
-        network_stack,
-        "connection_manager_module",
-        None,
-    )
+    connection_manager_module = getattr(network_stack, "connection_manager_module", None)
     if wifi_radio is None:
         return build_network_stack(
             runtime_config,
-            mdns_module=mdns_module,
             max_attempts=max_attempts,
             retry_delay_s=retry_delay_s,
             log_start_monotonic=log_start_monotonic,
@@ -268,19 +239,13 @@ def reconnect_network_stack(
             ssl_context=None if rebuild_socket_artifacts else network_stack.ssl_context,
             wifi_radio=wifi_radio,
             connection_manager_module=connection_manager_module,
-            mdns_server=network_stack.mdns_server,
-            mdns_errors=network_stack.mdns_errors,
             errors=connect_result["errors"],
         )
 
     socket_pool = network_stack.socket_pool
     ssl_context = network_stack.ssl_context
-    mdns_server = network_stack.mdns_server
-    mdns_errors = network_stack.mdns_errors
     if rebuild_socket_artifacts or socket_pool is None or ssl_context is None:
-        connection_manager_module = _resolve_connection_manager(
-            connection_manager_module
-        )
+        connection_manager_module = _resolve_connection_manager(connection_manager_module)
         if connection_manager_module is None:
             return NetworkStack(
                 phase="unavailable",
@@ -294,13 +259,6 @@ def reconnect_network_stack(
             )
         socket_pool = connection_manager_module.get_radio_socketpool(wifi_radio)
         ssl_context = connection_manager_module.get_radio_ssl_context(wifi_radio)
-        if mdns_server is None:
-            mdns_server, mdns_errors = _start_mdns_server_if_enabled(
-                runtime_config,
-                wifi_radio,
-                mdns_module=mdns_module,
-                log_start_monotonic=log_start_monotonic,
-            )
     return NetworkStack(
         phase="ready",
         mode="station",
@@ -311,8 +269,6 @@ def reconnect_network_stack(
         ssl_context=ssl_context,
         wifi_radio=wifi_radio,
         connection_manager_module=connection_manager_module,
-        mdns_server=mdns_server,
-        mdns_errors=mdns_errors,
         errors=(),
     )
 
@@ -345,8 +301,6 @@ def refresh_network_stack(network_stack):
         ssl_context=network_stack.ssl_context,
         wifi_radio=network_stack.wifi_radio,
         connection_manager_module=network_stack.connection_manager_module,
-        mdns_server=network_stack.mdns_server,
-        mdns_errors=network_stack.mdns_errors,
         errors=network_stack.errors,
     )
 
@@ -358,11 +312,7 @@ def refresh_network_stack(network_stack):
         ip_address="",
         socket_pool=None,
         ssl_context=None,
-        errors=(
-            "network_connect_failed",
-            str(last_exc or ""),
-            "attempts={}".format(attempts),
-        ),
+        errors=("network_connect_failed", str(last_exc or ""), "attempts={}".format(attempts)),
     )
 
 
@@ -394,80 +344,6 @@ def _resolve_connection_manager(connection_manager_module):
     except ImportError:
         return None
     return connection_manager_module
-
-
-def _resolve_mdns_module(mdns_module):
-    if mdns_module is not None:
-        return mdns_module
-    try:
-        import mdns as mdns_module  # type: ignore
-    except ImportError:
-        return None
-    return mdns_module
-
-
-def _start_mdns_server(
-    runtime_config,
-    wifi_radio,
-    *,
-    mdns_module=None,
-    log_start_monotonic=None,
-):
-    hostname = str(getattr(runtime_config.network, "hostname", "") or "").strip()
-    if not hostname:
-        return None, ("mdns_hostname_missing",)
-    module = _resolve_mdns_module(mdns_module)
-    if module is None:
-        return None, ("mdns_module_unavailable",)
-    server_cls = getattr(module, "Server", None)
-    if server_cls is None:
-        return None, ("mdns_server_unavailable",)
-    try:
-        server = server_cls(wifi_radio)
-        server.hostname = hostname
-        instance_name = getattr(server, "instance_name", None)
-        if instance_name is not None:
-            try:
-                server.instance_name = hostname
-            except Exception:
-                pass
-        server.advertise_service(
-            service_type="_http",
-            protocol="_tcp",
-            port=int(getattr(runtime_config.network, "http_port", 8000) or 8000),
-        )
-        _network_log(
-            "mdns phase=ready hostname={}.local port={}".format(
-                hostname,
-                int(getattr(runtime_config.network, "http_port", 8000) or 8000),
-            ),
-            start_monotonic=log_start_monotonic,
-        )
-        return server, ()
-    except Exception as exc:
-        errors = ("mdns_start_failed", str(exc))
-        _network_log(
-            "mdns phase=error error={}".format(str(exc) or "unknown"),
-            start_monotonic=log_start_monotonic,
-        )
-        return None, errors
-
-
-def _start_mdns_server_if_enabled(
-    runtime_config,
-    wifi_radio,
-    *,
-    mdns_module=None,
-    log_start_monotonic=None,
-):
-    if not getattr(runtime_config, "web_enabled", False):
-        return None, ()
-    return _start_mdns_server(
-        runtime_config,
-        wifi_radio,
-        mdns_module=mdns_module,
-        log_start_monotonic=log_start_monotonic,
-    )
 
 
 def _connect_station(
@@ -528,10 +404,10 @@ def _connect_station(
                 last_exc = RuntimeError("network_ap_subnet_suspect")
                 if attempt < attempts:
                     _network_log(
-                        (
-                            "network connect retry attempt={} reason=ap_subnet "
-                            "ip={}"
-                        ).format(attempt, ip_address or "none"),
+                        "network connect retry attempt={} reason=ap_subnet ip={}".format(
+                            attempt,
+                            ip_address or "none",
+                        ),
                         start_monotonic=log_start_monotonic,
                     )
                     _reset_station_mode(wifi_radio)

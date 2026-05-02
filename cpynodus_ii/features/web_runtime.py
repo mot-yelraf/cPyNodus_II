@@ -13,10 +13,7 @@ from cpynodus_ii.features.web_handlers import (
     handle_web_config_request,
 )
 from cpynodus_ii.features.web_routes import route_paths
-from cpynodus_ii.features.web_services import (
-    apply_itaot_init_payload,
-    build_itaot_meta_payload,
-)
+from cpynodus_ii.features.web_services import apply_itaot_init_payload, build_itaot_meta_payload
 
 
 _HTTP_STATUS = {
@@ -211,18 +208,10 @@ class WebRuntimeController:
         def _set_switch_state(request):
             body = _parse_json_body(request)
             if body is None:
-                return self._json_response(
-                    request,
-                    {"success": False, "error": "invalid_json"},
-                    status_code=400,
-                )
+                return self._json_response(request, {"success": False, "error": "invalid_json"}, status_code=400)
             state = body.get("state")
             if state is None:
-                return self._json_response(
-                    request,
-                    {"success": False, "error": "state_required"},
-                    status_code=400,
-                )
+                return self._json_response(request, {"success": False, "error": "state_required"}, status_code=400)
             payload = handle_switch_state_request(
                 self.runtime_config,
                 self.switch_service,
@@ -240,11 +229,7 @@ class WebRuntimeController:
             mode = str(body.get("mode", "soft") or "soft").strip().lower()
             callback = self.reboot_callbacks.get(mode)
             if callback is None:
-                return self._json_response(
-                    request,
-                    {"success": False, "error": "unsupported_restart_mode"},
-                    status_code=400,
-                )
+                return self._json_response(request, {"success": False, "error": "unsupported_restart_mode"}, status_code=400)
             callback()
             return self._json_response(request, {"success": True, "restart": mode})
 
@@ -253,11 +238,7 @@ class WebRuntimeController:
             def _itaot_init(request):
                 payload = _parse_json_body(request)
                 if payload is None:
-                    return self._json_response(
-                        request,
-                        {"success": False, "error": "invalid_json"},
-                        status_code=400,
-                    )
+                    return self._json_response(request, {"success": False, "error": "invalid_json"}, status_code=400)
                 result = apply_itaot_init_payload(
                     payload,
                     self.runtime_config,
@@ -265,16 +246,10 @@ class WebRuntimeController:
                 )
                 self.runtime_config = result.runtime_config
                 if result.accepted:
-                    callback = self.reboot_callbacks.get(
-                        "hard"
-                    ) or self.reboot_callbacks.get("soft")
+                    callback = self.reboot_callbacks.get("hard") or self.reboot_callbacks.get("soft")
                     if callback is not None:
                         callback()
-                return self._json_response(
-                    request,
-                    result.body,
-                    status_code=result.status_code,
-                )
+                return self._json_response(request, result.body, status_code=result.status_code)
 
             @route("/itaot-meta", methods=["GET"])
             def _itaot_meta(request):
@@ -285,9 +260,7 @@ class WebRuntimeController:
                     switch_states={},
                 )
                 if self.switch_service is not None:
-                    from cpynodus_ii.features.switch_service import (
-                        snapshot_switch_states,
-                    )
+                    from cpynodus_ii.features.switch_service import snapshot_switch_states
 
                     payload = build_itaot_meta_payload(
                         self.runtime_config,
@@ -364,315 +337,144 @@ def _html_escape(value):
 
 
 def _render_status_html(payload):
-    metric_tiles = []
-    for item in payload["sensor"]["current_metrics"]:
-        metric_tiles.append(
-            "<div class='metric'><label>{}</label><strong>{}</strong></div>".format(
+    rows = []
+    for item in payload["sensor"]["display_metrics"]:
+        rows.append(
+            "<tr><td>{}</td><td>{}</td><td>{}</td></tr>".format(
                 _html_escape(item["metric"]),
                 _html_escape(item.get("value", "")),
+                _html_escape(item.get("style", "")),
             )
         )
-    if not metric_tiles:
-        metric_tiles.append("<div class='empty'>No sensor data</div>")
-    profile_options = []
-    for option in payload["profile_options"]:
-        selected = " selected" if option == payload["profile"] else ""
-        profile_options.append(
-            "<option value='{0}'{1}>{0}</option>".format(_html_escape(option), selected)
+    if not rows:
+        rows.append("<tr><td colspan='3'>No display metrics configured</td></tr>")
+    switch_rows = []
+    for channel in payload["switch"]["channels"]:
+        switch_rows.append(
+            "<tr><td>{}</td><td>{}</td><td>{}</td></tr>".format(
+                _html_escape(channel["label"] or channel["channel_id"]),
+                _html_escape(channel["channel_id"]),
+                "ON" if channel.get("state") else "OFF",
+            )
         )
-    switch_controls = _switch_controls_html(
-        payload["switch"]["channels"],
-        editable=True,
-    )
-    menu_items = _menu_items_html(
-        payload["sensor"]["present"],
-        payload["switch"]["present"],
-    )
-    return _page_html(
-        "Data",
-        menu_items,
-        """
-<section id="data" class="view active">
-<div class="topline"><p>{ip}</p><p id="measurement_time">{timestamp}</p></div>
-<div class="metrics">{metric_tiles}</div>
-</section>
-<section id="nodus" class="view">
-<p>{device_id}</p><p>{version}</p>
-<div class="form">
-<label>Location</label><input id="location" value="{location}">
-<label>Profile</label><select id="profile">{profiles}</select>
-<label>SSID</label><input id="ssid" value="{ssid}">
-<label>Password</label><input id="password" type="password" value="{password}">
-<button onclick="saveNodus()">Save</button><span id="nodus_status"></span>
-</div></section>
-<section id="sensor" class="view">{sensor_fields}</section>
-<section id="switch" class="view">{switch_controls}</section>
+    if not switch_rows:
+        switch_rows.append("<tr><td colspan='3'>No switch channels</td></tr>")
+    return """
+<html><head><meta charset="utf-8"><title>Nodus Status</title>
+<style>
+body{{font-family:Helvetica,Arial,sans-serif;background:#f7f8fa;color:#1b1f24;margin:0;padding:24px;}}
+.wrap{{max-width:960px;margin:0 auto;display:grid;gap:16px;}}
+.card{{background:#fff;border:1px solid #d8dee4;border-radius:12px;padding:16px;}}
+table{{width:100%;border-collapse:collapse}}th,td{{padding:8px;border-bottom:1px solid #eef2f6;text-align:left}}
+.nav a{{margin-right:12px}}
+</style></head><body>
+<div class="wrap">
+<div class="card"><h1>{hostname}</h1><div>Profile: {profile} | IP: {ip}</div><div class="nav"><a href="/setup">Setup</a><a href="/current-data">JSON</a></div></div>
+<div class="card"><h2>Display</h2><table><tr><th>Metric</th><th>Value</th><th>Style</th></tr>{rows}</table></div>
+<div class="card"><h2>Switches</h2><table><tr><th>Label</th><th>Channel</th><th>State</th></tr>{switch_rows}</table></div>
+</div></body></html>
 """.format(
-            hostname=_html_escape(payload["network"]["hostname"]),
-            ip=_html_escape(payload["network"]["ipv4addr"]),
-            timestamp=_html_escape(payload["measurement"]["timestamp"]),
-            metric_tiles="".join(metric_tiles),
-            device_id=_html_escape(_primary_device_id(payload)),
-            version=_html_escape(payload["version"]),
-            location=_html_escape(
-                payload["sensor"]["location"] or payload["switch"]["location"]
-            ),
-            profiles="".join(profile_options),
-            ssid=_html_escape(payload["network"]["ssid"]),
-            password=_html_escape(payload["network"]["password"]),
-            sensor_fields=_sensor_config_html(payload["sensor"]),
-            switch_controls=switch_controls,
-        ),
+        hostname=_html_escape(payload["network"]["hostname"]),
+        profile=_html_escape(payload["profile"]),
+        ip=_html_escape(payload["network"]["ipv4addr"]),
+        rows="".join(rows),
+        switch_rows="".join(switch_rows),
     )
 
 
 def _render_setup_html(payload):
-    menu_items = _menu_items_html(
-        payload["sensor"]["present"],
-        payload["switch"]["present"],
-    )
-    profile_options = []
-    for option in payload["profile_options"]:
-        selected = " selected" if option == payload["profile"] else ""
-        profile_options.append(
-            "<option value='{0}'{1}>{0}</option>".format(_html_escape(option), selected)
-        )
-    return _page_html(
-        "Nodus",
-        menu_items,
-        """
-<section id="data" class="view active"><div class="topline"><p>{ip}</p></div>
-</section><section id="nodus" class="view">
-<p>{device_id}</p><p>{version}</p>
-<div class="form">
-<label>Location</label><input id="location" value="{location}">
-<label>Profile</label><select id="profile">{profiles}</select>
-<label>SSID</label><input id="ssid" value="{ssid}">
-<label>Password</label><input id="password" type="password" value="{password}">
-<button onclick="saveNodus()">Save</button><span id="nodus_status"></span>
-</div></section>
-<section id="sensor" class="view">{sensor_fields}</section>
-<section id="switch" class="view">{switch_controls}</section>
+    switch_sections = []
+    for channel in payload["switch"]["channels"]:
+        switch_sections.append(
+            """
+<div class="row">
+<label>{label}</label>
+<input id="{key}_label" value="{label_value}">
+<button onclick="setSwitch('{channel_id}', true)">On</button>
+<button onclick="setSwitch('{channel_id}', false)">Off</button>
+</div>
 """.format(
-            hostname=_html_escape(payload["network"]["hostname"]),
-            ip="",
-            device_id=_html_escape(_primary_device_id(payload)),
-            version=_html_escape(payload["version"]),
-            location=_html_escape(
-                payload["sensor"]["location"] or payload["switch"]["location"]
-            ),
-            profiles="".join(profile_options),
-            ssid=_html_escape(payload["network"]["ssid"]),
-            password=_html_escape(payload["network"]["password"]),
-            sensor_fields=_sensor_config_html(payload["sensor"]),
-            switch_controls=_switch_controls_html(
-                payload["switch"]["channels"],
-                editable=True,
-            ),
-        ),
-    )
-
-
-def _page_html(title, menu_items, body):
-    return """
-<html><head><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta charset="utf-8"><title>Nodus {title}</title><style>
-body{{font-family:Helvetica,Arial,sans-serif;background:#f3f5f7;
-color:#17212b;margin:0;padding:18px;display:flex;justify-content:center}}
-main{{position:relative;width:min(100%,620px);background:#f8fafc;
-border:1px solid #cbd5df;border-radius:8px;padding:18px;box-shadow:0 1px 2px #0001}}
-header{{display:flex;align-items:flex-start;justify-content:space-between;
-gap:12px;margin-bottom:12px}}
-.hamb{{font-size:28px;background:#17212b;color:white;border:0;
-border-radius:6px;width:44px;height:40px}}
-nav{{display:none;position:absolute;right:0;top:48px;background:white;
-border:1px solid #ccd4dd;border-radius:8px;box-shadow:0 6px 18px #0002}}
-nav.open{{display:block}}
-nav button{{display:block;width:150px;padding:13px;border:0;background:white;
-color:#17212b;text-align:left;font-size:16px}}
-.view{{display:none}}.view.active{{display:block}}
-h1{{font-size:30px;margin:0}}
-p{{margin:4px 0;color:#51606f}}
-.topline{{margin:8px 0 20px}}
-.metrics{{display:grid;grid-template-columns:1fr 1fr;gap:7px;max-width:500px;
-max-height:430px;overflow-y:auto;padding-right:4px}}
-.metric{{background:white;border:1px solid #d8dee5;border-radius:8px;
-padding:9px;min-height:48px}}
-.metric label,.form label{{display:block;font-size:13px;color:#607080;
-margin-bottom:7px}}
-.metric strong{{font-size:22px;font-weight:650;overflow-wrap:anywhere}}
-.form{{display:grid;grid-template-columns:110px minmax(150px,300px);gap:10px;
-align-items:center;background:white;border:1px solid #d8dee5;
-border-radius:8px;padding:14px;max-width:460px}}
-input,select{{font-size:16px;padding:10px;border:1px solid #b8c3cf;
-border-radius:6px;min-width:0;max-width:300px}}
-button{{font-size:15px;border:1px solid #17212b;border-radius:6px;
-background:#17212b;color:white;padding:10px 14px}}
-.switch{{display:grid;grid-template-columns:minmax(150px,300px) 84px;gap:8px;
-align-items:center;background:white;border:1px solid #d8dee5;
-border-radius:8px;padding:12px;margin-bottom:10px;max-width:460px}}
-.state-on{{background:#17803d;border-color:#17803d}}
-.state-off{{background:#17212b;border-color:#17212b}}
-.empty{{background:white;border:1px solid #d8dee5;border-radius:8px;
-padding:16px;color:#607080}}
-@media(max-width:560px){{body{{padding:10px}}main{{padding:12px}}
-.metrics{{gap:10px}}
-.metric strong{{font-size:20px}}.form{{grid-template-columns:1fr}}
-.switch{{grid-template-columns:1fr 1fr}}}}
-</style><script>
-function menu(){{document.getElementById('menu').classList.toggle('open')}}
-function show(id){{for(const v of document.querySelectorAll('.view'))
-v.classList.remove('active');document.getElementById(id).classList.add('active');
-const t=document.getElementById('view_title');
-if(t)t.textContent=id.charAt(0).toUpperCase()+id.slice(1);
-menu()}}
-async function postJson(path,payload){{const r=await fetch(path,{{method:'POST',
-headers:{{'Content-Type':'application/json'}},body:JSON.stringify(payload)}});
-return await r.json()}}
-async function saveNodus(){{const u=[
-{{section:'Sensor',key:'LOCATION',value:document.getElementById('location').value}},
-{{section:'Switch',key:'SWITCH_LOCATION',
-value:document.getElementById('location').value}},
-{{section:'Profile',key:'ACTIVE_PROFILE',
-value:document.getElementById('profile').value}},
-{{section:'Network',key:'SSID',value:document.getElementById('ssid').value}},
-{{section:'Network',key:'PASSWORD',value:document.getElementById('password').value}}];
-document.getElementById('nodus_status').textContent=JSON.stringify(
-await postJson('/config',{{updates:u}}))}}
-async function saveSensor(){{const u=[];for(const e of
-document.querySelectorAll('[data-cal]'))u.push(
-{{section:'Calibration.Device',key:e.dataset.cal,value:e.value}});
-document.getElementById('sensor_status').textContent=JSON.stringify(
-await postJson('/config',{{updates:u}}))}}
-async function saveSwitchLabels(){{const u=[];for(const e of
-document.querySelectorAll('[data-switch-label]'))u.push(
-{{section:'Switch',key:e.dataset.switchLabel,value:e.value}});
-document.getElementById('switch_status').textContent=JSON.stringify(
-await postJson('/config',{{updates:u}}))}}
-async function setSwitch(id,state){{document.getElementById('switch_status')
-.textContent=JSON.stringify(await postJson('/set-switch-state',
-{{channel_id:id,state:state}}))}}
-async function toggleSwitch(id,state){{const r=await postJson('/set-switch-state',
-{{channel_id:id,state:!state}});const b=document.getElementById('sw_'+id);
-if(b&&r.success){{b.textContent=r.state?'On':'Off';
-b.className=r.state?'state-on':'state-off';
-b.setAttribute('onclick',"toggleSwitch('"+id+"',"+(r.state?'true':'false')+")")}}
-const s=document.getElementById('switch_status');
-if(s)s.textContent=r.success?'':(r.errors||['switch update failed']).join(', ')}}
-function esc(s){{return String(s==null?'':s).replace(/[&<>"]/g,function(c){{
-return {{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}}[c]}})}}
-async function refreshData(){{try{{const r=await fetch('/current-data');
-const p=await r.json();const t=document.getElementById('measurement_time');
-if(t)t.textContent=p.measurement.timestamp||'';
-const g=document.querySelector('.metrics');
-if(!g)return;let h='';for(const m of p.sensor.current_metrics||[]){{h+=
-"<div class='metric'><label>"+esc(m.metric)+"</label><strong>"+
-esc(m.value)+"</strong></div>"}}
-g.innerHTML=h||"<div class='empty'>No sensor data</div>"}}
-catch(e){{}}}}
-setInterval(refreshData,15000)
-</script></head><body><main><header><h1 id="view_title">{title}</h1>
-<div><button class="hamb" onclick="menu()">&#9776;</button>
-<nav id="menu">{menu_items}</nav></div></header>{body}</main>
-</body></html>
-""".format(title=_html_escape(title), menu_items=menu_items, body=body)
-
-
-def _menu_items_html(sensor_present, switch_present):
-    items = [
-        "<button onclick=\"show('data')\">Data</button>",
-        "<button onclick=\"show('nodus')\">Nodus</button>",
-    ]
-    if sensor_present:
-        items.append("<button onclick=\"show('sensor')\">Sensor</button>")
-    if switch_present:
-        items.append("<button onclick=\"show('switch')\">Switch</button>")
-    return "".join(items)
-
-
-def _primary_device_id(payload):
-    return payload["sensor"]["sensor_id"] or payload["switch"]["device_id"]
-
-
-def _sensor_config_html(sensor):
-    if not sensor["present"]:
-        return "<div class='empty'>No sensor</div>"
-    rows = []
-    for key in _calibration_keys_for_device(sensor["device"]):
-        rows.append(
-            "<label>{}</label><input data-cal='{}' value='{}'>".format(
-                _html_escape(key),
-                _html_escape(key),
-                _html_escape(sensor["calibration_device"].get(key, 0.0)),
-            )
-        )
-    return (
-        "<div class='form'>{}<button onclick='saveSensor()'>Save</button>"
-        "<span id='sensor_status'></span></div>"
-    ).format("".join(rows))
-
-
-def _calibration_keys_for_device(device):
-    mapping = {
-        "aqi": ("TEMP_OFFSET", "RH_OFFSET", "GAS_OFFSET", "AQI_OFFSET"),
-        "co2": ("TEMP_OFFSET", "RH_OFFSET", "CO2_OFFSET"),
-        "lux": ("LUX_OFFSET",),
-        "aht": ("TEMP_OFFSET", "RH_OFFSET"),
-        "avpd": ("TEMP_OFFSET", "RH_OFFSET"),
-        "apvpd": (
-            "TEMP_OFFSET",
-            "RH_OFFSET",
-            "APVPD_TEMP_CAL_VAL",
-            "APVPD_RH_CAL_VAL",
-        ),
-        "apvpd_aht": (
-            "TEMP_OFFSET",
-            "RH_OFFSET",
-            "APVPD_TEMP_CAL_VAL",
-            "APVPD_RH_CAL_VAL",
-        ),
-        "soil": (
-            "SOIL_TEMP_CAL_VAL",
-            "SOIL_TEMP_MOIST_VAL",
-            "SOIL_PH_CAL_VAL",
-            "SOIL_EC_CAL_VAL",
-        ),
-    }
-    return mapping.get(str(device or "").lower(), ())
-
-
-def _switch_controls_html(channels, *, editable=False):
-    if not channels:
-        return "<div class='empty'>No switches</div>"
-    rows = []
-    for channel in channels:
-        label = channel["label"] or channel["channel_id"]
-        name = _html_escape(label)
-        if editable:
-            name = (
-                "<input data-switch-label='{key}_LABEL' value='{label}'>"
-            ).format(
+                label=_html_escape(channel["key"]),
                 key=_html_escape(channel["key"]),
-                label=_html_escape(label),
-            )
-        rows.append(
-            (
-                "<div class='switch'>{}<button id='sw_{}' class='{}' "
-                "onclick=\"toggleSwitch('{}',{})\">{}</button></div>"
-            ).format(
-                name,
-                _html_escape(channel["channel_id"]),
-                "state-on" if channel.get("state") else "state-off",
-                _html_escape(channel["channel_id"]),
-                "true" if channel.get("state") else "false",
-                "On" if channel.get("state") else "Off",
+                label_value=_html_escape(channel["label"]),
+                channel_id=_html_escape(channel["channel_id"]),
             )
         )
-    if editable:
-        rows.append(
-            "<button onclick='saveSwitchLabels()'>Save</button>"
-            "<span id='switch_status'></span>"
+    metric_rows = []
+    for index, metric in enumerate(payload["sensor"]["display_metrics"], start=1):
+        metric_rows.append(
+            """
+<div class="row">
+<label>Metric {idx}</label><input id="metric_{idx}" value="{metric}">
+<label>Style</label><input id="style_{idx}" value="{style}">
+</div>
+""".format(
+                idx=index,
+                metric=_html_escape(metric),
+                style=_html_escape(payload["sensor"]["display_styles"][index - 1]),
+            )
         )
-    else:
-        rows.append("<span id='switch_status'></span>")
-    return "".join(rows)
+    return """
+<html><head><meta charset="utf-8"><title>Nodus Setup</title>
+<style>
+body{{font-family:Helvetica,Arial,sans-serif;background:#f7f8fa;color:#1b1f24;margin:0;padding:24px;}}
+.wrap{{max-width:960px;margin:0 auto;display:grid;gap:16px;}}
+.card{{background:#fff;border:1px solid #d8dee4;border-radius:12px;padding:16px;}}
+.row{{display:grid;grid-template-columns:140px 1fr 100px 100px;gap:8px;align-items:center;margin-bottom:8px}}
+input{{padding:8px;border:1px solid #c8d1dc;border-radius:8px}} button{{padding:8px 12px}}
+.status{{font-size:13px;color:#4b5563}}
+</style>
+<script>
+async function postJson(path, payload){{
+  const res = await fetch(path, {{method:'POST', headers:{{'Content-Type':'application/json'}}, body:JSON.stringify(payload)}});
+  return await res.json();
+}}
+async function saveLive(){{
+  const updates = [];
+  updates.push({{section:'Sensor', key:'LOCATION', value:document.getElementById('location').value}});
+  updates.push({{section:'Switch', key:'SWITCH_LOCATION', value:document.getElementById('location').value}});
+  updates.push({{section:'Switch', key:'SWITCH_1_LABEL', value:document.getElementById('SWITCH_1_label')?.value || ''}});
+  updates.push({{section:'Switch', key:'SWITCH_2_LABEL', value:document.getElementById('SWITCH_2_label')?.value || ''}});
+  for (let i=1;i<=6;i++) {{
+    updates.push({{section:'Display', key:'METRIC_'+i, value:document.getElementById('metric_'+i).value}});
+    updates.push({{section:'Display.Style', key:'METRIC_'+i, value:document.getElementById('style_'+i).value}});
+  }}
+  const result = await postJson('/config', {{updates}});
+  document.getElementById('live_status').textContent = JSON.stringify(result);
+}}
+async function saveRestart(){{
+  const updates = [
+    {{section:'Network', key:'SSID', value:document.getElementById('ssid').value}},
+    {{section:'Network', key:'HOSTNAME', value:document.getElementById('hostname').value}},
+    {{section:'Network', key:'AP_CHANNEL', value:document.getElementById('ap_channel').value}},
+  ];
+  const result = await postJson('/config', {{updates}});
+  document.getElementById('restart_status').textContent = JSON.stringify(result);
+}}
+async function setSwitch(channelId, state){{
+  const result = await postJson('/set-switch-state', {{channel_id:channelId, state:state}});
+  document.getElementById('switch_status').textContent = JSON.stringify(result);
+}}
+</script></head><body>
+<div class="wrap">
+<div class="card"><h1>Setup {hostname}</h1><div class="status">Profile: {profile}</div></div>
+<div class="card"><h2>Restart-Required</h2>
+<div class="row"><label>SSID</label><input id="ssid" value="{ssid}"><span></span><span></span></div>
+<div class="row"><label>AP Channel</label><input id="ap_channel" value="{ap_channel}"><span></span><span></span></div>
+<div class="row"><label>Hostname</label><input id="hostname" value="{hostname}"><button onclick="saveRestart()">Save</button><span id="restart_status" class="status"></span></div>
+</div>
+<div class="card"><h2>Live Updates</h2>
+<div class="row"><label>Location</label><input id="location" value="{location}"><button onclick="saveLive()">Apply</button><span id="live_status" class="status"></span></div>
+{metric_rows}
+</div>
+<div class="card"><h2>Switches</h2>{switch_rows}<div id="switch_status" class="status"></div></div>
+</div></body></html>
+""".format(
+        hostname=_html_escape(payload["network"]["hostname"]),
+        profile=_html_escape(payload["profile"]),
+        ssid=_html_escape(payload["network"]["ssid"]),
+        ap_channel=_html_escape(payload["network"]["ap_channel"]),
+        location=_html_escape(payload["sensor"]["location"] or payload["switch"]["location"]),
+        metric_rows="".join(metric_rows),
+        switch_rows="".join(switch_sections),
+    )

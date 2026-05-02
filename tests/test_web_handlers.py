@@ -18,10 +18,7 @@ def _runtime_config():
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for name in ("settings.toml", "sensor_i2c.toml", "switch.toml"):
-            (tmpdir_path / name).write_text(
-                (docs_root / name).read_text(),
-                encoding="utf-8",
-            )
+            (tmpdir_path / name).write_text((docs_root / name).read_text(), encoding="utf-8")
         return Settings.from_directory(tmpdir_path).runtime_config()
 
 
@@ -84,11 +81,8 @@ def test_build_status_payload_includes_display_metrics_and_switch_state():
 
     assert payload["schema"] == "nodus-web-status/v1"
     assert payload["network"]["ipv4addr"] == "10.0.0.44"
-    assert payload["measurement"]["timestamp"]
     assert payload["sensor"]["snapshot"]["phase"] == "ready"
     assert payload["sensor"]["display_metrics"][0]["metric"] == "Air Quality"
-    assert payload["sensor"]["current_metrics"][0]["metric"] == "Temperature"
-    assert payload["sensor"]["calibration_device"]["TEMP_OFFSET"] == 0.0
     assert payload["switch"]["channels"][0]["state"] is True
 
 
@@ -124,10 +118,7 @@ def test_handle_switch_state_request_persists_last_state_when_requested():
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for name in ("settings.toml", "sensor_i2c.toml", "switch.toml"):
-            (tmpdir_path / name).write_text(
-                (docs_root / name).read_text(),
-                encoding="utf-8",
-            )
+            (tmpdir_path / name).write_text((docs_root / name).read_text(), encoding="utf-8")
         runtime_config = Settings.from_directory(tmpdir_path).runtime_config()
 
         payload = handle_switch_state_request(
