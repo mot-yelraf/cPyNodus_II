@@ -202,7 +202,7 @@ def build_network_stack(
 
     socket_pool = connection_manager_module.get_radio_socketpool(wifi_radio)
     ssl_context = connection_manager_module.get_radio_ssl_context(wifi_radio)
-    mdns_server, mdns_errors = _start_mdns_server(
+    mdns_server, mdns_errors = _start_mdns_server_if_enabled(
         runtime_config,
         wifi_radio,
         mdns_module=mdns_module,
@@ -268,9 +268,7 @@ def reconnect_network_stack(
             ssl_context=None if rebuild_socket_artifacts else network_stack.ssl_context,
             wifi_radio=wifi_radio,
             connection_manager_module=connection_manager_module,
-            mdns_server=(
-                None if rebuild_socket_artifacts else network_stack.mdns_server
-            ),
+            mdns_server=network_stack.mdns_server,
             mdns_errors=network_stack.mdns_errors,
             errors=connect_result["errors"],
         )
@@ -296,12 +294,13 @@ def reconnect_network_stack(
             )
         socket_pool = connection_manager_module.get_radio_socketpool(wifi_radio)
         ssl_context = connection_manager_module.get_radio_ssl_context(wifi_radio)
-        mdns_server, mdns_errors = _start_mdns_server(
-            runtime_config,
-            wifi_radio,
-            mdns_module=mdns_module,
-            log_start_monotonic=log_start_monotonic,
-        )
+        if mdns_server is None:
+            mdns_server, mdns_errors = _start_mdns_server_if_enabled(
+                runtime_config,
+                wifi_radio,
+                mdns_module=mdns_module,
+                log_start_monotonic=log_start_monotonic,
+            )
     return NetworkStack(
         phase="ready",
         mode="station",
@@ -452,6 +451,23 @@ def _start_mdns_server(
             start_monotonic=log_start_monotonic,
         )
         return None, errors
+
+
+def _start_mdns_server_if_enabled(
+    runtime_config,
+    wifi_radio,
+    *,
+    mdns_module=None,
+    log_start_monotonic=None,
+):
+    if not getattr(runtime_config, "web_enabled", False):
+        return None, ()
+    return _start_mdns_server(
+        runtime_config,
+        wifi_radio,
+        mdns_module=mdns_module,
+        log_start_monotonic=log_start_monotonic,
+    )
 
 
 def _connect_station(

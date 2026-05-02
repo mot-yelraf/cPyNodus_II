@@ -199,6 +199,30 @@ def test_build_network_stack_advertises_mdns_for_ready_station_mode():
     ]
 
 
+def test_build_network_stack_skips_mdns_when_web_is_disabled():
+    _FakeMdnsModule.servers = []
+    radio = _FakeRadio()
+    runtime_config = RuntimeConfig(
+        active_profile="sensorius",
+        network=NetworkConfig(
+            ssid="TestWiFi",
+            password="secretpass",
+            hostname="co2-ykdvea",
+        ),
+    )
+
+    stack = build_network_stack(
+        runtime_config,
+        wifi_radio=radio,
+        connection_manager_module=_FakeConnMgr,
+        mdns_module=_FakeMdnsModule,
+    )
+
+    assert stack.mdns_errors == ()
+    assert stack.mdns_server is None
+    assert _FakeMdnsModule.servers == []
+
+
 def test_build_network_stack_returns_ap_mode_when_requested():
     runtime_config = RuntimeConfig(
         ap_mode=True,
@@ -536,3 +560,35 @@ def test_reconnect_network_stack_preserves_socket_artifacts_until_rebuild_reques
     assert network_link_is_ready(preserved) is True
     assert preserved.socket_pool is stack.socket_pool
     assert rebuilt.socket_pool is not stack.socket_pool
+
+
+def test_reconnect_network_stack_reuses_mdns_when_rebuilding_socket_artifacts():
+    _FakeMdnsModule.servers = []
+    radio = _FakeRadio()
+    runtime_config = RuntimeConfig(
+        active_profile="nodusweb",
+        network=NetworkConfig(
+            ssid="TestWiFi",
+            password="secretpass",
+            hostname="co2-ykdvea",
+        ),
+    )
+
+    stack = build_network_stack(
+        runtime_config,
+        wifi_radio=radio,
+        connection_manager_module=_FakeConnMgr,
+        mdns_module=_FakeMdnsModule,
+    )
+    rebuilt = reconnect_network_stack(
+        runtime_config,
+        stack,
+        max_attempts=1,
+        retry_delay_s=0.0,
+        rebuild_socket_artifacts=True,
+        mdns_module=_FakeMdnsModule,
+    )
+
+    assert rebuilt.socket_pool is not stack.socket_pool
+    assert rebuilt.mdns_server is stack.mdns_server
+    assert len(_FakeMdnsModule.servers) == 1
