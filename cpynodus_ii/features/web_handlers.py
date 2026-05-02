@@ -5,10 +5,15 @@ the concrete web server implementation, which keeps the route layer thin and
 easy to test.
 """
 
+import time
+
 from cpynodus_ii.core.settings import Settings
 from cpynodus_ii.features.sensor_service import read_sensor_snapshot
 from cpynodus_ii.features.switch_service import snapshot_switch_states
-from cpynodus_ii.features.web_config import apply_web_config_updates, apply_web_switch_override
+from cpynodus_ii.features.web_config import (
+    apply_web_config_updates,
+    apply_web_switch_override,
+)
 from cpynodus_ii.features.web_routes import build_web_route_table
 
 
@@ -37,9 +42,17 @@ def build_status_payload(
                 "index": index,
                 "metric": metric,
                 "style": runtime_config.sensor.display.styles[index - 1],
-                "value": (sensor_snapshot.metrics or {}).get(metric) if sensor_snapshot is not None else None,
+                "value": (
+                    (sensor_snapshot.metrics or {}).get(metric)
+                    if sensor_snapshot is not None
+                    else None
+                ),
             }
         )
+    current_metrics = []
+    if sensor_snapshot is not None:
+        for label, value in (sensor_snapshot.metrics or {}).items():
+            current_metrics.append({"metric": label, "value": value})
 
     switch_channels = []
     for channel in runtime_config.switch.channels:
@@ -59,17 +72,26 @@ def build_status_payload(
         "version": str(version or ""),
         "profile": runtime_config.active_profile,
         "ap_mode": bool(runtime_config.ap_mode),
+        "measurement": {
+            "timestamp": _timestamp_text(),
+        },
         "network": {
             "hostname": runtime_config.network.hostname,
             "ssid": runtime_config.network.ssid,
+            "password": runtime_config.network.password,
             "ipv4addr": str(ip_address or ""),
         },
+        "profile_options": ("nodusweb", "sensorius", "homeassistant", "weewx"),
         "sensor": {
             "present": bool(runtime_config.sensor.present),
             "sensor_id": runtime_config.sensor.sensor_id,
             "device": runtime_config.sensor.device,
             "location": runtime_config.sensor.location,
             "display_metrics": display_metrics,
+            "current_metrics": current_metrics,
+            "calibration_device": _calibration_payload(
+                runtime_config.sensor.calibration_device
+            ),
             "snapshot": {
                 "phase": getattr(sensor_snapshot, "phase", "unavailable"),
                 "metrics": dict(getattr(sensor_snapshot, "metrics", {}) or {}),
@@ -82,6 +104,21 @@ def build_status_payload(
             "channels": switch_channels,
         },
     }
+
+
+def _timestamp_text():
+    try:
+        current = time.localtime()
+        return "{:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}".format(
+            int(current[0]),
+            int(current[1]),
+            int(current[2]),
+            int(current[3]),
+            int(current[4]),
+            int(current[5]),
+        )
+    except Exception:
+        return ""
 
 
 def build_setup_payload(runtime_config, *, version):
@@ -103,10 +140,12 @@ def build_setup_payload(runtime_config, *, version):
         ],
         "network": {
             "ssid": runtime_config.network.ssid,
+            "password": runtime_config.network.password,
             "hostname": runtime_config.network.hostname,
             "http_port": runtime_config.network.http_port,
             "ap_channel": runtime_config.network.ap_channel,
         },
+        "profile_options": ("nodusweb", "sensorius", "homeassistant", "weewx"),
         "sensor": {
             "present": bool(runtime_config.sensor.present),
             "device": runtime_config.sensor.device,
@@ -114,6 +153,9 @@ def build_setup_payload(runtime_config, *, version):
             "location": runtime_config.sensor.location,
             "display_metrics": list(runtime_config.sensor.display.metrics),
             "display_styles": list(runtime_config.sensor.display.styles),
+            "calibration_device": _calibration_payload(
+                runtime_config.sensor.calibration_device
+            ),
         },
         "switch": {
             "present": bool(runtime_config.switch.present),
@@ -141,6 +183,24 @@ def build_setup_payload(runtime_config, *, version):
             "port": runtime_config.mqtt.port,
             "base_topic": runtime_config.mqtt.base_topic,
         },
+    }
+
+
+def _calibration_payload(calibration):
+    return {
+        "TEMP_OFFSET": calibration.temp_offset,
+        "RH_OFFSET": calibration.rh_offset,
+        "CO2_OFFSET": calibration.co2_offset,
+        "AQI_OFFSET": calibration.aqi_offset,
+        "GAS_OFFSET": calibration.gas_offset,
+        "LUX_OFFSET": calibration.lux_offset,
+        "PPFD_OFFSET": calibration.ppfd_offset,
+        "APVPD_TEMP_CAL_VAL": calibration.apvpd_temp_cal_val,
+        "APVPD_RH_CAL_VAL": calibration.apvpd_rh_cal_val,
+        "SOIL_TEMP_CAL_VAL": calibration.soil_temp_cal_val,
+        "SOIL_TEMP_MOIST_VAL": calibration.soil_temp_moist_val,
+        "SOIL_PH_CAL_VAL": calibration.soil_ph_cal_val,
+        "SOIL_EC_CAL_VAL": calibration.soil_ec_cal_val,
     }
 
 

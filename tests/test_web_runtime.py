@@ -86,7 +86,10 @@ def _runtime_config():
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for name in ("settings.toml", "sensor_i2c.toml", "switch.toml"):
-            (tmpdir_path / name).write_text((docs_root / name).read_text(), encoding="utf-8")
+            (tmpdir_path / name).write_text(
+                (docs_root / name).read_text(),
+                encoding="utf-8",
+            )
         runtime_config = Settings.from_directory(tmpdir_path).runtime_config()
         runtime_config.active_profile = "nodusweb"
         return runtime_config
@@ -96,7 +99,11 @@ def test_ap_mode_network_stack_includes_socket_artifacts_for_web_runtime():
     runtime_config = _runtime_config()
     runtime_config.ap_mode = True
 
-    stack = build_network_stack(runtime_config, wifi_radio=_FakeRadio(), connection_manager_module=_FakeConnMgr)
+    stack = build_network_stack(
+        runtime_config,
+        wifi_radio=_FakeRadio(),
+        connection_manager_module=_FakeConnMgr,
+    )
 
     assert stack.phase == "ap"
     assert stack.socket_pool["kind"] == "socketpool"
@@ -105,7 +112,11 @@ def test_ap_mode_network_stack_includes_socket_artifacts_for_web_runtime():
 
 def test_web_runtime_controller_registers_and_polls_routes():
     runtime_config = _runtime_config()
-    stack = build_network_stack(runtime_config, wifi_radio=_FakeRadio(), connection_manager_module=_FakeConnMgr)
+    stack = build_network_stack(
+        runtime_config,
+        wifi_radio=_FakeRadio(),
+        connection_manager_module=_FakeConnMgr,
+    )
 
     controller = WebRuntimeController(
         runtime_config,
@@ -122,9 +133,52 @@ def test_web_runtime_controller_registers_and_polls_routes():
     assert controller.server.poll_count == 1
 
 
+def test_web_runtime_root_renders_nodusweb_menu_sections():
+    runtime_config = _runtime_config()
+    stack = build_network_stack(
+        runtime_config,
+        wifi_radio=_FakeRadio(),
+        connection_manager_module=_FakeConnMgr,
+    )
+    controller = WebRuntimeController(
+        runtime_config,
+        stack,
+        version="v0.26.122.1",
+        server_module=_FakeServerModule,
+    ).start()
+
+    handler = controller.server.routes[("/", ("GET",))]
+    response = handler(_FakeRequest())
+
+    assert "Data" in response.body
+    assert "Nodus" in response.body
+    assert "Sensor" in response.body
+    assert "Switch" in response.body
+    assert "saveNodus()" in response.body
+    assert "saveSwitchLabels()" in response.body
+    assert "nav button{" in response.body
+    assert "color:#17212b;text-align:left" in response.body
+    assert "main{position:relative" in response.body
+    assert "<body><main><header>" in response.body
+    assert "width:min(100%,620px)" in response.body
+    assert "grid-template-columns:110px minmax(150px,300px)" in response.body
+    assert '<h1 id="view_title">Data</h1>' in response.body
+    assert "max-height:430px;overflow-y:auto" in response.body
+    assert "toggleSwitch" in response.body
+    assert "state-on" in response.body
+    assert "state-off" in response.body
+    assert "switch update failed" in response.body
+    assert 'id="measurement_time"' in response.body
+    assert "setInterval(refreshData,15000)" in response.body
+
+
 def test_web_runtime_controller_config_route_updates_runtime_config():
     runtime_config = _runtime_config()
-    stack = build_network_stack(runtime_config, wifi_radio=_FakeRadio(), connection_manager_module=_FakeConnMgr)
+    stack = build_network_stack(
+        runtime_config,
+        wifi_radio=_FakeRadio(),
+        connection_manager_module=_FakeConnMgr,
+    )
     controller = WebRuntimeController(
         runtime_config,
         stack,
@@ -145,7 +199,11 @@ def test_web_runtime_controller_config_route_updates_runtime_config():
 
 def test_web_runtime_controller_switch_route_applies_live_override():
     runtime_config = _runtime_config()
-    stack = build_network_stack(runtime_config, wifi_radio=_FakeRadio(), connection_manager_module=_FakeConnMgr)
+    stack = build_network_stack(
+        runtime_config,
+        wifi_radio=_FakeRadio(),
+        connection_manager_module=_FakeConnMgr,
+    )
 
     class _Handle:
         def __init__(self, value=False):

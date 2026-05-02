@@ -1,6 +1,10 @@
 """Tests for station-mode and AP-mode network stack helpers."""
 
-from cpynodus_ii.core import build_network_stack, network_link_is_ready, reconnect_network_stack
+from cpynodus_ii.core import (
+    build_network_stack,
+    network_link_is_ready,
+    reconnect_network_stack,
+)
 from cpynodus_ii.core.config import NetworkConfig, RuntimeConfig
 
 
@@ -96,6 +100,33 @@ class _FakeConnMgr:
         return {"kind": "ssl", "radio": radio}
 
 
+class _FakeMdnsServer:
+    def __init__(self, radio):
+        self.radio = radio
+        self.hostname = ""
+        self.instance_name = ""
+        self.services = []
+
+    def advertise_service(self, *, service_type, protocol, port):
+        self.services.append(
+            {
+                "service_type": service_type,
+                "protocol": protocol,
+                "port": port,
+            }
+        )
+
+
+class _FakeMdnsModule:
+    servers = []
+
+    @classmethod
+    def Server(cls, radio):
+        server = _FakeMdnsServer(radio)
+        cls.servers.append(server)
+        return server
+
+
 class _FlakyRadio:
     def __init__(self, failures):
         self.failures = list(failures)
@@ -141,6 +172,33 @@ def test_build_network_stack_connects_station_mode_and_returns_socket_artifacts(
     assert stack.ssl_context["kind"] == "ssl"
 
 
+def test_build_network_stack_advertises_mdns_for_ready_station_mode():
+    _FakeMdnsModule.servers = []
+    radio = _FakeRadio()
+    runtime_config = RuntimeConfig(
+        active_profile="nodusweb",
+        network=NetworkConfig(
+            ssid="TestWiFi",
+            password="secretpass",
+            hostname="co2-ykdvea",
+            http_port=8000,
+        ),
+    )
+
+    stack = build_network_stack(
+        runtime_config,
+        wifi_radio=radio,
+        connection_manager_module=_FakeConnMgr,
+        mdns_module=_FakeMdnsModule,
+    )
+
+    assert stack.mdns_errors == ()
+    assert stack.mdns_server.hostname == "co2-ykdvea"
+    assert stack.mdns_server.services == [
+        {"service_type": "_http", "protocol": "_tcp", "port": 8000}
+    ]
+
+
 def test_build_network_stack_returns_ap_mode_when_requested():
     runtime_config = RuntimeConfig(
         ap_mode=True,
@@ -152,7 +210,11 @@ def test_build_network_stack_returns_ap_mode_when_requested():
     )
 
     radio = _FakeRadio()
-    stack = build_network_stack(runtime_config, wifi_radio=radio, connection_manager_module=_FakeConnMgr)
+    stack = build_network_stack(
+        runtime_config,
+        wifi_radio=radio,
+        connection_manager_module=_FakeConnMgr,
+    )
 
     assert stack.phase == "ap"
     assert stack.mode == "ap"
@@ -178,10 +240,19 @@ def test_build_network_stack_reports_missing_wifi_modules():
 
 
 def test_build_network_stack_retries_transient_failures_and_then_succeeds():
-    radio = _FlakyRadio([ConnectionError("temporary network failure"), ConnectionError("temporary network failure")])
+    radio = _FlakyRadio(
+        [
+            ConnectionError("temporary network failure"),
+            ConnectionError("temporary network failure"),
+        ]
+    )
     runtime_config = RuntimeConfig(
         active_profile="sensorius",
-        network=NetworkConfig(ssid="TestWiFi", password="secretpass", hostname="aqi-x943fm"),
+        network=NetworkConfig(
+            ssid="TestWiFi",
+            password="secretpass",
+            hostname="aqi-x943fm",
+        ),
     )
 
     stack = build_network_stack(
@@ -209,7 +280,11 @@ def test_build_network_stack_retries_authentication_error_before_failing():
     radio.ipv4_address_ap = "192.168.4.1"
     runtime_config = RuntimeConfig(
         active_profile="sensorius",
-        network=NetworkConfig(ssid="TestWiFi", password="badpass", hostname="aqi-x943fm"),
+        network=NetworkConfig(
+            ssid="TestWiFi",
+            password="badpass",
+            hostname="aqi-x943fm",
+        ),
     )
 
     stack = build_network_stack(
@@ -233,7 +308,11 @@ def test_build_network_stack_recovers_after_transient_authentication_error():
     radio = _FlakyRadio([ConnectionError("Authentication failure")])
     runtime_config = RuntimeConfig(
         active_profile="sensorius",
-        network=NetworkConfig(ssid="TestWiFi", password="secretpass", hostname="aqi-x943fm"),
+        network=NetworkConfig(
+            ssid="TestWiFi",
+            password="secretpass",
+            hostname="aqi-x943fm",
+        ),
     )
 
     stack = build_network_stack(
@@ -250,11 +329,17 @@ def test_build_network_stack_recovers_after_transient_authentication_error():
 
 
 def test_build_network_stack_diagnostics_ignore_unimplemented_ap_info():
-    radio = _NotImplementedAPInfoRadio([ConnectionError("temporary network failure")])
+    radio = _NotImplementedAPInfoRadio(
+        [ConnectionError("temporary network failure")]
+    )
     radio.ipv4_address = "10.0.0.252"
     runtime_config = RuntimeConfig(
         active_profile="sensorius",
-        network=NetworkConfig(ssid="TestWiFi", password="secretpass", hostname="aqi-x943fm"),
+        network=NetworkConfig(
+            ssid="TestWiFi",
+            password="secretpass",
+            hostname="aqi-x943fm",
+        ),
     )
 
     stack = build_network_stack(
@@ -290,7 +375,11 @@ def test_build_network_stack_rejects_unconnected_radio_after_connect_call():
     radio = _RadioNotConnectedAfterConnect()
     runtime_config = RuntimeConfig(
         active_profile="sensorius",
-        network=NetworkConfig(ssid="PeaceHill", password="secretpass", hostname="co2-29j39c"),
+        network=NetworkConfig(
+            ssid="PeaceHill",
+            password="secretpass",
+            hostname="co2-29j39c",
+        ),
     )
 
     stack = build_network_stack(
