@@ -88,6 +88,8 @@ Bootstrap rules:
 - `nodus/<channel_id>/event`
 - retained `nodus/<channel_id>/state`
 - `nodus/<device_id>/meta/patch`
+- optional Sensorius-owned retained empty `nodus/<channel_id>/config/set`
+  cleanup when Sensorius used a retained command
 
 ### Calibration
 
@@ -191,6 +193,32 @@ The payload must include:
 Password fields in retained `meta` use the same `obf1:` obfuscation format as
 persisted TOML password fields. They are not plaintext.
 
+## Retained Command Cleanup
+
+`/set` topics are command topics, not state topics. Sensorius should publish
+commands non-retained unless a specific command flow requires retained delivery.
+
+When Sensorius intentionally publishes any `/set` command retained, Sensorius
+owns removing that retained command after successful handling by publishing an
+empty retained payload to the same topic. Nodus ignores empty `/set` payloads.
+
+Sensorius retained-command sequence:
+
+1. Publish the command to the relevant `/set` topic with `retain = true`.
+2. Wait for the correlated `ack`.
+3. Wait for the correlated successful `result`.
+4. Consume the correlated retained state, event, or `meta/patch` update as
+   applicable.
+5. Publish an empty retained payload to the same `/set` topic.
+
+Current implementation:
+
+- Nodus ignores empty payloads on switch `nodus/<channel_id>/config/set`.
+- Nodus ignores empty payloads on ordinary device
+  `nodus/<device_id>/config/set`.
+- Nodus ignores empty payloads on `nodus/<device_id>/calibration/set`.
+- Nodus does not publish empty retained cleanup payloads to `/set` topics.
+
 ## Ordinary `config/set`
 
 Canonical topic:
@@ -223,6 +251,23 @@ Canonical replies:
 {"message_id":"cfg-123","applied":true,"updated":1,"duplicate":false,"error":""}
 ```
 
+Implemented behavior:
+
+- Nodus publishes `config/ack` after a valid envelope is accepted for
+  handling.
+- Duplicate `message_id` values produce `config/ack` with
+  `duplicate = true` and `config/result` with `applied = true`,
+  `updated = 0`, and `duplicate = true`.
+- Accepted non-duplicate writes publish `config/result` and a non-retained
+  `meta/patch` with `source = "config_set"`.
+- Failed validation or rejected writes publish `config/result` with
+  `applied = false` and an error string.
+- Empty payloads on `nodus/<device_id>/config/set` are ignored. This allows
+  Sensorius retained command cleanup publishes to be received safely after
+  reconnect.
+- Nodus does not clear `nodus/<device_id>/config/set`; Sensorius owns retained
+  command cleanup for commands it publishes retained.
+
 ## Switch `config/set`
 
 Canonical topic:
@@ -254,6 +299,23 @@ Forward-only rule:
 - Plain `ON` and `OFF` payloads may still be tolerated by firmware, but they
   are not the documented forward contract.
 
+Implemented behavior:
+
+- Empty payloads on `nodus/<channel_id>/config/set` are ignored. This allows
+  Sensorius retained command cleanup publishes to be received safely after
+  reconnect.
+- Nodus publishes channel-scoped `config/ack` after a valid switch command is
+  accepted for handling.
+- Nodus applies the switch state, publishes channel-scoped `config/result`,
+  publishes `event`, publishes retained `state`, and publishes a non-retained
+  device `meta/patch` with `source = "switch_set"`.
+- If the filesystem is writable, Nodus persists the channel
+  `SWITCH_<n>_LAST_STATE` update into `switch.toml`. If persistence fails, the
+  command may still be applied locally and the command result carries
+  `persistence_mode = "volatile"` in serial logging.
+- Nodus does not clear `nodus/<channel_id>/config/set`; Sensorius owns retained
+  command cleanup for commands it publishes retained.
+
 ## `calibration/set`
 
 Canonical topic:
@@ -282,6 +344,28 @@ Canonical replies:
 - `calibration/ack`
 - `calibration/result`
 - `meta/patch` with `source = "calibration_set"` for accepted writes
+
+Implemented behavior:
+
+- Nodus publishes `calibration/ack` after a valid calibration envelope is
+  accepted for handling.
+- Duplicate `message_id` values produce `calibration/ack` and
+  `calibration/result` with `applied = true`, `updated = 0`, and no
+  `meta/patch`.
+- `action = "apply"`, `"set"`, or `"update"` writes accepted calibration
+  values, publishes `calibration/result`, and publishes non-retained
+  `meta/patch` with `source = "calibration_set"`.
+- `action = "status"` republishes retained
+  `nodus/<sensor_id>/event/calibration_status` and publishes a correlated
+  `calibration/result`.
+- Soil pH session actions publish command-scoped `calibration/result` plus the
+  soil calibration event topics described in
+  `docs/calibration_mqtt_contract.md`.
+- Empty payloads on `nodus/<device_id>/calibration/set` are ignored. This
+  allows Sensorius retained command cleanup publishes to be received safely
+  after reconnect.
+- Nodus does not clear `nodus/<device_id>/calibration/set`; Sensorius owns
+  retained command cleanup for commands it publishes retained.
 
 ## `meta/patch`
 

@@ -179,21 +179,19 @@ def test_process_switch_command_message_applies_state_and_publishes_result():
     )
 
     assert result.phase == "published"
-    assert result.published_count == 6
+    assert result.published_count == 5
     assert [message.topic for message in transport.published_messages] == [
         "nodus/S1-x943fm/config/ack",
         "nodus/S1-x943fm/config/result",
         "nodus/S1-x943fm/event",
         "nodus/S1-x943fm/state",
         "nodus/switch-x943fm/meta/patch",
-        "nodus/S1-x943fm/config/set",
     ]
     assert transport.published_messages[0].payload["message_id"] == ""
     assert transport.published_messages[2].payload["schema"] == "nodus-switch-event/v1"
     assert transport.published_messages[2].payload["state"] == "ON"
     assert transport.published_messages[3].payload == "ON"
     assert transport.published_messages[4].payload["source"] == "switch_set"
-    assert transport.published_messages[5].payload == ""
 
 
 def test_process_switch_command_message_accepts_device_style_updates_payload():
@@ -236,7 +234,6 @@ def test_process_switch_command_message_uses_configured_base_topic():
         "greenhouse/S1-x943fm/event",
         "greenhouse/S1-x943fm/state",
         "greenhouse/switch-x943fm/meta/patch",
-        "greenhouse/S1-x943fm/config/set",
     ]
 
 
@@ -373,6 +370,36 @@ def test_process_switch_command_message_ignores_empty_retained_clear():
         _runtime_config(),
         _switch_service(),
         topic="nodus/S1-x943fm/config/set",
+        payload_text="",
+    )
+
+    assert result.phase == "ignored"
+    assert result.published_count == 0
+    assert result.errors == ()
+
+
+def test_process_device_config_message_ignores_empty_retained_clear():
+    transport = MQTTTransport("broker.local", 1883)
+
+    result = process_device_config_message(
+        transport,
+        _runtime_config(),
+        topic="nodus/switch-x943fm/config/set",
+        payload_text="",
+    )
+
+    assert result.phase == "ignored"
+    assert result.published_count == 0
+    assert result.errors == ()
+
+
+def test_process_calibration_message_ignores_empty_retained_clear():
+    transport = MQTTTransport("broker.local", 1883)
+
+    result = process_calibration_message(
+        transport,
+        _runtime_config(),
+        topic="nodus/switch-x943fm/calibration/set",
         payload_text="",
     )
 

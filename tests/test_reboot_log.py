@@ -80,3 +80,38 @@ def test_append_reboot_traceback_trims_log_to_max_size(tmp_path):
     assert "=== new-entry ===" in content
     assert "RuntimeError: trim-me" in content
     assert "=== old-entry ===" not in content
+
+
+def test_append_reboot_traceback_trims_with_tuple_stat(tmp_path, monkeypatch):
+    log_path = tmp_path / "_reboot.log"
+    old_content = "=== old-entry ===\n" + ("x" * 400) + "\n"
+    log_path.write_text(old_content, encoding="utf-8")
+
+    from cpynodus_ii.core import reboot_log
+
+    real_os = reboot_log.os
+    real_stat = real_os.stat
+
+    class _TupleStatOs:
+        def stat(self, path):
+            stat_result = real_stat(path)
+            return (0, 0, 0, 0, 0, 0, stat_result.st_size, 0, 0, 0)
+
+    monkeypatch.setattr(reboot_log, "os", _TupleStatOs())
+
+    try:
+        raise RuntimeError("tuple-stat")
+    except RuntimeError as exc:
+        written = append_reboot_traceback(
+            exc,
+            path=str(log_path),
+            header="new-entry",
+            max_bytes=400,
+        )
+
+    assert written is True
+    content = log_path.read_text(encoding="utf-8")
+    assert len(content.encode("utf-8")) <= 400
+    assert "=== new-entry ===" in content
+    assert "RuntimeError: tuple-stat" in content
+    assert "=== old-entry ===" not in content

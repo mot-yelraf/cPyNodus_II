@@ -420,12 +420,11 @@ def process_switch_command_message(
                 ),
                 reload_runtime=False,
             )
-    transport.publish(topic, "", retain=True)
     return CommandResult(
         phase=publish_result.phase if publish_result.phase != "skipped" else meta_result.phase,
         topic=topic,
         command_type="switch",
-        published_count=1 + publish_result.published_count + meta_result.published_count + 1,
+        published_count=1 + publish_result.published_count + meta_result.published_count,
         errors=publish_result.errors + meta_result.errors + tuple(persistence_errors),
         message_id=command.message_id,
         persistence_mode="volatile" if persistence_errors else "persisted" if settings_root is not None else "",
@@ -443,6 +442,16 @@ def process_device_config_message(
     settings_root=None,
 ):
     """Parse, apply, and publish one device config command."""
+    if not str(payload_text or "").strip():
+        return CommandResult(
+            phase="ignored",
+            topic=topic,
+            command_type="config",
+            published_count=0,
+            errors=(),
+            runtime_config=runtime_config,
+        )
+
     command = parse_device_config_command(payload_text)
     if command is None:
         return CommandResult(
@@ -584,6 +593,16 @@ def process_calibration_message(
     settings_root=None,
 ):
     """Parse and respond to one device calibration command."""
+    if not str(payload_text or "").strip():
+        return CommandResult(
+            phase="ignored",
+            topic=topic,
+            command_type="calibration",
+            published_count=0,
+            errors=(),
+            runtime_config=runtime_config,
+        )
+
     command = parse_calibration_command(payload_text)
     if command is None:
         return CommandResult(
