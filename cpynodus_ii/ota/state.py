@@ -1,4 +1,10 @@
-"""Persist small OTA state records for temporary firmware update mode."""
+"""Persist the small reboot handoff record used by OTA mode.
+
+Nodus receives the `/fwupdate` MQTT prepare command during normal operation,
+writes this state record, then soft-reboots into a temporary HTTP-only OTA
+runtime. The record is intentionally compact so it can be read and rewritten
+on CircuitPython without allocating large JSON structures.
+"""
 
 import json
 import os
@@ -11,7 +17,13 @@ FWUPDATE_TOPIC_SUFFIX = "fwupdate"
 
 @dataclass(frozen=True)
 class FwUpdateState:
-    """Describe the private OTA state needed across reboots."""
+    """Describe the OTA handoff state that survives soft reboot.
+
+    `prior_profile` lets normal runtime resume the same profile after a
+    successful update. `package_id` binds the MQTT prepare request to the
+    HTTP transfer, and `phase` records whether OTA is requested, ready,
+    staging, applied, aborted, or invalid.
+    """
 
     mode: str = "ota"
     prior_profile: str = ""
@@ -33,7 +45,7 @@ class FwUpdateState:
 
 
 def build_fwupdate_topic(device_id, base_topic="nodus"):
-    """Return the MQTT firmware-update control topic for a device."""
+    """Return the per-device MQTT topic used to request OTA prepare mode."""
     base = _clean_topic_part(base_topic) or "nodus"
     device = _clean_topic_part(device_id)
     if not device:
@@ -42,7 +54,7 @@ def build_fwupdate_topic(device_id, base_topic="nodus"):
 
 
 def load_ota_state(path=OTA_STATE_FILE):
-    """Load OTA state from disk, returning ``None`` when no state exists."""
+    """Load OTA handoff state, returning ``None`` when no request exists."""
     try:
         with open(path, "r") as handle:
             document = json.load(handle)
@@ -62,7 +74,7 @@ def load_ota_state(path=OTA_STATE_FILE):
 
 
 def save_ota_state(state, path=OTA_STATE_FILE):
-    """Persist OTA state with a best-effort atomic replace."""
+    """Persist OTA handoff state with a best-effort atomic replace."""
     state_obj = _coerce_state(state)
     parent = _parent_dir(path)
     if parent:
@@ -81,7 +93,7 @@ def save_ota_state(state, path=OTA_STATE_FILE):
 
 
 def clear_ota_state(path=OTA_STATE_FILE):
-    """Remove OTA state if it exists."""
+    """Remove the OTA handoff record if it exists."""
     try:
         os.remove(path)
         return True

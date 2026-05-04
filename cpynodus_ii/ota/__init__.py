@@ -1,7 +1,9 @@
-"""Device-compatible helpers for Nodus OTA update state.
+"""Lightweight OTA state helpers safe for normal Nodus runtime imports.
 
-Normal runtime imports this package for lightweight state helpers only. Import
-OTA HTTP/runtime modules directly from their submodules when entering OTA mode.
+The normal firmware path imports this package only to recognize `/fwupdate`
+MQTT commands and persist the small reboot handoff record. The heavier OTA
+runtime and HTTP server stay in their submodules so MQTT, sensor, and switch
+operation do not pay those memory costs until temporary OTA mode starts.
 """
 
 from cpynodus_ii.ota.state import (

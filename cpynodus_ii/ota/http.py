@@ -1,4 +1,11 @@
-"""Serve the temporary OTA HTTP control endpoints."""
+"""Serve the temporary Nodus OTA HTTP transfer endpoints.
+
+This module runs only in OTA mode, after MQTT has been stopped and the device
+has rebooted into a reduced runtime. It accepts a manifest, stages files under
+`_ota/stage`, supports 1024-byte chunk uploads to avoid large heap
+allocations, verifies SHA256 while streaming from disk, backs up live files,
+applies staged files, and schedules the final reboot.
+"""
 
 import hashlib
 import json
@@ -19,7 +26,13 @@ _HTTP_STATUS = {
 
 
 class OtaHttpController:
-    """Bridge OTA state handlers onto an `adafruit_httpserver` server."""
+    """Bridge OTA state and file handlers onto an HTTP server instance.
+
+    The controller owns the OTA HTTP lifecycle for one temporary runtime:
+    status, manifest begin, file staging, commit, abort, and delayed reboot.
+    It keeps state compact and streams staged-file verification so larger
+    Python modules can be updated on Pico2 W without full-file allocations.
+    """
 
     def __init__(
         self,
@@ -76,7 +89,7 @@ class OtaHttpController:
         return self
 
     def poll(self):
-        """Poll the OTA server once if active."""
+        """Poll the OTA server once and run any due scheduled reboot."""
         if self.phase != "ready" or self.server is None:
             return self
         poll = getattr(self.server, "poll", None)
@@ -100,7 +113,7 @@ class OtaHttpController:
         return self._route_paths
 
     def status_payload(self):
-        """Return a compact OTA status payload."""
+        """Return the current compact OTA status payload."""
         state = load_ota_state(_ota_state_path(self.settings_root)) or self.ota_state
         return build_ota_status_payload(
             self.runtime_config,
@@ -416,7 +429,9 @@ class OtaHttpController:
         if entry is None:
             return _error_payload("file_not_in_manifest", "staging"), 400
         stage_path = _join_root(self.settings_root, "_ota/stage/{}".format(safe_path))
+        verify_started = self._monotonic()
         size, actual_sha = _file_size_sha256(stage_path)
+        verify_elapsed = self._elapsed_s(verify_started)
         expected_size = int(entry.get("size", -1) or -1)
         expected_sha = str(entry.get("sha256", "") or "")
         if size < 0:
@@ -425,7 +440,13 @@ class OtaHttpController:
             return _error_payload("file_size_mismatch", "staging"), 400
         if actual_sha != expected_sha:
             return _error_payload("sha256_mismatch", "staging"), 400
-        self._log("file accepted path={} bytes={}".format(safe_path, size))
+        self._log(
+            "file accepted path={} bytes={} verify_s={:.1f}".format(
+                safe_path,
+                size,
+                verify_elapsed,
+            )
+        )
         return (
             {
                 "accepted": True,
@@ -446,14 +467,20 @@ class OtaHttpController:
         if manifest is None:
             self._log("commit rejected error=manifest_missing")
             return _error_payload("manifest_missing", "staging"), 400
+        verify_started = self._monotonic()
         error = _verify_staged_manifest_files(self.settings_root, manifest)
+        verify_elapsed = self._elapsed_s(verify_started)
         if error:
             self._log("commit rejected error={}".format(error))
             return _error_payload(error, "staging"), 400
+        self._log("commit verify complete elapsed_s={:.1f}".format(verify_elapsed))
+        apply_started = self._monotonic()
         error = _apply_staged_manifest_files(self.settings_root, manifest)
+        apply_elapsed = self._elapsed_s(apply_started)
         if error:
             self._log("commit rejected error={}".format(error))
             return _error_payload(error, "staging"), 503
+        self._log("commit apply complete elapsed_s={:.1f}".format(apply_elapsed))
         _remove_tree(_ota_stage_path(self.settings_root))
         _remove_ota_tmp_files(self.settings_root)
         applied_state = FwUpdateState(
@@ -465,9 +492,12 @@ class OtaHttpController:
         self.ota_state = applied_state
         self._schedule_reboot()
         self._log(
-            "commit accepted package={} files={} reboot_delay_s={}".format(
+            "commit accepted package={} files={} verify_s={:.1f} apply_s={:.1f} "
+            "reboot_delay_s={}".format(
                 applied_state.package_id,
                 len(manifest.get("files", ()) or ()),
+                verify_elapsed,
+                apply_elapsed,
                 self.reboot_delay_s,
             )
         )
@@ -511,6 +541,17 @@ class OtaHttpController:
         if callable(self.log_fn):
             self.log_fn("ota_http", message)
 
+    def _monotonic(self):
+        try:
+            return float(self.time_module.monotonic())
+        except Exception:
+            return 0.0
+
+    def _elapsed_s(self, started):
+        now = self._monotonic()
+        elapsed = now - float(started or 0)
+        return elapsed if elapsed >= 0 else 0.0
+
     def _json_response(self, request, payload, *, status_code=200):
         response_cls = getattr(self.server_module, "JSONResponse", None)
         status = (status_code, _HTTP_STATUS.get(status_code, "OK"))
@@ -534,7 +575,7 @@ def build_ota_status_payload(
     http_phase="",
     errors=(),
 ):
-    """Build the JSON payload returned by `/ota/status`."""
+    """Build the compact JSON payload returned by `/ota/status`."""
     state = ota_state if isinstance(ota_state, FwUpdateState) else FwUpdateState()
     return {
         "schema": "nodus-ota-status/v1",

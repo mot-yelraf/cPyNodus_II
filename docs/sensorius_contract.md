@@ -10,6 +10,8 @@ define the contract. When other docs drift, this document wins.
 
 - AP bootstrap uses only `/itaot-meta` and `/itaot-init`.
 - Normal runtime sync uses only MQTT.
+- OTA uses MQTT only for the prepare/result control path; package bytes move
+  over HTTP while Nodus is in temporary OTA mode.
 - Nodus publishes retained full `meta` on connect/reconnect.
 - After accepted runtime changes, Nodus publishes only `meta/patch`.
 - Sensorius paces ordinary runtime config writes one key at a time per
@@ -98,6 +100,12 @@ Bootstrap rules:
 - `nodus/<device_id>/calibration/result`
 - `nodus/<device_id>/meta/patch`
 
+### Firmware Update
+
+- `nodus/<device_id>/fwupdate`
+- `nodus/<device_id>/fwupdate/ack`
+- `nodus/<device_id>/fwupdate/result`
+
 ## Onboarding MQTT Flow
 
 1. Nodus joins Wi-Fi and MQTT.
@@ -181,6 +189,8 @@ The payload must include:
 - `profile.active_profile`
 - `mqtt.broker`, `mqtt.broker_ip`, `mqtt.active_broker`, `mqtt.port`,
   `mqtt.use_tls`, `mqtt.username`, `mqtt.password`, `mqtt.base_topic`
+- `fwupdate.schema`, `fwupdate.transport`, `fwupdate.prepare_topic`,
+  `fwupdate.ack_topic`, `fwupdate.result_topic`
 - `location_group.location`, `location_group.members`
 - `sensor.sensor_id`, `sensor.location`, `sensor.data_topic`,
   `sensor.event_topic`, `sensor.availability_topic`,
@@ -366,6 +376,40 @@ Implemented behavior:
   after reconnect.
 - Nodus does not clear `nodus/<device_id>/calibration/set`; Sensorius owns
   retained command cleanup for commands it publishes retained.
+
+## `fwupdate`
+
+Canonical prepare topic:
+
+- `nodus/<device_id>/fwupdate`
+
+Canonical prepare payload:
+
+```json
+{
+  "schema": "nodus-fwupdate/v1",
+  "message_id": "fw-20260504T193222Z",
+  "command": "prepare",
+  "package_id": "ota-tagA-to-tagB"
+}
+```
+
+Canonical replies:
+
+- `nodus/<device_id>/fwupdate/ack`
+- `nodus/<device_id>/fwupdate/result`
+
+Implemented behavior:
+
+- Nodus subscribes to `fwupdate` in normal MQTT runtime.
+- For accepted `prepare`, Nodus persists private OTA state, publishes `ack`
+  and a prepared `result`, publishes offline availability/heartbeat, then
+  soft-reboots into temporary OTA mode.
+- OTA mode does not run MQTT. Sensorius or the CLI transfers package files
+  over HTTP using the endpoints in `docs/ota.md`.
+- After successful apply and reboot back into the prior profile, Nodus
+  publishes a non-retained `fwupdate/result` with `phase = "applied"`,
+  `applied = true`, `package_id`, and `prior_profile`.
 
 ## `meta/patch`
 

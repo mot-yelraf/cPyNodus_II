@@ -1,4 +1,10 @@
-"""Run the temporary low-memory OTA startup path."""
+"""Run the temporary HTTP-only OTA startup path.
+
+OTA mode is entered after normal runtime receives a `/fwupdate` MQTT prepare
+command and soft-reboots. It reconnects Wi-Fi, starts only the small OTA HTTP
+server, leaves MQTT and feature services stopped, and returns to the prior
+profile after a successful commit and reboot.
+"""
 
 import asyncio
 import gc
@@ -11,7 +17,7 @@ from cpynodus_ii.ota.state import FwUpdateState, save_ota_state
 
 @dataclass(frozen=True)
 class OtaModeResult:
-    """Describe the OTA mode startup result."""
+    """Summarize whether temporary OTA mode reached network and HTTP ready."""
 
     phase: str
     package_id: str
@@ -35,7 +41,13 @@ async def run_ota_mode(
     sleep_fn=None,
     idle_s=0,
 ):
-    """Enter temporary OTA mode without starting MQTT or feature services."""
+    """Enter temporary OTA mode without MQTT, sensors, switches, or web UI.
+
+    The function marks the saved state `ready`, starts the OTA HTTP endpoints,
+    then polls the server until `idle_s` expires or forever when `idle_s` is
+    `None`. The reduced runtime keeps heap available for staged file transfer,
+    verification, backup, apply, and reboot scheduling.
+    """
     state = ota_state if isinstance(ota_state, FwUpdateState) else FwUpdateState()
     _log(
         log_fn,

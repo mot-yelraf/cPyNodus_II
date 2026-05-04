@@ -249,6 +249,8 @@ def push_ota_package(
     manifest = _read_manifest(package_path)
     base_url = _normalize_device_url(device_url)
     http = opener or urlopen
+    package_started = time.monotonic()
+    total_bytes = _manifest_total_bytes(manifest)
     _log(log_fn, "status {}".format(base_url))
     status = _request_json(http, "GET", "{}/ota/status".format(base_url), timeout_s)
     if status.get("phase") != "ready":
@@ -294,6 +296,7 @@ def push_ota_package(
         if actual_sha != expected_sha:
             raise OTATransferError("package_file_sha256_mismatch:{}".format(path))
         chunk_bytes = int(chunk_size or 0)
+        file_started = time.monotonic()
         _log(
             log_fn,
             "file {} bytes={} chunk={}".format(path, len(payload), chunk_bytes),
@@ -322,8 +325,18 @@ def push_ota_package(
             raise OTATransferError(
                 "file_rejected:{}:{}".format(path, result.get("error", ""))
             )
+        file_elapsed = time.monotonic() - file_started
+        _log(
+            log_fn,
+            "file accepted {} elapsed_s={:.1f} rate_Bps={:.0f}".format(
+                path,
+                file_elapsed,
+                _bytes_per_second(len(payload), file_elapsed),
+            ),
+        )
 
     _log(log_fn, "commit")
+    commit_started = time.monotonic()
     commit = _request_json(
         http,
         "POST",
@@ -333,12 +346,27 @@ def push_ota_package(
     )
     if commit.get("accepted") is not True:
         raise OTATransferError("commit_rejected:{}".format(commit.get("error", "")))
+    commit_elapsed = time.monotonic() - commit_started
     _log(
         log_fn,
-        "committed phase={} rebooting={} delay_s={}".format(
+        "committed phase={} rebooting={} delay_s={} elapsed_s={:.1f}".format(
             commit.get("phase", ""),
             commit.get("rebooting", False),
             commit.get("reboot_delay_s", 0),
+            commit_elapsed,
+        ),
+    )
+    package_elapsed = time.monotonic() - package_started
+    _log(
+        log_fn,
+        "summary package={} files={} bytes={} elapsed_s={:.1f} rate_Bps={:.0f} "
+        "commit_s={:.1f}".format(
+            manifest["package_id"],
+            len(manifest.get("files", ()) or ()),
+            total_bytes,
+            package_elapsed,
+            _bytes_per_second(total_bytes, package_elapsed),
+            commit_elapsed,
         ),
     )
     return {
@@ -346,6 +374,9 @@ def push_ota_package(
         "begin": begin,
         "commit": commit,
         "files": len(manifest.get("files", ()) or ()),
+        "bytes": total_bytes,
+        "elapsed_s": package_elapsed,
+        "commit_s": commit_elapsed,
         "package_id": manifest["package_id"],
     }
 
@@ -373,6 +404,7 @@ def _push_file_chunks(
         return begin
     offset = 0
     payload_size = len(payload)
+    started = time.monotonic()
     while offset < payload_size:
         next_offset = min(payload_size, offset + int(chunk_size))
         chunk = payload[offset:next_offset]
@@ -392,7 +424,17 @@ def _push_file_chunks(
         if result.get("accepted") is not True:
             return result
         offset = int(result.get("offset", next_offset) or next_offset)
-        _log(log_fn, "chunk {} offset={}/{}".format(path, offset, payload_size))
+        elapsed = time.monotonic() - started
+        _log(
+            log_fn,
+            "chunk {} offset={}/{} elapsed_s={:.1f} rate_Bps={:.0f}".format(
+                path,
+                offset,
+                payload_size,
+                elapsed,
+                _bytes_per_second(offset, elapsed),
+            ),
+        )
     return _request_json(
         http,
         "POST",
@@ -401,6 +443,23 @@ def _push_file_chunks(
         payload={},
         headers={"X-Nodus-File-Path": path},
     )
+
+
+def _manifest_total_bytes(manifest):
+    total = 0
+    for entry in manifest.get("files", ()) or ():
+        try:
+            total += int(entry.get("size", 0) or 0)
+        except (TypeError, ValueError):
+            pass
+    return total
+
+
+def _bytes_per_second(byte_count, elapsed_s):
+    elapsed = float(elapsed_s or 0)
+    if elapsed <= 0:
+        return 0.0
+    return float(byte_count or 0) / elapsed
 
 
 def prepare_fwupdate(
@@ -501,7 +560,7 @@ def main(argv=None):
     push_parser = subparsers.add_parser("push")
     push_parser.add_argument("package")
     push_parser.add_argument("--device", required=True)
-    push_parser.add_argument("--timeout", type=float, default=30.0)
+    push_parser.add_argument("--timeout", type=float, default=300.0)
     push_parser.add_argument("--prepare", action="store_true")
     push_parser.add_argument("--broker", default="")
     push_parser.add_argument("--port", type=int, default=1883)

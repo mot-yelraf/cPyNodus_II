@@ -347,14 +347,20 @@ def test_push_ota_package_sends_begin_files_and_commit(tmp_path):
         package / "files" / "ota_test.py"
     ).read_bytes()
     assert opener.requests[3][0].headers["X-nodus-file-path"] == "ota_test.py"
-    assert logs == [
+    assert logs[:3] == [
         "status http://10.0.0.213:8000",
         "begin package=ota-tagA-to-tagB files=1",
         "file ota_test.py bytes=22 chunk=1024",
-        "chunk ota_test.py offset=22/22",
-        "commit",
-        "committed phase=applied_pending_boot rebooting=True delay_s=5",
     ]
+    assert logs[3].startswith("chunk ota_test.py offset=22/22 elapsed_s=")
+    assert logs[4].startswith("file accepted ota_test.py elapsed_s=")
+    assert logs[5] == "commit"
+    assert logs[6].startswith(
+        "committed phase=applied_pending_boot rebooting=True delay_s=5 elapsed_s="
+    )
+    assert logs[7].startswith(
+        "summary package=ota-tagA-to-tagB files=1 bytes=22 elapsed_s="
+    )
 
 
 def test_push_ota_package_rejects_device_package_mismatch(tmp_path):
@@ -383,6 +389,24 @@ def test_nodus_ota_cli_push_command(tmp_path, monkeypatch, capsys):
 
     assert exit_code == 0
     assert "pushed ota-tagA-to-tagB files=1" in capsys.readouterr().out
+
+
+def test_nodus_ota_cli_push_defaults_to_300_second_timeout(tmp_path, monkeypatch):
+    package = _write_test_package(tmp_path / "package")
+    opener = _FakeOtaOpener(package_id="ota-tagA-to-tagB")
+    monkeypatch.setattr(ota_package, "urlopen", opener)
+
+    exit_code = ota_package.main(
+        [
+            "push",
+            str(package),
+            "--device",
+            "http://10.0.0.213:8000",
+        ]
+    )
+
+    assert exit_code == 0
+    assert [timeout for _request, timeout in opener.requests] == [300.0] * 6
 
 
 def test_normalize_manifest_path_rejects_path_traversal():

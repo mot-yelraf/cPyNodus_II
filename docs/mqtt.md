@@ -13,6 +13,8 @@ wins.
 - Runtime device config uses `nodus/<device_id>/config/set`.
 - Runtime switch config uses `nodus/<channel_id>/config/set`.
 - Calibration uses `nodus/<device_id>/calibration/set`.
+- OTA prepare uses `nodus/<device_id>/fwupdate`; files move over HTTP after
+  Nodus reboots into temporary OTA mode.
 - Nodus publishes retained `nodus/<device_id>/meta` on connect/reconnect.
 - Nodus publishes non-retained `nodus/<device_id>/meta/patch` after accepted
   runtime changes.
@@ -35,6 +37,9 @@ wins.
 - `nodus/<device_id>/calibration/set`
 - `nodus/<device_id>/calibration/ack`
 - `nodus/<device_id>/calibration/result`
+- `nodus/<device_id>/fwupdate`
+- `nodus/<device_id>/fwupdate/ack`
+- `nodus/<device_id>/fwupdate/result`
 - `nodus/<sensor_id>/data`
 - `nodus/<sensor_id>/availability`
 - `nodus/<channel_id>/event`
