@@ -84,6 +84,9 @@ def test_ota_http_controller_registers_protocol_routes(tmp_path):
     assert ("/ota/status", ("GET",)) in controller.server.routes
     assert ("/ota/begin", ("POST",)) in controller.server.routes
     assert ("/ota/file", ("PUT",)) in controller.server.routes
+    assert ("/ota/file/begin", ("POST",)) in controller.server.routes
+    assert ("/ota/file/chunk", ("PUT",)) in controller.server.routes
+    assert ("/ota/file/end", ("POST",)) in controller.server.routes
     assert ("/ota/commit", ("POST",)) in controller.server.routes
     assert ("/ota/abort", ("POST",)) in controller.server.routes
 
@@ -144,6 +147,9 @@ def test_ota_begin_rejects_package_mismatch(tmp_path):
 def test_ota_abort_marks_state_aborted(tmp_path):
     controller = _controller(tmp_path)
     handler = controller.server.routes[("/ota/abort", ("POST",))]
+    staged_path = tmp_path / "_ota" / "stage" / "ota_test.py"
+    staged_path.parent.mkdir(parents=True)
+    staged_path.write_bytes(b"staged payload\n")
 
     response = handler(_FakeRequest())
     state = load_ota_state(str(tmp_path / "_ota" / "state.json"))
@@ -151,6 +157,42 @@ def test_ota_abort_marks_state_aborted(tmp_path):
     assert response.body["accepted"] is True
     assert response.body["phase"] == "aborted"
     assert state.phase == "aborted"
+    assert not (tmp_path / "_ota" / "stage").exists()
+
+
+def test_ota_begin_clears_previous_workspace_files(tmp_path):
+    controller = _controller(tmp_path)
+    handler = controller.server.routes[("/ota/begin", ("POST",))]
+    old_stage = tmp_path / "_ota" / "stage" / "old.py"
+    old_backup = tmp_path / "_ota" / "backup" / "old.py"
+    tmp_file = tmp_path / "_ota" / "manifest.json.tmp"
+    old_stage.parent.mkdir(parents=True)
+    old_backup.parent.mkdir(parents=True)
+    tmp_file.parent.mkdir(parents=True, exist_ok=True)
+    old_stage.write_bytes(b"old stage\n")
+    old_backup.write_bytes(b"old backup\n")
+    tmp_file.write_text("stale tmp")
+    payload = b'print("ok")\n'
+    manifest = {
+        "schema": "nodus-ota/v1",
+        "package_id": "ota-tagA-to-tagB",
+        "files": [
+            {
+                "path": "ota_test.py",
+                "size": len(payload),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }
+        ],
+    }
+
+    response = handler(_FakeRequest(json.dumps(manifest).encode("utf-8")))
+
+    assert response.status == (200, "OK")
+    assert response.body["accepted"] is True
+    assert not (tmp_path / "_ota" / "stage").exists()
+    assert not (tmp_path / "_ota" / "backup").exists()
+    assert not tmp_file.exists()
+    assert (tmp_path / "_ota" / "manifest.json").exists()
 
 
 def test_ota_file_stages_manifest_file_with_sha256_verification(tmp_path):
@@ -288,6 +330,88 @@ def test_ota_file_route_returns_error_when_handler_raises(tmp_path, monkeypatch)
     assert "file exception error=RuntimeError:boom" in logs
 
 
+def test_ota_chunked_file_stages_manifest_file(tmp_path):
+    controller = _controller(tmp_path)
+    begin_handler = controller.server.routes[("/ota/begin", ("POST",))]
+    file_begin = controller.server.routes[("/ota/file/begin", ("POST",))]
+    file_chunk = controller.server.routes[("/ota/file/chunk", ("PUT",))]
+    file_end = controller.server.routes[("/ota/file/end", ("POST",))]
+    payload = (b"0123456789abcdef" * 128) + b"done\n"
+    manifest = {
+        "schema": "nodus-ota/v1",
+        "package_id": "ota-tagA-to-tagB",
+        "files": [
+            {
+                "path": "cpynodus_ii/features/payloads.py",
+                "size": len(payload),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }
+        ],
+    }
+
+    begin_handler(_FakeRequest(json.dumps(manifest).encode("utf-8")))
+    begin = file_begin(
+        _FakeRequest(query_params={"path": "cpynodus_ii/features/payloads.py"})
+    )
+    first = file_chunk(
+        _FakeRequest(
+            payload[:1024],
+            query_params={
+                "path": "cpynodus_ii/features/payloads.py",
+                "offset": "0",
+            },
+        )
+    )
+    second = file_chunk(
+        _FakeRequest(
+            payload[1024:],
+            query_params={
+                "path": "cpynodus_ii/features/payloads.py",
+                "offset": "1024",
+            },
+        )
+    )
+    end = file_end(
+        _FakeRequest(query_params={"path": "cpynodus_ii/features/payloads.py"})
+    )
+
+    staged_path = tmp_path / "_ota" / "stage" / "cpynodus_ii" / "features"
+    assert begin.status == (200, "OK")
+    assert first.body["offset"] == 1024
+    assert second.body["offset"] == len(payload)
+    assert end.status == (200, "OK")
+    assert end.body["sha256"] == hashlib.sha256(payload).hexdigest()
+    assert (staged_path / "payloads.py").read_bytes() == payload
+
+
+def test_ota_chunk_rejects_offset_mismatch(tmp_path):
+    controller = _controller(tmp_path)
+    begin_handler = controller.server.routes[("/ota/begin", ("POST",))]
+    file_begin = controller.server.routes[("/ota/file/begin", ("POST",))]
+    file_chunk = controller.server.routes[("/ota/file/chunk", ("PUT",))]
+    payload = b"abcdef"
+    manifest = {
+        "schema": "nodus-ota/v1",
+        "package_id": "ota-tagA-to-tagB",
+        "files": [
+            {
+                "path": "ota_test.py",
+                "size": len(payload),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }
+        ],
+    }
+
+    begin_handler(_FakeRequest(json.dumps(manifest).encode("utf-8")))
+    file_begin(_FakeRequest(query_params={"path": "ota_test.py"}))
+    response = file_chunk(
+        _FakeRequest(b"abc", query_params={"path": "ota_test.py", "offset": "2"})
+    )
+
+    assert response.status == (409, "Conflict")
+    assert response.body["error"] == "chunk_offset_mismatch"
+
+
 def test_ota_file_rejects_sha256_mismatch(tmp_path):
     controller = _controller(tmp_path)
     begin_handler = controller.server.routes[("/ota/begin", ("POST",))]
@@ -392,9 +516,11 @@ def test_ota_commit_verifies_backs_up_and_applies_staged_files(tmp_path):
     assert response.body["files"] == 1
     assert state.phase == "applied_pending_boot"
     assert live_path.read_bytes() == payload
+    assert not (tmp_path / "_ota" / "stage").exists()
     assert (tmp_path / "_ota" / "backup" / "ota_test.py").read_bytes() == (
         b"old payload\n"
     )
+    assert (tmp_path / "_ota" / "manifest.json").exists()
 
 
 def test_ota_commit_schedules_single_reboot_after_delay(tmp_path):
@@ -436,6 +562,48 @@ def test_ota_commit_schedules_single_reboot_after_delay(tmp_path):
     controller.poll()
     controller.poll()
 
+    assert reboot_calls == ["reboot"]
+
+
+def test_ota_poll_failure_still_runs_due_reboot(tmp_path):
+    reboot_calls = []
+    logs = []
+    fake_time = _FakeTime()
+    controller = _controller(
+        tmp_path,
+        reboot_callback=lambda: reboot_calls.append("reboot"),
+        reboot_delay_s=5,
+        time_module=fake_time,
+        log_fn=lambda module, message: logs.append(message),
+    )
+    begin_handler = controller.server.routes[("/ota/begin", ("POST",))]
+    file_handler = controller.server.routes[("/ota/file", ("PUT",))]
+    commit_handler = controller.server.routes[("/ota/commit", ("POST",))]
+    payload = b"OTA transfer check\n"
+    manifest = {
+        "schema": "nodus-ota/v1",
+        "package_id": "ota-tagA-to-tagB",
+        "files": [
+            {
+                "path": "ota_test.py",
+                "size": len(payload),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }
+        ],
+    }
+
+    begin_handler(_FakeRequest(json.dumps(manifest).encode("utf-8")))
+    file_handler(_FakeRequest(payload, query_params={"path": "ota_test.py"}))
+    commit_handler(_FakeRequest())
+
+    def _raise():
+        raise BrokenPipeError(32)
+
+    fake_time.now = 5.0
+    controller.server.poll = _raise
+    controller.poll()
+
+    assert "poll failed error=BrokenPipeError:32" in logs
     assert reboot_calls == ["reboot"]
 
 

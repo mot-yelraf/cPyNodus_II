@@ -236,7 +236,13 @@ def build_worktree_ota_package(
 
 
 def push_ota_package(
-    package_dir, device_url, *, timeout_s=10, opener=None, log_fn=None
+    package_dir,
+    device_url,
+    *,
+    timeout_s=10,
+    opener=None,
+    log_fn=None,
+    chunk_size=1024,
 ):
     """Transfer an OTA package to one Nodus temporary OTA HTTP endpoint."""
     package_path = Path(package_dir)
@@ -287,16 +293,31 @@ def push_ota_package(
             raise OTATransferError("package_file_size_mismatch:{}".format(path))
         if actual_sha != expected_sha:
             raise OTATransferError("package_file_sha256_mismatch:{}".format(path))
-        _log(log_fn, "file {} bytes={}".format(path, len(payload)))
-        result = _request_json(
-            http,
-            "PUT",
-            "{}/ota/file?path={}".format(base_url, quote(path, safe="/")),
-            timeout_s,
-            body=payload,
-            content_type="application/octet-stream",
-            headers={"X-Nodus-File-Path": path},
+        chunk_bytes = int(chunk_size or 0)
+        _log(
+            log_fn,
+            "file {} bytes={} chunk={}".format(path, len(payload), chunk_bytes),
         )
+        if chunk_bytes > 0:
+            result = _push_file_chunks(
+                http,
+                base_url,
+                path,
+                payload,
+                timeout_s,
+                chunk_bytes,
+                log_fn=log_fn,
+            )
+        else:
+            result = _request_json(
+                http,
+                "PUT",
+                "{}/ota/file?path={}".format(base_url, quote(path, safe="/")),
+                timeout_s,
+                body=payload,
+                content_type="application/octet-stream",
+                headers={"X-Nodus-File-Path": path},
+            )
         if result.get("accepted") is not True:
             raise OTATransferError(
                 "file_rejected:{}:{}".format(path, result.get("error", ""))
@@ -327,6 +348,59 @@ def push_ota_package(
         "files": len(manifest.get("files", ()) or ()),
         "package_id": manifest["package_id"],
     }
+
+
+def _push_file_chunks(
+    http,
+    base_url,
+    path,
+    payload,
+    timeout_s,
+    chunk_size,
+    *,
+    log_fn=None,
+):
+    encoded_path = quote(path, safe="/")
+    begin = _request_json(
+        http,
+        "POST",
+        "{}/ota/file/begin?path={}".format(base_url, encoded_path),
+        timeout_s,
+        payload={},
+        headers={"X-Nodus-File-Path": path},
+    )
+    if begin.get("accepted") is not True:
+        return begin
+    offset = 0
+    payload_size = len(payload)
+    while offset < payload_size:
+        next_offset = min(payload_size, offset + int(chunk_size))
+        chunk = payload[offset:next_offset]
+        result = _request_json(
+            http,
+            "PUT",
+            "{}/ota/file/chunk?path={}&offset={}".format(
+                base_url,
+                encoded_path,
+                offset,
+            ),
+            timeout_s,
+            body=chunk,
+            content_type="application/octet-stream",
+            headers={"X-Nodus-File-Path": path},
+        )
+        if result.get("accepted") is not True:
+            return result
+        offset = int(result.get("offset", next_offset) or next_offset)
+        _log(log_fn, "chunk {} offset={}/{}".format(path, offset, payload_size))
+    return _request_json(
+        http,
+        "POST",
+        "{}/ota/file/end?path={}".format(base_url, encoded_path),
+        timeout_s,
+        payload={},
+        headers={"X-Nodus-File-Path": path},
+    )
 
 
 def prepare_fwupdate(
@@ -427,7 +501,7 @@ def main(argv=None):
     push_parser = subparsers.add_parser("push")
     push_parser.add_argument("package")
     push_parser.add_argument("--device", required=True)
-    push_parser.add_argument("--timeout", type=float, default=10.0)
+    push_parser.add_argument("--timeout", type=float, default=30.0)
     push_parser.add_argument("--prepare", action="store_true")
     push_parser.add_argument("--broker", default="")
     push_parser.add_argument("--port", type=int, default=1883)
@@ -437,6 +511,7 @@ def main(argv=None):
     push_parser.add_argument("--password", default="")
     push_parser.add_argument("--message-id", default="")
     push_parser.add_argument("--wait-after-prepare", type=float, default=8.0)
+    push_parser.add_argument("--chunk-size", type=int, default=1024)
     args = parser.parse_args(argv)
     log = timestamp_logger()
 
@@ -513,6 +588,7 @@ def main(argv=None):
                 args.package,
                 args.device,
                 timeout_s=args.timeout,
+                chunk_size=args.chunk_size,
                 log_fn=log,
             )
         except OTATransferError as exc:

@@ -11,6 +11,7 @@ _HTTP_STATUS = {
     200: "OK",
     400: "Bad Request",
     404: "Not Found",
+    409: "Conflict",
     500: "Internal Server Error",
     501: "Not Implemented",
     503: "Service Unavailable",
@@ -89,6 +90,7 @@ class OtaHttpController:
             self.phase = "error"
             self.errors = ("ota_poll_failed", str(exc))
             self._log("poll failed error={}".format(_exception_text(exc)))
+            self._maybe_reboot()
             return self
         self._maybe_reboot()
         return self
@@ -146,6 +148,9 @@ class OtaHttpController:
             "/ota/status",
             "/ota/begin",
             "/ota/file",
+            "/ota/file/begin",
+            "/ota/file/chunk",
+            "/ota/file/end",
             "/ota/commit",
             "/ota/abort",
         )
@@ -187,6 +192,34 @@ class OtaHttpController:
                     status_code=500,
                 )
 
+        @route("/ota/file/begin", methods=["POST"])
+        def _file_begin(request):
+            path = _request_path_arg(request)
+            payload, status_code = self._handle_file_begin(path)
+            return self._json_response(request, payload, status_code=status_code)
+
+        @route("/ota/file/chunk", methods=["PUT"])
+        def _file_chunk(request):
+            try:
+                path = _request_path_arg(request)
+                offset = _request_int_arg(request, "offset", -1)
+                body = _request_body_bytes(request)
+                payload, status_code = self._handle_file_chunk(path, offset, body)
+                return self._json_response(request, payload, status_code=status_code)
+            except Exception as exc:
+                self._log("chunk exception error={}".format(_exception_text(exc)))
+                return self._json_response(
+                    request,
+                    _error_payload("chunk_handler_exception", "staging"),
+                    status_code=500,
+                )
+
+        @route("/ota/file/end", methods=["POST"])
+        def _file_end(request):
+            path = _request_path_arg(request)
+            payload, status_code = self._handle_file_end(path)
+            return self._json_response(request, payload, status_code=status_code)
+
         @route("/ota/commit", methods=["POST"])
         def _commit(request):
             payload, status_code = self._handle_commit()
@@ -203,6 +236,8 @@ class OtaHttpController:
                 package_id=getattr(state, "package_id", "") or "",
                 phase="aborted",
             )
+            _remove_tree(_ota_stage_path(self.settings_root))
+            _remove_ota_tmp_files(self.settings_root)
             save_ota_state(aborted, _ota_state_path(self.settings_root))
             self.ota_state = aborted
             return self._json_response(
@@ -225,6 +260,7 @@ class OtaHttpController:
             package_id=str(manifest.get("package_id", "") or ""),
             phase="staging",
         )
+        _cleanup_package_workspace(self.settings_root)
         save_ota_state(next_state, _ota_state_path(self.settings_root))
         _write_json_file(_ota_manifest_path(self.settings_root), manifest)
         self.ota_state = next_state
@@ -295,6 +331,112 @@ class OtaHttpController:
             200,
         )
 
+    def _handle_file_begin(self, path):
+        state = load_ota_state(_ota_state_path(self.settings_root)) or self.ota_state
+        if getattr(state, "phase", "") != "staging":
+            return _error_payload("ota_not_staging", getattr(state, "phase", "")), 400
+        safe_path = _normalize_package_path(path)
+        if not safe_path:
+            return _error_payload("file_path_invalid", "staging"), 400
+        manifest = _read_json_file(_ota_manifest_path(self.settings_root))
+        if manifest is None:
+            return _error_payload("manifest_missing", "staging"), 400
+        entry = _manifest_file_entry(manifest, safe_path)
+        if entry is None:
+            return _error_payload("file_not_in_manifest", "staging"), 400
+        stage_path = _join_root(self.settings_root, "_ota/stage/{}".format(safe_path))
+        _ensure_parent_dirs(stage_path)
+        try:
+            with open(stage_path, "wb"):
+                pass
+        except OSError:
+            return _error_payload("file_stage_failed", "staging"), 503
+        self._log("file begin path={} bytes={}".format(safe_path, entry.get("size", 0)))
+        return (
+            {
+                "accepted": True,
+                "phase": "staging",
+                "path": safe_path,
+                "offset": 0,
+                "size": int(entry.get("size", 0) or 0),
+            },
+            200,
+        )
+
+    def _handle_file_chunk(self, path, offset, body):
+        state = load_ota_state(_ota_state_path(self.settings_root)) or self.ota_state
+        if getattr(state, "phase", "") != "staging":
+            return _error_payload("ota_not_staging", getattr(state, "phase", "")), 400
+        safe_path = _normalize_package_path(path)
+        if not safe_path:
+            return _error_payload("file_path_invalid", "staging"), 400
+        if int(offset) < 0:
+            return _error_payload("chunk_offset_invalid", "staging"), 400
+        manifest = _read_json_file(_ota_manifest_path(self.settings_root))
+        if manifest is None:
+            return _error_payload("manifest_missing", "staging"), 400
+        entry = _manifest_file_entry(manifest, safe_path)
+        if entry is None:
+            return _error_payload("file_not_in_manifest", "staging"), 400
+        stage_path = _join_root(self.settings_root, "_ota/stage/{}".format(safe_path))
+        current_size = _file_size(stage_path)
+        if current_size != int(offset):
+            return _error_payload("chunk_offset_mismatch", "staging"), 409
+        expected_size = int(entry.get("size", -1) or -1)
+        next_offset = current_size + len(body)
+        if next_offset > expected_size:
+            return _error_payload("chunk_size_exceeds_file", "staging"), 400
+        try:
+            with open(stage_path, "ab") as handle:
+                handle.write(body)
+        except OSError:
+            return _error_payload("chunk_stage_failed", "staging"), 503
+        return (
+            {
+                "accepted": True,
+                "phase": "staging",
+                "path": safe_path,
+                "offset": next_offset,
+                "chunk": len(body),
+            },
+            200,
+        )
+
+    def _handle_file_end(self, path):
+        state = load_ota_state(_ota_state_path(self.settings_root)) or self.ota_state
+        if getattr(state, "phase", "") != "staging":
+            return _error_payload("ota_not_staging", getattr(state, "phase", "")), 400
+        safe_path = _normalize_package_path(path)
+        if not safe_path:
+            return _error_payload("file_path_invalid", "staging"), 400
+        manifest = _read_json_file(_ota_manifest_path(self.settings_root))
+        if manifest is None:
+            return _error_payload("manifest_missing", "staging"), 400
+        entry = _manifest_file_entry(manifest, safe_path)
+        if entry is None:
+            return _error_payload("file_not_in_manifest", "staging"), 400
+        stage_path = _join_root(self.settings_root, "_ota/stage/{}".format(safe_path))
+        size, actual_sha = _file_size_sha256(stage_path)
+        expected_size = int(entry.get("size", -1) or -1)
+        expected_sha = str(entry.get("sha256", "") or "")
+        if size < 0:
+            return _error_payload("staged_file_missing", "staging"), 400
+        if size != expected_size:
+            return _error_payload("file_size_mismatch", "staging"), 400
+        if actual_sha != expected_sha:
+            return _error_payload("sha256_mismatch", "staging"), 400
+        self._log("file accepted path={} bytes={}".format(safe_path, size))
+        return (
+            {
+                "accepted": True,
+                "phase": "staging",
+                "path": safe_path,
+                "size": size,
+                "sha256": actual_sha,
+            },
+            200,
+        )
+
     def _handle_commit(self):
         state = load_ota_state(_ota_state_path(self.settings_root)) or self.ota_state
         if getattr(state, "phase", "") != "staging":
@@ -312,6 +454,8 @@ class OtaHttpController:
         if error:
             self._log("commit rejected error={}".format(error))
             return _error_payload(error, "staging"), 503
+        _remove_tree(_ota_stage_path(self.settings_root))
+        _remove_ota_tmp_files(self.settings_root)
         applied_state = FwUpdateState(
             prior_profile=getattr(state, "prior_profile", "") or "",
             package_id=getattr(state, "package_id", "") or "",
@@ -404,6 +548,9 @@ def build_ota_status_payload(
                 "/ota/status",
                 "/ota/begin",
                 "/ota/file",
+                "/ota/file/begin",
+                "/ota/file/chunk",
+                "/ota/file/end",
                 "/ota/commit",
                 "/ota/abort",
             ],
@@ -487,6 +634,27 @@ def _request_path_arg(request):
     return ""
 
 
+def _request_int_arg(request, key, default):
+    value = ""
+    query_params = getattr(request, "query_params", None)
+    query_get = getattr(query_params, "get", None)
+    if callable(query_get):
+        try:
+            value = str(query_get(key, "") or "")
+        except Exception:
+            value = ""
+    if not value:
+        for attr_name in ("query", "query_string"):
+            query = str(getattr(request, attr_name, "") or "")
+            value = _query_arg(query, key)
+            if value:
+                break
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return int(default)
+
+
 def _request_header(request, name):
     headers = getattr(request, "headers", None)
     header_get = getattr(headers, "get", None)
@@ -543,14 +711,14 @@ def _verify_staged_manifest_files(root, manifest):
         if not safe_path:
             return "manifest_file_path_invalid"
         staged_path = _join_root(root, "_ota/stage/{}".format(safe_path))
-        payload = _read_binary_file(staged_path)
-        if payload is None:
+        size, actual_sha = _file_size_sha256(staged_path)
+        if size < 0:
             return "staged_file_missing"
         expected_size = int(entry.get("size", -1) or -1)
-        if len(payload) != expected_size:
+        if size != expected_size:
             return "staged_file_size_mismatch"
         expected_sha = str(entry.get("sha256", "") or "")
-        if _sha256_hex(payload) != expected_sha:
+        if actual_sha != expected_sha:
             return "staged_file_sha256_mismatch"
     return ""
 
@@ -577,6 +745,45 @@ def _apply_staged_manifest_files(root, manifest):
     return ""
 
 
+def _cleanup_package_workspace(root):
+    _remove_tree(_ota_stage_path(root))
+    _remove_tree(_ota_backup_path(root))
+    _remove_ota_tmp_files(root)
+
+
+def _remove_ota_tmp_files(root):
+    ota_dir = _join_root(root, "_ota")
+    try:
+        names = os.listdir(ota_dir)
+    except OSError:
+        return
+    for name in names:
+        text = str(name or "")
+        if not text.endswith(".tmp"):
+            continue
+        try:
+            os.remove(_join_root(root, "_ota/{}".format(text)))
+        except OSError:
+            pass
+
+
+def _remove_tree(path):
+    try:
+        names = os.listdir(path)
+    except OSError:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        return
+    for name in names:
+        _remove_tree(_join(path, name))
+    try:
+        os.rmdir(path)
+    except OSError:
+        pass
+
+
 def _restore_backups(backups):
     for backup_path, live_path in reversed(tuple(backups or ())):
         try:
@@ -591,6 +798,35 @@ def _path_exists(path):
         return True
     except OSError:
         return False
+
+
+def _file_size(path):
+    try:
+        stat = os.stat(path)
+        return int(stat[6])
+    except (OSError, IndexError, TypeError, ValueError):
+        return -1
+
+
+def _file_size_sha256(path):
+    hasher = _new_sha256_hasher()
+    if hasher is None:
+        payload = _read_binary_file(path)
+        if payload is None:
+            return -1, ""
+        return len(payload), _sha256_fallback(payload).hex()
+    size = 0
+    try:
+        with open(path, "rb") as handle:
+            while True:
+                chunk = handle.read(512)
+                if not chunk:
+                    break
+                size += len(chunk)
+                hasher.update(chunk)
+    except OSError:
+        return -1, ""
+    return size, hasher.hexdigest()
 
 
 def _copy_file(src_path, dst_path):
@@ -682,20 +918,24 @@ def _sha256_hex(data):
 
 
 def _hashlib_sha256(data):
+    hasher = _new_sha256_hasher()
+    if hasher is not None:
+        hasher.update(data)
+        return hasher.hexdigest()
+    return None
+
+
+def _new_sha256_hasher():
     sha256 = getattr(hashlib, "sha256", None)
     if callable(sha256):
         try:
-            hasher = sha256()
-            hasher.update(data)
-            return hasher.hexdigest()
+            return sha256()
         except Exception:
             pass
     new_hash = getattr(hashlib, "new", None)
     if callable(new_hash):
         try:
-            hasher = new_hash("sha256")
-            hasher.update(data)
-            return hasher.hexdigest()
+            return new_hash("sha256")
         except Exception:
             pass
     return None
@@ -864,6 +1104,14 @@ def _ota_state_path(root):
 
 def _ota_manifest_path(root):
     return _join_root(root, "_ota/manifest.json")
+
+
+def _ota_stage_path(root):
+    return _join_root(root, "_ota/stage")
+
+
+def _ota_backup_path(root):
+    return _join_root(root, "_ota/backup")
 
 
 def _join_root(root, path):

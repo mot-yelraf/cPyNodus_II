@@ -336,19 +336,22 @@ def test_push_ota_package_sends_begin_files_and_commit(tmp_path):
     ] == [
         ("GET", "http://10.0.0.213:8000/ota/status"),
         ("POST", "http://10.0.0.213:8000/ota/begin"),
-        ("PUT", "http://10.0.0.213:8000/ota/file?path=ota_test.py"),
+        ("POST", "http://10.0.0.213:8000/ota/file/begin?path=ota_test.py"),
+        ("PUT", "http://10.0.0.213:8000/ota/file/chunk?path=ota_test.py&offset=0"),
+        ("POST", "http://10.0.0.213:8000/ota/file/end?path=ota_test.py"),
         ("POST", "http://10.0.0.213:8000/ota/commit"),
     ]
     begin_payload = json.loads(opener.requests[1][0].data.decode("utf-8"))
     assert begin_payload["package_id"] == "ota-tagA-to-tagB"
-    assert opener.requests[2][0].data == (
+    assert opener.requests[3][0].data == (
         package / "files" / "ota_test.py"
     ).read_bytes()
-    assert opener.requests[2][0].headers["X-nodus-file-path"] == "ota_test.py"
+    assert opener.requests[3][0].headers["X-nodus-file-path"] == "ota_test.py"
     assert logs == [
         "status http://10.0.0.213:8000",
         "begin package=ota-tagA-to-tagB files=1",
-        "file ota_test.py bytes=22",
+        "file ota_test.py bytes=22 chunk=1024",
+        "chunk ota_test.py offset=22/22",
         "commit",
         "committed phase=applied_pending_boot rebooting=True delay_s=5",
     ]
@@ -466,7 +469,13 @@ class _FakeOtaOpener:
             )
         if url.endswith("/ota/begin"):
             return _FakeResponse({"accepted": True, "phase": "staging"})
-        if "/ota/file?path=ota_test.py" in url:
+        if url.endswith("/ota/file/begin?path=ota_test.py"):
+            return _FakeResponse({"accepted": True, "phase": "staging"})
+        if "/ota/file/chunk?path=ota_test.py&offset=0" in url:
+            return _FakeResponse(
+                {"accepted": True, "phase": "staging", "offset": 22}
+            )
+        if url.endswith("/ota/file/end?path=ota_test.py"):
             return _FakeResponse({"accepted": True, "phase": "staging"})
         if url.endswith("/ota/commit"):
             return _FakeResponse(
