@@ -43,7 +43,9 @@ def bind_switch_hardware(switch_runtime, *, board_module=None, digitalio_module=
         )
 
     errors = []
-    board_module = board_module or _try_import_module("board", "board_module_unavailable", errors)
+    board_module = board_module or _try_import_module(
+        "board", "board_module_unavailable", errors
+    )
     digitalio_module = digitalio_module or _try_import_module(
         "digitalio",
         "digitalio_module_unavailable",
@@ -61,8 +63,18 @@ def bind_switch_hardware(switch_runtime, *, board_module=None, digitalio_module=
     channel_bindings = []
     for channel in switch_runtime.channels:
         channel_errors = []
-        enable_pin = _resolve_pin(board_module, channel.enable_pin, "missing_enable_pin_object", channel_errors)
-        control_pin = _resolve_pin(board_module, channel.control_pin, "missing_control_pin_object", channel_errors)
+        enable_pin = _resolve_pin(
+            board_module,
+            channel.enable_pin,
+            "missing_enable_pin_object",
+            channel_errors,
+        )
+        control_pin = _resolve_pin(
+            board_module,
+            channel.control_pin,
+            "missing_control_pin_object",
+            channel_errors,
+        )
         if channel_errors:
             channel_bindings.append(
                 SwitchChannelHardwareAdapter(

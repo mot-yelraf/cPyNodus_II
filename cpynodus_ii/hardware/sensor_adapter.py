@@ -21,7 +21,9 @@ class SensorHardwareAdapter:
     errors: tuple = ()
 
 
-def bind_sensor_hardware(sensor_runtime, runtime_config, *, board_module=None, busio_module=None):
+def bind_sensor_hardware(
+    sensor_runtime, runtime_config, *, board_module=None, busio_module=None
+):
     """Bind the sensor runtime to CircuitPython transport objects when possible."""
     if sensor_runtime.phase != "ready":
         return SensorHardwareAdapter(
@@ -33,8 +35,12 @@ def bind_sensor_hardware(sensor_runtime, runtime_config, *, board_module=None, b
         )
 
     errors = []
-    board_module = board_module or _try_import_module("board", "board_module_unavailable", errors)
-    busio_module = busio_module or _try_import_module("busio", "busio_module_unavailable", errors)
+    board_module = board_module or _try_import_module(
+        "board", "board_module_unavailable", errors
+    )
+    busio_module = busio_module or _try_import_module(
+        "busio", "busio_module_unavailable", errors
+    )
     if errors:
         return SensorHardwareAdapter(
             phase="error",
@@ -46,8 +52,12 @@ def bind_sensor_hardware(sensor_runtime, runtime_config, *, board_module=None, b
 
     sensor = runtime_config.sensor
     if sensor_runtime.interface == "i2c" and sensor.i2c is not None:
-        scl = _resolve_pin(board_module, sensor.i2c.scl_pin, "missing_i2c_scl_pin_object", errors)
-        sda = _resolve_pin(board_module, sensor.i2c.sda_pin, "missing_i2c_sda_pin_object", errors)
+        scl = _resolve_pin(
+            board_module, sensor.i2c.scl_pin, "missing_i2c_scl_pin_object", errors
+        )
+        sda = _resolve_pin(
+            board_module, sensor.i2c.sda_pin, "missing_i2c_sda_pin_object", errors
+        )
         secondary_scl = None
         secondary_sda = None
         if sensor.device in {"apvpd", "apvpd_aht"} and sensor.secondary_i2c is not None:

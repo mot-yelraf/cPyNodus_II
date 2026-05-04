@@ -1,6 +1,10 @@
 """Tests for bounded Wi-Fi and MQTT recovery policy decisions."""
 
-from cpynodus_ii.core.recovery import RecoveryPolicy, RecoveryState, advance_recovery_state
+from cpynodus_ii.core.recovery import (
+    RecoveryPolicy,
+    RecoveryState,
+    advance_recovery_state,
+)
 
 
 def test_wifi_recovery_blocks_mqtt_and_requests_reconnect():

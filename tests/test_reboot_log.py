@@ -1,7 +1,5 @@
 """Tests for bounded reboot-log append and trim behavior."""
 
-from pathlib import Path
-
 from cpynodus_ii.core.reboot_log import (
     append_reboot_reason_traceback,
     append_reboot_traceback,
@@ -29,7 +27,9 @@ def test_append_reboot_traceback_appends_entries(tmp_path):
         try:
             raise ValueError(message)
         except ValueError as exc:
-            assert append_reboot_traceback(exc, path=str(log_path), header=message) is True
+            assert (
+                append_reboot_traceback(exc, path=str(log_path), header=message) is True
+            )
 
     content = log_path.read_text(encoding="utf-8")
     assert content.count("=== ") == 2

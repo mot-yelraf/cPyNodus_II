@@ -1,13 +1,5 @@
 """Tests for the MQTT client adapter wrapper and callback handling."""
 
-from pathlib import Path
-import sys
-
-ROOT = Path(__file__).resolve().parents[1]
-ROOT_STR = str(ROOT)
-if ROOT_STR not in sys.path:
-    sys.path.insert(0, ROOT_STR)
-
 from cpynodus_ii.core import (
     build_mqtt_client_adapter,
     connect_mqtt_client,
@@ -16,7 +8,13 @@ from cpynodus_ii.core import (
     preflight_mqtt_broker,
     sync_transport_to_client,
 )
-from cpynodus_ii.core.config import DetectedSensor, MQTTConfig, RuntimeConfig, SwitchChannelConfig, SwitchConfig
+from cpynodus_ii.core.config import (
+    DetectedSensor,
+    MQTTConfig,
+    RuntimeConfig,
+    SwitchChannelConfig,
+    SwitchConfig,
+)
 from cpynodus_ii.core.mqtt import MQTTTransport
 
 
@@ -63,7 +61,9 @@ class _FakeMQTTClient:
 
     def connect(self):
         if self.kwargs.get("broker") in self.fail_connect_for:
-            raise RuntimeError("connect failed for {}".format(self.kwargs.get("broker")))
+            raise RuntimeError(
+                "connect failed for {}".format(self.kwargs.get("broker"))
+            )
         self.connected = True
 
     def publish(self, topic, payload, retain=False):
@@ -114,6 +114,13 @@ class _PublishFailSecondMQTTClient(_FakeMQTTClient):
 class _SubscribeFailMQTTClient(_FakeMQTTClient):
     def subscribe(self, topic):
         raise RuntimeError("No data received from broker for 10 seconds.")
+
+
+class _SubscribeFailSecondMQTTClient(_FakeMQTTClient):
+    def subscribe(self, topic):
+        if self.subscribed:
+            raise RuntimeError("No data received from broker for 10 seconds.")
+        super().subscribe(topic)
 
 
 class _SettleBeforeSubscribeFailMQTTClient(_SubscribeFailMQTTClient):
@@ -346,7 +353,9 @@ def test_connect_sync_poll_and_disconnect_flow():
     assert connect_result.adapter.active_broker == "broker.local"
 
     transport.subscribe("nodus/S1-x943fm/config/set")
-    transport.publish("nodus/aqi-x943fm/data", {"schema": "nodus-sensor/v1"}, retain=False)
+    transport.publish(
+        "nodus/aqi-x943fm/data", {"schema": "nodus-sensor/v1"}, retain=False
+    )
     sync_result = sync_transport_to_client(connect_result.adapter, transport)
     assert sync_result.phase == "synced"
     assert sync_result.subscribed_count == 0
@@ -359,14 +368,18 @@ def test_connect_sync_poll_and_disconnect_flow():
     assert sync_result.published_count == 0
     assert sync_result.adapter.client.subscribed == ["nodus/S1-x943fm/config/set"]
 
-    sync_result.adapter.client.pending_incoming.append(("nodus/S1-x943fm/config/set", b"ON"))
+    sync_result.adapter.client.pending_incoming.append(
+        ("nodus/S1-x943fm/config/set", b"ON")
+    )
     poll_result = poll_mqtt_client(sync_result.adapter, transport)
     assert poll_result.phase == "polled"
     assert poll_result.received_count == 1
     assert transport.received_messages[-1].topic == "nodus/S1-x943fm/config/set"
     assert transport.received_messages[-1].payload_text == "ON"
 
-    disconnect_result = disconnect_mqtt_client(sync_result.adapter, transport, runtime_config)
+    disconnect_result = disconnect_mqtt_client(
+        sync_result.adapter, transport, runtime_config
+    )
     assert disconnect_result.phase == "disconnected"
     assert transport.connected is False
     assert sync_result.adapter.client.disconnected is True
@@ -594,7 +607,9 @@ def test_poll_mqtt_client_uses_timeout_compatible_with_socket_timeout():
     )
 
     connect_result = connect_mqtt_client(adapter, transport)
-    connect_result.adapter.client.pending_incoming.append(("nodus/S1-x943fm/config/set", b"ON"))
+    connect_result.adapter.client.pending_incoming.append(
+        ("nodus/S1-x943fm/config/set", b"ON")
+    )
 
     poll_result = poll_mqtt_client(connect_result.adapter, transport)
 
@@ -614,7 +629,9 @@ def test_sync_transport_to_client_marks_transport_disconnected_on_publish_oserro
     )
 
     connect_result = connect_mqtt_client(adapter, transport)
-    transport.publish("nodus/aqi-x943fm/data", {"schema": "nodus-sensor/v1"}, retain=False)
+    transport.publish(
+        "nodus/aqi-x943fm/data", {"schema": "nodus-sensor/v1"}, retain=False
+    )
 
     sync_result = sync_transport_to_client(connect_result.adapter, transport)
 
@@ -660,8 +677,12 @@ def test_sync_transport_to_client_compacts_successes_before_failed_publish():
     )
 
     connect_result = connect_mqtt_client(adapter, transport)
-    transport.publish("nodus/aqi-x943fm/availability", {"status": "online"}, retain=True)
-    transport.publish("nodus/aqi-x943fm/data", {"schema": "nodus-sensor/v1"}, retain=False)
+    transport.publish(
+        "nodus/aqi-x943fm/availability", {"status": "online"}, retain=True
+    )
+    transport.publish(
+        "nodus/aqi-x943fm/data", {"schema": "nodus-sensor/v1"}, retain=False
+    )
 
     sync_result = sync_transport_to_client(connect_result.adapter, transport)
 
@@ -690,6 +711,28 @@ def test_sync_transport_to_client_marks_transport_disconnected_on_subscribe_exce
     assert sync_result.errors == (
         "mqtt_subscribe_failed:No data received from broker for 10 seconds.",
     )
+
+
+def test_sync_transport_to_client_compacts_successful_subscriptions_before_failure():
+    runtime_config = _runtime_config()
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connect_requested()
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=object(),
+        modules={"mqtt_cls": _SubscribeFailSecondMQTTClient},
+    )
+
+    connect_result = connect_mqtt_client(adapter, transport)
+    transport.subscribe("nodus/one")
+    transport.subscribe("nodus/two")
+
+    sync_result = sync_transport_to_client(connect_result.adapter, transport)
+
+    assert sync_result.phase == "error"
+    assert sync_result.subscribed_count == 1
+    assert transport.connected is False
+    assert transport.subscriptions == ["nodus/two"]
 
 
 def test_sync_transport_to_client_publishes_before_subscribe_exception():
@@ -753,7 +796,9 @@ def test_disconnect_mqtt_client_swallow_shutdown_publish_oserror():
 
     connect_result = connect_mqtt_client(adapter, transport)
 
-    disconnect_result = disconnect_mqtt_client(connect_result.adapter, transport, runtime_config)
+    disconnect_result = disconnect_mqtt_client(
+        connect_result.adapter, transport, runtime_config
+    )
 
     assert disconnect_result.phase == "disconnected"
     assert transport.connected is False
@@ -773,7 +818,9 @@ def test_disconnect_mqtt_client_reports_disconnect_oserror():
 
     connect_result = connect_mqtt_client(adapter, transport)
 
-    disconnect_result = disconnect_mqtt_client(connect_result.adapter, transport, runtime_config)
+    disconnect_result = disconnect_mqtt_client(
+        connect_result.adapter, transport, runtime_config
+    )
 
     assert disconnect_result.phase == "disconnected"
     assert transport.connected is False
@@ -963,7 +1010,9 @@ def test_poll_mqtt_client_tolerates_two_arg_message_callback():
     )
 
     connect_result = connect_mqtt_client(adapter, transport)
-    connect_result.adapter.client.pending_incoming.append(("nodus/S1-x943fm/config/set", b"OFF"))
+    connect_result.adapter.client.pending_incoming.append(
+        ("nodus/S1-x943fm/config/set", b"OFF")
+    )
     poll_result = poll_mqtt_client(connect_result.adapter, transport)
 
     assert poll_result.phase == "polled"

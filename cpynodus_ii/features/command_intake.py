@@ -14,16 +14,20 @@ from cpynodus_ii.features.payloads import (
     build_calibration_ack_payload,
     build_calibration_result_payload,
     build_calibration_status_payload,
-    build_sensor_data_payload,
     build_config_ack_payload,
     build_config_result_payload,
     build_meta_patch_payload,
+    build_sensor_data_payload,
     mqtt_topic,
 )
 from cpynodus_ii.features.publish_cycle import PublishCycleResult, publish_switch_result
 from cpynodus_ii.features.sensor_service import read_sensor_snapshot
 from cpynodus_ii.features.switch_service import apply_switch_state
-from cpynodus_ii.features.web_services import clear_onboarding_state, load_onboarding_state
+from cpynodus_ii.features.web_services import (
+    clear_onboarding_state,
+    load_onboarding_state,
+)
+from cpynodus_ii.ota import FwUpdateState, save_ota_state
 
 
 @dataclass(frozen=True)
@@ -57,6 +61,15 @@ class CalibrationCommand:
 
 
 @dataclass(frozen=True)
+class FwUpdateCommand:
+    """Describe one parsed firmware update control command."""
+
+    message_id: str
+    command: str
+    package_id: str = ""
+
+
+@dataclass(frozen=True)
 class SoilPhCalibrationSession:
     """Describe an active soil pH sampling session."""
 
@@ -83,6 +96,7 @@ class CommandResult:
     duplicate: bool = False
     persistence_mode: str = ""
     requested_state: str = ""
+    reboot_requested: bool = False
 
 
 def subscribe_runtime_topics(transport, runtime_config):
@@ -90,10 +104,23 @@ def subscribe_runtime_topics(transport, runtime_config):
     topics = []
     device_id = _device_id(runtime_config)
     if device_id:
-        topics.append(transport.subscribe(mqtt_topic(runtime_config, device_id, "config", "set")))
-        topics.append(transport.subscribe(mqtt_topic(runtime_config, device_id, "calibration", "set")))
+        topics.append(
+            transport.subscribe(mqtt_topic(runtime_config, device_id, "config", "set"))
+        )
+        topics.append(
+            transport.subscribe(
+                mqtt_topic(runtime_config, device_id, "calibration", "set")
+            )
+        )
+        topics.append(
+            transport.subscribe(mqtt_topic(runtime_config, device_id, "fwupdate"))
+        )
     for channel in runtime_config.switch.channels:
-        topics.append(transport.subscribe(mqtt_topic(runtime_config, channel.channel_id, "config", "set")))
+        topics.append(
+            transport.subscribe(
+                mqtt_topic(runtime_config, channel.channel_id, "config", "set")
+            )
+        )
     return tuple(topics)
 
 
@@ -112,7 +139,9 @@ def process_inbound_messages(
     device_id = _device_id(runtime_config)
 
     for message in transport.drain_received():
-        if message.topic == mqtt_topic(current_runtime_config, device_id, "config", "set"):
+        if message.topic == mqtt_topic(
+            current_runtime_config, device_id, "config", "set"
+        ):
             result = process_device_config_message(
                 transport,
                 current_runtime_config,
@@ -128,8 +157,24 @@ def process_inbound_messages(
             results.append(result)
             continue
 
-        if message.topic == mqtt_topic(current_runtime_config, device_id, "calibration", "set"):
+        if message.topic == mqtt_topic(
+            current_runtime_config, device_id, "calibration", "set"
+        ):
             result = process_calibration_message(
+                transport,
+                current_runtime_config,
+                topic=message.topic,
+                payload_text=message.payload_text,
+                duplicate_message_ids=seen_message_ids,
+                settings_root=settings_root,
+            )
+            if result.message_id:
+                seen_message_ids.add(result.message_id)
+            results.append(result)
+            continue
+
+        if message.topic == mqtt_topic(current_runtime_config, device_id, "fwupdate"):
+            result = process_fwupdate_message(
                 transport,
                 current_runtime_config,
                 topic=message.topic,
@@ -155,6 +200,155 @@ def process_inbound_messages(
             )
 
     return tuple(results)
+
+
+def process_fwupdate_message(
+    transport,
+    runtime_config,
+    *,
+    topic,
+    payload_text,
+    duplicate_message_ids=(),
+    settings_root=None,
+):
+    """Parse and persist one firmware-update prepare command."""
+    command = parse_fwupdate_command(payload_text)
+    ack_topic = mqtt_topic(
+        runtime_config, _device_id(runtime_config), "fwupdate", "ack"
+    )
+    result_topic = mqtt_topic(
+        runtime_config, _device_id(runtime_config), "fwupdate", "result"
+    )
+    if command is None:
+        transport.publish(
+            ack_topic,
+            _build_fwupdate_ack_payload("", accepted=False, duplicate=False),
+            retain=False,
+        )
+        transport.publish(
+            result_topic,
+            _build_fwupdate_result_payload("", prepared=False, error="schema_invalid"),
+            retain=False,
+        )
+        return CommandResult(
+            phase="error",
+            topic=topic,
+            command_type="fwupdate",
+            published_count=2,
+            errors=("schema_invalid",),
+            runtime_config=runtime_config,
+        )
+
+    duplicate = command.message_id in set(duplicate_message_ids or ())
+    transport.publish(
+        ack_topic,
+        _build_fwupdate_ack_payload(
+            command.message_id, accepted=True, duplicate=duplicate
+        ),
+        retain=False,
+    )
+    if duplicate:
+        transport.publish(
+            result_topic,
+            _build_fwupdate_result_payload(
+                command.message_id,
+                prepared=True,
+                package_id=command.package_id,
+                duplicate=True,
+            ),
+            retain=False,
+        )
+        return CommandResult(
+            phase="published",
+            topic=topic,
+            command_type="fwupdate",
+            published_count=2,
+            errors=(),
+            runtime_config=runtime_config,
+            message_id=command.message_id,
+            duplicate=True,
+            requested_state=command.command,
+        )
+
+    error = _fwupdate_prepare_error(command, settings_root)
+    if error:
+        transport.publish(
+            result_topic,
+            _build_fwupdate_result_payload(
+                command.message_id,
+                prepared=False,
+                package_id=command.package_id,
+                error=error,
+            ),
+            retain=False,
+        )
+        return CommandResult(
+            phase="error",
+            topic=topic,
+            command_type="fwupdate",
+            published_count=2,
+            errors=(error,),
+            runtime_config=runtime_config,
+            message_id=command.message_id,
+            requested_state=command.command,
+        )
+
+    try:
+        save_ota_state(
+            FwUpdateState(
+                prior_profile=runtime_config.active_profile,
+                package_id=command.package_id,
+                phase="requested",
+            ),
+            _ota_state_path(settings_root),
+        )
+        persistence_error = ""
+    except OSError:
+        persistence_error = "ota_state_persist_failed"
+
+    if persistence_error:
+        transport.publish(
+            result_topic,
+            _build_fwupdate_result_payload(
+                command.message_id,
+                prepared=False,
+                package_id=command.package_id,
+                error=persistence_error,
+            ),
+            retain=False,
+        )
+        return CommandResult(
+            phase="error",
+            topic=topic,
+            command_type="fwupdate",
+            published_count=2,
+            errors=(persistence_error,),
+            runtime_config=runtime_config,
+            message_id=command.message_id,
+            requested_state=command.command,
+        )
+
+    transport.publish(
+        result_topic,
+        _build_fwupdate_result_payload(
+            command.message_id,
+            prepared=True,
+            package_id=command.package_id,
+        ),
+        retain=False,
+    )
+    return CommandResult(
+        phase="published",
+        topic=topic,
+        command_type="fwupdate",
+        published_count=2,
+        errors=(),
+        runtime_config=runtime_config,
+        message_id=command.message_id,
+        persistence_mode="persisted",
+        requested_state=command.command,
+        reboot_requested=True,
+    )
 
 
 def process_soil_calibration_session(
@@ -198,7 +392,9 @@ def process_soil_calibration_session(
         )
 
     snapshot = read_sensor_snapshot(sensor_service, runtime_config)
-    ph_value = (snapshot.metrics or {}).get("Soil pH") if snapshot.phase == "ready" else None
+    ph_value = (
+        (snapshot.metrics or {}).get("Soil pH") if snapshot.phase == "ready" else None
+    )
     if ph_value is None:
         return CommandResult(
             phase="error",
@@ -270,7 +466,9 @@ def process_soil_calibration_session(
             message_id=session.message_id,
         )
 
-    current_offset = float(getattr(runtime_config.sensor.calibration_device, "soil_ph_cal_val", 0.0) or 0.0)
+    current_offset = float(
+        getattr(runtime_config.sensor.calibration_device, "soil_ph_cal_val", 0.0) or 0.0
+    )
     average_ph = sum(samples) / float(len(samples) or 1)
     computed_offset = current_offset + (float(session.reference_ph) - float(average_ph))
     updates = (
@@ -280,10 +478,12 @@ def process_soil_calibration_session(
             "value": computed_offset,
         },
     )
-    updated_runtime_config, applied_updates, persistence_errors = apply_runtime_config_updates(
-        runtime_config,
-        updates,
-        settings_root=settings_root,
+    updated_runtime_config, applied_updates, persistence_errors = (
+        apply_runtime_config_updates(
+            runtime_config,
+            updates,
+            settings_root=settings_root,
+        )
     )
     transport.publish(
         mqtt_topic(updated_runtime_config, sensor_id, "event", "calibration_status"),
@@ -329,13 +529,20 @@ def process_soil_calibration_session(
     calibration_result_payload["computed_soil_ph_offset"] = float(computed_offset)
     calibration_result_payload["samples_collected"] = len(samples)
     transport.publish(
-        mqtt_topic(updated_runtime_config, _device_id(updated_runtime_config), "calibration", "result"),
+        mqtt_topic(
+            updated_runtime_config,
+            _device_id(updated_runtime_config),
+            "calibration",
+            "result",
+        ),
         calibration_result_payload,
         retain=False,
     )
     published += 1
     transport.publish(
-        mqtt_topic(updated_runtime_config, _device_id(updated_runtime_config), "meta", "patch"),
+        mqtt_topic(
+            updated_runtime_config, _device_id(updated_runtime_config), "meta", "patch"
+        ),
         build_meta_patch_payload(
             updated_runtime_config,
             source="calibration_set",
@@ -348,18 +555,30 @@ def process_soil_calibration_session(
     _set_soil_session(transport, None)
     return CommandResult(
         phase="published",
-        topic=mqtt_topic(updated_runtime_config, sensor_id, "event", "calibration_result"),
+        topic=mqtt_topic(
+            updated_runtime_config, sensor_id, "event", "calibration_result"
+        ),
         command_type="calibration_session",
         published_count=published,
         errors=tuple(persistence_errors),
         runtime_config=updated_runtime_config,
         message_id=session.message_id,
-        persistence_mode="volatile" if persistence_errors else "persisted" if settings_root is not None else "",
+        persistence_mode="volatile"
+        if persistence_errors
+        else "persisted"
+        if settings_root is not None
+        else "",
     )
 
 
 def process_switch_command_message(
-    transport, runtime_config, switch_service, *, topic, payload_text, settings_root=None
+    transport,
+    runtime_config,
+    switch_service,
+    *,
+    topic,
+    payload_text,
+    settings_root=None,
 ):
     """Parse, apply, and publish one switch command message."""
     if not str(payload_text or "").strip():
@@ -421,13 +640,21 @@ def process_switch_command_message(
                 reload_runtime=False,
             )
     return CommandResult(
-        phase=publish_result.phase if publish_result.phase != "skipped" else meta_result.phase,
+        phase=publish_result.phase
+        if publish_result.phase != "skipped"
+        else meta_result.phase,
         topic=topic,
         command_type="switch",
-        published_count=1 + publish_result.published_count + meta_result.published_count,
+        published_count=1
+        + publish_result.published_count
+        + meta_result.published_count,
         errors=publish_result.errors + meta_result.errors + tuple(persistence_errors),
         message_id=command.message_id,
-        persistence_mode="volatile" if persistence_errors else "persisted" if settings_root is not None else "",
+        persistence_mode="volatile"
+        if persistence_errors
+        else "persisted"
+        if settings_root is not None
+        else "",
         requested_state="ON" if command.desired_state else "OFF",
     )
 
@@ -463,12 +690,16 @@ def process_device_config_message(
         )
 
     ack_topic = mqtt_topic(runtime_config, _device_id(runtime_config), "config", "ack")
-    result_topic = mqtt_topic(runtime_config, _device_id(runtime_config), "config", "result")
+    result_topic = mqtt_topic(
+        runtime_config, _device_id(runtime_config), "config", "result"
+    )
     token_error = _validate_onboarding_token(command, settings_root=settings_root)
     if token_error:
         transport.publish(
             ack_topic,
-            build_config_ack_payload(command.message_id, accepted=False, duplicate=False),
+            build_config_ack_payload(
+                command.message_id, accepted=False, duplicate=False
+            ),
             retain=False,
         )
         transport.publish(
@@ -495,7 +726,9 @@ def process_device_config_message(
 
     transport.publish(
         ack_topic,
-        build_config_ack_payload(command.message_id, accepted=True, duplicate=duplicate),
+        build_config_ack_payload(
+            command.message_id, accepted=True, duplicate=duplicate
+        ),
         retain=False,
     )
 
@@ -522,10 +755,12 @@ def process_device_config_message(
             duplicate=True,
         )
 
-    updated_runtime_config, applied_updates, persistence_errors = apply_runtime_config_updates(
-        runtime_config,
-        command.updates,
-        settings_root=settings_root,
+    updated_runtime_config, applied_updates, persistence_errors = (
+        apply_runtime_config_updates(
+            runtime_config,
+            command.updates,
+            settings_root=settings_root,
+        )
     )
     if not applied_updates:
         transport.publish(
@@ -560,7 +795,9 @@ def process_device_config_message(
         retain=False,
     )
     transport.publish(
-        mqtt_topic(updated_runtime_config, _device_id(updated_runtime_config), "meta", "patch"),
+        mqtt_topic(
+            updated_runtime_config, _device_id(updated_runtime_config), "meta", "patch"
+        ),
         build_meta_patch_payload(
             updated_runtime_config,
             source="config_set",
@@ -673,11 +910,13 @@ def process_calibration_message(
         applied_updates = tuple(command.updates)
         persistence_errors = ()
         if settings_root is not None:
-            _, applied_updates, persistence_errors = Settings.apply_updates_to_directory(
-                settings_root,
-                runtime_config,
-                command.updates,
-                reload_runtime=False,
+            _, applied_updates, persistence_errors = (
+                Settings.apply_updates_to_directory(
+                    settings_root,
+                    runtime_config,
+                    command.updates,
+                    reload_runtime=False,
+                )
             )
         if applied_updates:
             updated_runtime_config, _, _ = apply_runtime_config_updates(
@@ -974,14 +1213,36 @@ def parse_calibration_command(payload_text):
     )
 
 
+def parse_fwupdate_command(payload_text):
+    """Parse firmware-update control payloads."""
+    payload = _parse_json_object(payload_text)
+    if payload is None:
+        return None
+    message_id = str(payload.get("message_id", "") or "").strip()
+    body = payload.get("payload") or {}
+    command = str(payload.get("command", body.get("command", "")) or "").strip()
+    package_id = str(
+        payload.get("package_id", body.get("package_id", "")) or ""
+    ).strip()
+    if not (message_id and command):
+        return None
+    return FwUpdateCommand(
+        message_id=message_id,
+        command=command.lower(),
+        package_id=package_id,
+    )
+
+
 def apply_runtime_config_updates(runtime_config, updates, *, settings_root=None):
     """Apply supported runtime updates and return the new config plus applied writes."""
     if settings_root is not None:
-        persisted_runtime_config, persisted_updates, persistence_errors = Settings.apply_updates_to_directory(
-            settings_root,
-            runtime_config,
-            updates,
-            reload_runtime=False,
+        persisted_runtime_config, persisted_updates, persistence_errors = (
+            Settings.apply_updates_to_directory(
+                settings_root,
+                runtime_config,
+                updates,
+                reload_runtime=False,
+            )
         )
         current = runtime_config
         for update in persisted_updates:
@@ -1106,7 +1367,9 @@ def apply_runtime_config_update(runtime_config, section, key, value):
     if section == "Sensor" and key_upper == "SERIAL_NUM":
         return replace(
             runtime_config,
-            sensor=replace(runtime_config.sensor, serial_number=str(value or "").strip()),
+            sensor=replace(
+                runtime_config.sensor, serial_number=str(value or "").strip()
+            ),
         )
     if section == "Switch" and key_upper == "SWITCH_LOCATION":
         return replace(
@@ -1267,6 +1530,78 @@ def _device_id(runtime_config):
     )
 
 
+def _fwupdate_prepare_error(command, settings_root):
+    if command.command != "prepare":
+        return "unsupported_fwupdate_command"
+    if not command.package_id:
+        return "package_id_missing"
+    if not settings_root:
+        return "read_only_filesystem"
+    if _filesystem_writable(settings_root) is False:
+        return "read_only_filesystem"
+    return ""
+
+
+def _filesystem_writable(root):
+    writable = Settings.filesystem_writable(root)
+    if writable is not None:
+        return bool(writable)
+    probe_path = _join_root(root, ".ota_write_probe.tmp")
+    try:
+        with open(probe_path, "w") as handle:
+            handle.write("1")
+        try:
+            import os
+
+            os.remove(probe_path)
+        except OSError:
+            pass
+        return True
+    except OSError:
+        return False
+
+
+def _ota_state_path(root):
+    return _join_root(root, "_ota/state.json")
+
+
+def _join_root(root, path):
+    root_text = str(root or ".")
+    path_text = str(path or "")
+    if root_text == "/":
+        return "/{}".format(path_text.lstrip("/"))
+    if root_text.endswith("/"):
+        return "{}{}".format(root_text, path_text.lstrip("/"))
+    return "{}/{}".format(root_text, path_text.lstrip("/"))
+
+
+def _build_fwupdate_ack_payload(message_id, *, accepted, duplicate):
+    return {
+        "schema": "nodus-fwupdate-ack/v1",
+        "message_id": str(message_id or ""),
+        "accepted": bool(accepted),
+        "duplicate": bool(duplicate),
+    }
+
+
+def _build_fwupdate_result_payload(
+    message_id,
+    *,
+    prepared,
+    package_id="",
+    error="",
+    duplicate=False,
+):
+    return {
+        "schema": "nodus-fwupdate-result/v1",
+        "message_id": str(message_id or ""),
+        "prepared": bool(prepared),
+        "package_id": str(package_id or ""),
+        "duplicate": bool(duplicate),
+        "error": str(error or ""),
+    }
+
+
 def _find_runtime_channel(runtime_config, channel_id):
     for channel in getattr(runtime_config.switch, "channels", ()):
         if getattr(channel, "channel_id", "") == channel_id:
@@ -1299,7 +1634,9 @@ def _calibration_status_payload(runtime_config, transport):
             calibrated=False,
             extra=extra,
         )
-    return build_calibration_status_payload(runtime_config, status="idle", calibrated=False)
+    return build_calibration_status_payload(
+        runtime_config, status="idle", calibrated=False
+    )
 
 
 def _validate_onboarding_token(command, *, settings_root=None):
@@ -1314,7 +1651,9 @@ def _validate_onboarding_token(command, *, settings_root=None):
     return "onboard_token_invalid"
 
 
-def _unsupported_calibration_command(transport, *, topic, result_topic, runtime_config, command):
+def _unsupported_calibration_command(
+    transport, *, topic, result_topic, runtime_config, command
+):
     transport.publish(
         result_topic,
         build_calibration_result_payload(

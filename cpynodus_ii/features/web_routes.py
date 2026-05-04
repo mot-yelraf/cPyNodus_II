@@ -74,7 +74,9 @@ def _operational_routes(runtime_config):
                 path="/restart",
                 methods=("POST",),
                 kind="control",
-                description="Schedule a soft or hard restart for restart-required changes",
+                description=(
+                    "Schedule a soft or hard restart for restart-required changes"
+                ),
             )
         )
     return tuple(routes)

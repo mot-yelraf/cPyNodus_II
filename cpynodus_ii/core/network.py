@@ -5,8 +5,8 @@ HTTP session resources used by web, MQTT, and time-sync features while keeping
 station-mode and access-point behavior explicit.
 """
 
-from dataclasses import dataclass
 import time
+from dataclasses import dataclass
 
 
 def _network_log(message, *, start_monotonic=None):
@@ -72,7 +72,9 @@ def build_network_stack(
     """Build the runtime network stack needed by MQTT and networked profiles."""
     if runtime_config.ap_mode:
         wifi_radio = _resolve_wifi_radio(wifi_radio)
-        connection_manager_module = _resolve_connection_manager(connection_manager_module)
+        connection_manager_module = _resolve_connection_manager(
+            connection_manager_module
+        )
         ap_ip_address = ""
         socket_pool = None
         ssl_context = None
@@ -83,7 +85,9 @@ def build_network_stack(
                     start_ap(
                         runtime_config.network.ap_ssid,
                         runtime_config.network.ap_password,
-                        channel=int(getattr(runtime_config.network, "ap_channel", 6) or 6),
+                        channel=int(
+                            getattr(runtime_config.network, "ap_channel", 6) or 6
+                        ),
                     )
                 except TypeError:
                     try:
@@ -98,8 +102,12 @@ def build_network_stack(
             ap_ip_address = _current_ap_ip_address(wifi_radio)
             if connection_manager_module is not None:
                 try:
-                    socket_pool = connection_manager_module.get_radio_socketpool(wifi_radio)
-                    ssl_context = connection_manager_module.get_radio_ssl_context(wifi_radio)
+                    socket_pool = connection_manager_module.get_radio_socketpool(
+                        wifi_radio
+                    )
+                    ssl_context = connection_manager_module.get_radio_ssl_context(
+                        wifi_radio
+                    )
                 except Exception:
                     socket_pool = None
                     ssl_context = None
@@ -116,7 +124,11 @@ def build_network_stack(
             errors=(),
         )
 
-    if not (runtime_config.mqtt_enabled or runtime_config.web_enabled or runtime_config.ntp_enabled):
+    if not (
+        runtime_config.mqtt_enabled
+        or runtime_config.web_enabled
+        or runtime_config.ntp_enabled
+    ):
         return NetworkStack(
             phase="inactive",
             mode="inactive",
@@ -212,7 +224,9 @@ def reconnect_network_stack(
 ):
     """Reconnect station Wi-Fi, preserving socket artifacts when allowed."""
     wifi_radio = getattr(network_stack, "wifi_radio", None)
-    connection_manager_module = getattr(network_stack, "connection_manager_module", None)
+    connection_manager_module = getattr(
+        network_stack, "connection_manager_module", None
+    )
     if wifi_radio is None:
         return build_network_stack(
             runtime_config,
@@ -245,7 +259,9 @@ def reconnect_network_stack(
     socket_pool = network_stack.socket_pool
     ssl_context = network_stack.ssl_context
     if rebuild_socket_artifacts or socket_pool is None or ssl_context is None:
-        connection_manager_module = _resolve_connection_manager(connection_manager_module)
+        connection_manager_module = _resolve_connection_manager(
+            connection_manager_module
+        )
         if connection_manager_module is None:
             return NetworkStack(
                 phase="unavailable",
@@ -304,25 +320,14 @@ def refresh_network_stack(network_stack):
         errors=network_stack.errors,
     )
 
-    return NetworkStack(
-        phase="error",
-        mode="station",
-        ssid=runtime_config.network.ssid,
-        hostname=runtime_config.network.hostname,
-        ip_address="",
-        socket_pool=None,
-        ssl_context=None,
-        errors=("network_connect_failed", str(last_exc or ""), "attempts={}".format(attempts)),
-    )
-
-
 def _looks_auth_failure(exc):
     text = str(exc or "").strip().lower()
     return (
         "authentication failure" in text
         or "wrong password" in text
         or "bad password" in text
-        or "auth" in text and "fail" in text
+        or "auth" in text
+        and "fail" in text
     )
 
 
@@ -404,7 +409,10 @@ def _connect_station(
                 last_exc = RuntimeError("network_ap_subnet_suspect")
                 if attempt < attempts:
                     _network_log(
-                        "network connect retry attempt={} reason=ap_subnet ip={}".format(
+                        (
+                            "network connect retry attempt={} "
+                            "reason=ap_subnet ip={}"
+                        ).format(
                             attempt,
                             ip_address or "none",
                         ),

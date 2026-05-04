@@ -4,14 +4,24 @@ The feature package groups sensor, switch, web, command, payload, and
 steady-state helpers that sit above the core runtime primitives.
 """
 
-from cpynodus_ii.features.sensor import SensorInitialization, plan_sensor_initialization
-from cpynodus_ii.features.sensor_runtime import SensorRuntime, build_sensor_runtime
-from cpynodus_ii.features.sensor_service import (
-    SensorService,
-    SensorSnapshot,
-    read_sensor_snapshot,
-    start_sensor_service,
-    stop_sensor_service,
+from cpynodus_ii.features.command_intake import (
+    CalibrationCommand,
+    CommandResult,
+    DeviceConfigCommand,
+    FwUpdateCommand,
+    SoilPhCalibrationSession,
+    SwitchCommand,
+    parse_calibration_command,
+    parse_device_config_command,
+    parse_fwupdate_command,
+    parse_switch_command,
+    process_calibration_message,
+    process_device_config_message,
+    process_fwupdate_message,
+    process_inbound_messages,
+    process_soil_calibration_session,
+    process_switch_command_message,
+    subscribe_runtime_topics,
 )
 from cpynodus_ii.features.payloads import (
     build_calibration_ack_payload,
@@ -30,26 +40,20 @@ from cpynodus_ii.features.payloads import (
 from cpynodus_ii.features.publish_cycle import (
     PublishCycleResult,
     publish_availability_refresh_cycle,
+    publish_ota_completion_report,
     publish_sensor_cycle,
     publish_shutdown_cycle,
     publish_startup_cycle,
     publish_switch_result,
 )
-from cpynodus_ii.features.command_intake import (
-    CommandResult,
-    CalibrationCommand,
-    DeviceConfigCommand,
-    SoilPhCalibrationSession,
-    parse_calibration_command,
-    parse_device_config_command,
-    SwitchCommand,
-    parse_switch_command,
-    process_inbound_messages,
-    process_calibration_message,
-    process_device_config_message,
-    process_soil_calibration_session,
-    process_switch_command_message,
-    subscribe_runtime_topics,
+from cpynodus_ii.features.sensor import SensorInitialization, plan_sensor_initialization
+from cpynodus_ii.features.sensor_runtime import SensorRuntime, build_sensor_runtime
+from cpynodus_ii.features.sensor_service import (
+    SensorService,
+    SensorSnapshot,
+    read_sensor_snapshot,
+    start_sensor_service,
+    stop_sensor_service,
 )
 from cpynodus_ii.features.steady_state import (
     SteadyState,
@@ -75,6 +79,21 @@ from cpynodus_ii.features.switch_service import (
     start_switch_service,
     stop_switch_service,
 )
+from cpynodus_ii.features.web_config import (
+    WebConfigDecision,
+    WebConfigResult,
+    apply_web_config_updates,
+    apply_web_switch_override,
+    classify_web_update,
+)
+from cpynodus_ii.features.web_handlers import (
+    build_setup_payload,
+    build_status_payload,
+    handle_switch_state_request,
+    handle_web_config_request,
+)
+from cpynodus_ii.features.web_routes import WebRoute, build_web_route_table, route_paths
+from cpynodus_ii.features.web_runtime import WebRuntimeController
 from cpynodus_ii.features.web_services import (
     ItaotInitResult,
     apply_itaot_init_payload,
@@ -84,21 +103,6 @@ from cpynodus_ii.features.web_services import (
     load_onboarding_state,
     normalize_itaot_init_payload,
 )
-from cpynodus_ii.features.web_config import (
-    WebConfigDecision,
-    WebConfigResult,
-    apply_web_config_updates,
-    apply_web_switch_override,
-    classify_web_update,
-)
-from cpynodus_ii.features.web_routes import WebRoute, build_web_route_table, route_paths
-from cpynodus_ii.features.web_handlers import (
-    build_setup_payload,
-    build_status_payload,
-    handle_switch_state_request,
-    handle_web_config_request,
-)
-from cpynodus_ii.features.web_runtime import WebRuntimeController
 
 __all__ = [
     "SensorInitialization",
@@ -116,6 +120,7 @@ __all__ = [
     "CalibrationCommand",
     "CommandResult",
     "DeviceConfigCommand",
+    "FwUpdateCommand",
     "SoilPhCalibrationSession",
     "apply_switch_state",
     "build_device_heartbeat_payload",
@@ -139,10 +144,12 @@ __all__ = [
     "build_web_route_table",
     "parse_calibration_command",
     "parse_device_config_command",
+    "parse_fwupdate_command",
     "parse_switch_command",
     "plan_sensor_initialization",
     "plan_switch_initialization",
     "publish_availability_refresh_cycle",
+    "publish_ota_completion_report",
     "publish_sensor_cycle",
     "publish_shutdown_cycle",
     "publish_startup_cycle",
@@ -150,6 +157,7 @@ __all__ = [
     "process_inbound_messages",
     "process_calibration_message",
     "process_device_config_message",
+    "process_fwupdate_message",
     "process_soil_calibration_session",
     "process_switch_command_message",
     "read_sensor_snapshot",

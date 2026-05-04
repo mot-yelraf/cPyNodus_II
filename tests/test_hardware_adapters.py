@@ -48,7 +48,9 @@ def test_sensor_hardware_adapter_binds_i2c_transport():
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for name in ("settings.toml", "sensor_i2c.toml", "switch.toml"):
-            (tmpdir_path / name).write_text((docs_root / name).read_text(), encoding="utf-8")
+            (tmpdir_path / name).write_text(
+                (docs_root / name).read_text(), encoding="utf-8"
+            )
         runtime_config = Settings.from_directory(tmpdir_path).runtime_config()
 
     sensor_runtime = build_sensor_runtime(
@@ -78,7 +80,9 @@ def test_sensor_hardware_adapter_binds_modbus_uart_transport():
             interface="modbus_rs485",
             active_config_file="sensor_soil.toml",
             device="soil",
-            modbus=SimpleNamespace(uart_tx="GP4", uart_rx="GP5", baud=4800, timeout_s=0.5, address=3),
+            modbus=SimpleNamespace(
+                uart_tx="GP4", uart_rx="GP5", baud=4800, timeout_s=0.5, address=3
+            ),
         )
     )
     sensor_runtime = build_sensor_runtime(
@@ -185,11 +189,15 @@ def test_switch_hardware_adapter_binds_channel_pins():
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for name in ("settings.toml", "sensor_i2c.toml", "switch.toml"):
-            (tmpdir_path / name).write_text((docs_root / name).read_text(), encoding="utf-8")
+            (tmpdir_path / name).write_text(
+                (docs_root / name).read_text(), encoding="utf-8"
+            )
         runtime_config = Settings.from_directory(tmpdir_path).runtime_config()
 
     switch_runtime = build_switch_runtime(plan_switch_initialization(runtime_config))
-    board_module = SimpleNamespace(GP5="pin-gp5", GP28="pin-gp28", GP10="pin-gp10", GP21="pin-gp21")
+    board_module = SimpleNamespace(
+        GP5="pin-gp5", GP28="pin-gp28", GP10="pin-gp10", GP21="pin-gp21"
+    )
     digitalio_module = SimpleNamespace(
         DigitalInOut=_FakeDigitalInOut,
         Direction=SimpleNamespace(OUTPUT="output"),

@@ -6,11 +6,12 @@ USB mass-storage drive. Edit mode exposes ``CIRCUITPY`` to the host and keeps
 the application filesystem read-only so files can be updated safely.
 """
 
+import time
+
 import board
 import digitalio
 import microcontroller
 import storage
-import time
 import usb_cdc
 
 # ---------- user-configurable pins ----------
@@ -75,7 +76,11 @@ except Exception as exc:
 try:
     reset_reason = getattr(getattr(microcontroller, "cpu", None), "reset_reason", None)
     reset_text = "" if reset_reason is None else str(reset_reason).strip().lower()
-    if ("power_on" in reset_text) or ("power" in reset_text) or ("brownout" in reset_text):
+    if (
+        ("power_on" in reset_text)
+        or ("power" in reset_text)
+        or ("brownout" in reset_text)
+    ):
         if len(microcontroller.nvm) > 1 and microcontroller.nvm[1] != 0:
             microcontroller.nvm[1] = 0
 except Exception as exc:

@@ -63,7 +63,9 @@ def append_reboot_traceback(
             else:
                 import traceback
 
-                traceback.print_exception(type(exc), exc, exc.__traceback__, file=handle)
+                traceback.print_exception(
+                    type(exc), exc, exc.__traceback__, file=handle
+                )
             handle.write("\n")
         _trim_reboot_log(path, max_bytes=max_bytes)
         return True

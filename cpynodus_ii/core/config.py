@@ -178,7 +178,9 @@ class SensorCalibration:
         _raw_setattr(self, "apvpd_temp_cal_val", float(self.apvpd_temp_cal_val or 0.0))
         _raw_setattr(self, "apvpd_rh_cal_val", float(self.apvpd_rh_cal_val or 0.0))
         _raw_setattr(self, "soil_temp_cal_val", float(self.soil_temp_cal_val or 0.0))
-        _raw_setattr(self, "soil_temp_moist_val", float(self.soil_temp_moist_val or 0.0))
+        _raw_setattr(
+            self, "soil_temp_moist_val", float(self.soil_temp_moist_val or 0.0)
+        )
         _raw_setattr(self, "soil_ph_cal_val", float(self.soil_ph_cal_val or 0.0))
         _raw_setattr(self, "soil_ec_cal_val", float(self.soil_ec_cal_val or 0.0))
 
@@ -269,11 +271,19 @@ class HomeAssistantConfig:
     publish_legacy_sensor_topic: bool = True
 
     def __post_init__(self):
-        _raw_setattr(self, "discovery_prefix", _clean_str(self.discovery_prefix) or "homeassistant")
+        _raw_setattr(
+            self,
+            "discovery_prefix",
+            _clean_str(self.discovery_prefix) or "homeassistant",
+        )
         _raw_setattr(self, "base_topic", _clean_str(self.base_topic) or "nodus")
-        _raw_setattr(self, "publish_discovery_retain", bool(self.publish_discovery_retain))
+        _raw_setattr(
+            self, "publish_discovery_retain", bool(self.publish_discovery_retain)
+        )
         _raw_setattr(self, "publish_state_retain", bool(self.publish_state_retain))
-        _raw_setattr(self, "publish_legacy_sensor_topic", bool(self.publish_legacy_sensor_topic))
+        _raw_setattr(
+            self, "publish_legacy_sensor_topic", bool(self.publish_legacy_sensor_topic)
+        )
 
 
 @dataclass

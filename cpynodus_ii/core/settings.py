@@ -9,6 +9,7 @@ import os
 import random
 import time
 
+from cpynodus_ii.core import toml_compat
 from cpynodus_ii.core.config import (
     DetectedSensor,
     DisplayConfig,
@@ -24,12 +25,11 @@ from cpynodus_ii.core.config import (
     SoilScaleMap,
     SoilStressConfig,
     SoilThresholdConfig,
-    SwitchConfig,
     SwitchChannelConfig,
+    SwitchConfig,
     TimeConfig,
 )
 from cpynodus_ii.core.obfuscation import decode_password, encode_password
-from cpynodus_ii.core import toml_compat
 
 
 def _path_exists(path):
@@ -116,7 +116,14 @@ _FACTORY_SENSOR_DISPLAY_DEFAULTS = {
         "Dew Point Deficit",
         "DewVPD Risk",
     ),
-    "lux": ("Light Intensity", "Auto Light", "Estimated PPFD", "Visible Light Intensity", "", ""),
+    "lux": (
+        "Light Intensity",
+        "Auto Light",
+        "Estimated PPFD",
+        "Visible Light Intensity",
+        "",
+        "",
+    ),
 }
 
 
@@ -168,7 +175,9 @@ class Settings:
         root_path = str(root or ".")
         settings_doc = cls._read_toml_file(_join_path(root_path, cls.SETTINGS_FILE))
         sensor_i2c_doc = cls._read_toml_file(_join_path(root_path, cls.SENSOR_I2C_FILE))
-        sensor_soil_doc = cls._read_toml_file(_join_path(root_path, cls.SENSOR_SOIL_FILE))
+        sensor_soil_doc = cls._read_toml_file(
+            _join_path(root_path, cls.SENSOR_SOIL_FILE)
+        )
         switch_doc = cls._read_toml_file(_join_path(root_path, cls.SWITCH_FILE))
         runtime_config = cls._runtime_config_from_documents(
             settings_doc=settings_doc,
@@ -314,7 +323,10 @@ class Settings:
                 interfaces.get("i2c1", {}) if isinstance(interfaces, dict) else {},
             )
         else:
-            cls._apply_i2c_bootstrap(i2c_doc, interfaces.get("i2c", {}) if isinstance(interfaces, dict) else {})
+            cls._apply_i2c_bootstrap(
+                i2c_doc,
+                interfaces.get("i2c", {}) if isinstance(interfaces, dict) else {},
+            )
             for key in tuple(plant_i2c_doc.keys()):
                 plant_i2c_doc.pop(key, None)
 
@@ -406,12 +418,23 @@ class Settings:
         for index in (1, 2):
             if index in active_channels:
                 spec = active_channels[index]
-                switch_doc["SWITCH_{}_ENABLE_PIN".format(index)] = spec.get("enable", "")
+                switch_doc["SWITCH_{}_ENABLE_PIN".format(index)] = spec.get(
+                    "enable", ""
+                )
                 switch_doc["SWITCH_{}_PIN".format(index)] = spec.get("control", "")
-                if not str(switch_doc.get("SWITCH_{}_LABEL".format(index), "") or "").strip():
+                if not str(
+                    switch_doc.get("SWITCH_{}_LABEL".format(index), "") or ""
+                ).strip():
                     switch_doc["SWITCH_{}_LABEL".format(index)] = spec.get("label", "")
                 continue
-            for suffix in ("_LABEL", "_CHANNEL_ID", "_ENABLE_PIN", "_PIN", "_LAST_STATE", "_OVERRIDE_SCRIPT"):
+            for suffix in (
+                "_LABEL",
+                "_CHANNEL_ID",
+                "_ENABLE_PIN",
+                "_PIN",
+                "_LAST_STATE",
+                "_OVERRIDE_SCRIPT",
+            ):
                 inactive_keys.append("SWITCH_{}{}".format(index, suffix))
 
         for key in inactive_keys:
@@ -437,7 +460,9 @@ class Settings:
                 sensor_path = path
                 break
 
-        sensor_section = sensor_doc.get("Sensor", {}) if isinstance(sensor_doc, dict) else {}
+        sensor_section = (
+            sensor_doc.get("Sensor", {}) if isinstance(sensor_doc, dict) else {}
+        )
         sensor_device = str(sensor_section.get("DEVICE", "") or "").strip().lower()
         sensor_serial = str(sensor_section.get("SERIAL_NUM", "") or "").strip().lower()
         sensor_id = str(sensor_section.get("SENSOR_ID", "") or "").strip().lower()
@@ -453,13 +478,19 @@ class Settings:
 
         switch_path = _join_path(root, cls.SWITCH_FILE)
         switch_doc = cls._read_toml_file(switch_path)
-        switch_section = switch_doc.get("Switch", {}) if isinstance(switch_doc, dict) else {}
+        switch_section = (
+            switch_doc.get("Switch", {}) if isinstance(switch_doc, dict) else {}
+        )
         has_switch = any(
-            str(switch_section.get("SWITCH_{}_ENABLE_PIN".format(index), "") or "").strip()
+            str(
+                switch_section.get("SWITCH_{}_ENABLE_PIN".format(index), "") or ""
+            ).strip()
             for index in (1, 2)
         )
         if has_switch:
-            switch_serial = str(switch_section.get("DEVICE_SERIAL_NUM", "") or "").strip().lower()
+            switch_serial = (
+                str(switch_section.get("DEVICE_SERIAL_NUM", "") or "").strip().lower()
+            )
             if not switch_serial:
                 switch_serial = sensor_serial or cls.make_serial_number()
                 switch_section["DEVICE_SERIAL_NUM"] = switch_serial
@@ -483,11 +514,17 @@ class Settings:
             if sensor_id:
                 network_doc["HOSTNAME"] = sensor_id
             elif has_switch:
-                network_doc["HOSTNAME"] = str(switch_section.get("SWITCH_DEVICE_ID", "") or "").strip().lower()
+                network_doc["HOSTNAME"] = (
+                    str(switch_section.get("SWITCH_DEVICE_ID", "") or "")
+                    .strip()
+                    .lower()
+                )
         cls._write_toml_file(settings_path, settings_doc)
 
     @classmethod
-    def _detect_factory_sensor(cls, *, detect_fn=None, board_module=None, busio_module=None):
+    def _detect_factory_sensor(
+        cls, *, detect_fn=None, board_module=None, busio_module=None
+    ):
         if callable(detect_fn):
             detected = detect_fn()
             if isinstance(detected, tuple) and len(detected) == 2:
@@ -546,7 +583,7 @@ class Settings:
                     "scl": _FACTORY_I2C_PINS[1][0],
                     "sda": _FACTORY_I2C_PINS[1][1],
                     "addr": 0x76,
-                }
+                },
             }
 
         if 0x38 in scans.get(0, set()) and 0x38 in scans.get(1, set()):
@@ -562,7 +599,7 @@ class Settings:
                     "scl": _FACTORY_I2C_PINS[1][0],
                     "sda": _FACTORY_I2C_PINS[1][1],
                     "addr": 0x38,
-                }
+                },
             }
 
         for address, device in (
@@ -606,7 +643,9 @@ class Settings:
         return "", {}
 
     @classmethod
-    def _detect_factory_switch_channels(cls, *, board_module=None, digitalio_module=None):
+    def _detect_factory_switch_channels(
+        cls, *, board_module=None, digitalio_module=None
+    ):
         board_module = board_module or cls._try_import_module("board")
         digitalio_module = digitalio_module or cls._try_import_module("digitalio")
         if board_module is None or digitalio_module is None:
@@ -685,7 +724,11 @@ class Settings:
 
     @classmethod
     def _probe_soil_rs485(cls, *, board_module=None, busio_module=None):
-        if board_module is None or busio_module is None or not hasattr(busio_module, "UART"):
+        if (
+            board_module is None
+            or busio_module is None
+            or not hasattr(busio_module, "UART")
+        ):
             return None
 
         def _read_regs(uart_obj, addr, start, count):
@@ -749,14 +792,16 @@ class Settings:
                     for addr in range(1, 6):
                         variant = _variant_for_probe(uart, addr)
                         if variant:
-                            found.append({
-                                "name": channel_name,
-                                "tx": tx_name,
-                                "rx": rx_name,
-                                "baud": baud,
-                                "addr": addr,
-                                "soil_variant": variant,
-                            })
+                            found.append(
+                                {
+                                    "name": channel_name,
+                                    "tx": tx_name,
+                                    "rx": rx_name,
+                                    "baud": baud,
+                                    "addr": addr,
+                                    "soil_variant": variant,
+                                }
+                            )
                             found_channel = True
                             break
                 except Exception:
@@ -792,7 +837,9 @@ class Settings:
             return None
 
     @classmethod
-    def apply_updates_to_directory(cls, root, runtime_config, updates, *, reload_runtime=True):
+    def apply_updates_to_directory(
+        cls, root, runtime_config, updates, *, reload_runtime=True
+    ):
         """Persist supported TOML updates and return runtime config plus diagnostics."""
         root_path = str(root or ".")
         if not updates:
@@ -814,12 +861,18 @@ class Settings:
                     if cls._apply_update_to_document(document, update):
                         applied_updates.append(update)
                 serialized_document = cls._document_for_write(path, document)
-                cls._replace_toml_file(path, cls._dump_toml_for_path(path, serialized_document))
+                cls._replace_toml_file(
+                    path, cls._dump_toml_for_path(path, serialized_document)
+                )
         except OSError as exc:
             code = getattr(exc, "errno", None)
             if code in {30} or "read-only" in str(exc).lower():
                 return runtime_config, tuple(applied_updates), ("read_only_filesystem",)
-            return runtime_config, tuple(applied_updates), ("persistence_failed", str(exc))
+            return (
+                runtime_config,
+                tuple(applied_updates),
+                ("persistence_failed", str(exc)),
+            )
 
         if not reload_runtime:
             return runtime_config, tuple(applied_updates), ()
@@ -860,7 +913,9 @@ class Settings:
         mqtt_doc = settings_doc.get("MQTT", {})
         homeassistant_doc = settings_doc.get("HomeAssistant", {})
         time_doc = settings_doc.get("Time", {})
-        sensor = cls._detect_sensor(sensor_i2c_doc=sensor_i2c_doc, sensor_soil_doc=sensor_soil_doc)
+        sensor = cls._detect_sensor(
+            sensor_i2c_doc=sensor_i2c_doc, sensor_soil_doc=sensor_soil_doc
+        )
         switch = cls._detect_switch(switch_doc=switch_doc)
         return RuntimeConfig(
             active_profile=profile_doc.get("ACTIVE_PROFILE", "nodusweb"),
@@ -892,11 +947,19 @@ class Settings:
                 ),
             ),
             homeassistant=HomeAssistantConfig(
-                discovery_prefix=homeassistant_doc.get("DISCOVERY_PREFIX", "homeassistant"),
+                discovery_prefix=homeassistant_doc.get(
+                    "DISCOVERY_PREFIX", "homeassistant"
+                ),
                 base_topic=homeassistant_doc.get("BASE_TOPIC", "nodus"),
-                publish_discovery_retain=homeassistant_doc.get("PUBLISH_DISCOVERY_RETAIN", True),
-                publish_state_retain=homeassistant_doc.get("PUBLISH_STATE_RETAIN", True),
-                publish_legacy_sensor_topic=homeassistant_doc.get("PUBLISH_LEGACY_SENSOR_TOPIC", True),
+                publish_discovery_retain=homeassistant_doc.get(
+                    "PUBLISH_DISCOVERY_RETAIN", True
+                ),
+                publish_state_retain=homeassistant_doc.get(
+                    "PUBLISH_STATE_RETAIN", True
+                ),
+                publish_legacy_sensor_topic=homeassistant_doc.get(
+                    "PUBLISH_LEGACY_SENSOR_TOPIC", True
+                ),
             ),
             time=TimeConfig(
                 tz=time_doc.get("TZ", "America/Denver"),
@@ -925,7 +988,9 @@ class Settings:
         soil_device_cal_doc = soil_calibration_doc.get("Device", {})
         i2c_sensor_doc = sensor_i2c_doc.get("Sensor", {})
         i2c_bus_doc = sensor_i2c_doc.get("I2Cbus", {})
-        i2c_plant_bus_doc = i2c_bus_doc.get("Plant", {}) if isinstance(i2c_bus_doc, dict) else {}
+        i2c_plant_bus_doc = (
+            i2c_bus_doc.get("Plant", {}) if isinstance(i2c_bus_doc, dict) else {}
+        )
         i2c_display_doc = sensor_i2c_doc.get("Display", {})
         i2c_display_style_doc = sensor_i2c_doc.get("Display.Style", {})
         if not i2c_display_style_doc and isinstance(i2c_display_doc, dict):
@@ -977,22 +1042,46 @@ class Settings:
                     dry_pct=float(soil_deficit_doc.get("SPD_DRY_THRESHOLD_PCT", 18.0)),
                 ),
                 soil_stress=SoilStressConfig(
-                    temp_low_crit_c=float(soil_stress_doc.get("SSI_TEMP_LOW_CRIT_C", 15.0)),
+                    temp_low_crit_c=float(
+                        soil_stress_doc.get("SSI_TEMP_LOW_CRIT_C", 15.0)
+                    ),
                     temp_low_ok_c=float(soil_stress_doc.get("SSI_TEMP_LOW_OK_C", 18.0)),
-                    temp_high_ok_c=float(soil_stress_doc.get("SSI_TEMP_HIGH_OK_C", 24.0)),
-                    temp_high_crit_c=float(soil_stress_doc.get("SSI_TEMP_HIGH_CRIT_C", 30.0)),
-                    moisture_weight_pct=float(soil_stress_doc.get("SSI_MOISTURE_WEIGHT_PCT", 70.0)),
-                    temp_weight_pct=float(soil_stress_doc.get("SSI_TEMP_WEIGHT_PCT", 30.0)),
+                    temp_high_ok_c=float(
+                        soil_stress_doc.get("SSI_TEMP_HIGH_OK_C", 24.0)
+                    ),
+                    temp_high_crit_c=float(
+                        soil_stress_doc.get("SSI_TEMP_HIGH_CRIT_C", 30.0)
+                    ),
+                    moisture_weight_pct=float(
+                        soil_stress_doc.get("SSI_MOISTURE_WEIGHT_PCT", 70.0)
+                    ),
+                    temp_weight_pct=float(
+                        soil_stress_doc.get("SSI_TEMP_WEIGHT_PCT", 30.0)
+                    ),
                 ),
                 display=DisplayConfig(
-                    metrics=tuple(soil_display_doc.get(f"METRIC_{index}", "") for index in range(1, 7)),
-                    styles=tuple(soil_display_style_doc.get(f"METRIC_{index}", "") for index in range(1, 7)),
+                    metrics=tuple(
+                        soil_display_doc.get(f"METRIC_{index}", "")
+                        for index in range(1, 7)
+                    ),
+                    styles=tuple(
+                        soil_display_style_doc.get(f"METRIC_{index}", "")
+                        for index in range(1, 7)
+                    ),
                 ),
                 calibration_device=SensorCalibration(
-                    soil_temp_cal_val=float(soil_device_cal_doc.get("SOIL_TEMP_CAL_VAL", 0.0)),
-                    soil_temp_moist_val=float(soil_device_cal_doc.get("SOIL_TEMP_MOIST_VAL", 0.0)),
-                    soil_ph_cal_val=float(soil_device_cal_doc.get("SOIL_PH_CAL_VAL", 0.0)),
-                    soil_ec_cal_val=float(soil_device_cal_doc.get("SOIL_EC_CAL_VAL", 0.0)),
+                    soil_temp_cal_val=float(
+                        soil_device_cal_doc.get("SOIL_TEMP_CAL_VAL", 0.0)
+                    ),
+                    soil_temp_moist_val=float(
+                        soil_device_cal_doc.get("SOIL_TEMP_MOIST_VAL", 0.0)
+                    ),
+                    soil_ph_cal_val=float(
+                        soil_device_cal_doc.get("SOIL_PH_CAL_VAL", 0.0)
+                    ),
+                    soil_ec_cal_val=float(
+                        soil_device_cal_doc.get("SOIL_EC_CAL_VAL", 0.0)
+                    ),
                 ),
             )
 
@@ -1013,8 +1102,14 @@ class Settings:
                 ),
                 secondary_i2c=cls._optional_i2c_config(i2c_plant_bus_doc),
                 display=DisplayConfig(
-                    metrics=tuple(i2c_display_doc.get(f"METRIC_{index}", "") for index in range(1, 7)),
-                    styles=tuple(i2c_display_style_doc.get(f"METRIC_{index}", "") for index in range(1, 7)),
+                    metrics=tuple(
+                        i2c_display_doc.get(f"METRIC_{index}", "")
+                        for index in range(1, 7)
+                    ),
+                    styles=tuple(
+                        i2c_display_style_doc.get(f"METRIC_{index}", "")
+                        for index in range(1, 7)
+                    ),
                 ),
                 calibration_system=SensorCalibration(
                     temp_offset=float(i2c_system_cal_doc.get("TEMP_OFFSET", 0.0)),
@@ -1029,8 +1124,12 @@ class Settings:
                     gas_offset=float(i2c_device_cal_doc.get("GAS_OFFSET", 0.0)),
                     lux_offset=float(i2c_device_cal_doc.get("LUX_OFFSET", 0.0)),
                     ppfd_offset=float(i2c_device_cal_doc.get("PPFD_OFFSET", 0.0)),
-                    apvpd_temp_cal_val=float(i2c_device_cal_doc.get("APVPD_TEMP_CAL_VAL", 0.0)),
-                    apvpd_rh_cal_val=float(i2c_device_cal_doc.get("APVPD_RH_CAL_VAL", 0.0)),
+                    apvpd_temp_cal_val=float(
+                        i2c_device_cal_doc.get("APVPD_TEMP_CAL_VAL", 0.0)
+                    ),
+                    apvpd_rh_cal_val=float(
+                        i2c_device_cal_doc.get("APVPD_RH_CAL_VAL", 0.0)
+                    ),
                 ),
             )
 
@@ -1078,7 +1177,10 @@ class Settings:
     def _optional_i2c_config(document):
         if not isinstance(document, dict):
             return None
-        has_pin = bool(str(document.get("I2C_SCL", "") or "").strip() or str(document.get("I2C_SDA", "") or "").strip())
+        has_pin = bool(
+            str(document.get("I2C_SCL", "") or "").strip()
+            or str(document.get("I2C_SDA", "") or "").strip()
+        )
         has_addr = int(document.get("I2C_ADDR", 0) or 0) > 0
         if not (has_pin or has_addr):
             return None
@@ -1097,8 +1199,12 @@ class Settings:
 
         channels = []
         for index in (1, 2):
-            control_pin = str(switch_section.get(f"SWITCH_{index}_PIN", "") or "").strip()
-            enable_pin = str(switch_section.get(f"SWITCH_{index}_ENABLE_PIN", "") or "").strip()
+            control_pin = str(
+                switch_section.get(f"SWITCH_{index}_PIN", "") or ""
+            ).strip()
+            enable_pin = str(
+                switch_section.get(f"SWITCH_{index}_ENABLE_PIN", "") or ""
+            ).strip()
             if not (control_pin or enable_pin):
                 continue
             channels.append(
@@ -1109,7 +1215,9 @@ class Settings:
                     enable_pin=enable_pin,
                     control_pin=control_pin,
                     last_state=switch_section.get(f"SWITCH_{index}_LAST_STATE", False),
-                    override_script=switch_section.get(f"SWITCH_{index}_OVERRIDE_SCRIPT", False),
+                    override_script=switch_section.get(
+                        f"SWITCH_{index}_OVERRIDE_SCRIPT", False
+                    ),
                 )
             )
 

@@ -86,7 +86,9 @@ def _runtime_config():
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for name in ("settings.toml", "sensor_i2c.toml", "switch.toml"):
-            (tmpdir_path / name).write_text((docs_root / name).read_text(), encoding="utf-8")
+            (tmpdir_path / name).write_text(
+                (docs_root / name).read_text(), encoding="utf-8"
+            )
         runtime_config = Settings.from_directory(tmpdir_path).runtime_config()
         runtime_config.active_profile = "nodusweb"
         return runtime_config
@@ -96,7 +98,9 @@ def test_ap_mode_network_stack_includes_socket_artifacts_for_web_runtime():
     runtime_config = _runtime_config()
     runtime_config.ap_mode = True
 
-    stack = build_network_stack(runtime_config, wifi_radio=_FakeRadio(), connection_manager_module=_FakeConnMgr)
+    stack = build_network_stack(
+        runtime_config, wifi_radio=_FakeRadio(), connection_manager_module=_FakeConnMgr
+    )
 
     assert stack.phase == "ap"
     assert stack.socket_pool["kind"] == "socketpool"
@@ -105,7 +109,9 @@ def test_ap_mode_network_stack_includes_socket_artifacts_for_web_runtime():
 
 def test_web_runtime_controller_registers_and_polls_routes():
     runtime_config = _runtime_config()
-    stack = build_network_stack(runtime_config, wifi_radio=_FakeRadio(), connection_manager_module=_FakeConnMgr)
+    stack = build_network_stack(
+        runtime_config, wifi_radio=_FakeRadio(), connection_manager_module=_FakeConnMgr
+    )
 
     controller = WebRuntimeController(
         runtime_config,
@@ -124,7 +130,9 @@ def test_web_runtime_controller_registers_and_polls_routes():
 
 def test_web_runtime_controller_config_route_updates_runtime_config():
     runtime_config = _runtime_config()
-    stack = build_network_stack(runtime_config, wifi_radio=_FakeRadio(), connection_manager_module=_FakeConnMgr)
+    stack = build_network_stack(
+        runtime_config, wifi_radio=_FakeRadio(), connection_manager_module=_FakeConnMgr
+    )
     controller = WebRuntimeController(
         runtime_config,
         stack,
@@ -145,7 +153,9 @@ def test_web_runtime_controller_config_route_updates_runtime_config():
 
 def test_web_runtime_controller_switch_route_applies_live_override():
     runtime_config = _runtime_config()
-    stack = build_network_stack(runtime_config, wifi_radio=_FakeRadio(), connection_manager_module=_FakeConnMgr)
+    stack = build_network_stack(
+        runtime_config, wifi_radio=_FakeRadio(), connection_manager_module=_FakeConnMgr
+    )
 
     class _Handle:
         def __init__(self, value=False):

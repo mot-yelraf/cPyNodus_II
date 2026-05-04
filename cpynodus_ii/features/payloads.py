@@ -37,8 +37,18 @@ def _short_hash(value):
 def _ha_device_block(runtime_config):
     sensor = runtime_config.sensor
     switch = runtime_config.switch
-    device_id = _slugify(sensor.sensor_id or switch.device_id or runtime_config.network.hostname or "nodus")
-    name = sensor.sensor_id or switch.device_id or runtime_config.network.hostname or "Nodus"
+    device_id = _slugify(
+        sensor.sensor_id
+        or switch.device_id
+        or runtime_config.network.hostname
+        or "nodus"
+    )
+    name = (
+        sensor.sensor_id
+        or switch.device_id
+        or runtime_config.network.hostname
+        or "Nodus"
+    )
     location = sensor.location or switch.location
     device = {
         "identifiers": [device_id],
@@ -63,7 +73,9 @@ def mqtt_base_topic(runtime_config):
 
 def mqtt_topic(runtime_config, *parts):
     """Build one MQTT topic under the active runtime base topic."""
-    members = [str(part or "").strip("/") for part in parts if str(part or "").strip("/")]
+    members = [
+        str(part or "").strip("/") for part in parts if str(part or "").strip("/")
+    ]
     if not members:
         return mqtt_base_topic(runtime_config)
     return "{}/{}".format(mqtt_base_topic(runtime_config), "/".join(members))
@@ -124,7 +136,11 @@ def build_switch_event_payload(runtime_config, channel, state, *, message_id="")
 
 def build_device_heartbeat_payload(runtime_config, *, online):
     """Build the compact heartbeat payload for device liveness."""
-    device_id = runtime_config.sensor.sensor_id or runtime_config.switch.device_id or runtime_config.network.hostname
+    device_id = (
+        runtime_config.sensor.sensor_id
+        or runtime_config.switch.device_id
+        or runtime_config.network.hostname
+    )
     return {
         "schema": "nodus-heartbeat/v1",
         "device_id": device_id,
@@ -139,7 +155,12 @@ def build_runtime_meta_payload(runtime_config, *, version, active_broker=""):
     switch = runtime_config.switch
     device_id = sensor.sensor_id or switch.device_id or runtime_config.network.hostname
     location = sensor.location or switch.location
-    members = [member for member in [sensor.sensor_id] + [channel.channel_id for channel in switch.channels] if member]
+    members = [
+        member
+        for member in [sensor.sensor_id]
+        + [channel.channel_id for channel in switch.channels]
+        if member
+    ]
 
     payload = {
         "schema": "nodus-meta/v1",
@@ -154,11 +175,15 @@ def build_runtime_meta_payload(runtime_config, *, version, active_broker=""):
         },
         "status": {
             "state": "online",
-            "heartbeat_topic": mqtt_topic(runtime_config, device_id, "status", "heartbeat"),
+            "heartbeat_topic": mqtt_topic(
+                runtime_config, device_id, "status", "heartbeat"
+            ),
         },
         "network": {
             "ssid": runtime_config.network.ssid,
-            "password": _obfuscated_password(runtime_config.network.password, runtime_config),
+            "password": _obfuscated_password(
+                runtime_config.network.password, runtime_config
+            ),
             "hostname": runtime_config.network.hostname,
         },
         "profile": {
@@ -167,11 +192,15 @@ def build_runtime_meta_payload(runtime_config, *, version, active_broker=""):
         "mqtt": {
             "broker": runtime_config.mqtt.broker,
             "broker_ip": runtime_config.mqtt.broker_ip,
-            "active_broker": str(active_broker or runtime_config.mqtt.preferred_host or ""),
+            "active_broker": str(
+                active_broker or runtime_config.mqtt.preferred_host or ""
+            ),
             "port": runtime_config.mqtt.port,
             "use_tls": bool(runtime_config.mqtt.use_tls),
             "username": runtime_config.mqtt.username,
-            "password": _obfuscated_password(runtime_config.mqtt.password, runtime_config),
+            "password": _obfuscated_password(
+                runtime_config.mqtt.password, runtime_config
+            ),
             "base_topic": runtime_config.mqtt.base_topic,
         },
         "location_group": {
@@ -189,7 +218,9 @@ def build_runtime_meta_payload(runtime_config, *, version, active_broker=""):
             "display_styles": _display_styles_for_meta(sensor),
             "data_topic": mqtt_topic(runtime_config, sensor.sensor_id, "data"),
             "event_topic": mqtt_topic(runtime_config, sensor.sensor_id, "event"),
-            "availability_topic": mqtt_topic(runtime_config, sensor.sensor_id, "availability"),
+            "availability_topic": mqtt_topic(
+                runtime_config, sensor.sensor_id, "availability"
+            ),
         }
 
     if switch.present:
@@ -203,11 +234,21 @@ def build_runtime_meta_payload(runtime_config, *, version, active_broker=""):
                     "enable_pin": channel.enable_pin,
                     "pin": channel.control_pin,
                     "state": bool(channel.last_state),
-                    "event_topic": mqtt_topic(runtime_config, channel.channel_id, "event"),
-                    "state_topic": mqtt_topic(runtime_config, channel.channel_id, "state"),
-                    "set_topic": mqtt_topic(runtime_config, channel.channel_id, "config", "set"),
-                    "result_topic": mqtt_topic(runtime_config, channel.channel_id, "config", "result"),
-                    "availability_topic": mqtt_topic(runtime_config, channel.channel_id, "availability"),
+                    "event_topic": mqtt_topic(
+                        runtime_config, channel.channel_id, "event"
+                    ),
+                    "state_topic": mqtt_topic(
+                        runtime_config, channel.channel_id, "state"
+                    ),
+                    "set_topic": mqtt_topic(
+                        runtime_config, channel.channel_id, "config", "set"
+                    ),
+                    "result_topic": mqtt_topic(
+                        runtime_config, channel.channel_id, "config", "result"
+                    ),
+                    "availability_topic": mqtt_topic(
+                        runtime_config, channel.channel_id, "availability"
+                    ),
                 }
             )
         payload["switch"] = {
@@ -222,19 +263,13 @@ def build_runtime_meta_payload(runtime_config, *, version, active_broker=""):
 def _display_metrics_for_meta(sensor):
     metrics = tuple(getattr(getattr(sensor, "display", None), "metrics", ()) or ())
     return [
-        str(metric or "").strip()
-        for metric in metrics
-        if str(metric or "").strip()
+        str(metric or "").strip() for metric in metrics if str(metric or "").strip()
     ]
 
 
 def _display_styles_for_meta(sensor):
     styles = tuple(getattr(getattr(sensor, "display", None), "styles", ()) or ())
-    return [
-        str(style or "").strip()
-        for style in styles
-        if str(style or "").strip()
-    ]
+    return [str(style or "").strip() for style in styles if str(style or "").strip()]
 
 
 def _obfuscated_password(password, runtime_config):
@@ -278,10 +313,15 @@ def build_homeassistant_discovery_plan(
     previous_topics=None,
 ):
     """Build HA discovery messages plus stale retained-topic cleanup."""
-    if str(getattr(runtime_config, "active_profile", "") or "").strip().lower() != "homeassistant":
+    if (
+        str(getattr(runtime_config, "active_profile", "") or "").strip().lower()
+        != "homeassistant"
+    ):
         return ()
 
-    discovery_prefix = str(getattr(runtime_config.homeassistant, "discovery_prefix", "") or "homeassistant").strip()
+    discovery_prefix = str(
+        getattr(runtime_config.homeassistant, "discovery_prefix", "") or "homeassistant"
+    ).strip()
     if not discovery_prefix:
         discovery_prefix = "homeassistant"
     device = _ha_device_block(runtime_config)
@@ -324,12 +364,16 @@ def build_homeassistant_discovery_plan(
             if object_id in used_object_ids:
                 object_id = "{}_{}".format(object_id, _short_hash(metric_text))
             used_object_ids.add(object_id)
-            topic = "{}/sensor/{}/{}/config".format(discovery_prefix, base_id, object_id)
+            topic = "{}/sensor/{}/{}/config".format(
+                discovery_prefix, base_id, object_id
+            )
             payload = {
                 "name": "{} {}".format(base_id, metric_text),
                 "unique_id": "{}_{}".format(base_id, object_id),
                 "state_topic": sensor_data_topic,
-                "value_template": "{{{{ value_json['values'].get('{}', '') }}}}".format(metric_text),
+                "value_template": "{{{{ value_json['values'].get('{}', '') }}}}".format(
+                    metric_text
+                ),
                 "availability_topic": availability_topic,
                 "availability_template": "{{ value_json['status'] }}",
                 "payload_available": "online",
@@ -350,17 +394,23 @@ def build_homeassistant_discovery_plan(
             if not channel_id:
                 continue
             object_id = _slugify(channel_id)
-            topic = "{}/switch/{}/{}/config".format(discovery_prefix, base_id, object_id)
+            topic = "{}/switch/{}/{}/config".format(
+                discovery_prefix, base_id, object_id
+            )
             payload = {
                 "name": "{} {}".format(base_id, channel.label or channel_id),
                 "unique_id": "{}_{}".format(base_id, object_id),
                 "state_topic": mqtt_topic(runtime_config, channel_id, "state"),
-                "command_topic": mqtt_topic(runtime_config, channel_id, "config", "set"),
+                "command_topic": mqtt_topic(
+                    runtime_config, channel_id, "config", "set"
+                ),
                 "payload_on": "ON",
                 "payload_off": "OFF",
                 "state_on": "ON",
                 "state_off": "OFF",
-                "availability_topic": mqtt_topic(runtime_config, channel_id, "availability"),
+                "availability_topic": mqtt_topic(
+                    runtime_config, channel_id, "availability"
+                ),
                 "availability_template": "{{ value_json['status'] }}",
                 "payload_available": "online",
                 "payload_not_available": "offline",
@@ -480,7 +530,9 @@ def build_calibration_result_payload(
     return payload
 
 
-def build_calibration_status_payload(runtime_config, *, status="idle", calibrated=False, extra=None):
+def build_calibration_status_payload(
+    runtime_config, *, status="idle", calibrated=False, extra=None
+):
     sensor = runtime_config.sensor
     payload = {
         "schema": "nodus-calibration-status/v1",

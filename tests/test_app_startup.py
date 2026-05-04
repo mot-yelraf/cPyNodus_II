@@ -6,16 +6,21 @@ from types import SimpleNamespace
 
 from cpynodus_ii.app import (
     _load_settings_for_startup,
+    _load_startup_ota_state,
+    _mark_ota_applied_after_boot,
     _mark_startup_warm_rebooted,
+    _ota_state_path,
     _persist_learned_broker_ip,
     _read_startup_warm_reboot_marker,
     _resolve_startup_plan,
+    _should_enter_ota_mode,
     _should_fallback_to_ap,
-    _startup_warm_reboot_ready_reason,
     _startup_ap_fallback_reason,
+    _startup_warm_reboot_ready_reason,
 )
 from cpynodus_ii.core.config import MQTTConfig, NetworkConfig, RuntimeConfig
 from cpynodus_ii.core.obfuscation import PASSWORD_OBF_PREFIX
+from cpynodus_ii.ota import FwUpdateState, save_ota_state
 
 
 def test_resolve_startup_plan_allows_test_override_for_sensorius_without_web():
@@ -68,6 +73,69 @@ def test_load_settings_for_startup_skips_write_paths_on_rofs(monkeypatch):
     assert fs_writable is False
     assert profile_reset_requested is False
     assert calls == []
+
+
+def test_startup_ota_state_loads_from_private_state_file(tmp_path):
+    save_ota_state(
+        FwUpdateState(
+            prior_profile="homeassistant",
+            package_id="ota-tagA-to-tagB",
+            phase="requested",
+        ),
+        _ota_state_path(tmp_path),
+    )
+
+    state = _load_startup_ota_state(tmp_path)
+
+    assert state.prior_profile == "homeassistant"
+    assert state.package_id == "ota-tagA-to-tagB"
+    assert state.phase == "requested"
+
+
+def test_should_enter_ota_mode_requires_rwfs_and_requested_or_ready_state():
+    requested = FwUpdateState(phase="requested")
+    ready = FwUpdateState(phase="ready")
+    invalid = FwUpdateState(phase="invalid")
+
+    assert _should_enter_ota_mode(requested, True) is True
+    assert _should_enter_ota_mode(ready, True) is True
+    assert _should_enter_ota_mode(requested, False) is False
+    assert _should_enter_ota_mode(invalid, True) is False
+    assert _should_enter_ota_mode(None, True) is False
+
+
+def test_mark_ota_applied_after_boot_persists_success_state(tmp_path):
+    pending = FwUpdateState(
+        prior_profile="homeassistant",
+        package_id="ota-tagA-to-tagB",
+        phase="applied_pending_boot",
+    )
+
+    applied = _mark_ota_applied_after_boot(pending, tmp_path, True)
+    loaded = _load_startup_ota_state(tmp_path)
+
+    assert applied.phase == "applied"
+    assert applied.prior_profile == "homeassistant"
+    assert applied.package_id == "ota-tagA-to-tagB"
+    assert loaded == applied
+
+
+def test_mark_ota_applied_after_boot_leaves_non_pending_state_unchanged(tmp_path):
+    ready = FwUpdateState(package_id="ota-tagA-to-tagB", phase="ready")
+
+    result = _mark_ota_applied_after_boot(ready, tmp_path, True)
+
+    assert result is ready
+    assert _load_startup_ota_state(tmp_path) is None
+
+
+def test_mark_ota_applied_after_boot_skips_write_on_rofs(tmp_path):
+    pending = FwUpdateState(package_id="ota-tagA-to-tagB", phase="applied_pending_boot")
+
+    result = _mark_ota_applied_after_boot(pending, tmp_path, False)
+
+    assert result is pending
+    assert _load_startup_ota_state(tmp_path) is None
 
 
 def test_persist_learned_broker_ip_writes_settings_and_obfuscates_password(tmp_path):
@@ -134,7 +202,9 @@ def test_startup_warm_reboot_ready_after_ntp_synced():
         mqtt=MQTTConfig(broker="samhain.local", port=1883),
     )
     network_stack = SimpleNamespace(phase="ready", socket_pool=object())
-    mqtt_adapter = SimpleNamespace(active_broker="samhain.local", broker="samhain.local")
+    mqtt_adapter = SimpleNamespace(
+        active_broker="samhain.local", broker="samhain.local"
+    )
     ntp_state = SimpleNamespace(phase="synced")
     plan = SimpleNamespace(mqtt_enabled=True)
 
@@ -156,7 +226,9 @@ def test_startup_warm_reboot_waits_for_broker_dns(monkeypatch):
         mqtt=MQTTConfig(broker="samhain.local", port=1883),
     )
     network_stack = SimpleNamespace(phase="ready", socket_pool=object())
-    mqtt_adapter = SimpleNamespace(active_broker="samhain.local", broker="samhain.local")
+    mqtt_adapter = SimpleNamespace(
+        active_broker="samhain.local", broker="samhain.local"
+    )
     ntp_state = SimpleNamespace(phase="deferred")
     plan = SimpleNamespace(mqtt_enabled=True)
 
@@ -183,7 +255,9 @@ def test_startup_warm_reboot_ready_after_broker_dns(monkeypatch):
         mqtt=MQTTConfig(broker="samhain.local", port=1883),
     )
     network_stack = SimpleNamespace(phase="ready", socket_pool=object())
-    mqtt_adapter = SimpleNamespace(active_broker="samhain.local", broker="samhain.local")
+    mqtt_adapter = SimpleNamespace(
+        active_broker="samhain.local", broker="samhain.local"
+    )
     ntp_state = SimpleNamespace(phase="deferred")
     plan = SimpleNamespace(mqtt_enabled=True)
 
@@ -207,10 +281,13 @@ def test_startup_warm_reboot_ready_after_broker_dns(monkeypatch):
 def test_should_fallback_to_ap_when_nodusweb_has_no_ssid():
     runtime_config = RuntimeConfig(active_profile="nodusweb")
 
-    assert _should_fallback_to_ap(
-        runtime_config,
-        SimpleNamespace(phase="error"),
-    ) is True
+    assert (
+        _should_fallback_to_ap(
+            runtime_config,
+            SimpleNamespace(phase="error"),
+        )
+        is True
+    )
 
 
 def test_should_fallback_to_ap_when_nodusweb_has_no_password():
@@ -219,10 +296,13 @@ def test_should_fallback_to_ap_when_nodusweb_has_no_password():
         network=replace(RuntimeConfig().network, ssid="PeaceHill", password=""),
     )
 
-    assert _should_fallback_to_ap(
-        runtime_config,
-        SimpleNamespace(phase="ready"),
-    ) is True
+    assert (
+        _should_fallback_to_ap(
+            runtime_config,
+            SimpleNamespace(phase="ready"),
+        )
+        is True
+    )
 
 
 def test_should_not_fallback_to_ap_when_station_error_keeps_lan_ip():

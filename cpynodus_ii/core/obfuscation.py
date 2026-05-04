@@ -8,7 +8,6 @@ cryptographic secrecy.
 import binascii
 import hashlib
 
-
 PASSWORD_OBF_PREFIX = "obf1"
 PASSWORD_OBF_NONCE_LEN = 8
 
@@ -58,7 +57,9 @@ def encode_password(cleartext, *, hostname="", nonce=None):
         return cleartext
     raw = cleartext.encode("utf-8")
     nonce = bytes(nonce) if nonce is not None else b"\x00" * PASSWORD_OBF_NONCE_LEN
-    stream = _obf_keystream(nonce, len(raw), key=_build_obf_key(include_hostname=False, hostname=hostname))
+    stream = _obf_keystream(
+        nonce, len(raw), key=_build_obf_key(include_hostname=False, hostname=hostname)
+    )
     cipher = bytes((raw[i] ^ stream[i]) for i in range(len(raw)))
     return "{}:{}:{}".format(
         PASSWORD_OBF_PREFIX,

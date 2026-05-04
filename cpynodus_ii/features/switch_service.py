@@ -113,7 +113,9 @@ def apply_switch_state(switch_service, *, channel_id=None, channel_key=None, sta
             errors=switch_service.errors,
         )
 
-    channel = _find_channel(switch_service, channel_id=channel_id, channel_key=channel_key)
+    channel = _find_channel(
+        switch_service, channel_id=channel_id, channel_key=channel_key
+    )
     if channel is None:
         return SwitchApplyResult(
             phase="error",

@@ -8,7 +8,6 @@ soft reload after an unhandled runtime failure.
 
 import sys
 
-
 if getattr(sys.implementation, "name", "") != "circuitpython":
     import os
 

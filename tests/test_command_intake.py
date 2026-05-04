@@ -21,15 +21,18 @@ from cpynodus_ii.core.mqtt import MQTTTransport
 from cpynodus_ii.features import (
     parse_calibration_command,
     parse_device_config_command,
+    parse_fwupdate_command,
     parse_switch_command,
     process_calibration_message,
     process_device_config_message,
+    process_fwupdate_message,
     process_inbound_messages,
     process_soil_calibration_session,
     process_switch_command_message,
     subscribe_runtime_topics,
 )
 from cpynodus_ii.features.web_services import save_onboarding_state
+from cpynodus_ii.ota import load_ota_state
 
 
 def _runtime_config():
@@ -68,7 +71,9 @@ def _soil_runtime_config():
             sensor_id="soil-abc123",
             serial_number="abc123",
             location="Bed A",
-            modbus=SoilModbusConfig(uart_tx="GP4", uart_rx="GP5", baud=4800, timeout_s=0.3, address=1),
+            modbus=SoilModbusConfig(
+                uart_tx="GP4", uart_rx="GP5", baud=4800, timeout_s=0.3, address=1
+            ),
             soil_registers=SoilRegisterMap(),
             soil_scales=SoilScaleMap(),
             soil_thresholds=SoilThresholdConfig(),
@@ -119,6 +124,7 @@ def test_subscribe_runtime_topics_tracks_all_switch_channels():
     assert topics == (
         "nodus/switch-x943fm/config/set",
         "nodus/switch-x943fm/calibration/set",
+        "nodus/switch-x943fm/fwupdate",
         "nodus/S1-x943fm/config/set",
         "nodus/S2-x943fm/config/set",
     )
@@ -137,8 +143,94 @@ def test_subscribe_runtime_topics_uses_configured_base_topic():
     assert topics == (
         "greenhouse/switch-x943fm/config/set",
         "greenhouse/switch-x943fm/calibration/set",
+        "greenhouse/switch-x943fm/fwupdate",
         "greenhouse/S1-x943fm/config/set",
         "greenhouse/S2-x943fm/config/set",
+    )
+
+
+def test_parse_fwupdate_command_accepts_prepare_payload():
+    command = parse_fwupdate_command(
+        '{"message_id":"fw-1","command":"prepare","package_id":"ota-tagA-to-tagB"}'
+    )
+
+    assert command.message_id == "fw-1"
+    assert command.command == "prepare"
+    assert command.package_id == "ota-tagA-to-tagB"
+
+
+def test_process_fwupdate_message_persists_prepare_state(tmp_path):
+    transport = MQTTTransport("broker.local", 1883)
+    runtime_config = _runtime_config()
+
+    result = process_fwupdate_message(
+        transport,
+        runtime_config,
+        topic="nodus/switch-x943fm/fwupdate",
+        payload_text=(
+            '{"message_id":"fw-1","command":"prepare",'
+            '"package_id":"ota-tagA-to-tagB"}'
+        ),
+        settings_root=tmp_path,
+    )
+
+    state = load_ota_state(str(tmp_path / "_ota" / "state.json"))
+
+    assert result.phase == "published"
+    assert result.command_type == "fwupdate"
+    assert result.message_id == "fw-1"
+    assert result.persistence_mode == "persisted"
+    assert result.reboot_requested is True
+    assert state.prior_profile == runtime_config.active_profile
+    assert state.package_id == "ota-tagA-to-tagB"
+    assert state.phase == "requested"
+    assert [message.topic for message in transport.published_messages] == [
+        "nodus/switch-x943fm/fwupdate/ack",
+        "nodus/switch-x943fm/fwupdate/result",
+    ]
+    assert transport.published_messages[0].payload["accepted"] is True
+    assert transport.published_messages[1].payload["prepared"] is True
+
+
+def test_process_fwupdate_message_rejects_missing_writable_root():
+    transport = MQTTTransport("broker.local", 1883)
+
+    result = process_fwupdate_message(
+        transport,
+        _runtime_config(),
+        topic="nodus/switch-x943fm/fwupdate",
+        payload_text=(
+            '{"message_id":"fw-1","command":"prepare",'
+            '"package_id":"ota-tagA-to-tagB"}'
+        ),
+        settings_root=None,
+    )
+
+    assert result.phase == "error"
+    assert result.errors == ("read_only_filesystem",)
+    assert transport.published_messages[1].payload["prepared"] is False
+    assert transport.published_messages[1].payload["error"] == "read_only_filesystem"
+
+
+def test_process_inbound_messages_handles_fwupdate_prepare(tmp_path):
+    transport = MQTTTransport("broker.local", 1883)
+    transport.receive(
+        "nodus/switch-x943fm/fwupdate",
+        '{"message_id":"fw-1","command":"prepare","package_id":"ota-tagA-to-tagB"}',
+    )
+
+    results = process_inbound_messages(
+        transport,
+        _runtime_config(),
+        _switch_service(),
+        settings_root=tmp_path,
+    )
+
+    assert len(results) == 1
+    assert results[0].command_type == "fwupdate"
+    assert results[0].phase == "published"
+    assert load_ota_state(str(tmp_path / "_ota" / "state.json")).package_id == (
+        "ota-tagA-to-tagB"
     )
 
 
@@ -209,7 +301,10 @@ def test_process_switch_command_message_accepts_device_style_updates_payload():
     assert transport.published_messages[0].payload["message_id"] == "cfg-1"
     assert transport.published_messages[2].payload["state"] == "ON"
     assert transport.published_messages[3].payload == "ON"
-    assert transport.published_messages[4].payload["updates"][0]["key"] == "SWITCH_1_LAST_STATE"
+    assert (
+        transport.published_messages[4].payload["updates"][0]["key"]
+        == "SWITCH_1_LAST_STATE"
+    )
 
 
 def test_process_switch_command_message_uses_configured_base_topic():
@@ -275,7 +370,9 @@ def test_process_device_config_message_clears_onboarding_state_after_success():
     transport = MQTTTransport("broker.local", 1883)
     with TemporaryDirectory() as tmpdir:
         root = Path(tmpdir)
-        (root / "settings.toml").write_text("[Network]\nHOSTNAME = \"old\"\n", encoding="utf-8")
+        (root / "settings.toml").write_text(
+            '[Network]\nHOSTNAME = "old"\n', encoding="utf-8"
+        )
         save_onboarding_state(tmpdir, {"onboard_token": "expected"})
         result = process_device_config_message(
             transport,
@@ -299,7 +396,10 @@ def test_process_calibration_message_starts_soil_ph_session():
     )
 
     assert result.phase == "published"
-    assert transport.published_messages[1].topic == "nodus/soil-abc123/event/calibration_status"
+    assert (
+        transport.published_messages[1].topic
+        == "nodus/soil-abc123/event/calibration_status"
+    )
     assert transport.published_messages[2].payload["started"] is True
 
 
@@ -318,7 +418,17 @@ def test_process_soil_calibration_session_samples_and_completes():
         interface="modbus_rs485",
         driver_kind="fake",
         driver=None,
-        transport=SimpleNamespace(read_registers=lambda reg, count: {0: 250, 1: 200, 2: 100, 3: 65, 4: 1, 5: 2, 6: 3}[reg]),
+        transport=SimpleNamespace(
+            read_registers=lambda reg, count: {
+                0: 250,
+                1: 200,
+                2: 100,
+                3: 65,
+                4: 1,
+                5: 2,
+                6: 3,
+            }[reg]
+        ),
         errors=(),
     )
     runtime_config = _soil_runtime_config()
@@ -342,7 +452,9 @@ def test_process_soil_calibration_session_samples_and_completes():
     assert "nodus/soil-abc123/event/calibration_sample" in topics
     assert "nodus/soil-abc123/event/calibration_progress" in topics
     assert "nodus/soil-abc123/event/calibration_result" in topics
-    assert transport.published_messages[-2].topic == "nodus/soil-abc123/calibration/result"
+    assert (
+        transport.published_messages[-2].topic == "nodus/soil-abc123/calibration/result"
+    )
     assert runtime_config.sensor.calibration_device.soil_ph_cal_val != 0.0
 
 
@@ -479,8 +591,13 @@ def test_process_calibration_message_publishes_result_and_meta_patch():
 
     assert result.phase == "published"
     assert result.published_count == 3
-    assert transport.published_messages[0].topic == "nodus/switch-x943fm/calibration/ack"
-    assert transport.published_messages[1].topic == "nodus/switch-x943fm/calibration/result"
+    assert (
+        transport.published_messages[0].topic == "nodus/switch-x943fm/calibration/ack"
+    )
+    assert (
+        transport.published_messages[1].topic
+        == "nodus/switch-x943fm/calibration/result"
+    )
     assert transport.published_messages[2].topic == "nodus/switch-x943fm/meta/patch"
 
 

@@ -7,7 +7,6 @@ rest of the runtime.
 
 from dataclasses import dataclass
 
-
 DEFAULT_NTP_SERVER = "us.pool.ntp.org"
 DEFAULT_NTP_MAX_DNS_FAILURES = 3
 DEFAULT_NTP_COOLDOWN_S = 3600.0
@@ -167,9 +166,7 @@ def maybe_sync_ntp(
             errors=tuple(errors),
         )
 
-    phase = (
-        "deferred" if _all_dns_not_found(errors) else _failure_phase(errors)
-    )
+    phase = "deferred" if _all_dns_not_found(errors) else _failure_phase(errors)
     return NTPResult(
         phase=phase,
         state=NTPState(
@@ -188,7 +185,9 @@ def maybe_sync_ntp(
 
 
 def _ntp_targets(time_config):
-    primary = str(getattr(time_config, "ntp_server", "") or "").strip() or DEFAULT_NTP_SERVER
+    primary = (
+        str(getattr(time_config, "ntp_server", "") or "").strip() or DEFAULT_NTP_SERVER
+    )
     fallback = str(getattr(time_config, "ntp_server_ip", "") or "").strip()
     if fallback and fallback != primary:
         return (primary, fallback)

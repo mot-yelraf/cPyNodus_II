@@ -1,11 +1,17 @@
 """Tests for one-pass steady-state runtime coordination."""
 
-from types import SimpleNamespace
 from pathlib import Path
+from types import SimpleNamespace
 
-from cpynodus_ii.core.config import DetectedSensor, RuntimeConfig, SwitchChannelConfig, SwitchConfig
+from cpynodus_ii.core.config import (
+    DetectedSensor,
+    RuntimeConfig,
+    SwitchChannelConfig,
+    SwitchConfig,
+)
 from cpynodus_ii.core.mqtt import MQTTTransport
 from cpynodus_ii.features import SteadyState, run_steady_state_iteration
+from cpynodus_ii.ota import FwUpdateState, save_ota_state
 
 
 def _ready_switch_service():
@@ -105,7 +111,9 @@ def test_steady_state_iteration_skips_sensor_cycle_when_polling_disabled():
     result = run_steady_state_iteration(
         transport,
         runtime_config,
-        SimpleNamespace(phase="inactive", device_id="", channel_count=0, channels=(), errors=()),
+        SimpleNamespace(
+            phase="inactive", device_id="", channel_count=0, channels=(), errors=()
+        ),
         None,
         state=SteadyState(sensor_interval_s=60.0),
         version="0.1.0",
@@ -136,12 +144,16 @@ def test_steady_state_iteration_loads_onboarding_state_for_startup_publish(tmp_p
             serial_number="x943fm",
         ),
     )
-    Path(tmp_path / "onboarding_state.json").write_text('{"onboard_token":"token-123"}', encoding="utf-8")
+    Path(tmp_path / "onboarding_state.json").write_text(
+        '{"onboard_token":"token-123"}', encoding="utf-8"
+    )
 
     result = run_steady_state_iteration(
         transport,
         runtime_config,
-        SimpleNamespace(phase="inactive", device_id="", channel_count=0, channels=(), errors=()),
+        SimpleNamespace(
+            phase="inactive", device_id="", channel_count=0, channels=(), errors=()
+        ),
         None,
         state=SteadyState(sensor_interval_s=60.0),
         version="v0.26.114.1",
@@ -159,3 +171,103 @@ def test_steady_state_iteration_loads_onboarding_state_for_startup_publish(tmp_p
         if message.topic == "nodus/aqi-x943fm/onboard/hello"
     )
     assert hello_message.payload["onboard_token"] == "token-123"
+
+
+def test_steady_state_iteration_reports_applied_ota_on_startup_publish(tmp_path):
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connect_requested()
+    transport.mark_connected()
+    runtime_config = RuntimeConfig(
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            device="aqi",
+            sensor_id="aqi-x943fm",
+        ),
+    )
+    save_ota_state(
+        FwUpdateState(
+            prior_profile="homeassistant",
+            package_id="ota-tagA-to-tagB",
+            phase="applied",
+        ),
+        str(tmp_path / "_ota" / "state.json"),
+    )
+
+    result = run_steady_state_iteration(
+        transport,
+        runtime_config,
+        SimpleNamespace(
+            phase="inactive", device_id="", channel_count=0, channels=(), errors=()
+        ),
+        None,
+        state=SteadyState(sensor_interval_s=60.0),
+        version="v0.26.123.12",
+        now_monotonic=10.0,
+        settings_root=str(tmp_path),
+    )
+
+    assert result.startup_publish_phase == "published"
+    assert result.ota_status_phase == "published"
+    assert result.ota_status_published_count == 1
+    ota_message = next(
+        message
+        for message in transport.published_messages
+        if message.topic == "nodus/aqi-x943fm/fwupdate/result"
+    )
+    assert ota_message.retain is False
+    assert ota_message.payload["schema"] == "nodus-fwupdate-result/v1"
+    assert ota_message.payload["prepared"] is True
+    assert ota_message.payload["applied"] is True
+    assert ota_message.payload["phase"] == "applied"
+    assert ota_message.payload["package_id"] == "ota-tagA-to-tagB"
+    assert ota_message.payload["prior_profile"] == "homeassistant"
+
+
+def test_steady_state_iteration_skips_ota_report_after_initial_connection(tmp_path):
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connect_requested()
+    transport.mark_connected()
+    runtime_config = RuntimeConfig(
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            device="aqi",
+            sensor_id="aqi-x943fm",
+        ),
+    )
+    save_ota_state(
+        FwUpdateState(package_id="ota-tagA-to-tagB", phase="applied"),
+        str(tmp_path / "_ota" / "state.json"),
+    )
+
+    first = run_steady_state_iteration(
+        transport,
+        runtime_config,
+        SimpleNamespace(
+            phase="inactive", device_id="", channel_count=0, channels=(), errors=()
+        ),
+        None,
+        state=SteadyState(sensor_interval_s=60.0),
+        version="v0.26.123.12",
+        now_monotonic=10.0,
+        settings_root=str(tmp_path),
+    )
+    published_after_first = len(transport.published_messages)
+    second = run_steady_state_iteration(
+        transport,
+        runtime_config,
+        SimpleNamespace(
+            phase="inactive", device_id="", channel_count=0, channels=(), errors=()
+        ),
+        None,
+        state=first.state,
+        version="v0.26.123.12",
+        now_monotonic=11.0,
+        settings_root=str(tmp_path),
+    )
+
+    assert first.ota_status_phase == "published"
+    assert second.ota_status_phase == "skipped"
+    assert second.ota_status_published_count == 0
+    assert len(transport.published_messages) == published_after_first

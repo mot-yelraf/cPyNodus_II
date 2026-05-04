@@ -39,7 +39,9 @@ def test_settings_from_directory_loads_switch_only_runtime_config():
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for name in ("settings.toml", "switch.toml"):
-            (tmpdir_path / name).write_text((docs_root / name).read_text(), encoding="utf-8")
+            (tmpdir_path / name).write_text(
+                (docs_root / name).read_text(), encoding="utf-8"
+            )
 
         settings = Settings.from_directory(tmpdir_path)
         runtime_config = settings.runtime_config()
@@ -70,7 +72,9 @@ def test_settings_from_directory_loads_sensor_switch_runtime_config():
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for name in ("settings.toml", "switch.toml", "sensor_i2c.toml"):
-            (tmpdir_path / name).write_text((docs_root / name).read_text(), encoding="utf-8")
+            (tmpdir_path / name).write_text(
+                (docs_root / name).read_text(), encoding="utf-8"
+            )
 
         settings = Settings.from_directory(tmpdir_path)
         runtime_config = settings.runtime_config()
@@ -119,19 +123,30 @@ def test_settings_from_directory_prefers_soil_sensor_file_when_soil_config_is_ac
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         (tmpdir_path / "settings.toml").write_text(
-            "[Profile]\nACTIVE_PROFILE = \"homeassistant\"\n[MQTT]\nBROKER = \"broker.local\"\nPORT = 1885\n",
+            (
+                '[Profile]\nACTIVE_PROFILE = "homeassistant"\n'
+                '[MQTT]\nBROKER = "broker.local"\nPORT = 1885\n'
+            ),
             encoding="utf-8",
         )
         (tmpdir_path / "sensor_i2c.toml").write_text(
-            "[Sensor]\nDEVICE = \"aqi\"\n",
+            '[Sensor]\nDEVICE = "aqi"\n',
             encoding="utf-8",
         )
         (tmpdir_path / "sensor_soil.toml").write_text(
             (
-                "[Sensor]\nDEVICE = \"soil\"\nSENSOR_ID = \"soil-1\"\nSERIAL_NUM = \"abc123\"\nLOCATION = \"Bed A\"\n"
-                "[Modbus]\nUART_TX = \"GP4\"\nUART_RX = \"GP5\"\nMODBUS_BAUD = 4800\nMODBUS_TIMEOUT_S = 0.5\nMODBUS_ADDR = 3\nSOIL_VARIANT = \"soil_7in1\"\n"
-                "[SoilSensorRegisters]\nTEMPERATURE_REG = 11\nMOISTURE_REG = 12\nEC_REG = 13\nPH_REG = 14\nN_REG = 15\nP_REG = 16\nK_REG = 17\n"
-                "[SoilSensorScales]\nMOISTURE_SCALE = 20.0\nTEMPERATURE_SCALE = 30.0\nEC_SCALE = 2.0\nPH_SCALE = 40.0\nN_SCALE = 5.0\nP_SCALE = 6.0\nK_SCALE = 7.0\n"
+                '[Sensor]\nDEVICE = "soil"\nSENSOR_ID = "soil-1"\n'
+                'SERIAL_NUM = "abc123"\nLOCATION = "Bed A"\n'
+                '[Modbus]\nUART_TX = "GP4"\nUART_RX = "GP5"\n'
+                "MODBUS_BAUD = 4800\nMODBUS_TIMEOUT_S = 0.5\n"
+                'MODBUS_ADDR = 3\nSOIL_VARIANT = "soil_7in1"\n'
+                "[SoilSensorRegisters]\nTEMPERATURE_REG = 11\n"
+                "MOISTURE_REG = 12\nEC_REG = 13\nPH_REG = 14\n"
+                "N_REG = 15\nP_REG = 16\nK_REG = 17\n"
+                "[SoilSensorScales]\nMOISTURE_SCALE = 20.0\n"
+                "TEMPERATURE_SCALE = 30.0\nEC_SCALE = 2.0\n"
+                "PH_SCALE = 40.0\nN_SCALE = 5.0\nP_SCALE = 6.0\n"
+                "K_SCALE = 7.0\n"
             ),
             encoding="utf-8",
         )
@@ -175,19 +190,19 @@ def test_settings_from_directory_loads_dual_soil_modbus_channels():
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         (tmpdir_path / "settings.toml").write_text(
-            "[Profile]\nACTIVE_PROFILE = \"homeassistant\"\n",
+            '[Profile]\nACTIVE_PROFILE = "homeassistant"\n',
             encoding="utf-8",
         )
         (tmpdir_path / "sensor_soil.toml").write_text(
             (
-                "[Sensor]\nDEVICE = \"soil\"\nSENSOR_ID = \"soil-1\"\n"
-                "[Modbus]\nUART_TX = \"GP0\"\nUART_RX = \"GP1\"\n"
+                '[Sensor]\nDEVICE = "soil"\nSENSOR_ID = "soil-1"\n'
+                '[Modbus]\nUART_TX = "GP0"\nUART_RX = "GP1"\n'
                 "MODBUS_BAUD = 9600\nMODBUS_ADDR = 1\n"
-                "[Modbus.CH1]\nUART_TX = \"GP0\"\nUART_RX = \"GP1\"\n"
+                '[Modbus.CH1]\nUART_TX = "GP0"\nUART_RX = "GP1"\n'
                 "MODBUS_BAUD = 9600\nMODBUS_ADDR = 1\n"
-                "[Modbus.CH2]\nUART_TX = \"GP4\"\nUART_RX = \"GP5\"\n"
+                '[Modbus.CH2]\nUART_TX = "GP4"\nUART_RX = "GP5"\n'
                 "MODBUS_BAUD = 4800\nMODBUS_ADDR = 3\n"
-                "SOIL_VARIANT = \"soil_7in1\"\n"
+                'SOIL_VARIANT = "soil_7in1"\n'
             ),
             encoding="utf-8",
         )
@@ -207,7 +222,7 @@ def test_runtime_config_keeps_minimal_defaults_for_missing_sections():
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         (tmpdir_path / "settings.toml").write_text(
-            "[Profile]\nACTIVE_PROFILE = \"nodusweb\"\n",
+            '[Profile]\nACTIVE_PROFILE = "nodusweb"\n',
             encoding="utf-8",
         )
 
@@ -236,7 +251,9 @@ def test_switch_only_runtime_config_parses_single_channel_details():
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for name in ("settings.toml", "switch.toml"):
-            (tmpdir_path / name).write_text((docs_root / name).read_text(), encoding="utf-8")
+            (tmpdir_path / name).write_text(
+                (docs_root / name).read_text(), encoding="utf-8"
+            )
 
         settings = Settings.from_directory(tmpdir_path)
         runtime_config = settings.runtime_config()

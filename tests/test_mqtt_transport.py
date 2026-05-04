@@ -1,13 +1,5 @@
 """Tests for the lightweight MQTT transport facade."""
 
-from pathlib import Path
-import sys
-
-ROOT = Path(__file__).resolve().parents[1]
-ROOT_STR = str(ROOT)
-if ROOT_STR not in sys.path:
-    sys.path.insert(0, ROOT_STR)
-
 from cpynodus_ii.core.mqtt import MQTTTransport
 from cpynodus_ii.core.settings import Settings
 
@@ -16,6 +8,7 @@ def _run_direct_tests():
     tests = (
         test_transport_reads_target_from_settings,
         test_transport_tracks_connect_request_without_feature_logic,
+        test_transport_subscribe_deduplicates_topics,
         test_transport_compact_discards_synced_entries,
     )
     for test in tests:
@@ -38,6 +31,15 @@ def test_transport_tracks_connect_request_without_feature_logic():
     assert transport.connect_requested is False
     transport.mark_connect_requested()
     assert transport.connect_requested is True
+
+
+def test_transport_subscribe_deduplicates_topics():
+    transport = MQTTTransport("broker.local", 1883)
+
+    assert transport.subscribe("nodus/a/set") == "nodus/a/set"
+    assert transport.subscribe("nodus/a/set") == "nodus/a/set"
+
+    assert transport.subscriptions == ["nodus/a/set"]
 
 
 def test_transport_compact_discards_synced_entries():

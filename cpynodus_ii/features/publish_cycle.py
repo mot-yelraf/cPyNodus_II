@@ -19,6 +19,7 @@ from cpynodus_ii.features.payloads import (
     build_switch_state_payload,
     mqtt_topic,
 )
+from cpynodus_ii.ota import load_ota_state
 
 
 @dataclass(frozen=True)
@@ -112,7 +113,9 @@ def publish_startup_cycle(
     discovery_plan = build_homeassistant_discovery_plan(
         runtime_config,
         sensor_snapshot=sensor_snapshot,
-        retain=bool(getattr(runtime_config.homeassistant, "publish_discovery_retain", True)),
+        retain=bool(
+            getattr(runtime_config.homeassistant, "publish_discovery_retain", True)
+        ),
         previous_topics=getattr(transport, "_ha_last_retained_discovery_topics", ()),
     )
     for topic, payload, retain_flag, is_clear in discovery_plan:
@@ -120,14 +123,21 @@ def publish_startup_cycle(
         topics.append(message.topic)
         if not is_clear:
             continue
-    if str(getattr(runtime_config, "active_profile", "") or "").strip().lower() == "homeassistant":
+    if (
+        str(getattr(runtime_config, "active_profile", "") or "").strip().lower()
+        == "homeassistant"
+    ):
         retained_topics = {
-            topic for topic, _payload, retain_flag, is_clear in discovery_plan if retain_flag and not is_clear
+            topic
+            for topic, _payload, retain_flag, is_clear in discovery_plan
+            if retain_flag and not is_clear
         }
         transport._ha_last_retained_discovery_topics = retained_topics
 
     if runtime_config.switch.present:
-        state_payloads = build_switch_state_payload(runtime_config, switch_snapshot or {})
+        state_payloads = build_switch_state_payload(
+            runtime_config, switch_snapshot or {}
+        )
         for channel in runtime_config.switch.channels:
             payload = state_payloads[channel.key]
             message = transport.publish(
@@ -258,6 +268,54 @@ def publish_availability_refresh_cycle(transport, runtime_config):
     )
 
 
+def publish_ota_completion_report(transport, runtime_config, *, settings_root=None):
+    """Publish the post-reboot OTA result if an applied update is recorded."""
+    if not settings_root:
+        return PublishCycleResult(
+            phase="skipped",
+            published_count=0,
+            topics=(),
+            errors=(),
+        )
+    state = load_ota_state(_ota_state_path(settings_root))
+    if state is None:
+        return PublishCycleResult(
+            phase="skipped",
+            published_count=0,
+            topics=(),
+            errors=(),
+        )
+    if getattr(state, "phase", "") != "applied":
+        return PublishCycleResult(
+            phase="skipped",
+            published_count=0,
+            topics=(),
+            errors=(),
+        )
+    device_id = _device_id(runtime_config)
+    message = transport.publish(
+        mqtt_topic(runtime_config, device_id, "fwupdate", "result"),
+        {
+            "schema": "nodus-fwupdate-result/v1",
+            "message_id": "",
+            "prepared": True,
+            "applied": True,
+            "phase": "applied",
+            "package_id": str(getattr(state, "package_id", "") or ""),
+            "prior_profile": str(getattr(state, "prior_profile", "") or ""),
+            "error": "",
+            "timestamp": int(time()),
+        },
+        retain=False,
+    )
+    return PublishCycleResult(
+        phase="published",
+        published_count=1,
+        topics=(message.topic,),
+        errors=(),
+    )
+
+
 def publish_switch_result(transport, runtime_config, apply_result, *, message_id=""):
     """Publish a compact switch apply result and retained state update."""
     if apply_result.phase != "ready":
@@ -311,4 +369,17 @@ def publish_switch_result(transport, runtime_config, apply_result, *, message_id
 
 
 def _device_id(runtime_config):
-    return runtime_config.sensor.sensor_id or runtime_config.switch.device_id or runtime_config.network.hostname
+    return (
+        runtime_config.sensor.sensor_id
+        or runtime_config.switch.device_id
+        or runtime_config.network.hostname
+    )
+
+
+def _ota_state_path(root):
+    root_text = str(root or ".")
+    if root_text == "/":
+        return "/_ota/state.json"
+    if root_text.endswith("/"):
+        return "{}_ota/state.json".format(root_text)
+    return "{}/_ota/state.json".format(root_text)
