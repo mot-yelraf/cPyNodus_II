@@ -27,7 +27,7 @@ from cpynodus_ii.features.web_services import (
     clear_onboarding_state,
     load_onboarding_state,
 )
-from cpynodus_ii.ota import FwUpdateState, save_ota_state
+from cpynodus_ii.ota.state import FwUpdateState, save_ota_state
 
 
 @dataclass(frozen=True)

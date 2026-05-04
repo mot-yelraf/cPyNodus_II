@@ -4,7 +4,8 @@ import asyncio
 from types import SimpleNamespace
 
 from cpynodus_ii.core.config import RuntimeConfig
-from cpynodus_ii.ota import FwUpdateState, load_ota_state, run_ota_mode
+from cpynodus_ii.ota.runtime import run_ota_mode
+from cpynodus_ii.ota.state import FwUpdateState, load_ota_state
 from tests.test_ota_http import _FakeServerModule
 
 

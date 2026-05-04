@@ -208,7 +208,7 @@ def test_steady_state_refreshes_availability_on_interval():
         now_monotonic=26.0,
     )
     assert third.availability_refresh_phase == "published"
-    assert third.availability_refresh_published_count == 2
+    assert third.availability_refresh_published_count == 3
     assert third.state.last_availability_publish_at == 26.0
 
 

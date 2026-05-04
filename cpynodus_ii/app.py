@@ -47,7 +47,7 @@ from cpynodus_ii.features import (
     start_switch_service,
 )
 from cpynodus_ii.hardware import bind_sensor_hardware, bind_switch_hardware
-from cpynodus_ii.ota import FwUpdateState, load_ota_state, run_ota_mode, save_ota_state
+from cpynodus_ii.ota.state import FwUpdateState, load_ota_state, save_ota_state
 
 _STARTUP_WARM_REBOOT_NVM_INDEX = 1
 _STARTUP_WARM_REBOOT_MARKER = 1
@@ -129,6 +129,37 @@ def _transport_queue_summary(transport):
     except Exception:
         received = -1
     return "queues pub={} sub={} rx={}".format(published, subscriptions, received)
+
+
+def _mqtt_adapter_summary(adapter):
+    """Return compact MQTT adapter state for diagnostics."""
+    try:
+        published_index = int(getattr(adapter, "published_index", 0) or 0)
+    except Exception:
+        published_index = -1
+    try:
+        subscription_index = int(getattr(adapter, "subscription_index", 0) or 0)
+    except Exception:
+        subscription_index = -1
+    return "adapter pub_i={} sub_i={}".format(published_index, subscription_index)
+
+
+def _mqtt_sync_summary(sync_result, transport, *, source, before_queues):
+    """Return a compact MQTT sync diagnostic string."""
+    errors = ",".join(sync_result.errors) if sync_result.errors else "none"
+    return (
+        "sync source={} phase={} published={} subscribed={} before={} after={} "
+        "{} errors={}"
+    ).format(
+        str(source or "unknown"),
+        sync_result.phase,
+        sync_result.published_count,
+        sync_result.subscribed_count,
+        before_queues,
+        _transport_queue_summary(transport),
+        _mqtt_adapter_summary(sync_result.adapter),
+        errors,
+    )
 
 
 def _sensor_error_text(*parts):
@@ -502,6 +533,8 @@ async def main(*, startup_plan_override=None):
         fs_writable,
     )
     if _should_enter_ota_mode(ota_state, fs_writable):
+        from cpynodus_ii.ota.runtime import run_ota_mode
+
         await run_ota_mode(
             runtime_config,
             ota_state,
@@ -899,6 +932,7 @@ async def main(*, startup_plan_override=None):
                         await asyncio.sleep(1)
                         continue
                 transport.mark_connect_requested()
+                connect_started_at = time.monotonic()
                 connect_result = connect_mqtt_client(
                     mqtt_adapter,
                     transport,
@@ -927,27 +961,31 @@ async def main(*, startup_plan_override=None):
                                 else "none",
                             ),
                             start_monotonic=start_monotonic,
-                        )
+                    )
                     _print_log(
                         "mqtt",
-                        "connect phase={} broker={}".format(
+                        "connect phase={} broker={} elapsed_s={:.1f}".format(
                             connect_phase,
                             mqtt_adapter.active_broker or "none",
+                            time.monotonic() - connect_started_at,
                         ),
                         start_monotonic=start_monotonic,
                     )
+                    sync_before = _transport_queue_summary(transport)
                     sync_result = sync_transport_to_client(mqtt_adapter, transport)
                     mqtt_adapter = sync_result.adapter
-                    if sync_result.phase == "error":
+                    if (
+                        sync_result.phase == "error"
+                        or sync_result.published_count
+                        or sync_result.subscribed_count
+                    ):
                         _print_log(
                             "mqtt",
-                            "sync phase={} published={} subscribed={} errors={}".format(
-                                sync_result.phase,
-                                sync_result.published_count,
-                                sync_result.subscribed_count,
-                                ",".join(sync_result.errors)
-                                if sync_result.errors
-                                else "none",
+                            _mqtt_sync_summary(
+                                sync_result,
+                                transport,
+                                source="post_connect",
+                                before_queues=sync_before,
                             ),
                             start_monotonic=start_monotonic,
                         )
@@ -991,8 +1029,10 @@ async def main(*, startup_plan_override=None):
             if iteration.subscribed_topics:
                 _print_log(
                     "mqtt",
-                    "subscriptions topics={}".format(
-                        ",".join(iteration.subscribed_topics)
+                    "subscriptions queued topics={} gen={} {}".format(
+                        ",".join(iteration.subscribed_topics),
+                        transport.connection_generation,
+                        _transport_queue_summary(transport),
                     ),
                     start_monotonic=start_monotonic,
                 )
@@ -1057,18 +1097,21 @@ async def main(*, startup_plan_override=None):
                 while float(next_periodic_gc_at) <= float(now_monotonic):
                     next_periodic_gc_at += 60.0
             if transport.connected:
+                sync_before = _transport_queue_summary(transport)
                 sync_result = sync_transport_to_client(mqtt_adapter, transport)
                 mqtt_adapter = sync_result.adapter
-                if sync_result.phase == "error":
+                if (
+                    sync_result.phase == "error"
+                    or sync_result.published_count
+                    or sync_result.subscribed_count
+                ):
                     _print_log(
                         "mqtt",
-                        "sync phase={} published={} subscribed={} errors={}".format(
-                            sync_result.phase,
-                            sync_result.published_count,
-                            sync_result.subscribed_count,
-                            ",".join(sync_result.errors)
-                            if sync_result.errors
-                            else "none",
+                        _mqtt_sync_summary(
+                            sync_result,
+                            transport,
+                            source="main_loop",
+                            before_queues=sync_before,
                         ),
                         start_monotonic=start_monotonic,
                     )

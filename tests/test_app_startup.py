@@ -20,7 +20,7 @@ from cpynodus_ii.app import (
 )
 from cpynodus_ii.core.config import MQTTConfig, NetworkConfig, RuntimeConfig
 from cpynodus_ii.core.obfuscation import PASSWORD_OBF_PREFIX
-from cpynodus_ii.ota import FwUpdateState, save_ota_state
+from cpynodus_ii.ota.state import FwUpdateState, save_ota_state
 
 
 def test_resolve_startup_plan_allows_test_override_for_sensorius_without_web():

@@ -19,7 +19,7 @@ from cpynodus_ii.features.payloads import (
     build_switch_state_payload,
     mqtt_topic,
 )
-from cpynodus_ii.ota import load_ota_state
+from cpynodus_ii.ota.state import load_ota_state
 
 
 @dataclass(frozen=True)
@@ -227,8 +227,16 @@ def publish_shutdown_cycle(transport, runtime_config):
 
 
 def publish_availability_refresh_cycle(transport, runtime_config):
-    """Republish retained online availability payloads during steady-state."""
+    """Republish retained online heartbeat and availability payloads."""
     topics = []
+    device_id = _device_id(runtime_config)
+    heartbeat = transport.publish(
+        mqtt_topic(runtime_config, device_id, "status", "heartbeat"),
+        build_device_heartbeat_payload(runtime_config, online=True),
+        retain=True,
+    )
+    topics.append(heartbeat.topic)
+
     if runtime_config.sensor.present:
         availability = transport.publish(
             mqtt_topic(runtime_config, runtime_config.sensor.sensor_id, "availability"),

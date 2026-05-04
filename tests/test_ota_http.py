@@ -5,7 +5,8 @@ import json
 from types import SimpleNamespace
 
 from cpynodus_ii.core.config import RuntimeConfig
-from cpynodus_ii.ota import FwUpdateState, OtaHttpController, load_ota_state
+from cpynodus_ii.ota.http import OtaHttpController
+from cpynodus_ii.ota.state import FwUpdateState, load_ota_state
 
 
 class _FakeRequest:

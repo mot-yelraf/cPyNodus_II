@@ -302,7 +302,9 @@ def sync_transport_to_client(adapter, transport):
             errors=(),
         )
 
-    for topic in transport.subscriptions[adapter.subscription_index :]:
+    pending_subscriptions = transport.subscriptions[adapter.subscription_index :]
+    pending_subscription_count = len(pending_subscriptions)
+    for topic in pending_subscriptions:
         try:
             client.subscribe(topic)
         except Exception as exc:
@@ -319,7 +321,14 @@ def sync_transport_to_client(adapter, transport):
                 adapter=adapter,
                 published_count=published_count,
                 subscribed_count=subscribed_count,
-                errors=("mqtt_subscribe_failed:{}".format(exc),),
+                errors=(
+                    "mqtt_subscribe_failed:topic={}:index={}/{}:{}".format(
+                        topic,
+                        subscribed_count,
+                        pending_subscription_count,
+                        exc,
+                    ),
+                ),
             )
         subscribed_count += 1
 

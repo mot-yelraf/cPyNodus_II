@@ -709,7 +709,10 @@ def test_sync_transport_to_client_marks_transport_disconnected_on_subscribe_exce
     assert sync_result.phase == "error"
     assert transport.connected is False
     assert sync_result.errors == (
-        "mqtt_subscribe_failed:No data received from broker for 10 seconds.",
+        (
+            "mqtt_subscribe_failed:topic=nodus/S1-x943fm/config/set:index=0/1:"
+            "No data received from broker for 10 seconds."
+        ),
     )
 
 
@@ -733,6 +736,12 @@ def test_sync_transport_to_client_compacts_successful_subscriptions_before_failu
     assert sync_result.subscribed_count == 1
     assert transport.connected is False
     assert transport.subscriptions == ["nodus/two"]
+    assert sync_result.errors == (
+        (
+            "mqtt_subscribe_failed:topic=nodus/two:index=1/2:"
+            "No data received from broker for 10 seconds."
+        ),
+    )
 
 
 def test_sync_transport_to_client_publishes_before_subscribe_exception():
@@ -763,6 +772,12 @@ def test_sync_transport_to_client_publishes_before_subscribe_exception():
     assert sync_result.phase == "error"
     assert sync_result.published_count == 0
     assert sync_result.subscribed_count == 0
+    assert sync_result.errors == (
+        (
+            "mqtt_subscribe_failed:topic=nodus/S1-x943fm/config/set:index=0/1:"
+            "No data received from broker for 10 seconds."
+        ),
+    )
 
 
 def test_poll_mqtt_client_marks_transport_disconnected_on_oserror():

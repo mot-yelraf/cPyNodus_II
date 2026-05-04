@@ -147,7 +147,7 @@ def test_startup_cycle_publishes_online_availability_before_sensor_ready():
     assert availability.payload["status"] == "online"
 
 
-def test_availability_refresh_cycle_republishes_retained_online_topics():
+def test_availability_refresh_cycle_republishes_retained_heartbeat_and_online_topics():
     transport = MQTTTransport("broker.local", 1883)
     runtime_config = RuntimeConfig(
         network=NetworkConfig(hostname="aqi-x943fm"),
@@ -176,15 +176,18 @@ def test_availability_refresh_cycle_republishes_retained_online_topics():
     result = publish_availability_refresh_cycle(transport, runtime_config)
 
     assert result.phase == "published"
-    assert result.published_count == 2
+    assert result.published_count == 3
     assert result.topics == (
+        "nodus/aqi-x943fm/status/heartbeat",
         "nodus/aqi-x943fm/availability",
         "nodus/S1-x943fm/availability",
     )
     assert transport.published_messages[0].retain is True
     assert transport.published_messages[1].retain is True
+    assert transport.published_messages[2].retain is True
     assert transport.published_messages[0].payload["status"] == "online"
     assert transport.published_messages[1].payload["status"] == "online"
+    assert transport.published_messages[2].payload["status"] == "online"
 
 
 def test_sensor_cycle_preserves_snapshot_errors_when_skipped():
