@@ -157,6 +157,14 @@ def test_runtime_meta_payload_includes_sensor_and_switch_topics():
     assert payload["profile"]["active_profile"] == "sensorius"
     assert payload["status"]["state"] == "online"
     assert payload["status"]["heartbeat_topic"] == "nodus/aqi-x943fm/status/heartbeat"
+    assert payload["capabilities"]["fwupdate"] is True
+    assert payload["fwupdate"] == {
+        "schema": "nodus-fwupdate/v1",
+        "transport": "http",
+        "prepare_topic": "nodus/aqi-x943fm/fwupdate",
+        "ack_topic": "nodus/aqi-x943fm/fwupdate/ack",
+        "result_topic": "nodus/aqi-x943fm/fwupdate/result",
+    }
     assert payload["mqtt"]["broker"] == "broker.local"
     assert payload["mqtt"]["broker_ip"] == "10.0.0.20"
     assert payload["mqtt"]["active_broker"] == "sensoria-hub-0.local"

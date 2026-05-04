@@ -344,6 +344,7 @@ def test_push_ota_package_sends_begin_files_and_commit(tmp_path):
     assert opener.requests[2][0].data == (
         package / "files" / "ota_test.py"
     ).read_bytes()
+    assert opener.requests[2][0].headers["X-nodus-file-path"] == "ota_test.py"
     assert logs == [
         "status http://10.0.0.213:8000",
         "begin package=ota-tagA-to-tagB files=1",

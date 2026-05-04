@@ -11,6 +11,7 @@ _HTTP_STATUS = {
     200: "OK",
     400: "Bad Request",
     404: "Not Found",
+    500: "Internal Server Error",
     501: "Not Implemented",
     503: "Service Unavailable",
 }
@@ -87,6 +88,7 @@ class OtaHttpController:
         except Exception as exc:
             self.phase = "error"
             self.errors = ("ota_poll_failed", str(exc))
+            self._log("poll failed error={}".format(_exception_text(exc)))
             return self
         self._maybe_reboot()
         return self
@@ -171,9 +173,19 @@ class OtaHttpController:
 
         @route("/ota/file", methods=["PUT"])
         def _file(request):
-            path = _request_path_arg(request)
-            payload, status_code = self._handle_file(path, _request_body_bytes(request))
-            return self._json_response(request, payload, status_code=status_code)
+            try:
+                path = _request_path_arg(request)
+                body = _request_body_bytes(request)
+                self._log("file received path={} bytes={}".format(path, len(body)))
+                payload, status_code = self._handle_file(path, body)
+                return self._json_response(request, payload, status_code=status_code)
+            except Exception as exc:
+                self._log("file exception error={}".format(_exception_text(exc)))
+                return self._json_response(
+                    request,
+                    _error_payload("file_handler_exception", "staging"),
+                    status_code=500,
+                )
 
         @route("/ota/commit", methods=["POST"])
         def _commit(request):
@@ -254,7 +266,7 @@ class OtaHttpController:
         expected_size = int(entry.get("size", -1) or -1)
         expected_sha = str(entry.get("sha256", "") or "")
         actual_size = len(body)
-        actual_sha = hashlib.sha256(body).hexdigest()
+        actual_sha = _sha256_hex(body)
         if actual_size != expected_size:
             self._log(
                 "file rejected path={} error=file_size_mismatch".format(safe_path)
@@ -456,13 +468,40 @@ def _request_body_bytes(request):
 
 def _request_path_arg(request):
     query_params = getattr(request, "query_params", None)
-    if isinstance(query_params, dict):
-        return str(query_params.get("path", "") or "")
+    query_get = getattr(query_params, "get", None)
+    if callable(query_get):
+        try:
+            value = str(query_get("path", "") or "")
+        except Exception:
+            value = ""
+        if value:
+            return value
     for attr_name in ("query", "query_string"):
         query = str(getattr(request, attr_name, "") or "")
         value = _query_arg(query, "path")
         if value:
             return value
+    header_value = _request_header(request, "X-Nodus-File-Path")
+    if header_value:
+        return header_value
+    return ""
+
+
+def _request_header(request, name):
+    headers = getattr(request, "headers", None)
+    header_get = getattr(headers, "get", None)
+    if callable(header_get):
+        for key in (name, str(name or "").lower(), str(name or "").title()):
+            try:
+                value = str(header_get(key, "") or "")
+            except Exception:
+                value = ""
+            if value:
+                return value
+    if isinstance(headers, dict):
+        for key, value in headers.items():
+            if str(key or "").lower() == str(name or "").lower():
+                return str(value or "")
     return ""
 
 
@@ -511,7 +550,7 @@ def _verify_staged_manifest_files(root, manifest):
         if len(payload) != expected_size:
             return "staged_file_size_mismatch"
         expected_sha = str(entry.get("sha256", "") or "")
-        if hashlib.sha256(payload).hexdigest() != expected_sha:
+        if _sha256_hex(payload) != expected_sha:
             return "staged_file_sha256_mismatch"
     return ""
 
@@ -629,6 +668,189 @@ def _error_payload(error, phase):
         "phase": str(phase or ""),
         "error": str(error or ""),
     }
+
+
+def _exception_text(exc):
+    return "{}:{}".format(type(exc).__name__, exc)
+
+
+def _sha256_hex(data):
+    digest = _hashlib_sha256(data)
+    if digest is not None:
+        return digest
+    return _sha256_fallback(data).hex()
+
+
+def _hashlib_sha256(data):
+    sha256 = getattr(hashlib, "sha256", None)
+    if callable(sha256):
+        try:
+            hasher = sha256()
+            hasher.update(data)
+            return hasher.hexdigest()
+        except Exception:
+            pass
+    new_hash = getattr(hashlib, "new", None)
+    if callable(new_hash):
+        try:
+            hasher = new_hash("sha256")
+            hasher.update(data)
+            return hasher.hexdigest()
+        except Exception:
+            pass
+    return None
+
+
+def _sha256_fallback(data):
+    payload = bytes(data or b"")
+    length_bits = (len(payload) * 8) & 0xFFFFFFFFFFFFFFFF
+    payload += b"\x80"
+    while (len(payload) % 64) != 56:
+        payload += b"\x00"
+    payload += bytes(
+        (
+            (length_bits >> 56) & 0xFF,
+            (length_bits >> 48) & 0xFF,
+            (length_bits >> 40) & 0xFF,
+            (length_bits >> 32) & 0xFF,
+            (length_bits >> 24) & 0xFF,
+            (length_bits >> 16) & 0xFF,
+            (length_bits >> 8) & 0xFF,
+            length_bits & 0xFF,
+        )
+    )
+    h = [
+        0x6A09E667,
+        0xBB67AE85,
+        0x3C6EF372,
+        0xA54FF53A,
+        0x510E527F,
+        0x9B05688C,
+        0x1F83D9AB,
+        0x5BE0CD19,
+    ]
+    k = (
+        0x428A2F98,
+        0x71374491,
+        0xB5C0FBCF,
+        0xE9B5DBA5,
+        0x3956C25B,
+        0x59F111F1,
+        0x923F82A4,
+        0xAB1C5ED5,
+        0xD807AA98,
+        0x12835B01,
+        0x243185BE,
+        0x550C7DC3,
+        0x72BE5D74,
+        0x80DEB1FE,
+        0x9BDC06A7,
+        0xC19BF174,
+        0xE49B69C1,
+        0xEFBE4786,
+        0x0FC19DC6,
+        0x240CA1CC,
+        0x2DE92C6F,
+        0x4A7484AA,
+        0x5CB0A9DC,
+        0x76F988DA,
+        0x983E5152,
+        0xA831C66D,
+        0xB00327C8,
+        0xBF597FC7,
+        0xC6E00BF3,
+        0xD5A79147,
+        0x06CA6351,
+        0x14292967,
+        0x27B70A85,
+        0x2E1B2138,
+        0x4D2C6DFC,
+        0x53380D13,
+        0x650A7354,
+        0x766A0ABB,
+        0x81C2C92E,
+        0x92722C85,
+        0xA2BFE8A1,
+        0xA81A664B,
+        0xC24B8B70,
+        0xC76C51A3,
+        0xD192E819,
+        0xD6990624,
+        0xF40E3585,
+        0x106AA070,
+        0x19A4C116,
+        0x1E376C08,
+        0x2748774C,
+        0x34B0BCB5,
+        0x391C0CB3,
+        0x4ED8AA4A,
+        0x5B9CCA4F,
+        0x682E6FF3,
+        0x748F82EE,
+        0x78A5636F,
+        0x84C87814,
+        0x8CC70208,
+        0x90BEFFFA,
+        0xA4506CEB,
+        0xBEF9A3F7,
+        0xC67178F2,
+    )
+    mask = 0xFFFFFFFF
+    for offset in range(0, len(payload), 64):
+        block = payload[offset : offset + 64]
+        w = [0] * 64
+        for i in range(16):
+            j = i * 4
+            w[i] = (
+                (block[j] << 24)
+                | (block[j + 1] << 16)
+                | (block[j + 2] << 8)
+                | block[j + 3]
+            )
+        for i in range(16, 64):
+            s0 = _rotr(w[i - 15], 7) ^ _rotr(w[i - 15], 18) ^ (w[i - 15] >> 3)
+            s1 = _rotr(w[i - 2], 17) ^ _rotr(w[i - 2], 19) ^ (w[i - 2] >> 10)
+            w[i] = (w[i - 16] + s0 + w[i - 7] + s1) & mask
+        a, b, c, d, e, f, g, hh = h
+        for i in range(64):
+            s1 = _rotr(e, 6) ^ _rotr(e, 11) ^ _rotr(e, 25)
+            ch = (e & f) ^ ((~e) & g)
+            temp1 = (hh + s1 + ch + k[i] + w[i]) & mask
+            s0 = _rotr(a, 2) ^ _rotr(a, 13) ^ _rotr(a, 22)
+            maj = (a & b) ^ (a & c) ^ (b & c)
+            temp2 = (s0 + maj) & mask
+            hh = g
+            g = f
+            f = e
+            e = (d + temp1) & mask
+            d = c
+            c = b
+            b = a
+            a = (temp1 + temp2) & mask
+        h = [
+            (h[0] + a) & mask,
+            (h[1] + b) & mask,
+            (h[2] + c) & mask,
+            (h[3] + d) & mask,
+            (h[4] + e) & mask,
+            (h[5] + f) & mask,
+            (h[6] + g) & mask,
+            (h[7] + hh) & mask,
+        ]
+    return bytes(
+        byte
+        for word in h
+        for byte in (
+            (word >> 24) & 0xFF,
+            (word >> 16) & 0xFF,
+            (word >> 8) & 0xFF,
+            word & 0xFF,
+        )
+    )
+
+
+def _rotr(value, bits):
+    return ((value >> bits) | (value << (32 - bits))) & 0xFFFFFFFF
 
 
 def _ota_state_path(root):

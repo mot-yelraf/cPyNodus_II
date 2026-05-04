@@ -172,6 +172,7 @@ def build_runtime_meta_payload(runtime_config, *, version, active_broker=""):
         "capabilities": {
             "sensor": sensor.present,
             "switch": switch.present,
+            "fwupdate": True,
         },
         "status": {
             "state": "online",
@@ -202,6 +203,15 @@ def build_runtime_meta_payload(runtime_config, *, version, active_broker=""):
                 runtime_config.mqtt.password, runtime_config
             ),
             "base_topic": runtime_config.mqtt.base_topic,
+        },
+        "fwupdate": {
+            "schema": "nodus-fwupdate/v1",
+            "transport": "http",
+            "prepare_topic": mqtt_topic(runtime_config, device_id, "fwupdate"),
+            "ack_topic": mqtt_topic(runtime_config, device_id, "fwupdate", "ack"),
+            "result_topic": mqtt_topic(
+                runtime_config, device_id, "fwupdate", "result"
+            ),
         },
         "location_group": {
             "location": location,

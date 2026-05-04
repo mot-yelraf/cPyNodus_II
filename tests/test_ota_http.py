@@ -5,14 +5,24 @@ import json
 from types import SimpleNamespace
 
 from cpynodus_ii.core.config import RuntimeConfig
+from cpynodus_ii.ota import http as ota_http
 from cpynodus_ii.ota.http import OtaHttpController
 from cpynodus_ii.ota.state import FwUpdateState, load_ota_state
 
 
 class _FakeRequest:
-    def __init__(self, body=b"", query_params=None):
+    def __init__(self, body=b"", query_params=None, headers=None):
         self.body = body
         self.query_params = dict(query_params or {})
+        self.headers = dict(headers or {})
+
+
+class _MappingLike:
+    def __init__(self, values):
+        self._values = dict(values or {})
+
+    def get(self, key, default=None):
+        return self._values.get(key, default)
 
 
 class _FakeResponse:
@@ -176,6 +186,108 @@ def test_ota_file_stages_manifest_file_with_sha256_verification(tmp_path):
     assert staged_path.read_bytes() == payload
 
 
+def test_ota_file_accepts_path_from_header_when_query_params_are_missing(tmp_path):
+    controller = _controller(tmp_path)
+    begin_handler = controller.server.routes[("/ota/begin", ("POST",))]
+    file_handler = controller.server.routes[("/ota/file", ("PUT",))]
+    payload = b'print("ok")\n'
+    manifest = {
+        "schema": "nodus-ota/v1",
+        "package_id": "ota-tagA-to-tagB",
+        "files": [
+            {
+                "path": "ota_test.py",
+                "size": len(payload),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }
+        ],
+    }
+
+    begin_handler(_FakeRequest(json.dumps(manifest).encode("utf-8")))
+    response = file_handler(
+        _FakeRequest(payload, headers={"X-Nodus-File-Path": "ota_test.py"})
+    )
+
+    assert response.status == (200, "OK")
+    assert response.body["accepted"] is True
+    assert response.body["path"] == "ota_test.py"
+    assert (tmp_path / "_ota" / "stage" / "ota_test.py").read_bytes() == payload
+
+
+def test_ota_file_accepts_path_from_mapping_like_query_params(tmp_path):
+    controller = _controller(tmp_path)
+    begin_handler = controller.server.routes[("/ota/begin", ("POST",))]
+    file_handler = controller.server.routes[("/ota/file", ("PUT",))]
+    payload = b'print("ok")\n'
+    manifest = {
+        "schema": "nodus-ota/v1",
+        "package_id": "ota-tagA-to-tagB",
+        "files": [
+            {
+                "path": "ota_test.py",
+                "size": len(payload),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }
+        ],
+    }
+
+    begin_handler(_FakeRequest(json.dumps(manifest).encode("utf-8")))
+    request = _FakeRequest(payload)
+    request.query_params = _MappingLike({"path": "ota_test.py"})
+    response = file_handler(request)
+
+    assert response.status == (200, "OK")
+    assert response.body["accepted"] is True
+    assert response.body["path"] == "ota_test.py"
+
+
+def test_ota_file_accepts_path_from_mapping_like_headers(tmp_path):
+    controller = _controller(tmp_path)
+    begin_handler = controller.server.routes[("/ota/begin", ("POST",))]
+    file_handler = controller.server.routes[("/ota/file", ("PUT",))]
+    payload = b'print("ok")\n'
+    manifest = {
+        "schema": "nodus-ota/v1",
+        "package_id": "ota-tagA-to-tagB",
+        "files": [
+            {
+                "path": "ota_test.py",
+                "size": len(payload),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }
+        ],
+    }
+
+    begin_handler(_FakeRequest(json.dumps(manifest).encode("utf-8")))
+    request = _FakeRequest(payload)
+    request.headers = _MappingLike({"x-nodus-file-path": "ota_test.py"})
+    response = file_handler(request)
+
+    assert response.status == (200, "OK")
+    assert response.body["accepted"] is True
+    assert response.body["path"] == "ota_test.py"
+
+
+def test_ota_file_route_returns_error_when_handler_raises(tmp_path, monkeypatch):
+    logs = []
+    controller = _controller(tmp_path, log_fn=lambda module, msg: logs.append(msg))
+    file_handler = controller.server.routes[("/ota/file", ("PUT",))]
+
+    def _raise(_path, _body):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(controller, "_handle_file", _raise)
+    response = file_handler(
+        _FakeRequest(b"payload", headers={"X-Nodus-File-Path": "ota_test.py"})
+    )
+
+    assert response.status == (500, "Internal Server Error")
+    assert response.body["accepted"] is False
+    assert response.body["error"] == "file_handler_exception"
+    assert "file received path=ota_test.py bytes=7" in logs
+    assert "file exception error=RuntimeError:boom" in logs
+
+
 def test_ota_file_rejects_sha256_mismatch(tmp_path):
     controller = _controller(tmp_path)
     begin_handler = controller.server.routes[("/ota/begin", ("POST",))]
@@ -199,6 +311,37 @@ def test_ota_file_rejects_sha256_mismatch(tmp_path):
     assert response.body["accepted"] is False
     assert response.body["error"] == "sha256_mismatch"
     assert not (tmp_path / "_ota" / "stage" / "code.py").exists()
+
+
+def test_ota_sha256_helper_uses_hashlib_new_when_sha256_attr_missing(monkeypatch):
+    class _FakeHasher:
+        def __init__(self):
+            self.payload = b""
+
+        def update(self, payload):
+            self.payload += payload
+
+        def hexdigest(self):
+            return hashlib.sha256(self.payload).hexdigest()
+
+    class _FakeHashlib:
+        @staticmethod
+        def new(name):
+            assert name == "sha256"
+            return _FakeHasher()
+
+    monkeypatch.setattr(ota_http, "hashlib", _FakeHashlib)
+
+    assert ota_http._sha256_hex(b"abc") == hashlib.sha256(b"abc").hexdigest()
+
+
+def test_ota_sha256_helper_has_pure_python_fallback(monkeypatch):
+    class _FakeHashlib:
+        pass
+
+    monkeypatch.setattr(ota_http, "hashlib", _FakeHashlib)
+
+    assert ota_http._sha256_hex(b"abc") == hashlib.sha256(b"abc").hexdigest()
 
 
 def test_ota_file_rejects_path_not_in_manifest(tmp_path):

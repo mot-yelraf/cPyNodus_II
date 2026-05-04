@@ -295,6 +295,7 @@ def push_ota_package(
             timeout_s,
             body=payload,
             content_type="application/octet-stream",
+            headers={"X-Nodus-File-Path": path},
         )
         if result.get("accepted") is not True:
             raise OTATransferError(
@@ -576,18 +577,21 @@ def _request_json(
     payload=None,
     body=None,
     content_type="application/json",
+    headers=None,
 ):
     data = body
     if payload is not None:
         data = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    request_headers = {
+        "Content-Type": content_type,
+        "Accept": "application/json",
+    }
+    request_headers.update(headers or {})
     request = Request(
         url,
         data=data,
         method=method,
-        headers={
-            "Content-Type": content_type,
-            "Accept": "application/json",
-        },
+        headers=request_headers,
     )
     try:
         with opener(request, timeout=float(timeout_s or 10)) as response:
