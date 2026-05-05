@@ -34,26 +34,26 @@ The architecture is split into three layers:
 
 - `sensorius` is the networked profile used by Sensorius onboarding and management.
   - MQTT is enabled.
+  - NTP sync is started.
   - Broker settings come from `[MQTT]`.
   - Runtime metadata and sensor data are published over MQTT.
-  - NTP sync is started.
-  - The normal-mode webserver is intentionally skipped in this profile.
+  - Webserver startup is intentionally skipped in this profile.
 - `weewx` is a networked MQTT profile.
   - MQTT is enabled.
-  - Broker settings come from `[MQTT]`.
-  - The normal-mode webserver is intentionally skipped in this profile.
   - NTP sync is started.
+  - Broker settings come from `[MQTT]`.
+  - Webserver startup is intentionally skipped in this profile.
 - `homeassistant` is a networked MQTT profile.
   - MQTT is enabled.
+  - NTP sync is started.
   - Broker settings come from `[MQTT]`.
   - Home Assistant behavior is further configured in `[HomeAssistant]`.
-  - The normal-mode webserver is intentionally skipped in this profile.
+  - Webserver startup is intentionally skipped in this profile.
   - Devices are expected to be provisioned through AP/nodusweb mode before switching into this profile.
-  - NTP sync is started.
 - `nodusweb` is the default local-only profile.
-  - MQTT startup is skipped.
+  - Webserver startup is started in this profile.
   - NTP sync is started after normal network bring-up.
-  - The device can run without an MQTT broker.
+  - MQTT startup is skipped; the device will run without an MQTT broker.
 
 ## Developer Note: MQTT-First Onboarding and Runtime Metadata (2026-02-24)
 

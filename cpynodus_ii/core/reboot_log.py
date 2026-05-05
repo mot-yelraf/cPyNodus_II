@@ -11,13 +11,22 @@ import sys
 REBOOT_LOG_MAX_BYTES = 10 * 1024
 
 
+def _stat_size(stat_result):
+    if hasattr(stat_result, "st_size"):
+        return int(getattr(stat_result, "st_size", 0) or 0)
+    try:
+        return int(stat_result[6] or 0)
+    except Exception:
+        return 0
+
+
 def _trim_reboot_log(path, *, max_bytes=REBOOT_LOG_MAX_BYTES):
     """Keep only the newest log content when the reboot log grows too large."""
     try:
         stat_result = os.stat(path)
     except OSError:
         return False
-    if int(getattr(stat_result, "st_size", 0) or 0) <= int(max_bytes or 0):
+    if _stat_size(stat_result) <= int(max_bytes or 0):
         return True
     try:
         with open(path, "r", encoding="utf-8") as handle:
@@ -54,7 +63,9 @@ def append_reboot_traceback(
             else:
                 import traceback
 
-                traceback.print_exception(type(exc), exc, exc.__traceback__, file=handle)
+                traceback.print_exception(
+                    type(exc), exc, exc.__traceback__, file=handle
+                )
             handle.write("\n")
         _trim_reboot_log(path, max_bytes=max_bytes)
         return True

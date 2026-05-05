@@ -36,7 +36,7 @@ def test_apply_itaot_init_payload_persists_existing_settings_fields_only():
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         (tmpdir_path / "settings.toml").write_text(
-            "[Profile]\nACTIVE_PROFILE = \"nodusweb\"\n",
+            '[Profile]\nACTIVE_PROFILE = "nodusweb"\n',
             encoding="utf-8",
         )
         runtime_config = Settings.from_directory(tmpdir_path).runtime_config()
@@ -76,10 +76,15 @@ def test_apply_itaot_init_payload_persists_existing_settings_fields_only():
 
 
 def test_bootstrap_routes_enabled_for_ap_mode_only():
-    assert bootstrap_routes_enabled(RuntimeConfig(active_profile="nodusweb", ap_mode=True)) is True
+    assert (
+        bootstrap_routes_enabled(RuntimeConfig(active_profile="nodusweb", ap_mode=True))
+        is True
+    )
     assert bootstrap_routes_enabled(RuntimeConfig(active_profile="sensorius")) is False
     assert bootstrap_routes_enabled(RuntimeConfig(active_profile="nodusweb")) is False
-    assert bootstrap_routes_enabled(RuntimeConfig(active_profile="homeassistant")) is False
+    assert (
+        bootstrap_routes_enabled(RuntimeConfig(active_profile="homeassistant")) is False
+    )
 
 
 def test_build_itaot_meta_payload_includes_sensor_switch_identity_and_state():

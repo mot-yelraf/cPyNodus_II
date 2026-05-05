@@ -12,10 +12,6 @@ import time
 from dataclasses import replace
 
 from cpynodus_ii import __version__
-from cpynodus_ii.hardware import bind_sensor_hardware, bind_switch_hardware
-from cpynodus_ii.core.mqtt import MQTTTransport
-from cpynodus_ii.core.ntp import DEFAULT_NTP_SERVER
-from cpynodus_ii.core.reboot_log import append_reboot_reason_traceback
 from cpynodus_ii.core import (
     NTPState,
     RecoveryPolicy,
@@ -32,21 +28,25 @@ from cpynodus_ii.core import (
     refresh_network_stack,
     sync_transport_to_client,
 )
+from cpynodus_ii.core.mqtt import MQTTTransport
+from cpynodus_ii.core.ntp import DEFAULT_NTP_SERVER
 from cpynodus_ii.core.plan import StartupPlan
+from cpynodus_ii.core.reboot_log import append_reboot_reason_traceback
 from cpynodus_ii.core.settings import Settings
 from cpynodus_ii.features import (
+    SteadyState,
+    WebRuntimeController,
     build_sensor_runtime,
     build_switch_runtime,
     plan_sensor_initialization,
     plan_switch_initialization,
     read_sensor_snapshot,
-    SteadyState,
     run_steady_state_iteration,
-    snapshot_switch_states,
     start_sensor_service,
     start_switch_service,
-    WebRuntimeController,
 )
+from cpynodus_ii.hardware import bind_sensor_hardware, bind_switch_hardware
+from cpynodus_ii.ota.state import FwUpdateState, load_ota_state, save_ota_state
 
 
 def _path_exists(path):
@@ -127,6 +127,37 @@ def _transport_queue_summary(transport):
     return "queues pub={} sub={} rx={}".format(published, subscriptions, received)
 
 
+def _mqtt_adapter_summary(adapter):
+    """Return compact MQTT adapter state for diagnostics."""
+    try:
+        published_index = int(getattr(adapter, "published_index", 0) or 0)
+    except Exception:
+        published_index = -1
+    try:
+        subscription_index = int(getattr(adapter, "subscription_index", 0) or 0)
+    except Exception:
+        subscription_index = -1
+    return "adapter pub_i={} sub_i={}".format(published_index, subscription_index)
+
+
+def _mqtt_sync_summary(sync_result, transport, *, source, before_queues):
+    """Return a compact MQTT sync diagnostic string."""
+    errors = ",".join(sync_result.errors) if sync_result.errors else "none"
+    return (
+        "sync source={} phase={} published={} subscribed={} before={} after={} "
+        "{} errors={}"
+    ).format(
+        str(source or "unknown"),
+        sync_result.phase,
+        sync_result.published_count,
+        sync_result.subscribed_count,
+        before_queues,
+        _transport_queue_summary(transport),
+        _mqtt_adapter_summary(sync_result.adapter),
+        errors,
+    )
+
+
 def _sensor_error_text(*parts):
     """Return a compact sensor error string for startup and poll logs."""
     errors = []
@@ -160,6 +191,28 @@ def _sensor_issue_text(errors):
         if text.startswith("sensor_") and text not in issue_errors:
             issue_errors.append(text)
     return ",".join(issue_errors) if issue_errors else ""
+
+
+def _dns_health_text(network_stack, mqtt_adapter, ntp_state):
+    """Return compact DNS health from existing MQTT and NTP resolver state."""
+    if getattr(network_stack, "phase", "") != "ready":
+        return "unavailable"
+    if getattr(network_stack, "socket_pool", None) is None:
+        return "unavailable"
+    errors = tuple(getattr(mqtt_adapter, "errors", ()) or ()) + tuple(
+        getattr(ntp_state, "errors", ()) or ()
+    )
+    for error in errors:
+        text = str(error or "")
+        if "resolve_failed" in text or "dns_unready" in text:
+            return "error"
+    return "ok"
+
+
+def _ntp_health_text(ntp_state):
+    """Return compact NTP health for periodic runtime logs."""
+    phase = str(getattr(ntp_state, "phase", "") or "").strip()
+    return phase or "idle"
 
 
 def _is_recoverable_mqtt_poll_error(errors):
@@ -226,7 +279,10 @@ def _station_ip_looks_recoverable(runtime_config, network_stack):
     ip_address = str(getattr(network_stack, "ip_address", "") or "").strip()
     if not ip_address:
         return False
-    if ip_address.startswith("192.168.4.") and runtime_config.network.ssid != runtime_config.network.ap_ssid:
+    if (
+        ip_address.startswith("192.168.4.")
+        and runtime_config.network.ssid != runtime_config.network.ap_ssid
+    ):
         return False
     return True
 
@@ -333,11 +389,55 @@ def _load_settings_for_startup(settings_root):
     return settings, fs_writable, False
 
 
+def _ota_state_path(root):
+    """Return the private OTA state path under the settings root."""
+    root_text = str(root or ".")
+    if root_text == "/":
+        return "/_ota/state.json"
+    if root_text.endswith("/"):
+        return "{}_ota/state.json".format(root_text)
+    return "{}/_ota/state.json".format(root_text)
+
+
+def _load_startup_ota_state(settings_root):
+    """Load private OTA state for startup branch selection."""
+    if not settings_root:
+        return None
+    return load_ota_state(_ota_state_path(settings_root))
+
+
+def _should_enter_ota_mode(ota_state, fs_writable):
+    """Return True when startup should use the temporary OTA runtime."""
+    if fs_writable is not True or ota_state is None:
+        return False
+    if getattr(ota_state, "mode", "") != "ota":
+        return False
+    return getattr(ota_state, "phase", "") in {"requested", "ready"}
+
+
+def _mark_ota_applied_after_boot(ota_state, settings_root, fs_writable):
+    """Mark an OTA update applied once normal startup resumes."""
+    if fs_writable is not True or ota_state is None or not settings_root:
+        return ota_state
+    if getattr(ota_state, "mode", "") != "ota":
+        return ota_state
+    if getattr(ota_state, "phase", "") != "applied_pending_boot":
+        return ota_state
+    applied_state = FwUpdateState(
+        prior_profile=getattr(ota_state, "prior_profile", "") or "",
+        package_id=getattr(ota_state, "package_id", "") or "",
+        phase="applied",
+    )
+    return save_ota_state(applied_state, _ota_state_path(settings_root))
+
+
 async def main(*, startup_plan_override=None):
     """Run the current scaffold runtime."""
     start_monotonic = time.monotonic()
     settings_root = "."
-    settings, fs_writable, profile_reset_requested = _load_settings_for_startup(settings_root)
+    settings, fs_writable, profile_reset_requested = _load_settings_for_startup(
+        settings_root
+    )
     if profile_reset_requested:
         _print_log(
             "factory_reset",
@@ -347,19 +447,55 @@ async def main(*, startup_plan_override=None):
         _hard_reboot()
         return
     fs_mode = _filesystem_mode_label(fs_writable)
-    persistence_mode = "persisted" if fs_writable else "volatile" if fs_writable is False else "unknown"
+    persistence_mode = (
+        "persisted"
+        if fs_writable
+        else "volatile"
+        if fs_writable is False
+        else "unknown"
+    )
     writable_settings_root = (
         settings_root
         if fs_writable is True and _path_exists(Settings.SETTINGS_FILE)
         else None
     )
     runtime_config = settings.runtime_config()
-    network_stack = build_network_stack(runtime_config, log_start_monotonic=start_monotonic)
+    ota_state = _load_startup_ota_state(writable_settings_root)
+    ota_state = _mark_ota_applied_after_boot(
+        ota_state,
+        writable_settings_root,
+        fs_writable,
+    )
+    if _should_enter_ota_mode(ota_state, fs_writable):
+        from cpynodus_ii.ota.runtime import run_ota_mode
+
+        await run_ota_mode(
+            runtime_config,
+            ota_state,
+            settings_root=writable_settings_root,
+            version=__version__,
+            log_fn=lambda prefix, message: _print_log(
+                prefix,
+                message,
+                start_monotonic=start_monotonic,
+            ),
+            reboot_callback=lambda: _soft_reboot(
+                reason="ota:applied_pending_boot",
+                start_monotonic=start_monotonic,
+            ),
+            idle_s=None,
+        )
+        return
+    network_stack = build_network_stack(
+        runtime_config, log_start_monotonic=start_monotonic
+    )
     startup_ap_fallback = _should_fallback_to_ap(runtime_config, network_stack)
     startup_ap_fallback_errors = tuple(network_stack.errors)
     if startup_ap_fallback:
         runtime_config = _enter_ap_recovery_mode(runtime_config)
-        network_stack = build_network_stack(runtime_config, log_start_monotonic=start_monotonic)
+        network_stack = build_network_stack(
+            runtime_config, log_start_monotonic=start_monotonic
+        )
     plan = _resolve_startup_plan(
         runtime_config,
         startup_plan_override=startup_plan_override,
@@ -376,20 +512,24 @@ async def main(*, startup_plan_override=None):
     switch_runtime = build_switch_runtime(switch_init)
     sensor_adapter = bind_sensor_hardware(sensor_runtime, runtime_config)
     switch_adapter = bind_switch_hardware(switch_runtime)
-    sensor_service = start_sensor_service(sensor_runtime, sensor_adapter, runtime_config)
+    sensor_service = start_sensor_service(
+        sensor_runtime, sensor_adapter, runtime_config
+    )
     switch_service = start_switch_service(switch_runtime, switch_adapter)
     sensor_snapshot = read_sensor_snapshot(sensor_service, runtime_config)
-    switch_snapshot = snapshot_switch_states(switch_service)
     steady_state = SteadyState()
     ntp_state = NTPState()
     recovery_policy = RecoveryPolicy()
     recovery_state = RecoveryState(
         phase="ap" if network_stack.phase == "ap" else "idle",
-        phase_started_at=float(start_monotonic) if network_stack.phase == "ap" else -1.0,
+        phase_started_at=float(start_monotonic)
+        if network_stack.phase == "ap"
+        else -1.0,
     )
     web_runtime = None
     next_health_at = float(start_monotonic) + 300.0
     next_periodic_gc_at = float(start_monotonic) + 60.0
+    periodic_gc_count = 0
     last_mqtt_connect_attempt_at = float(start_monotonic)
 
     connect_phase = "deferred" if plan.mqtt_enabled else "skipped"
@@ -407,7 +547,10 @@ async def main(*, startup_plan_override=None):
     )
     _print_log(
         "cPyNodus_II",
-        "runtime network_phase={} network_errors={} mqtt_client={} mqtt_connect={}".format(
+        (
+            "runtime network_phase={} network_errors={} "
+            "mqtt_client={} mqtt_connect={}"
+        ).format(
             network_stack.phase,
             ",".join(network_stack.errors) if network_stack.errors else "none",
             mqtt_adapter.phase,
@@ -441,7 +584,10 @@ async def main(*, startup_plan_override=None):
     )
     _print_log(
         "cPyNodus_II",
-        "switch enabled={} channels={} phase={} adapter={} service={} mqtt={} web={} ntp={}".format(
+        (
+            "switch enabled={} channels={} phase={} adapter={} "
+            "service={} mqtt={} web={} ntp={}"
+        ).format(
             plan.switch_enabled,
             switch_init.channel_count,
             switch_runtime.phase,
@@ -480,7 +626,9 @@ async def main(*, startup_plan_override=None):
             "web",
             "phase={} routes={} port={} errors={}".format(
                 web_runtime.phase,
-                ",".join(web_runtime.route_paths) if web_runtime.route_paths else "none",
+                ",".join(web_runtime.route_paths)
+                if web_runtime.route_paths
+                else "none",
                 runtime_config.network.http_port,
                 ",".join(web_runtime.errors) if web_runtime.errors else "none",
             ),
@@ -498,9 +646,15 @@ async def main(*, startup_plan_override=None):
     _print_log(
         "cPyNodus_II",
         "switch_channels ids={} labels={}".format(
-            ",".join(channel.channel_id or "none" for channel in runtime_config.switch.channels)
+            ",".join(
+                channel.channel_id or "none"
+                for channel in runtime_config.switch.channels
+            )
             or "none",
-            ",".join(channel.label or channel.key or "none" for channel in runtime_config.switch.channels)
+            ",".join(
+                channel.label or channel.key or "none"
+                for channel in runtime_config.switch.channels
+            )
             or "none",
         ),
         start_monotonic=start_monotonic,
@@ -545,7 +699,9 @@ async def main(*, startup_plan_override=None):
             if recovery_decision.request_soft_reboot:
                 _print_log(
                     "recovery",
-                    "action=soft_reboot reason={}".format(recovery_decision.reboot_reason),
+                    "action=soft_reboot reason={}".format(
+                        recovery_decision.reboot_reason
+                    ),
                     start_monotonic=start_monotonic,
                 )
                 _log_recovery_soft_reboot(
@@ -571,10 +727,14 @@ async def main(*, startup_plan_override=None):
                 if network_link_is_ready(network_stack):
                     _print_log(
                         "recovery",
-                        "wifi phase=recovered ipv4={}".format(network_stack.ip_address or "none"),
+                        "wifi phase=recovered ipv4={}".format(
+                            network_stack.ip_address or "none"
+                        ),
                         start_monotonic=start_monotonic,
                     )
-            if recovery_decision.attempt_mqtt_rebuild and network_link_is_ready(network_stack):
+            if recovery_decision.attempt_mqtt_rebuild and network_link_is_ready(
+                network_stack
+            ):
                 network_stack = reconnect_network_stack(
                     runtime_config,
                     network_stack,
@@ -619,16 +779,23 @@ async def main(*, startup_plan_override=None):
                         "ntp",
                         "marker=cooldown_entered server={} retry_after_s={}".format(
                             ntp_state.server or DEFAULT_NTP_SERVER,
-                            int(max(float(ntp_state.cooldown_until) - float(now_monotonic), 0.0)),
+                            int(
+                                max(
+                                    float(ntp_state.cooldown_until)
+                                    - float(now_monotonic),
+                                    0.0,
+                                )
+                            ),
                         ),
                         start_monotonic=start_monotonic,
                     )
                 elif ntp_result.phase == "disabled":
                     _print_log(
                         "ntp",
-                        "marker=disabled server={} reason=attempt_limit_exhausted".format(
-                            ntp_state.server or DEFAULT_NTP_SERVER
-                        ),
+                        (
+                            "marker=disabled server={} "
+                            "reason=attempt_limit_exhausted"
+                        ).format(ntp_state.server or DEFAULT_NTP_SERVER),
                         start_monotonic=start_monotonic,
                     )
                 if ntp_result.phase == "synced":
@@ -641,6 +808,7 @@ async def main(*, startup_plan_override=None):
                 and (float(now_monotonic) - float(last_mqtt_connect_attempt_at)) >= 5.0
             ):
                 transport.mark_connect_requested()
+                connect_started_at = time.monotonic()
                 connect_result = connect_mqtt_client(
                     mqtt_adapter,
                     transport,
@@ -650,10 +818,12 @@ async def main(*, startup_plan_override=None):
                 connect_phase = connect_result.phase
                 last_mqtt_connect_attempt_at = float(now_monotonic)
                 if connect_phase == "connected":
-                    runtime_config, broker_ip_phase, broker_ip_errors = _persist_learned_broker_ip(
-                        runtime_config,
-                        mqtt_adapter,
-                        settings_root=writable_settings_root,
+                    runtime_config, broker_ip_phase, broker_ip_errors = (
+                        _persist_learned_broker_ip(
+                            runtime_config,
+                            mqtt_adapter,
+                            settings_root=writable_settings_root,
+                        )
                     )
                     if broker_ip_phase in {"persisted", "error"}:
                         _print_log(
@@ -662,33 +832,48 @@ async def main(*, startup_plan_override=None):
                                 broker_ip_phase,
                                 runtime_config.mqtt.broker or "none",
                                 mqtt_adapter.resolved_broker_ip or "none",
-                                ",".join(broker_ip_errors) if broker_ip_errors else "none",
+                                ",".join(broker_ip_errors)
+                                if broker_ip_errors
+                                else "none",
                             ),
                             start_monotonic=start_monotonic,
-                        )
+                    )
                     _print_log(
                         "mqtt",
-                        "connect phase={} broker={}".format(
+                        "connect phase={} broker={} elapsed_s={:.1f}".format(
                             connect_phase,
                             mqtt_adapter.active_broker or "none",
+                            time.monotonic() - connect_started_at,
                         ),
                         start_monotonic=start_monotonic,
                     )
+                    sync_before = _transport_queue_summary(transport)
                     sync_result = sync_transport_to_client(mqtt_adapter, transport)
                     mqtt_adapter = sync_result.adapter
                     if sync_result.phase == "error":
                         _print_log(
                             "mqtt",
-                            "sync phase={} published={} subscribed={} errors={}".format(
-                                sync_result.phase,
-                                sync_result.published_count,
-                                sync_result.subscribed_count,
-                                ",".join(sync_result.errors) if sync_result.errors else "none",
+                            _mqtt_sync_summary(
+                                sync_result,
+                                transport,
+                                source="post_connect",
+                                before_queues=sync_before,
                             ),
                             start_monotonic=start_monotonic,
                         )
                     _collect_garbage()
                     _log_memory_checkpoint(start_monotonic, "post_mqtt_connect")
+                elif connect_phase == "error":
+                    _print_log(
+                        "mqtt",
+                        "connect phase=error broker={} errors={}".format(
+                            mqtt_adapter.active_broker or mqtt_adapter.broker or "none",
+                            ",".join(connect_result.errors)
+                            if connect_result.errors
+                            else "none",
+                        ),
+                        start_monotonic=start_monotonic,
+                    )
             iteration = run_steady_state_iteration(
                 transport,
                 runtime_config,
@@ -716,8 +901,10 @@ async def main(*, startup_plan_override=None):
             if iteration.subscribed_topics:
                 _print_log(
                     "mqtt",
-                    "subscriptions topics={}".format(
-                        ",".join(iteration.subscribed_topics)
+                    "subscriptions queued topics={} gen={} {}".format(
+                        ",".join(iteration.subscribed_topics),
+                        transport.connection_generation,
+                        _transport_queue_summary(transport),
                     ),
                     start_monotonic=start_monotonic,
                 )
@@ -726,7 +913,10 @@ async def main(*, startup_plan_override=None):
                     continue
                 _print_log(
                     "mqtt",
-                    "command type={} phase={} topic={} requested={} published={} persistence_mode={} errors={}".format(
+                    (
+                        "command type={} phase={} topic={} requested={} "
+                        "published={} persistence_mode={} errors={}"
+                    ).format(
                         result.command_type,
                         result.phase,
                         result.topic,
@@ -737,18 +927,25 @@ async def main(*, startup_plan_override=None):
                     ),
                     start_monotonic=start_monotonic,
                 )
+            ota_reboot_requested = any(
+                bool(getattr(result, "reboot_requested", False))
+                for result in iteration.command_results
+            )
             if float(now_monotonic) >= float(next_health_at):
                 _print_log(
                     "cPyNodus_II",
-                    "health network_phase={} recovery_phase={} ssid={} ipv4={} mqtt_connected={} active_broker={} {} {}".format(
+                    (
+                        "health network_phase={} recovery_phase={} ssid={} ipv4={} "
+                        "dns_health={} ntp_health={} mqtt_connected={} active_broker={}"
+                    ).format(
                         network_stack.phase,
                         recovery_state.phase,
                         network_stack.ssid or "none",
                         network_stack.ip_address or "none",
+                        _dns_health_text(network_stack, mqtt_adapter, ntp_state),
+                        _ntp_health_text(ntp_state),
                         transport.connected,
                         mqtt_adapter.active_broker or "none",
-                        _memory_summary(),
-                        _transport_queue_summary(transport),
                     ),
                     start_monotonic=start_monotonic,
                 )
@@ -758,43 +955,57 @@ async def main(*, startup_plan_override=None):
                 before = _memory_summary()
                 _collect_garbage()
                 after = _memory_summary()
-                _print_log(
-                    "memory",
-                    "phase=periodic_gc before={} after={} {}".format(
-                        before,
-                        after,
-                        _transport_queue_summary(transport),
-                    ),
-                    start_monotonic=start_monotonic,
-                )
+                periodic_gc_count += 1
+                if (periodic_gc_count % 5) == 0:
+                    _print_log(
+                        "memory",
+                        "phase=periodic_gc before={} after={} {}".format(
+                            before,
+                            after,
+                            _transport_queue_summary(transport),
+                        ),
+                        start_monotonic=start_monotonic,
+                    )
                 while float(next_periodic_gc_at) <= float(now_monotonic):
                     next_periodic_gc_at += 60.0
             if transport.connected:
+                sync_before = _transport_queue_summary(transport)
                 sync_result = sync_transport_to_client(mqtt_adapter, transport)
                 mqtt_adapter = sync_result.adapter
                 if sync_result.phase == "error":
                     _print_log(
                         "mqtt",
-                        "sync phase={} published={} subscribed={} errors={}".format(
-                            sync_result.phase,
-                            sync_result.published_count,
-                            sync_result.subscribed_count,
-                            ",".join(sync_result.errors) if sync_result.errors else "none",
+                        _mqtt_sync_summary(
+                            sync_result,
+                            transport,
+                            source="main_loop",
+                            before_queues=sync_before,
                         ),
+                        start_monotonic=start_monotonic,
+                    )
+                if ota_reboot_requested:
+                    _print_log(
+                        "ota",
+                        "action=soft_reboot reason=fwupdate_prepare",
+                        start_monotonic=start_monotonic,
+                    )
+                    _soft_reboot(
+                        reason="ota:fwupdate_prepare",
                         start_monotonic=start_monotonic,
                     )
                 poll_result = poll_mqtt_client(mqtt_adapter, transport)
                 mqtt_adapter = poll_result.adapter
-                if (
-                    poll_result.phase == "error"
-                    and not _is_recoverable_mqtt_poll_error(poll_result.errors)
+                if poll_result.phase == "error" and not _is_recoverable_mqtt_poll_error(
+                    poll_result.errors
                 ):
                     _print_log(
                         "mqtt",
                         "poll phase={} received={} errors={}".format(
                             poll_result.phase,
                             poll_result.received_count,
-                            ",".join(poll_result.errors) if poll_result.errors else "none",
+                            ",".join(poll_result.errors)
+                            if poll_result.errors
+                            else "none",
                         ),
                         start_monotonic=start_monotonic,
                     )
@@ -819,7 +1030,10 @@ async def main(*, startup_plan_override=None):
                 if disconnect_result.errors:
                     _print_log(
                         "mqtt",
-                        "disconnect phase={} published={} subscribed={} errors={}".format(
+                        (
+                            "disconnect phase={} published={} subscribed={} "
+                            "errors={}"
+                        ).format(
                             disconnect_result.phase,
                             disconnect_result.published_count,
                             disconnect_result.subscribed_count,

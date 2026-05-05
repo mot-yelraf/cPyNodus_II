@@ -45,17 +45,29 @@ def classify_web_update(update):
     key_upper = key.upper()
 
     if not (section and key):
-        return WebConfigDecision(section, key, value, False, False, False, "missing_section_or_key")
+        return WebConfigDecision(
+            section, key, value, False, False, False, "missing_section_or_key"
+        )
 
     if section == "Sensor" and key_upper == "LOCATION":
         return WebConfigDecision(section, key, value, True, True, False)
-    if section == "Switch" and key_upper in {"SWITCH_LOCATION", "SWITCH_1_LABEL", "SWITCH_2_LABEL"}:
+    if section == "Switch" and key_upper in {
+        "SWITCH_LOCATION",
+        "SWITCH_1_LABEL",
+        "SWITCH_2_LABEL",
+    }:
         return WebConfigDecision(section, key, value, True, True, False)
     if section in {"Display", "Display.Style"} and _display_metric_index(key_upper):
         return WebConfigDecision(section, key, value, True, True, False)
-    if section in {"Calibration.System", "Calibration.Device"} and _calibration_attr_name(section, key_upper):
+    if section in {
+        "Calibration.System",
+        "Calibration.Device",
+    } and _calibration_attr_name(section, key_upper):
         return WebConfigDecision(section, key, value, True, True, False)
-    if section == "Switch" and key_upper in {"SWITCH_1_LAST_STATE", "SWITCH_2_LAST_STATE"}:
+    if section == "Switch" and key_upper in {
+        "SWITCH_1_LAST_STATE",
+        "SWITCH_2_LAST_STATE",
+    }:
         return WebConfigDecision(section, key, value, True, True, False)
     if section == "Time" and key_upper in {
         "TZ",
@@ -66,8 +78,16 @@ def classify_web_update(update):
     }:
         return WebConfigDecision(section, key, value, True, True, False)
 
-    if section == "Network" and key_upper in {"SSID", "PASSWORD", "HOSTNAME", "HTTPPORT", "AP_CHANNEL"}:
-        return WebConfigDecision(section, key, value, True, False, True, "network_restart_required")
+    if section == "Network" and key_upper in {
+        "SSID",
+        "PASSWORD",
+        "HOSTNAME",
+        "HTTPPORT",
+        "AP_CHANNEL",
+    }:
+        return WebConfigDecision(
+            section, key, value, True, False, True, "network_restart_required"
+        )
     if section == "MQTT" and key_upper in {
         "BROKER",
         "BROKER_IP",
@@ -77,9 +97,13 @@ def classify_web_update(update):
         "USERNAME",
         "PASSWORD",
     }:
-        return WebConfigDecision(section, key, value, True, False, True, "mqtt_restart_required")
+        return WebConfigDecision(
+            section, key, value, True, False, True, "mqtt_restart_required"
+        )
     if section == "Profile" and key_upper == "ACTIVE_PROFILE":
-        return WebConfigDecision(section, key, value, True, False, True, "profile_restart_required")
+        return WebConfigDecision(
+            section, key, value, True, False, True, "profile_restart_required"
+        )
     if section == "HomeAssistant" and key_upper in {
         "DISCOVERY_PREFIX",
         "BASE_TOPIC",
@@ -87,9 +111,13 @@ def classify_web_update(update):
         "PUBLISH_STATE_RETAIN",
         "PUBLISH_LEGACY_SENSOR_TOPIC",
     }:
-        return WebConfigDecision(section, key, value, True, False, True, "homeassistant_restart_required")
+        return WebConfigDecision(
+            section, key, value, True, False, True, "homeassistant_restart_required"
+        )
 
-    return WebConfigDecision(section, key, value, False, False, False, "unsupported_update")
+    return WebConfigDecision(
+        section, key, value, False, False, False, "unsupported_update"
+    )
 
 
 def apply_web_config_updates(runtime_config, updates, *, settings_root=None):
@@ -165,11 +193,17 @@ def apply_web_config_updates(runtime_config, updates, *, settings_root=None):
         restart_required_updates=tuple(restart_required_updates),
         ignored_updates=tuple(ignored_updates),
         errors=tuple(persistence_errors),
-        persistence_mode="volatile" if persistence_errors else "persisted" if settings_root is not None else "",
+        persistence_mode="volatile"
+        if persistence_errors
+        else "persisted"
+        if settings_root is not None
+        else "",
     )
 
 
-def apply_web_switch_override(runtime_config, switch_service, *, channel_id=None, channel_key=None, state):
+def apply_web_switch_override(
+    runtime_config, switch_service, *, channel_id=None, channel_key=None, state
+):
     """Apply a live switch override and reflect it into runtime config."""
     apply_result = apply_switch_state(
         switch_service,
@@ -194,11 +228,13 @@ def apply_web_switch_override(runtime_config, switch_service, *, channel_id=None
 
 
 def _persist_web_updates(runtime_config, updates, *, settings_root):
-    persisted_runtime_config, persisted_updates, persistence_errors = Settings.apply_updates_to_directory(
-        settings_root,
-        runtime_config,
-        updates,
-        reload_runtime=False,
+    persisted_runtime_config, persisted_updates, persistence_errors = (
+        Settings.apply_updates_to_directory(
+            settings_root,
+            runtime_config,
+            updates,
+            reload_runtime=False,
+        )
     )
     _ = persisted_runtime_config
     return runtime_config, tuple(persisted_updates), tuple(persistence_errors)

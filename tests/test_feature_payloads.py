@@ -64,8 +64,20 @@ def test_switch_state_payloads_use_channel_ids_and_states():
             location="TestLab",
             channel_count=2,
             channels=(
-                SwitchChannelConfig(key="SWITCH_1", channel_id="S1-x943fm", label="Fan", enable_pin="GP5", control_pin="GP28"),
-                SwitchChannelConfig(key="SWITCH_2", channel_id="S2-x943fm", label="Pump", enable_pin="GP10", control_pin="GP21"),
+                SwitchChannelConfig(
+                    key="SWITCH_1",
+                    channel_id="S1-x943fm",
+                    label="Fan",
+                    enable_pin="GP5",
+                    control_pin="GP28",
+                ),
+                SwitchChannelConfig(
+                    key="SWITCH_2",
+                    channel_id="S2-x943fm",
+                    label="Pump",
+                    enable_pin="GP10",
+                    control_pin="GP21",
+                ),
             ),
         )
     )
@@ -138,10 +150,21 @@ def test_runtime_meta_payload_includes_sensor_and_switch_topics():
     assert payload["network"]["ssid"] == "PeaceHill"
     assert payload["network"]["hostname"] == "aqi-x943fm"
     assert payload["network"]["password"] != "wifi-secret"
-    assert decode_password(payload["network"]["password"], hostname="aqi-x943fm") == "wifi-secret"
+    assert (
+        decode_password(payload["network"]["password"], hostname="aqi-x943fm")
+        == "wifi-secret"
+    )
     assert payload["profile"]["active_profile"] == "sensorius"
     assert payload["status"]["state"] == "online"
     assert payload["status"]["heartbeat_topic"] == "nodus/aqi-x943fm/status/heartbeat"
+    assert payload["capabilities"]["fwupdate"] is True
+    assert payload["fwupdate"] == {
+        "schema": "nodus-fwupdate/v1",
+        "transport": "http",
+        "prepare_topic": "nodus/aqi-x943fm/fwupdate",
+        "ack_topic": "nodus/aqi-x943fm/fwupdate/ack",
+        "result_topic": "nodus/aqi-x943fm/fwupdate/result",
+    }
     assert payload["mqtt"]["broker"] == "broker.local"
     assert payload["mqtt"]["broker_ip"] == "10.0.0.20"
     assert payload["mqtt"]["active_broker"] == "sensoria-hub-0.local"
@@ -150,7 +173,10 @@ def test_runtime_meta_payload_includes_sensor_and_switch_topics():
     assert payload["mqtt"]["username"] == "nodus-user"
     assert payload["mqtt"]["base_topic"] == "nodus"
     assert payload["mqtt"]["password"] != "mqtt-secret"
-    assert decode_password(payload["mqtt"]["password"], hostname="aqi-x943fm") == "mqtt-secret"
+    assert (
+        decode_password(payload["mqtt"]["password"], hostname="aqi-x943fm")
+        == "mqtt-secret"
+    )
     assert payload["sensor"]["display_metrics"] == [
         "Air Quality",
         "Temperature",
@@ -185,9 +211,13 @@ def test_availability_and_heartbeat_payloads_use_online_state():
 
 def test_config_and_calibration_payload_helpers_use_compact_contracts():
     config_ack = build_config_ack_payload("cfg-1", accepted=True, duplicate=False)
-    config_result = build_config_result_payload("cfg-1", applied=True, updated=2, error="")
+    config_result = build_config_result_payload(
+        "cfg-1", applied=True, updated=2, error=""
+    )
     calibration_ack = build_calibration_ack_payload("cal-1", accepted=True)
-    calibration_result = build_calibration_result_payload("cal-1", applied=False, error="calibration_not_supported")
+    calibration_result = build_calibration_result_payload(
+        "cal-1", applied=False, error="calibration_not_supported"
+    )
 
     assert config_ack["accepted"] is True
     assert config_result["updated"] == 2

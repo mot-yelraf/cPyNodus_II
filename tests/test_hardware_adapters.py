@@ -4,7 +4,15 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 
-from cpynodus_ii.core.config import DetectedSensor, I2CConfig, RuntimeConfig, SwitchChannelConfig, SwitchConfig
+from cpynodus_ii.core.config import (
+    DetectedSensor,
+    I2CConfig,
+    RuntimeConfig,
+    SoilModbusChannelConfig,
+    SoilModbusConfig,
+    SwitchChannelConfig,
+    SwitchConfig,
+)
 from cpynodus_ii.core.settings import Settings
 from cpynodus_ii.features import (
     build_sensor_runtime,
@@ -40,7 +48,9 @@ def test_sensor_hardware_adapter_binds_i2c_transport():
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for name in ("settings.toml", "sensor_i2c.toml", "switch.toml"):
-            (tmpdir_path / name).write_text((docs_root / name).read_text(), encoding="utf-8")
+            (tmpdir_path / name).write_text(
+                (docs_root / name).read_text(), encoding="utf-8"
+            )
         runtime_config = Settings.from_directory(tmpdir_path).runtime_config()
 
     sensor_runtime = build_sensor_runtime(
@@ -70,7 +80,9 @@ def test_sensor_hardware_adapter_binds_modbus_uart_transport():
             interface="modbus_rs485",
             active_config_file="sensor_soil.toml",
             device="soil",
-            modbus=SimpleNamespace(uart_tx="GP4", uart_rx="GP5", baud=4800, timeout_s=0.5, address=3),
+            modbus=SimpleNamespace(
+                uart_tx="GP4", uart_rx="GP5", baud=4800, timeout_s=0.5, address=3
+            ),
         )
     )
     sensor_runtime = build_sensor_runtime(
@@ -92,6 +104,58 @@ def test_sensor_hardware_adapter_binds_modbus_uart_transport():
     assert adapter.transport.tx == "pin-gp4"
     assert adapter.transport.rx == "pin-gp5"
     assert adapter.transport.baudrate == 4800
+
+
+def test_sensor_hardware_adapter_binds_dual_modbus_uart_transports():
+    runtime_config = RuntimeConfig(
+        sensor=DetectedSensor(
+            family="soil",
+            interface="modbus_rs485",
+            active_config_file="sensor_soil.toml",
+            device="soil",
+            modbus=SoilModbusConfig(
+                channels=(
+                    SoilModbusChannelConfig(
+                        name="CH1",
+                        uart_tx="GP0",
+                        uart_rx="GP1",
+                        baud=9600,
+                        address=1,
+                    ),
+                    SoilModbusChannelConfig(
+                        name="CH2",
+                        uart_tx="GP4",
+                        uart_rx="GP5",
+                        baud=4800,
+                        address=3,
+                    ),
+                )
+            ),
+        )
+    )
+    sensor_runtime = build_sensor_runtime(
+        plan_sensor_initialization(runtime_config),
+        runtime_config,
+    )
+
+    adapter = bind_sensor_hardware(
+        sensor_runtime,
+        runtime_config,
+        board_module=SimpleNamespace(
+            GP0="pin-gp0",
+            GP1="pin-gp1",
+            GP4="pin-gp4",
+            GP5="pin-gp5",
+        ),
+        busio_module=SimpleNamespace(I2C=_FakeI2C, UART=_FakeUART),
+    )
+
+    assert adapter.phase == "bound"
+    assert adapter.transport_kind == "uart_dual"
+    assert adapter.transport[0][0].name == "CH1"
+    assert adapter.transport[0][1].baudrate == 9600
+    assert adapter.transport[1][0].name == "CH2"
+    assert adapter.transport[1][1].tx == "pin-gp4"
 
 
 def test_sensor_hardware_adapter_reports_missing_pin_objects():
@@ -125,11 +189,15 @@ def test_switch_hardware_adapter_binds_channel_pins():
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for name in ("settings.toml", "sensor_i2c.toml", "switch.toml"):
-            (tmpdir_path / name).write_text((docs_root / name).read_text(), encoding="utf-8")
+            (tmpdir_path / name).write_text(
+                (docs_root / name).read_text(), encoding="utf-8"
+            )
         runtime_config = Settings.from_directory(tmpdir_path).runtime_config()
 
     switch_runtime = build_switch_runtime(plan_switch_initialization(runtime_config))
-    board_module = SimpleNamespace(GP5="pin-gp5", GP28="pin-gp28", GP10="pin-gp10", GP21="pin-gp21")
+    board_module = SimpleNamespace(
+        GP5="pin-gp5", GP28="pin-gp28", GP10="pin-gp10", GP21="pin-gp21"
+    )
     digitalio_module = SimpleNamespace(
         DigitalInOut=_FakeDigitalInOut,
         Direction=SimpleNamespace(OUTPUT="output"),

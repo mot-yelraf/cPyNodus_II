@@ -8,7 +8,6 @@ the lightweight local shim on-device.
 
 import sys
 
-
 if getattr(sys.implementation, "name", "") != "circuitpython":
     import os
 
@@ -53,7 +52,10 @@ else:
             def __init__(self, *args, **kwargs):
                 if not fields:
                     if args:
-                        raise TypeError("positional arguments are not supported without discovered fields")
+                        raise TypeError(
+                            "positional arguments are not supported without "
+                            "discovered fields"
+                        )
                     for name, value in kwargs.items():
                         _raw_setattr(self, name, value)
                     if kwargs:

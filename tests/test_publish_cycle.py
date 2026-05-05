@@ -67,6 +67,8 @@ def test_startup_cycle_publishes_heartbeat_meta_sensor_and_switch_topics():
     assert "nodus/aqi-x943fm/data" in result.topics
     assert "nodus/S1-x943fm/state" in result.topics
     assert transport.published_messages[0].retain is True
+    topics = [message.topic for message in transport.published_messages]
+    assert topics.index("nodus/aqi-x943fm/meta") < topics.index("nodus/aqi-x943fm/data")
 
 
 def test_sensor_cycle_publishes_non_retained_sensor_data():
@@ -80,7 +82,9 @@ def test_sensor_cycle_publishes_non_retained_sensor_data():
             sensor_id="aqi-x943fm",
         ),
     )
-    sensor_snapshot = SimpleNamespace(phase="ready", metrics={"Temperature": 24.5, "Air Quality": 80})
+    sensor_snapshot = SimpleNamespace(
+        phase="ready", metrics={"Temperature": 24.5, "Air Quality": 80}
+    )
 
     result = publish_sensor_cycle(transport, runtime_config, sensor_snapshot)
 
@@ -143,7 +147,7 @@ def test_startup_cycle_publishes_online_availability_before_sensor_ready():
     assert availability.payload["status"] == "online"
 
 
-def test_availability_refresh_cycle_republishes_retained_online_topics():
+def test_availability_refresh_cycle_republishes_retained_heartbeat_and_online_topics():
     transport = MQTTTransport("broker.local", 1883)
     runtime_config = RuntimeConfig(
         network=NetworkConfig(hostname="aqi-x943fm"),
@@ -172,15 +176,18 @@ def test_availability_refresh_cycle_republishes_retained_online_topics():
     result = publish_availability_refresh_cycle(transport, runtime_config)
 
     assert result.phase == "published"
-    assert result.published_count == 2
+    assert result.published_count == 3
     assert result.topics == (
+        "nodus/aqi-x943fm/status/heartbeat",
         "nodus/aqi-x943fm/availability",
         "nodus/S1-x943fm/availability",
     )
     assert transport.published_messages[0].retain is True
     assert transport.published_messages[1].retain is True
+    assert transport.published_messages[2].retain is True
     assert transport.published_messages[0].payload["status"] == "online"
     assert transport.published_messages[1].payload["status"] == "online"
+    assert transport.published_messages[2].payload["status"] == "online"
 
 
 def test_sensor_cycle_preserves_snapshot_errors_when_skipped():
@@ -234,7 +241,9 @@ def test_switch_result_publishes_result_and_retained_state():
         errors=(),
     )
 
-    result = publish_switch_result(transport, runtime_config, apply_result, message_id="cfg-1")
+    result = publish_switch_result(
+        transport, runtime_config, apply_result, message_id="cfg-1"
+    )
 
     assert result.phase == "published"
     assert result.published_count == 3
@@ -404,7 +413,9 @@ def test_homeassistant_startup_cycle_publishes_discovery_topics():
         transport,
         runtime_config,
         version="0.1.0",
-        sensor_snapshot=SimpleNamespace(phase="ready", metrics={"CO2": 800, "Temperature": 24.5}),
+        sensor_snapshot=SimpleNamespace(
+            phase="ready", metrics={"CO2": 800, "Temperature": 24.5}
+        ),
         switch_snapshot={"SWITCH_1": {"phase": "ready", "state": True}},
     )
 
@@ -413,22 +424,38 @@ def test_homeassistant_startup_cycle_publishes_discovery_topics():
     assert "homeassistant/sensor/co2_ykdvea/temperature/config" in result.topics
     assert "homeassistant/switch/co2_ykdvea/s1_ykdvea/config" in result.topics
     discovery_messages = {
-        message.topic: message for message in transport.published_messages if message.topic.startswith("homeassistant/")
+        message.topic: message
+        for message in transport.published_messages
+        if message.topic.startswith("homeassistant/")
     }
-    assert discovery_messages["homeassistant/sensor/co2_ykdvea/co2/config"].retain is True
-    assert discovery_messages["homeassistant/sensor/co2_ykdvea/co2/config"].payload["state_topic"] == "nodus/co2-ykdvea/data"
-    assert discovery_messages["homeassistant/sensor/co2_ykdvea/co2/config"].payload["availability_template"] == (
-        "{{ value_json['status'] }}"
+    assert (
+        discovery_messages["homeassistant/sensor/co2_ykdvea/co2/config"].retain is True
     )
-    assert discovery_messages["homeassistant/switch/co2_ykdvea/s1_ykdvea/config"].payload["command_topic"] == "nodus/S1-ykdvea/config/set"
-    assert discovery_messages["homeassistant/switch/co2_ykdvea/s1_ykdvea/config"].payload["availability_template"] == (
-        "{{ value_json['status'] }}"
+    assert (
+        discovery_messages["homeassistant/sensor/co2_ykdvea/co2/config"].payload[
+            "state_topic"
+        ]
+        == "nodus/co2-ykdvea/data"
     )
+    assert discovery_messages["homeassistant/sensor/co2_ykdvea/co2/config"].payload[
+        "availability_template"
+    ] == ("{{ value_json['status'] }}")
+    assert (
+        discovery_messages["homeassistant/switch/co2_ykdvea/s1_ykdvea/config"].payload[
+            "command_topic"
+        ]
+        == "nodus/S1-ykdvea/config/set"
+    )
+    assert discovery_messages[
+        "homeassistant/switch/co2_ykdvea/s1_ykdvea/config"
+    ].payload["availability_template"] == ("{{ value_json['status'] }}")
 
 
 def test_homeassistant_startup_cycle_clears_stale_discovery_topics():
     transport = MQTTTransport("broker.local", 1883)
-    transport._ha_last_retained_discovery_topics = {"homeassistant/sensor/co2_ykdvea/old_metric/config"}
+    transport._ha_last_retained_discovery_topics = {
+        "homeassistant/sensor/co2_ykdvea/old_metric/config"
+    }
     runtime_config = RuntimeConfig(
         active_profile="homeassistant",
         network=NetworkConfig(hostname="co2-ykdvea"),
@@ -451,7 +478,9 @@ def test_homeassistant_startup_cycle_clears_stale_discovery_topics():
 
     assert "homeassistant/sensor/co2_ykdvea/old_metric/config" in result.topics
     stale_message = next(
-        message for message in transport.published_messages if message.topic == "homeassistant/sensor/co2_ykdvea/old_metric/config"
+        message
+        for message in transport.published_messages
+        if message.topic == "homeassistant/sensor/co2_ykdvea/old_metric/config"
     )
     assert stale_message.payload == ""
     assert stale_message.retain is True

@@ -11,7 +11,6 @@ import time
 
 from cpynodus_ii.core.settings import Settings
 
-
 ONBOARDING_STATE_FILE = "onboarding_state.json"
 ITAOT_META_SCHEMA = "itaot-meta/v1"
 
@@ -94,7 +93,12 @@ def normalize_itaot_init_payload(payload):
         errors.append("mqtt_broker_host_required")
     if not broker_port:
         errors.append("mqtt_broker_port_required")
-    if active_profile and active_profile not in {"sensorius", "weewx", "homeassistant", "nodusweb"}:
+    if active_profile and active_profile not in {
+        "sensorius",
+        "weewx",
+        "homeassistant",
+        "nodusweb",
+    }:
         errors.append("mqtt_active_profile_invalid")
 
     return {
@@ -119,20 +123,50 @@ def build_itaot_init_updates(normalized_payload):
     """Translate normalized bootstrap input into TOML updates."""
     mqtt_doc = normalized_payload.get("mqtt", {})
     updates = [
-        {"section": "Network", "key": "SSID", "value": normalized_payload.get("ssid", "")},
-        {"section": "Network", "key": "PASSWORD", "value": normalized_payload.get("password", "")},
-        {"section": "Network", "key": "HOSTNAME", "value": normalized_payload.get("hostname", "")},
+        {
+            "section": "Network",
+            "key": "SSID",
+            "value": normalized_payload.get("ssid", ""),
+        },
+        {
+            "section": "Network",
+            "key": "PASSWORD",
+            "value": normalized_payload.get("password", ""),
+        },
+        {
+            "section": "Network",
+            "key": "HOSTNAME",
+            "value": normalized_payload.get("hostname", ""),
+        },
         {"section": "MQTT", "key": "BROKER", "value": mqtt_doc.get("broker_host", "")},
-        {"section": "MQTT", "key": "PORT", "value": int(mqtt_doc.get("broker_port", 0) or 0)},
-        {"section": "MQTT", "key": "BASE_TOPIC", "value": mqtt_doc.get("base_topic", "nodus")},
-        {"section": "Profile", "key": "ACTIVE_PROFILE", "value": mqtt_doc.get("active_profile", "sensorius")},
+        {
+            "section": "MQTT",
+            "key": "PORT",
+            "value": int(mqtt_doc.get("broker_port", 0) or 0),
+        },
+        {
+            "section": "MQTT",
+            "key": "BASE_TOPIC",
+            "value": mqtt_doc.get("base_topic", "nodus"),
+        },
+        {
+            "section": "Profile",
+            "key": "ACTIVE_PROFILE",
+            "value": mqtt_doc.get("active_profile", "sensorius"),
+        },
     ]
     if mqtt_doc.get("broker_ip"):
-        updates.append({"section": "MQTT", "key": "BROKER_IP", "value": mqtt_doc.get("broker_ip")})
+        updates.append(
+            {"section": "MQTT", "key": "BROKER_IP", "value": mqtt_doc.get("broker_ip")}
+        )
     if mqtt_doc.get("username"):
-        updates.append({"section": "MQTT", "key": "USERNAME", "value": mqtt_doc.get("username")})
+        updates.append(
+            {"section": "MQTT", "key": "USERNAME", "value": mqtt_doc.get("username")}
+        )
     if mqtt_doc.get("password"):
-        updates.append({"section": "MQTT", "key": "PASSWORD", "value": mqtt_doc.get("password")})
+        updates.append(
+            {"section": "MQTT", "key": "PASSWORD", "value": mqtt_doc.get("password")}
+        )
     return tuple(updates)
 
 
@@ -206,18 +240,24 @@ def apply_itaot_init_payload(payload, runtime_config, *, settings_root="."):
         )
 
     updates = build_itaot_init_updates(normalized)
-    reloaded_config, applied_updates, persistence_errors = Settings.apply_updates_to_directory(
-        settings_root,
-        runtime_config,
-        updates,
-        reload_runtime=True,
+    reloaded_config, applied_updates, persistence_errors = (
+        Settings.apply_updates_to_directory(
+            settings_root,
+            runtime_config,
+            updates,
+            reload_runtime=True,
+        )
     )
     if persistence_errors:
         return ItaotInitResult(
             accepted=False,
             rebooting=False,
             status_code=503,
-            body={"success": False, "accepted": False, "errors": list(persistence_errors)},
+            body={
+                "success": False,
+                "accepted": False,
+                "errors": list(persistence_errors),
+            },
             runtime_config=reloaded_config,
             applied_updates=tuple(applied_updates),
             errors=tuple(persistence_errors),
@@ -238,7 +278,11 @@ def apply_itaot_init_payload(payload, runtime_config, *, settings_root="."):
             accepted=False,
             rebooting=False,
             status_code=503,
-            body={"success": False, "accepted": False, "errors": ["onboarding_state_persist_failed", str(exc)]},
+            body={
+                "success": False,
+                "accepted": False,
+                "errors": ["onboarding_state_persist_failed", str(exc)],
+            },
             runtime_config=reloaded_config,
             applied_updates=tuple(applied_updates),
             errors=("onboarding_state_persist_failed", str(exc)),
@@ -268,11 +312,17 @@ def _display_metrics_for_sensor(sensor):
     if not getattr(sensor, "present", False):
         return ()
     configured = tuple(
-        value for value in tuple(getattr(getattr(sensor, "display", None), "metrics", ()) or ()) if _clean_str(value)
+        value
+        for value in tuple(
+            getattr(getattr(sensor, "display", None), "metrics", ()) or ()
+        )
+        if _clean_str(value)
     )
     if configured:
         return configured
-    return _DISPLAY_METRICS_BY_DEVICE.get(_clean_str(getattr(sensor, "device", "")).lower(), ())
+    return _DISPLAY_METRICS_BY_DEVICE.get(
+        _clean_str(getattr(sensor, "device", "")).lower(), ()
+    )
 
 
 def _calibration_status(sensor):
@@ -322,7 +372,9 @@ def _switch_channel_state(channel, switch_states):
     return bool(getattr(channel, "last_state", False))
 
 
-def build_itaot_meta_payload(runtime_config, *, version, ip_address="", switch_states=None):
+def build_itaot_meta_payload(
+    runtime_config, *, version, ip_address="", switch_states=None
+):
     """Build the compact onboarding metadata payload."""
     sensor = runtime_config.sensor
     switch = runtime_config.switch

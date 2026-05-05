@@ -7,11 +7,14 @@ bootstrapping.
 
 from dataclasses import dataclass
 
-from cpynodus_ii.features.command_intake import process_inbound_messages
-from cpynodus_ii.features.command_intake import process_soil_calibration_session
-from cpynodus_ii.features.command_intake import subscribe_runtime_topics
+from cpynodus_ii.features.command_intake import (
+    process_inbound_messages,
+    process_soil_calibration_session,
+    subscribe_runtime_topics,
+)
 from cpynodus_ii.features.publish_cycle import (
     publish_availability_refresh_cycle,
+    publish_ota_completion_report,
     publish_sensor_cycle,
     publish_startup_cycle,
 )
@@ -46,6 +49,8 @@ class SteadyStateResult:
     sensor_published_count: int
     availability_refresh_phase: str
     availability_refresh_published_count: int
+    ota_status_phase: str
+    ota_status_published_count: int
     command_published_count: int
     calibration_session_phase: str
     calibration_session_published_count: int
@@ -79,9 +84,13 @@ def run_steady_state_iteration(
     subscribed_topics = ()
     startup_result = _skipped_publish_result("startup_not_required")
     availability_result = _skipped_publish_result("availability_refresh_not_required")
+    ota_status_result = _skipped_publish_result("ota_status_not_required")
     working_state = state
 
-    if transport.connected and transport.connection_generation != state.connection_generation:
+    if (
+        transport.connected
+        and transport.connection_generation != state.connection_generation
+    ):
         sensor_snapshot = None
         switch_snapshot = {}
         onboarding_state = {}
@@ -103,16 +112,17 @@ def run_steady_state_iteration(
             switch_snapshot=switch_snapshot,
             active_broker=active_broker,
         )
+        ota_status_result = publish_ota_completion_report(
+            transport,
+            runtime_config,
+            settings_root=settings_root,
+        )
         last_sensor_publish_at = state.last_sensor_publish_at
         if sensor_snapshot is not None and sensor_snapshot.phase == "ready":
             last_sensor_publish_at = float(now_monotonic)
         last_availability_publish_at = state.last_availability_publish_at
-        if (
-            startup_result.phase == "published"
-            and (
-                runtime_config.sensor.present
-                or runtime_config.switch.present
-            )
+        if startup_result.phase == "published" and (
+            runtime_config.sensor.present or runtime_config.switch.present
         ):
             last_availability_publish_at = float(now_monotonic)
         working_state = SteadyState(
@@ -140,12 +150,15 @@ def run_steady_state_iteration(
         if result.message_id and result.message_id not in handled_message_ids:
             handled_message_ids.append(result.message_id)
     if len(handled_message_ids) > int(working_state.handled_message_id_limit or 0):
-        handled_message_ids = handled_message_ids[-int(working_state.handled_message_id_limit or 0) :]
+        handled_message_ids = handled_message_ids[
+            -int(working_state.handled_message_id_limit or 0) :
+        ]
     command_published_count = sum(
         int(result.published_count or 0) for result in command_results
     )
     errors = []
     errors.extend(startup_result.errors)
+    errors.extend(ota_status_result.errors)
     for result in command_results:
         errors.extend(result.errors)
     calibration_session_result = process_soil_calibration_session(
@@ -196,10 +209,15 @@ def run_steady_state_iteration(
         )
     should_refresh_availability = (
         transport.connected
-        and (updated_runtime_config.sensor.present or updated_runtime_config.switch.present)
+        and (
+            updated_runtime_config.sensor.present
+            or updated_runtime_config.switch.present
+        )
         and (
             working_state.last_availability_publish_at < 0
-            or (float(now_monotonic) - float(working_state.last_availability_publish_at))
+            or (
+                float(now_monotonic) - float(working_state.last_availability_publish_at)
+            )
             >= float(working_state.availability_interval_s)
         )
     )
@@ -231,11 +249,14 @@ def run_steady_state_iteration(
         sensor_published_count=sensor_result.published_count,
         availability_refresh_phase=availability_result.phase,
         availability_refresh_published_count=availability_result.published_count,
+        ota_status_phase=ota_status_result.phase,
+        ota_status_published_count=ota_status_result.published_count,
         command_published_count=command_published_count,
         calibration_session_phase=calibration_session_result.phase,
         calibration_session_published_count=calibration_session_result.published_count,
         total_published_count=(
             startup_result.published_count
+            + ota_status_result.published_count
             + command_published_count
             + calibration_session_result.published_count
             + sensor_result.published_count

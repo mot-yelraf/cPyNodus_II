@@ -212,22 +212,10 @@ def sync_transport_to_client(adapter, transport):
 
     client = adapter.client
     subscribed_count = 0
-    for topic in transport.subscriptions[adapter.subscription_index :]:
-        try:
-            client.subscribe(topic)
-        except Exception as exc:
-            transport.mark_disconnected()
-            return MQTTClientSyncResult(
-                phase="error",
-                adapter=adapter,
-                published_count=0,
-                subscribed_count=subscribed_count,
-                errors=("mqtt_subscribe_failed:{}".format(exc),),
-            )
-        subscribed_count += 1
-
     published_count = 0
-    for message in transport.published_messages[adapter.published_index :]:
+    for message in transport.published_messages[
+        adapter.published_index : adapter.published_index + 1
+    ]:
         payload = _serialize_payload(message.payload)
         try:
             client.publish(message.topic, payload, retain=message.retain)
@@ -272,6 +260,65 @@ def sync_transport_to_client(adapter, transport):
     if subscribed_count or published_count:
         transport.compact(
             published_keep_from=adapter.published_index + published_count,
+            subscriptions_keep_from=adapter.subscription_index + subscribed_count,
+        )
+    if published_count:
+        return MQTTClientSyncResult(
+            phase="synced",
+            adapter=MQTTClientAdapter(
+                phase=adapter.phase,
+                driver_kind=adapter.driver_kind,
+                broker=adapter.broker,
+                port=adapter.port,
+                broker_targets=adapter.broker_targets,
+                active_broker=adapter.active_broker,
+                resolved_broker_ip=adapter.resolved_broker_ip,
+                client=adapter.client,
+                client_class=adapter.client_class,
+                client_kwargs=adapter.client_kwargs,
+                published_index=0,
+                subscription_index=0,
+                errors=adapter.errors,
+            ),
+            published_count=published_count,
+            subscribed_count=0,
+            errors=(),
+        )
+
+    subscribed_count = 0
+    pending_subscriptions = transport.subscriptions[adapter.subscription_index :]
+    pending_subscription_count = len(pending_subscriptions)
+    for topic in pending_subscriptions:
+        try:
+            client.subscribe(topic)
+        except Exception as exc:
+            if subscribed_count:
+                transport.compact(
+                    published_keep_from=0,
+                    subscriptions_keep_from=(
+                        adapter.subscription_index + subscribed_count
+                    ),
+                )
+            transport.mark_disconnected()
+            return MQTTClientSyncResult(
+                phase="error",
+                adapter=adapter,
+                published_count=0,
+                subscribed_count=subscribed_count,
+                errors=(
+                    "mqtt_subscribe_failed:topic={}:index={}/{}:{}".format(
+                        topic,
+                        subscribed_count,
+                        pending_subscription_count,
+                        exc,
+                    ),
+                ),
+            )
+        subscribed_count += 1
+
+    if subscribed_count:
+        transport.compact(
+            published_keep_from=0,
             subscriptions_keep_from=adapter.subscription_index + subscribed_count,
         )
 
@@ -570,6 +617,16 @@ def _poll_timeout_for_client(client):
 def _preflight_broker_target(adapter, broker):
     error, _ip_address = _resolve_broker_target(adapter, broker)
     return error
+
+
+def preflight_mqtt_broker(adapter, broker=None):
+    """Resolve an MQTT broker target without opening a client socket."""
+    target = (
+        broker
+        or getattr(adapter, "active_broker", "")
+        or getattr(adapter, "broker", "")
+    )
+    return _resolve_broker_target(adapter, target)
 
 
 def _resolve_broker_target(adapter, broker):

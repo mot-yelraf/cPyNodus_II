@@ -308,11 +308,19 @@ runtime meta patch after:
 
 1. writing the accepted calibration values into the local TOML file
 2. publishing the compact `calibration/result` response
-3. clearing the retained `calibration/set` command topic
 
 This patch is the authoritative delta Sensorius should use to update its
 mirrored calibration state. It carries the accepted TOML write, not a second
 copy of the richer runtime calibration status payload.
+
+Current implementation note:
+
+- Empty payloads on `nodus/<device_id>/calibration/set` are ignored.
+- Nodus does not publish empty retained cleanup payloads to
+  `nodus/<device_id>/calibration/set`.
+- If Sensorius publishes a calibration command retained, Sensorius must clear
+  it after successful `calibration/result` by publishing an empty retained
+  payload to the same `calibration/set` topic.
 
 Example:
 

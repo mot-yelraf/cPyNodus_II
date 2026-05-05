@@ -2,7 +2,12 @@
 
 from types import SimpleNamespace
 
-from cpynodus_ii.core.config import DetectedSensor, RuntimeConfig, SwitchChannelConfig, SwitchConfig
+from cpynodus_ii.core.config import (
+    DetectedSensor,
+    RuntimeConfig,
+    SwitchChannelConfig,
+    SwitchConfig,
+)
 from cpynodus_ii.core.mqtt import MQTTTransport
 from cpynodus_ii.features import SteadyState, run_steady_state_iteration
 
@@ -107,6 +112,7 @@ def test_steady_state_resubscribes_and_republishes_on_connect_generation_change(
     assert result.subscribed_topics == (
         "nodus/aqi-x943fm/config/set",
         "nodus/aqi-x943fm/calibration/set",
+        "nodus/aqi-x943fm/fwupdate",
         "nodus/S1-x943fm/config/set",
     )
     assert result.state.connection_generation == 1
@@ -202,7 +208,7 @@ def test_steady_state_refreshes_availability_on_interval():
         now_monotonic=26.0,
     )
     assert third.availability_refresh_phase == "published"
-    assert third.availability_refresh_published_count == 2
+    assert third.availability_refresh_published_count == 3
     assert third.state.last_availability_publish_at == 26.0
 
 
@@ -216,7 +222,9 @@ def test_steady_state_bounds_handled_message_ids():
         transport,
         _runtime_config(),
         _switch_service(),
-        state=SteadyState(handled_message_ids=("old-1", "old-2"), handled_message_id_limit=2),
+        state=SteadyState(
+            handled_message_ids=("old-1", "old-2"), handled_message_id_limit=2
+        ),
         version="0.1.0",
         now_monotonic=10.0,
     )

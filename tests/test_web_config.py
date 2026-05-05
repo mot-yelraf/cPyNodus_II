@@ -18,7 +18,9 @@ def _load_runtime_config():
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for name in ("settings.toml", "sensor_i2c.toml", "switch.toml"):
-            (tmpdir_path / name).write_text((docs_root / name).read_text(), encoding="utf-8")
+            (tmpdir_path / name).write_text(
+                (docs_root / name).read_text(), encoding="utf-8"
+            )
         runtime_config = Settings.from_directory(tmpdir_path).runtime_config()
     return runtime_config
 
@@ -55,7 +57,9 @@ def _switch_service():
 
 
 def test_classify_web_update_marks_operational_changes_as_live():
-    decision = classify_web_update({"section": "Display", "key": "METRIC_1", "value": "CO2"})
+    decision = classify_web_update(
+        {"section": "Display", "key": "METRIC_1", "value": "CO2"}
+    )
 
     assert decision.accepted is True
     assert decision.applies_live is True
@@ -63,8 +67,12 @@ def test_classify_web_update_marks_operational_changes_as_live():
 
 
 def test_classify_web_update_marks_network_changes_as_restart_required():
-    decision = classify_web_update({"section": "Network", "key": "SSID", "value": "NewWiFi"})
-    ap_channel_decision = classify_web_update({"section": "Network", "key": "AP_CHANNEL", "value": 11})
+    decision = classify_web_update(
+        {"section": "Network", "key": "SSID", "value": "NewWiFi"}
+    )
+    ap_channel_decision = classify_web_update(
+        {"section": "Network", "key": "AP_CHANNEL", "value": 11}
+    )
 
     assert decision.accepted is True
     assert decision.applies_live is False
@@ -73,7 +81,7 @@ def test_classify_web_update_marks_network_changes_as_restart_required():
     assert ap_channel_decision.requires_restart is True
 
 
-def test_apply_web_config_updates_applies_live_display_location_and_switch_label_changes():
+def test_apply_web_config_updates_applies_live_display_location_and_switch_label():
     runtime_config = _load_runtime_config()
 
     result = apply_web_config_updates(
@@ -97,12 +105,14 @@ def test_apply_web_config_updates_applies_live_display_location_and_switch_label
     assert result.runtime_config.sensor.calibration_device.co2_offset == -125.0
 
 
-def test_apply_web_config_updates_persists_restart_required_fields_without_changing_live_runtime():
+def test_apply_web_config_updates_persists_restart_fields_without_live_change():
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         docs_root = Path(__file__).resolve().parents[1] / "docs" / "sensor+switch"
         for name in ("settings.toml", "sensor_i2c.toml", "switch.toml"):
-            (tmpdir_path / name).write_text((docs_root / name).read_text(), encoding="utf-8")
+            (tmpdir_path / name).write_text(
+                (docs_root / name).read_text(), encoding="utf-8"
+            )
         runtime_config = Settings.from_directory(tmpdir_path).runtime_config()
 
         result = apply_web_config_updates(

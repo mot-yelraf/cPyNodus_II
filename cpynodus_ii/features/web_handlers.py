@@ -8,7 +8,10 @@ easy to test.
 from cpynodus_ii.core.settings import Settings
 from cpynodus_ii.features.sensor_service import read_sensor_snapshot
 from cpynodus_ii.features.switch_service import snapshot_switch_states
-from cpynodus_ii.features.web_config import apply_web_config_updates, apply_web_switch_override
+from cpynodus_ii.features.web_config import (
+    apply_web_config_updates,
+    apply_web_switch_override,
+)
 from cpynodus_ii.features.web_routes import build_web_route_table
 
 
@@ -37,7 +40,9 @@ def build_status_payload(
                 "index": index,
                 "metric": metric,
                 "style": runtime_config.sensor.display.styles[index - 1],
-                "value": (sensor_snapshot.metrics or {}).get(metric) if sensor_snapshot is not None else None,
+                "value": (sensor_snapshot.metrics or {}).get(metric)
+                if sensor_snapshot is not None
+                else None,
             }
         )
 

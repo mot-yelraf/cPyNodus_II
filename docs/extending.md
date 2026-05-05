@@ -156,7 +156,10 @@ Adafruit and community CircuitPython drivers fit this pattern.
 ## Add a UART or Modbus Sensor
 
 The existing `soil` device is the main UART/RS485 example. It uses
-`sensor_soil.toml`, `SoilModbusClient`, register maps, and scale maps.
+`sensor_soil.toml`, `SoilModbusClient`, register maps, and scale maps. The
+soil path supports CH1, CH2, or both channels on the dual-channel RS485 hat
+through `[Modbus.CH1]` and `[Modbus.CH2]`; leave a channel's UART pins blank to
+disable it.
 
 For another Modbus sensor:
 

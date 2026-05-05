@@ -76,6 +76,47 @@ class _ScanSingleAHTI2C(_ScanAHTI2C):
         return ()
 
 
+class _NoSensorI2C:
+    def __init__(self, _scl, _sda):
+        return
+
+    def try_lock(self):
+        return True
+
+    def scan(self):
+        return ()
+
+    def unlock(self):
+        return
+
+    def deinit(self):
+        return
+
+
+class _ProbeSoilUART:
+    def __init__(self, tx, rx, *, baudrate, timeout):
+        self.tx = tx
+        self.rx = rx
+        self.baudrate = baudrate
+        self.timeout = timeout
+        self._last_write = b""
+
+    def write(self, payload):
+        self._last_write = bytes(payload)
+
+    def read(self, _count):
+        if self.baudrate != 9600 or self.tx not in {"GP0", "GP4"}:
+            return None
+        address = self._last_write[0]
+        count = (self._last_write[4] << 8) | self._last_write[5]
+        body = bytes([address, 0x03, count * 2]) + (b"\x00\x01" * count)
+        crc = Settings._modbus_crc16(body)
+        return body + bytes([crc & 0xFF, (crc >> 8) & 0xFF])
+
+    def deinit(self):
+        return
+
+
 def _copy_defs(tmpdir_path):
     root = Path(__file__).resolve().parents[1]
     for name in (
@@ -151,7 +192,23 @@ def test_factory_bootstrap_creates_soil_toml_without_i2c_toml():
                 "soil",
                 {
                     "uart": {"tx": "GP4", "rx": "GP5"},
-                    "modbus": {"baud": 4800, "timeout_s": 0.30, "addr": 3, "soil_variant": "soil_7in1"},
+                    "modbus": {
+                        "baud": 4800,
+                        "timeout_s": 0.30,
+                        "addr": 3,
+                        "soil_variant": "soil_7in1",
+                    },
+                    "modbus_channels": (
+                        {
+                            "name": "CH2",
+                            "tx": "GP4",
+                            "rx": "GP5",
+                            "baud": 4800,
+                            "timeout_s": 0.30,
+                            "addr": 3,
+                            "soil_variant": "soil_7in1",
+                        },
+                    ),
                 },
             ),
             board_module=SimpleNamespace(),
@@ -173,6 +230,10 @@ def test_factory_bootstrap_creates_soil_toml_without_i2c_toml():
     assert soil_doc["Modbus"]["MODBUS_BAUD"] == 4800
     assert soil_doc["Modbus"]["MODBUS_ADDR"] == 3
     assert soil_doc["Modbus"]["SOIL_VARIANT"] == "soil_7in1"
+    assert soil_doc["Modbus"]["CH1"]["UART_TX"] == ""
+    assert soil_doc["Modbus"]["CH2"]["UART_TX"] == "GP4"
+    assert soil_doc["Modbus"]["CH2"]["UART_RX"] == "GP5"
+    assert soil_doc["Modbus"]["CH2"]["MODBUS_ADDR"] == 3
     assert settings_doc["Network"]["HOSTNAME"] == soil_doc["Sensor"]["SENSOR_ID"]
 
 
@@ -181,7 +242,10 @@ def test_factory_profile_reset_forces_nodusweb_when_gp17_held_low():
         tmpdir_path = Path(tmpdir)
         _copy_defs(tmpdir_path)
         (tmpdir_path / "settings.toml").write_text(
-            "[Profile]\nACTIVE_PROFILE = \"sensorius\"\n[Network]\nHOSTNAME = \"co2-abc123\"\n",
+            (
+                '[Profile]\nACTIVE_PROFILE = "sensorius"\n'
+                '[Network]\nHOSTNAME = "co2-abc123"\n'
+            ),
             encoding="utf-8",
         )
         monotonic_values = iter((0.0, 1.0, 2.0, 3.0, 4.0, 5.1))
@@ -194,7 +258,9 @@ def test_factory_profile_reset_forces_nodusweb_when_gp17_held_low():
                 Direction=SimpleNamespace(INPUT="input"),
                 Pull=SimpleNamespace(UP="up"),
             ),
-            time_module=SimpleNamespace(monotonic=lambda: next(monotonic_values), sleep=lambda _s: None),
+            time_module=SimpleNamespace(
+                monotonic=lambda: next(monotonic_values), sleep=lambda _s: None
+            ),
         )
         document = Settings._read_toml_file(tmpdir_path / "settings.toml")
 
@@ -232,6 +298,28 @@ def test_factory_sensor_detect_finds_aht_when_aht_on_one_bus():
 
     assert detected_device == "aht"
     assert interfaces["i2c"]["addr"] == 0x38
+
+
+def test_factory_sensor_detect_finds_soil_on_both_rs485_channels():
+    detected_device, interfaces = Settings._detect_factory_sensor(
+        board_module=SimpleNamespace(
+            GP0="GP0",
+            GP1="GP1",
+            GP2="GP2",
+            GP3="GP3",
+            GP4="GP4",
+            GP5="GP5",
+        ),
+        busio_module=SimpleNamespace(I2C=_NoSensorI2C, UART=_ProbeSoilUART),
+    )
+
+    assert detected_device == "soil"
+    assert [channel["name"] for channel in interfaces["modbus_channels"]] == [
+        "CH1",
+        "CH2",
+    ]
+    assert interfaces["modbus_channels"][0]["tx"] == "GP0"
+    assert interfaces["modbus_channels"][1]["tx"] == "GP4"
 
 
 def test_factory_bootstrap_writes_dual_i2c_sections_for_apvpd():
@@ -309,8 +397,22 @@ def test_write_toml_file_preserves_template_section_and_key_order():
         Settings._write_toml_file(tmpdir_path / "settings.toml", document)
         text = (tmpdir_path / "settings.toml").read_text(encoding="utf-8")
 
-    assert text.index("[Network]") < text.index("[Profile]") < text.index("[MQTT]") < text.index("[HomeAssistant]") < text.index("[Time]")
-    assert text.index('SSID = ""') < text.index('PASSWORD = ') < text.index('AP_SSID = "Nodus_Setup"') < text.index('AP_PASSWORD = ') < text.index('AP_CHANNEL = 6') < text.index('HOSTNAME = "apvpd-uv9he6"') < text.index("HTTPPORT = 8000")
+    assert (
+        text.index("[Network]")
+        < text.index("[Profile]")
+        < text.index("[MQTT]")
+        < text.index("[HomeAssistant]")
+        < text.index("[Time]")
+    )
+    assert (
+        text.index('SSID = ""')
+        < text.index("PASSWORD = ")
+        < text.index('AP_SSID = "Nodus_Setup"')
+        < text.index("AP_PASSWORD = ")
+        < text.index("AP_CHANNEL = 6")
+        < text.index('HOSTNAME = "apvpd-uv9he6"')
+        < text.index("HTTPPORT = 8000")
+    )
 
 
 def test_apply_updates_preserves_template_order_in_settings_file():
@@ -331,8 +433,18 @@ def test_apply_updates_preserves_template_order_in_settings_file():
         )
         text = (tmpdir_path / "settings.toml").read_text(encoding="utf-8")
 
-    assert text.index("[Network]") < text.index("[Profile]") < text.index("[MQTT]") < text.index("[HomeAssistant]") < text.index("[Time]")
-    assert text.index('BROKER = "samhain.local"') < text.index('BROKER_IP = ""') < text.index("PORT = 1883")
+    assert (
+        text.index("[Network]")
+        < text.index("[Profile]")
+        < text.index("[MQTT]")
+        < text.index("[HomeAssistant]")
+        < text.index("[Time]")
+    )
+    assert (
+        text.index('BROKER = "samhain.local"')
+        < text.index('BROKER_IP = ""')
+        < text.index("PORT = 1883")
+    )
 
 
 def test_write_toml_file_keeps_previous_live_file_as_backup():
@@ -340,7 +452,7 @@ def test_write_toml_file_keeps_previous_live_file_as_backup():
         tmpdir_path = Path(tmpdir)
         _copy_defs(tmpdir_path)
         path = tmpdir_path / "sensor_i2c.toml"
-        path.write_text("[Sensor]\nDEVICE = \"apvpd\"\n", encoding="utf-8")
+        path.write_text('[Sensor]\nDEVICE = "apvpd"\n', encoding="utf-8")
         document = Settings._read_toml_file(path)
         document["Sensor"]["LOCATION"] = "Greenhouse"
 
@@ -359,7 +471,7 @@ def test_read_toml_file_uses_backup_when_live_file_is_empty():
         live_path = tmpdir_path / "sensor_i2c.toml"
         backup_path = tmpdir_path / "sensor_i2c.toml.bak"
         live_path.write_text("", encoding="utf-8")
-        backup_path.write_text("[Sensor]\nDEVICE = \"apvpd\"\n", encoding="utf-8")
+        backup_path.write_text('[Sensor]\nDEVICE = "apvpd"\n', encoding="utf-8")
 
         document = Settings._read_toml_file(live_path)
 
@@ -379,6 +491,23 @@ def test_write_toml_file_obfuscates_settings_password_fields():
         Settings._write_toml_file(tmpdir_path / "settings.toml", document)
         text = (tmpdir_path / "settings.toml").read_text(encoding="utf-8")
 
-    assert 'PASSWORD = "{}"'.format(encode_password("wifi-secret", hostname="apvpd-uv9he6")) in text
-    assert 'AP_PASSWORD = "{}"'.format(encode_password("ap-secret", hostname="apvpd-uv9he6")) in text
-    assert text.count('PASSWORD = "{}"'.format(encode_password("mqtt-secret", hostname="apvpd-uv9he6"))) == 1
+    assert (
+        'PASSWORD = "{}"'.format(
+            encode_password("wifi-secret", hostname="apvpd-uv9he6")
+        )
+        in text
+    )
+    assert (
+        'AP_PASSWORD = "{}"'.format(
+            encode_password("ap-secret", hostname="apvpd-uv9he6")
+        )
+        in text
+    )
+    assert (
+        text.count(
+            'PASSWORD = "{}"'.format(
+                encode_password("mqtt-secret", hostname="apvpd-uv9he6")
+            )
+        )
+        == 1
+    )

@@ -10,6 +10,7 @@ from cpynodus_ii.core.config import (
     I2CConfig,
     RuntimeConfig,
     SensorCalibration,
+    SoilModbusChannelConfig,
     SoilModbusConfig,
     SwitchChannelConfig,
     SwitchConfig,
@@ -180,7 +181,9 @@ def test_sensor_service_starts_bme680_for_aqi_config():
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for name in ("settings.toml", "sensor_i2c.toml", "switch.toml"):
-            (tmpdir_path / name).write_text((docs_root / name).read_text(), encoding="utf-8")
+            (tmpdir_path / name).write_text(
+                (docs_root / name).read_text(), encoding="utf-8"
+            )
         runtime_config = Settings.from_directory(tmpdir_path).runtime_config()
 
     sensor_runtime = build_sensor_runtime(
@@ -452,7 +455,9 @@ def test_sensor_service_reads_legacy_aqi_snapshot():
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for name in ("settings.toml", "sensor_i2c.toml", "switch.toml"):
-            (tmpdir_path / name).write_text((docs_root / name).read_text(), encoding="utf-8")
+            (tmpdir_path / name).write_text(
+                (docs_root / name).read_text(), encoding="utf-8"
+            )
         runtime_config = Settings.from_directory(tmpdir_path).runtime_config()
 
     sensor_runtime = build_sensor_runtime(
@@ -509,7 +514,9 @@ def test_sensor_service_uses_uart_transport_for_soil_sensor():
         board_module=SimpleNamespace(GP4="pin-gp4", GP5="pin-gp5"),
         busio_module=SimpleNamespace(I2C=_FakeI2C, UART=_FakeUART),
     )
-    sensor_service = start_sensor_service(sensor_runtime, sensor_adapter, runtime_config)
+    sensor_service = start_sensor_service(
+        sensor_runtime, sensor_adapter, runtime_config
+    )
 
     assert sensor_service.phase == "ready"
     assert sensor_service.driver_kind == "soil_modbus_uart"
@@ -526,8 +533,12 @@ def test_sensor_service_reads_soil_snapshot_from_wrapped_uart_transport():
             device="soil",
             sensor_id="soil-bd1234",
             modbus=SoilModbusConfig(uart_tx="GP4", uart_rx="GP5", baud=4800, address=1),
-            soil_registers=SimpleNamespace(temperature=1, moisture=0, ec=2, ph=3, n=4, p=5, k=6),
-            soil_scales=SimpleNamespace(temperature=10.0, moisture=10.0, ec=1.0, ph=10.0, n=1.0, p=1.0, k=1.0),
+            soil_registers=SimpleNamespace(
+                temperature=1, moisture=0, ec=2, ph=3, n=4, p=5, k=6
+            ),
+            soil_scales=SimpleNamespace(
+                temperature=10.0, moisture=10.0, ec=1.0, ph=10.0, n=1.0, p=1.0, k=1.0
+            ),
             soil_thresholds=SimpleNamespace(wet_pct=68.0, dry_pct=18.0),
             soil_stress=SimpleNamespace(
                 temp_low_crit_c=15.0,
@@ -549,7 +560,9 @@ def test_sensor_service_reads_soil_snapshot_from_wrapped_uart_transport():
         board_module=SimpleNamespace(GP4="pin-gp4", GP5="pin-gp5"),
         busio_module=SimpleNamespace(I2C=_FakeI2C, UART=_FakeUART),
     )
-    sensor_service = start_sensor_service(sensor_runtime, sensor_adapter, runtime_config)
+    sensor_service = start_sensor_service(
+        sensor_runtime, sensor_adapter, runtime_config
+    )
 
     snapshot = read_sensor_snapshot(sensor_service, runtime_config)
 
@@ -558,6 +571,109 @@ def test_sensor_service_reads_soil_snapshot_from_wrapped_uart_transport():
     assert snapshot.metrics["Soil Moisture"] == 43.0
     assert snapshot.metrics["Soil pH"] == 6.8
     assert snapshot.metrics["Soil Nitrogen"] == 11.0
+
+
+def test_sensor_service_reads_dual_soil_snapshots_with_channel_prefixes():
+    class _FakeSoilTransport:
+        def __init__(self, values):
+            self.values = values
+
+        def read_registers(self, start, count):
+            return self.values.get(start)
+
+        def deinit(self):
+            pass
+
+    runtime_config = RuntimeConfig(
+        sensor=DetectedSensor(
+            family="soil",
+            interface="modbus_rs485",
+            active_config_file="sensor_soil.toml",
+            device="soil",
+            sensor_id="soil-1",
+            modbus=SoilModbusConfig(
+                channels=(
+                    SoilModbusChannelConfig(
+                        name="CH1",
+                        uart_tx="GP0",
+                        uart_rx="GP1",
+                        baud=9600,
+                        address=1,
+                    ),
+                    SoilModbusChannelConfig(
+                        name="CH2",
+                        uart_tx="GP4",
+                        uart_rx="GP5",
+                        baud=4800,
+                        address=3,
+                    ),
+                )
+            ),
+            soil_registers=SimpleNamespace(
+                temperature=0,
+                moisture=1,
+                ec=2,
+                ph=3,
+                n=4,
+                p=5,
+                k=6,
+            ),
+            soil_scales=SimpleNamespace(
+                temperature=10.0,
+                moisture=10.0,
+                ec=1.0,
+                ph=10.0,
+                n=1.0,
+                p=1.0,
+                k=1.0,
+            ),
+            soil_thresholds=SimpleNamespace(wet_pct=38.0, dry_pct=18.0),
+            soil_stress=SimpleNamespace(
+                temp_low_crit_c=15.0,
+                temp_low_ok_c=18.0,
+                temp_high_ok_c=24.0,
+                temp_high_crit_c=30.0,
+                moisture_weight_pct=70.0,
+                temp_weight_pct=30.0,
+            ),
+        )
+    )
+    channels = runtime_config.sensor.modbus.channels
+    sensor_service = start_sensor_service(
+        build_sensor_runtime(
+            plan_sensor_initialization(runtime_config), runtime_config
+        ),
+        SimpleNamespace(
+            phase="bound",
+            transport=(
+                (
+                    channels[0],
+                    _FakeSoilTransport(
+                        {0: 215, 1: 430, 2: 55, 3: 68, 4: 11, 5: 22, 6: 33}
+                    ),
+                ),
+                (
+                    channels[1],
+                    _FakeSoilTransport(
+                        {0: 201, 1: 250, 2: 44, 3: 71, 4: 12, 5: 23, 6: 34}
+                    ),
+                ),
+            ),
+            errors=(),
+            interface="modbus_rs485",
+        ),
+        runtime_config,
+    )
+
+    snapshot = read_sensor_snapshot(sensor_service, runtime_config)
+
+    assert snapshot.phase == "ready"
+    assert snapshot.metrics["CH1 Soil Moisture"] == 43.0
+    assert snapshot.metrics["CH2 Soil Moisture"] == 25.0
+    assert snapshot.metrics["CH1 Soil pH"] == 6.8
+    assert snapshot.metrics["CH2 Soil pH"] == 7.1
+    assert snapshot.metrics["CH1 Soil Moisture Deficit"] == 0.0
+    assert snapshot.metrics["CH2 Soil Moisture Deficit"] == 65.0
 
 
 def test_sensor_service_reads_legacy_soil_snapshot():
@@ -579,8 +695,12 @@ def test_sensor_service_reads_legacy_soil_snapshot():
             device="soil",
             sensor_id="soil-1",
             modbus=SoilModbusConfig(uart_tx="GP4", uart_rx="GP5", baud=4800, address=3),
-            soil_registers=SimpleNamespace(temperature=0, moisture=1, ec=2, ph=3, n=4, p=5, k=6),
-            soil_scales=SimpleNamespace(temperature=10.0, moisture=10.0, ec=1.0, ph=10.0, n=1.0, p=1.0, k=1.0),
+            soil_registers=SimpleNamespace(
+                temperature=0, moisture=1, ec=2, ph=3, n=4, p=5, k=6
+            ),
+            soil_scales=SimpleNamespace(
+                temperature=10.0, moisture=10.0, ec=1.0, ph=10.0, n=1.0, p=1.0, k=1.0
+            ),
             soil_thresholds=SimpleNamespace(wet_pct=38.0, dry_pct=18.0),
             soil_stress=SimpleNamespace(
                 temp_low_crit_c=15.0,
@@ -598,7 +718,12 @@ def test_sensor_service_reads_legacy_soil_snapshot():
     )
     sensor_service = start_sensor_service(
         sensor_runtime,
-        SimpleNamespace(phase="bound", transport=_FakeSoilTransport(), errors=(), interface="modbus_rs485"),
+        SimpleNamespace(
+            phase="bound",
+            transport=_FakeSoilTransport(),
+            errors=(),
+            interface="modbus_rs485",
+        ),
         runtime_config,
     )
     snapshot = read_sensor_snapshot(sensor_service, runtime_config)
@@ -680,7 +805,9 @@ def test_sensor_service_starts_bme280_for_avpd_config():
         sensor_runtime,
         sensor_adapter,
         runtime_config,
-        modules={"adafruit_bme280.basic": SimpleNamespace(Adafruit_BME280_I2C=_FakeBME280)},
+        modules={
+            "adafruit_bme280.basic": SimpleNamespace(Adafruit_BME280_I2C=_FakeBME280)
+        },
     )
 
     assert sensor_service.phase == "ready"
@@ -740,7 +867,9 @@ def test_sensor_service_reads_dual_bme280_snapshot_for_apvpd():
             sensor_id="apvpd-1",
             i2c=I2CConfig(bus=0, scl_pin="GP1", sda_pin="GP0", address=0x76),
             secondary_i2c=I2CConfig(bus=1, scl_pin="GP3", sda_pin="GP2", address=0x76),
-            calibration_device=SensorCalibration(apvpd_temp_cal_val=0.5, apvpd_rh_cal_val=-1.0),
+            calibration_device=SensorCalibration(
+                apvpd_temp_cal_val=0.5, apvpd_rh_cal_val=-1.0
+            ),
         )
     )
     sensor_runtime = build_sensor_runtime(
@@ -750,14 +879,18 @@ def test_sensor_service_reads_dual_bme280_snapshot_for_apvpd():
     sensor_adapter = bind_sensor_hardware(
         sensor_runtime,
         runtime_config,
-        board_module=SimpleNamespace(GP0="pin-gp0", GP1="pin-gp1", GP2="pin-gp2", GP3="pin-gp3"),
+        board_module=SimpleNamespace(
+            GP0="pin-gp0", GP1="pin-gp1", GP2="pin-gp2", GP3="pin-gp3"
+        ),
         busio_module=SimpleNamespace(I2C=_FakeI2C, UART=_FakeUART),
     )
     sensor_service = start_sensor_service(
         sensor_runtime,
         sensor_adapter,
         runtime_config,
-        modules={"adafruit_bme280.basic": SimpleNamespace(Adafruit_BME280_I2C=_FakeBME280)},
+        modules={
+            "adafruit_bme280.basic": SimpleNamespace(Adafruit_BME280_I2C=_FakeBME280)
+        },
     )
     snapshot = read_sensor_snapshot(sensor_service, runtime_config)
 
@@ -848,14 +981,18 @@ def test_sensor_service_stop_deinits_dual_i2c_transports_for_apvpd():
     sensor_adapter = bind_sensor_hardware(
         sensor_runtime,
         runtime_config,
-        board_module=SimpleNamespace(GP0="pin-gp0", GP1="pin-gp1", GP2="pin-gp2", GP3="pin-gp3"),
+        board_module=SimpleNamespace(
+            GP0="pin-gp0", GP1="pin-gp1", GP2="pin-gp2", GP3="pin-gp3"
+        ),
         busio_module=SimpleNamespace(I2C=_FakeI2C, UART=_FakeUART),
     )
     sensor_service = start_sensor_service(
         sensor_runtime,
         sensor_adapter,
         runtime_config,
-        modules={"adafruit_bme280.basic": SimpleNamespace(Adafruit_BME280_I2C=_FakeBME280)},
+        modules={
+            "adafruit_bme280.basic": SimpleNamespace(Adafruit_BME280_I2C=_FakeBME280)
+        },
     )
 
     stop_sensor_service(sensor_service)
@@ -865,11 +1002,15 @@ def test_sensor_service_stop_deinits_dual_i2c_transports_for_apvpd():
 
 
 def test_load_module_resolves_dotted_modules_without_fromlist_keywords(monkeypatch):
-    root_module = SimpleNamespace(basic=SimpleNamespace(Adafruit_BME280_I2C=_FakeBME280))
+    root_module = SimpleNamespace(
+        basic=SimpleNamespace(Adafruit_BME280_I2C=_FakeBME280)
+    )
 
     monkeypatch.setattr("builtins.__import__", lambda name: root_module)
 
-    module = sensor_service_module._load_module("adafruit_bme280.basic", {}, "missing_adafruit_bme280")
+    module = sensor_service_module._load_module(
+        "adafruit_bme280.basic", {}, "missing_adafruit_bme280"
+    )
 
     assert module.Adafruit_BME280_I2C is _FakeBME280
 
@@ -900,7 +1041,9 @@ def test_sensor_service_uses_keyword_snapshot_construction_for_co2(monkeypatch):
 
     monkeypatch.setattr(sensor_service_module, "SensorSnapshot", _keyword_only_snapshot)
 
-    snapshot = sensor_service_module.read_sensor_snapshot(sensor_service, runtime_config)
+    snapshot = sensor_service_module.read_sensor_snapshot(
+        sensor_service, runtime_config
+    )
 
     assert calls == [
         {
@@ -935,7 +1078,9 @@ def test_sensor_service_applies_system_and_device_calibration_offsets_for_co2():
     )
     sensor_service = SimpleNamespace(phase="ready", driver=_FakeCO2Driver(), errors=())
 
-    snapshot = sensor_service_module.read_sensor_snapshot(sensor_service, runtime_config)
+    snapshot = sensor_service_module.read_sensor_snapshot(
+        sensor_service, runtime_config
+    )
 
     assert snapshot.metrics["CO2"] == 445.0
     assert snapshot.metrics["Temperature"] == 24.0
@@ -954,7 +1099,9 @@ def test_sensor_service_applies_device_calibration_offsets_for_aqi_and_lux():
             calibration_device=SensorCalibration(gas_offset=100.0, aqi_offset=25.0),
         )
     )
-    aqi_service = SimpleNamespace(phase="ready", driver=_FakeBME680(None, address=0x77), errors=())
+    aqi_service = SimpleNamespace(
+        phase="ready", driver=_FakeBME680(None, address=0x77), errors=()
+    )
     aqi_snapshot = sensor_service_module.read_sensor_snapshot(aqi_service, aqi_runtime)
 
     lux_runtime = RuntimeConfig(
@@ -1002,8 +1149,12 @@ def test_sensor_service_applies_soil_calibration_offsets():
             device="soil",
             sensor_id="soil-1",
             modbus=SoilModbusConfig(uart_tx="GP4", uart_rx="GP5", baud=4800, address=3),
-            soil_registers=SimpleNamespace(temperature=0, moisture=1, ec=2, ph=3, n=4, p=5, k=6),
-            soil_scales=SimpleNamespace(temperature=10.0, moisture=10.0, ec=1.0, ph=10.0, n=1.0, p=1.0, k=1.0),
+            soil_registers=SimpleNamespace(
+                temperature=0, moisture=1, ec=2, ph=3, n=4, p=5, k=6
+            ),
+            soil_scales=SimpleNamespace(
+                temperature=10.0, moisture=10.0, ec=1.0, ph=10.0, n=1.0, p=1.0, k=1.0
+            ),
             soil_thresholds=SimpleNamespace(wet_pct=38.0, dry_pct=18.0),
             soil_stress=SimpleNamespace(
                 temp_low_crit_c=15.0,
@@ -1022,8 +1173,15 @@ def test_sensor_service_applies_soil_calibration_offsets():
         )
     )
     sensor_service = start_sensor_service(
-        build_sensor_runtime(plan_sensor_initialization(runtime_config), runtime_config),
-        SimpleNamespace(phase="bound", transport=_FakeSoilTransport(), errors=(), interface="modbus_rs485"),
+        build_sensor_runtime(
+            plan_sensor_initialization(runtime_config), runtime_config
+        ),
+        SimpleNamespace(
+            phase="bound",
+            transport=_FakeSoilTransport(),
+            errors=(),
+            interface="modbus_rs485",
+        ),
         runtime_config,
     )
 
@@ -1055,7 +1213,9 @@ def test_sensor_service_stop_deinits_transport():
         board_module=SimpleNamespace(GP4="pin-gp4", GP5="pin-gp5"),
         busio_module=SimpleNamespace(I2C=_FakeI2C, UART=_FakeUART),
     )
-    sensor_service = start_sensor_service(sensor_runtime, sensor_adapter, runtime_config)
+    sensor_service = start_sensor_service(
+        sensor_runtime, sensor_adapter, runtime_config
+    )
     stop_sensor_service(sensor_service)
 
     assert sensor_service.transport.deinited is True

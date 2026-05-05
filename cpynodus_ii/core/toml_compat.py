@@ -40,7 +40,9 @@ def dumps(document):
 def dumps_with_template(document, template_text=""):
     lines = []
     scalar_order, child_order = _parse_template_order(template_text)
-    _emit_sections(lines, document, prefix=(), scalar_order=scalar_order, child_order=child_order)
+    _emit_sections(
+        lines, document, prefix=(), scalar_order=scalar_order, child_order=child_order
+    )
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -117,7 +119,9 @@ def _parse_template_order(template_text):
         if not line:
             continue
         if line.startswith("[") and line.endswith("]"):
-            section = tuple(part.strip() for part in line[1:-1].strip().split(".") if part.strip())
+            section = tuple(
+                part.strip() for part in line[1:-1].strip().split(".") if part.strip()
+            )
             current = section
             _register_section(current)
             continue

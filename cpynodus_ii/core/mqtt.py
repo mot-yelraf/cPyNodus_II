@@ -83,6 +83,8 @@ class MQTTTransport:
 
     def subscribe(self, topic):
         topic = str(topic or "").strip()
+        if topic in self.subscriptions:
+            return topic
         self.subscriptions.append(topic)
         return topic
 

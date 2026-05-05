@@ -52,11 +52,18 @@ def build_sensor_runtime(sensor_initialization, runtime_config):
     if sensor.interface == "i2c" and sensor.i2c is not None:
         transport_target = "i2c:{}@0x{:02x}".format(sensor.i2c.bus, sensor.i2c.address)
     elif sensor.interface == "modbus_rs485" and sensor.modbus is not None:
-        transport_target = "{}:{}@{}".format(
-            sensor.modbus.uart_tx,
-            sensor.modbus.uart_rx,
-            sensor.modbus.address,
-        )
+        targets = []
+        channels = getattr(sensor.modbus, "channels", ()) or (sensor.modbus,)
+        for channel in tuple(channels):
+            targets.append(
+                "{}={}:{}@{}".format(
+                    getattr(channel, "name", "") or "MODBUS",
+                    channel.uart_tx,
+                    channel.uart_rx,
+                    channel.address,
+                )
+            )
+        transport_target = ",".join(targets)
 
     return SensorRuntime(
         phase="ready",

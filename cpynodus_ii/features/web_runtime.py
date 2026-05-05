@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """Integrate the lightweight web server with runtime handlers and state.
 
 This module starts and polls the constrained web runtime, dispatches requests
@@ -13,8 +14,10 @@ from cpynodus_ii.features.web_handlers import (
     handle_web_config_request,
 )
 from cpynodus_ii.features.web_routes import route_paths
-from cpynodus_ii.features.web_services import apply_itaot_init_payload, build_itaot_meta_payload
-
+from cpynodus_ii.features.web_services import (
+    apply_itaot_init_payload,
+    build_itaot_meta_payload,
+)
 
 _HTTP_STATUS = {
     200: "OK",
@@ -208,10 +211,18 @@ class WebRuntimeController:
         def _set_switch_state(request):
             body = _parse_json_body(request)
             if body is None:
-                return self._json_response(request, {"success": False, "error": "invalid_json"}, status_code=400)
+                return self._json_response(
+                    request,
+                    {"success": False, "error": "invalid_json"},
+                    status_code=400,
+                )
             state = body.get("state")
             if state is None:
-                return self._json_response(request, {"success": False, "error": "state_required"}, status_code=400)
+                return self._json_response(
+                    request,
+                    {"success": False, "error": "state_required"},
+                    status_code=400,
+                )
             payload = handle_switch_state_request(
                 self.runtime_config,
                 self.switch_service,
@@ -229,16 +240,25 @@ class WebRuntimeController:
             mode = str(body.get("mode", "soft") or "soft").strip().lower()
             callback = self.reboot_callbacks.get(mode)
             if callback is None:
-                return self._json_response(request, {"success": False, "error": "unsupported_restart_mode"}, status_code=400)
+                return self._json_response(
+                    request,
+                    {"success": False, "error": "unsupported_restart_mode"},
+                    status_code=400,
+                )
             callback()
             return self._json_response(request, {"success": True, "restart": mode})
 
         if "/itaot-init" in self._route_paths:
+
             @route("/itaot-init", methods=["POST"])
             def _itaot_init(request):
                 payload = _parse_json_body(request)
                 if payload is None:
-                    return self._json_response(request, {"success": False, "error": "invalid_json"}, status_code=400)
+                    return self._json_response(
+                        request,
+                        {"success": False, "error": "invalid_json"},
+                        status_code=400,
+                    )
                 result = apply_itaot_init_payload(
                     payload,
                     self.runtime_config,
@@ -246,10 +266,14 @@ class WebRuntimeController:
                 )
                 self.runtime_config = result.runtime_config
                 if result.accepted:
-                    callback = self.reboot_callbacks.get("hard") or self.reboot_callbacks.get("soft")
+                    callback = self.reboot_callbacks.get(
+                        "hard"
+                    ) or self.reboot_callbacks.get("soft")
                     if callback is not None:
                         callback()
-                return self._json_response(request, result.body, status_code=result.status_code)
+                return self._json_response(
+                    request, result.body, status_code=result.status_code
+                )
 
             @route("/itaot-meta", methods=["GET"])
             def _itaot_meta(request):
@@ -260,7 +284,9 @@ class WebRuntimeController:
                     switch_states={},
                 )
                 if self.switch_service is not None:
-                    from cpynodus_ii.features.switch_service import snapshot_switch_states
+                    from cpynodus_ii.features.switch_service import (
+                        snapshot_switch_states,
+                    )
 
                     payload = build_itaot_meta_payload(
                         self.runtime_config,
@@ -474,7 +500,9 @@ async function setSwitch(channelId, state){{
         profile=_html_escape(payload["profile"]),
         ssid=_html_escape(payload["network"]["ssid"]),
         ap_channel=_html_escape(payload["network"]["ap_channel"]),
-        location=_html_escape(payload["sensor"]["location"] or payload["switch"]["location"]),
+        location=_html_escape(
+            payload["sensor"]["location"] or payload["switch"]["location"]
+        ),
         metric_rows="".join(metric_rows),
         switch_rows="".join(switch_sections),
     )

@@ -3,7 +3,13 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from cpynodus_ii.core.config import DetectedSensor, I2CConfig, RuntimeConfig, SwitchChannelConfig, SwitchConfig
+from cpynodus_ii.core.config import (
+    DetectedSensor,
+    I2CConfig,
+    RuntimeConfig,
+    SwitchChannelConfig,
+    SwitchConfig,
+)
 from cpynodus_ii.core.settings import Settings
 from cpynodus_ii.features import (
     build_sensor_runtime,
@@ -18,7 +24,9 @@ def test_sensor_runtime_builds_ready_i2c_target_from_reference_config():
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for name in ("settings.toml", "sensor_i2c.toml", "switch.toml"):
-            (tmpdir_path / name).write_text((docs_root / name).read_text(), encoding="utf-8")
+            (tmpdir_path / name).write_text(
+                (docs_root / name).read_text(), encoding="utf-8"
+            )
         runtime_config = Settings.from_directory(tmpdir_path).runtime_config()
 
     sensor_init = plan_sensor_initialization(runtime_config)
@@ -51,7 +59,9 @@ def test_switch_runtime_builds_ready_channels_from_reference_config():
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for name in ("settings.toml", "sensor_i2c.toml", "switch.toml"):
-            (tmpdir_path / name).write_text((docs_root / name).read_text(), encoding="utf-8")
+            (tmpdir_path / name).write_text(
+                (docs_root / name).read_text(), encoding="utf-8"
+            )
         runtime_config = Settings.from_directory(tmpdir_path).runtime_config()
 
     switch_init = plan_switch_initialization(runtime_config)

@@ -3,8 +3,8 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from cpynodus_ii.core.settings import Settings
 from cpynodus_ii.core.mqtt import MQTTTransport
+from cpynodus_ii.core.settings import Settings
 from cpynodus_ii.features import (
     process_calibration_message,
     process_device_config_message,
@@ -17,7 +17,9 @@ def test_device_config_message_persists_settings_toml_and_reloads_runtime_config
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for name in ("settings.toml", "switch.toml"):
-            (tmpdir_path / name).write_text((docs_root / name).read_text(), encoding="utf-8")
+            (tmpdir_path / name).write_text(
+                (docs_root / name).read_text(), encoding="utf-8"
+            )
 
         runtime_config = Settings.from_directory(tmpdir_path).runtime_config()
         transport = MQTTTransport("broker.local", 1883)
@@ -35,21 +37,29 @@ def test_device_config_message_persists_settings_toml_and_reloads_runtime_config
     assert result.runtime_config.mqtt.broker == "broker2.local"
     assert reloaded.network.hostname == "switch-new"
     assert reloaded.mqtt.broker == "broker2.local"
-    assert "nodus/switch-w9umh8/meta/patch" in [message.topic for message in transport.published_messages]
+    assert "nodus/switch-w9umh8/meta/patch" in [
+        message.topic for message in transport.published_messages
+    ]
 
 
-def test_calibration_message_persists_active_sensor_toml_without_reloading_runtime_config(monkeypatch):
+def test_calibration_message_persists_active_sensor_toml_without_runtime_reload(
+    monkeypatch,
+):
     docs_root = Path(__file__).resolve().parents[1] / "docs" / "sensor+switch"
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for name in ("settings.toml", "switch.toml", "sensor_i2c.toml"):
-            (tmpdir_path / name).write_text((docs_root / name).read_text(), encoding="utf-8")
+            (tmpdir_path / name).write_text(
+                (docs_root / name).read_text(), encoding="utf-8"
+            )
 
         runtime_config = Settings.from_directory(tmpdir_path).runtime_config()
         transport = MQTTTransport("broker.local", 1883)
 
         def _fail_on_reload(cls, root):
-            raise AssertionError("calibration persistence should not reload runtime config")
+            raise AssertionError(
+                "calibration persistence should not reload runtime config"
+            )
 
         monkeypatch.setattr(Settings, "from_directory", classmethod(_fail_on_reload))
         result = process_calibration_message(
@@ -73,7 +83,9 @@ def test_switch_command_persists_switch_toml_last_state():
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for name in ("settings.toml", "switch.toml"):
-            (tmpdir_path / name).write_text((docs_root / name).read_text(), encoding="utf-8")
+            (tmpdir_path / name).write_text(
+                (docs_root / name).read_text(), encoding="utf-8"
+            )
 
         runtime_config = Settings.from_directory(tmpdir_path).runtime_config()
         transport = MQTTTransport("broker.local", 1883)
@@ -127,7 +139,9 @@ def test_switch_command_persists_without_reloading_runtime_config(monkeypatch):
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for name in ("settings.toml", "switch.toml"):
-            (tmpdir_path / name).write_text((docs_root / name).read_text(), encoding="utf-8")
+            (tmpdir_path / name).write_text(
+                (docs_root / name).read_text(), encoding="utf-8"
+            )
 
         runtime_config = Settings.from_directory(tmpdir_path).runtime_config()
         transport = MQTTTransport("broker.local", 1883)
@@ -180,18 +194,24 @@ def test_switch_command_persists_without_reloading_runtime_config(monkeypatch):
     assert switch_doc["Switch"]["SWITCH_1_LAST_STATE"] is True
 
 
-def test_device_config_message_persists_sensor_location_without_reloading_runtime_config(monkeypatch):
+def test_device_config_message_persists_sensor_location_without_runtime_reload(
+    monkeypatch,
+):
     docs_root = Path(__file__).resolve().parents[1] / "docs" / "sensor+switch"
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for name in ("settings.toml", "switch.toml", "sensor_i2c.toml"):
-            (tmpdir_path / name).write_text((docs_root / name).read_text(), encoding="utf-8")
+            (tmpdir_path / name).write_text(
+                (docs_root / name).read_text(), encoding="utf-8"
+            )
 
         runtime_config = Settings.from_directory(tmpdir_path).runtime_config()
         transport = MQTTTransport("broker.local", 1883)
 
         def _fail_on_reload(cls, root):
-            raise AssertionError("generic config persistence should not reload runtime config")
+            raise AssertionError(
+                "generic config persistence should not reload runtime config"
+            )
 
         monkeypatch.setattr(Settings, "from_directory", classmethod(_fail_on_reload))
         result = process_device_config_message(
@@ -214,10 +234,14 @@ def test_device_config_message_persists_display_metrics_with_backup(monkeypatch)
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for name in ("settings.toml", "switch.toml", "sensor_i2c.toml"):
-            (tmpdir_path / name).write_text((docs_root / name).read_text(), encoding="utf-8")
+            (tmpdir_path / name).write_text(
+                (docs_root / name).read_text(), encoding="utf-8"
+            )
 
         runtime_config = Settings.from_directory(tmpdir_path).runtime_config()
-        original_text = (tmpdir_path / Settings.SENSOR_I2C_FILE).read_text(encoding="utf-8")
+        original_text = (tmpdir_path / Settings.SENSOR_I2C_FILE).read_text(
+            encoding="utf-8"
+        )
         transport = MQTTTransport("broker.local", 1883)
 
         def _fail_on_reload(cls, root):
@@ -228,11 +252,18 @@ def test_device_config_message_persists_display_metrics_with_backup(monkeypatch)
             transport,
             runtime_config,
             topic="nodus/aqi-x943fm/config/set",
-            payload_text='{"message_id":"cfg-1","payload":{"updates":[{"section":"Display","key":"METRIC_1","value":"Plant VPD"},{"section":"Display.Style","key":"METRIC_1","value":"Graph24hr"}]}}',
+            payload_text=(
+                '{"message_id":"cfg-1","payload":{"updates":['
+                '{"section":"Display","key":"METRIC_1","value":"Plant VPD"},'
+                '{"section":"Display.Style","key":"METRIC_1","value":"Graph24hr"}'
+                "]}}"
+            ),
             settings_root=tmpdir_path,
         )
         sensor_doc = Settings._read_toml_file(tmpdir_path / Settings.SENSOR_I2C_FILE)
-        backup_text = (tmpdir_path / "{}.bak".format(Settings.SENSOR_I2C_FILE)).read_text(encoding="utf-8")
+        backup_text = (
+            tmpdir_path / "{}.bak".format(Settings.SENSOR_I2C_FILE)
+        ).read_text(encoding="utf-8")
 
     assert result.phase == "published"
     assert result.persistence_mode == "persisted"

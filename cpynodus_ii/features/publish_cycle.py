@@ -19,6 +19,7 @@ from cpynodus_ii.features.payloads import (
     build_switch_state_payload,
     mqtt_topic,
 )
+from cpynodus_ii.ota.state import load_ota_state
 
 
 @dataclass(frozen=True)
@@ -44,13 +45,6 @@ def publish_startup_cycle(
     """Publish retained startup payloads for the current runtime state."""
     topics = []
     device_id = _device_id(runtime_config)
-    heartbeat = transport.publish(
-        mqtt_topic(runtime_config, device_id, "status", "heartbeat"),
-        build_device_heartbeat_payload(runtime_config, online=True),
-        retain=True,
-    )
-    topics.append(heartbeat.topic)
-
     meta = transport.publish(
         mqtt_topic(runtime_config, device_id, "meta"),
         build_runtime_meta_payload(
@@ -61,6 +55,22 @@ def publish_startup_cycle(
         retain=True,
     )
     topics.append(meta.topic)
+
+    if runtime_config.sensor.present:
+        if sensor_snapshot is not None and sensor_snapshot.phase == "ready":
+            data = transport.publish(
+                mqtt_topic(runtime_config, runtime_config.sensor.sensor_id, "data"),
+                build_sensor_data_payload(runtime_config, sensor_snapshot),
+                retain=False,
+            )
+            topics.append(data.topic)
+
+    heartbeat = transport.publish(
+        mqtt_topic(runtime_config, device_id, "status", "heartbeat"),
+        build_device_heartbeat_payload(runtime_config, online=True),
+        retain=True,
+    )
+    topics.append(heartbeat.topic)
 
     # Publish online availability early so stale retained offline status is
     # cleared even if later startup publishes fail.
@@ -103,7 +113,9 @@ def publish_startup_cycle(
     discovery_plan = build_homeassistant_discovery_plan(
         runtime_config,
         sensor_snapshot=sensor_snapshot,
-        retain=bool(getattr(runtime_config.homeassistant, "publish_discovery_retain", True)),
+        retain=bool(
+            getattr(runtime_config.homeassistant, "publish_discovery_retain", True)
+        ),
         previous_topics=getattr(transport, "_ha_last_retained_discovery_topics", ()),
     )
     for topic, payload, retain_flag, is_clear in discovery_plan:
@@ -111,23 +123,21 @@ def publish_startup_cycle(
         topics.append(message.topic)
         if not is_clear:
             continue
-    if str(getattr(runtime_config, "active_profile", "") or "").strip().lower() == "homeassistant":
+    if (
+        str(getattr(runtime_config, "active_profile", "") or "").strip().lower()
+        == "homeassistant"
+    ):
         retained_topics = {
-            topic for topic, _payload, retain_flag, is_clear in discovery_plan if retain_flag and not is_clear
+            topic
+            for topic, _payload, retain_flag, is_clear in discovery_plan
+            if retain_flag and not is_clear
         }
         transport._ha_last_retained_discovery_topics = retained_topics
 
-    if runtime_config.sensor.present:
-        if sensor_snapshot is not None and sensor_snapshot.phase == "ready":
-            data = transport.publish(
-                mqtt_topic(runtime_config, runtime_config.sensor.sensor_id, "data"),
-                build_sensor_data_payload(runtime_config, sensor_snapshot),
-                retain=False,
-            )
-            topics.append(data.topic)
-
     if runtime_config.switch.present:
-        state_payloads = build_switch_state_payload(runtime_config, switch_snapshot or {})
+        state_payloads = build_switch_state_payload(
+            runtime_config, switch_snapshot or {}
+        )
         for channel in runtime_config.switch.channels:
             payload = state_payloads[channel.key]
             message = transport.publish(
@@ -217,8 +227,16 @@ def publish_shutdown_cycle(transport, runtime_config):
 
 
 def publish_availability_refresh_cycle(transport, runtime_config):
-    """Republish retained online availability payloads during steady-state."""
+    """Republish retained online heartbeat and availability payloads."""
     topics = []
+    device_id = _device_id(runtime_config)
+    heartbeat = transport.publish(
+        mqtt_topic(runtime_config, device_id, "status", "heartbeat"),
+        build_device_heartbeat_payload(runtime_config, online=True),
+        retain=True,
+    )
+    topics.append(heartbeat.topic)
+
     if runtime_config.sensor.present:
         availability = transport.publish(
             mqtt_topic(runtime_config, runtime_config.sensor.sensor_id, "availability"),
@@ -254,6 +272,54 @@ def publish_availability_refresh_cycle(transport, runtime_config):
         phase="published",
         published_count=len(topics),
         topics=tuple(topics),
+        errors=(),
+    )
+
+
+def publish_ota_completion_report(transport, runtime_config, *, settings_root=None):
+    """Publish the post-reboot OTA result if an applied update is recorded."""
+    if not settings_root:
+        return PublishCycleResult(
+            phase="skipped",
+            published_count=0,
+            topics=(),
+            errors=(),
+        )
+    state = load_ota_state(_ota_state_path(settings_root))
+    if state is None:
+        return PublishCycleResult(
+            phase="skipped",
+            published_count=0,
+            topics=(),
+            errors=(),
+        )
+    if getattr(state, "phase", "") != "applied":
+        return PublishCycleResult(
+            phase="skipped",
+            published_count=0,
+            topics=(),
+            errors=(),
+        )
+    device_id = _device_id(runtime_config)
+    message = transport.publish(
+        mqtt_topic(runtime_config, device_id, "fwupdate", "result"),
+        {
+            "schema": "nodus-fwupdate-result/v1",
+            "message_id": "",
+            "prepared": True,
+            "applied": True,
+            "phase": "applied",
+            "package_id": str(getattr(state, "package_id", "") or ""),
+            "prior_profile": str(getattr(state, "prior_profile", "") or ""),
+            "error": "",
+            "timestamp": int(time()),
+        },
+        retain=False,
+    )
+    return PublishCycleResult(
+        phase="published",
+        published_count=1,
+        topics=(message.topic,),
         errors=(),
     )
 
@@ -311,4 +377,17 @@ def publish_switch_result(transport, runtime_config, apply_result, *, message_id
 
 
 def _device_id(runtime_config):
-    return runtime_config.sensor.sensor_id or runtime_config.switch.device_id or runtime_config.network.hostname
+    return (
+        runtime_config.sensor.sensor_id
+        or runtime_config.switch.device_id
+        or runtime_config.network.hostname
+    )
+
+
+def _ota_state_path(root):
+    root_text = str(root or ".")
+    if root_text == "/":
+        return "/_ota/state.json"
+    if root_text.endswith("/"):
+        return "{}_ota/state.json".format(root_text)
+    return "{}/_ota/state.json".format(root_text)

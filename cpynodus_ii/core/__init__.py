@@ -12,6 +12,7 @@ from cpynodus_ii.core.mqtt_client import (
     connect_mqtt_client,
     disconnect_mqtt_client,
     poll_mqtt_client,
+    preflight_mqtt_broker,
     sync_transport_to_client,
 )
 from cpynodus_ii.core.network import (
@@ -46,6 +47,7 @@ __all__ = [
     "maybe_sync_ntp",
     "network_link_is_ready",
     "poll_mqtt_client",
+    "preflight_mqtt_broker",
     "reconnect_network_stack",
     "refresh_network_stack",
     "sync_transport_to_client",

@@ -13,9 +13,15 @@ wins.
 - Runtime device config uses `nodus/<device_id>/config/set`.
 - Runtime switch config uses `nodus/<channel_id>/config/set`.
 - Calibration uses `nodus/<device_id>/calibration/set`.
+- OTA prepare uses `nodus/<device_id>/fwupdate`; files move over HTTP after
+  Nodus reboots into temporary OTA mode.
 - Nodus publishes retained `nodus/<device_id>/meta` on connect/reconnect.
 - Nodus publishes non-retained `nodus/<device_id>/meta/patch` after accepted
   runtime changes.
+- `/set` commands should normally be published non-retained. When a `/set`
+  command is intentionally published retained by Sensorius, Sensorius owns
+  clearing it with an empty retained publish to the same topic after successful
+  handling.
 - Sensorius paces ordinary runtime config writes one key at a time per
   physical Nodus host and waits for `ack` plus successful `result`.
 
@@ -31,6 +37,9 @@ wins.
 - `nodus/<device_id>/calibration/set`
 - `nodus/<device_id>/calibration/ack`
 - `nodus/<device_id>/calibration/result`
+- `nodus/<device_id>/fwupdate`
+- `nodus/<device_id>/fwupdate/ack`
+- `nodus/<device_id>/fwupdate/result`
 - `nodus/<sensor_id>/data`
 - `nodus/<sensor_id>/availability`
 - `nodus/<channel_id>/event`
@@ -52,13 +61,21 @@ current contract:
 
 ## Runtime Command Ownership
 
+- `/set` topics are command topics, not state topics. Prefer non-retained
+  publishes for commands. If Sensorius publishes any `/set` command retained,
+  Sensorius must clear that retained command by publishing an empty retained
+  payload to that exact topic after successful `result`. Nodus ignores empty
+  `/set` payloads defensively.
 - Startup retained `meta` publishing belongs to startup and reconnect handling.
 - Device config uses `config/set`, `config/ack`, `config/result`, and
-  `meta/patch`.
+  `meta/patch`. Nodus does not clear device `config/set`; Sensorius owns any
+  retained command cleanup.
 - Switch config uses channel-scoped `config/set`, `config/ack`,
-  `config/result`, retained `state`, and `meta/patch`.
+  `config/result`, retained `state`, and `meta/patch`. Nodus does not clear
+  switch `config/set`; Sensorius owns any retained command cleanup.
 - Calibration uses `calibration/set`, `calibration/ack`,
-  `calibration/result`, and `meta/patch`.
+  `calibration/result`, and `meta/patch`. Nodus does not clear
+  `calibration/set`; Sensorius owns any retained command cleanup.
 
 ## Notes
 

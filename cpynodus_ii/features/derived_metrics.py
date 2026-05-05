@@ -7,7 +7,6 @@ inside hardware-facing code.
 
 import math
 
-
 DEFAULT_PPFD_LUX_FACTOR = 54.0
 DLI_SECONDS_PER_DAY_MICROMOL = 0.0864
 
@@ -17,7 +16,9 @@ def enrich_metrics(device, metrics, *, runtime_config):
     enriched = dict(metrics or {})
 
     if device in {"aht", "aqi", "co2", "avpd", "apvpd", "apvpd_aht"}:
-        _add_temp_humidity_derivatives(enriched, humidity_digits=3 if device == "co2" else 1)
+        _add_temp_humidity_derivatives(
+            enriched, humidity_digits=3 if device == "co2" else 1
+        )
     if device in {"apvpd", "apvpd_aht"}:
         _add_prefixed_temp_humidity_derivatives(
             enriched,
@@ -38,10 +39,14 @@ def enrich_metrics(device, metrics, *, runtime_config):
         ppfd = estimate_ppfd_from_lux(lux)
         if ppfd is not None:
             enriched["Estimated PPFD"] = round(ppfd, 0)
-            enriched["Visible Light Intensity"] = estimate_dli_from_ppfd(enriched["Estimated PPFD"])
+            enriched["Visible Light Intensity"] = estimate_dli_from_ppfd(
+                enriched["Estimated PPFD"]
+            )
 
     if device == "soil":
         _add_soil_derivatives(enriched, runtime_config)
+        for prefix in _soil_metric_prefixes(enriched):
+            _add_soil_derivatives(enriched, runtime_config, prefix=prefix)
 
     return {key: value for key, value in enriched.items() if value is not None}
 
@@ -133,7 +138,12 @@ def calculate_dewvpd_risk(
         vpd_kpa = float(vpd_kpa)
     except (TypeError, ValueError):
         return None
-    if dt_hi <= dt_lo or vp_target_lo <= vp_lo or vp_target_hi <= vp_target_lo or vp_hi <= vp_target_hi:
+    if (
+        dt_hi <= dt_lo
+        or vp_target_lo <= vp_lo
+        or vp_target_hi <= vp_target_lo
+        or vp_hi <= vp_target_hi
+    ):
         return None
     weight = min(max(weight, 0.0), 1.0)
     dew_risk = (dt_hi - delta_t) / (dt_hi - dt_lo)
@@ -198,54 +208,96 @@ def _add_temp_humidity_derivatives(metrics, *, humidity_digits):
     )
 
 
-def _add_prefixed_temp_humidity_derivatives(metrics, *, temp_key, rh_key, prefix, humidity_digits):
+def _add_prefixed_temp_humidity_derivatives(
+    metrics, *, temp_key, rh_key, prefix, humidity_digits
+):
     temp_c = metrics.get(temp_key)
     rh_pct = metrics.get(rh_key)
     label_prefix = "{} ".format(prefix) if prefix else ""
     if temp_c is not None:
-        metrics["{}Temperature_F".format(label_prefix)] = round((float(temp_c) * 9.0 / 5.0) + 32.0, 1)
+        metrics["{}Temperature_F".format(label_prefix)] = round(
+            (float(temp_c) * 9.0 / 5.0) + 32.0, 1
+        )
     absolute_humidity = calculate_absolute_humidity(temp_c, rh_pct)
     if absolute_humidity is not None:
-        metrics["{}Humidity".format(label_prefix)] = round(absolute_humidity, humidity_digits)
+        metrics["{}Humidity".format(label_prefix)] = round(
+            absolute_humidity, humidity_digits
+        )
     vpd_kpa = calculate_vpd(temp_c, rh_pct)
     if vpd_kpa is not None:
-        metrics["Ambient VPD" if not prefix else "{} VPD".format(prefix)] = round(max(0.0, min(vpd_kpa, 5.0)), 3)
+        metrics["Ambient VPD" if not prefix else "{} VPD".format(prefix)] = round(
+            max(0.0, min(vpd_kpa, 5.0)), 3
+        )
     dewpoint_c = calculate_dewpoint(temp_c, rh_pct)
     if dewpoint_c is not None:
         metrics["{}Dew Point".format(label_prefix)] = round(dewpoint_c, 2)
-        metrics["{}Dew Point_F".format(label_prefix)] = round((dewpoint_c * 9.0 / 5.0) + 32.0, 1)
+        metrics["{}Dew Point_F".format(label_prefix)] = round(
+            (dewpoint_c * 9.0 / 5.0) + 32.0, 1
+        )
     dew_deficit = calculate_dewpoint_deficit(temp_c, rh_pct)
     if dew_deficit is not None:
         metrics["{}Dew Point Deficit".format(label_prefix)] = round(dew_deficit, 2)
     dew_vpd_risk = calculate_dewvpd_risk(temp_c, rh_pct, vpd_kpa)
     if dew_vpd_risk is not None:
-        metrics["DewVPD Risk" if not prefix else "{} DewVPD Risk".format(prefix)] = round(
-            max(0.0, min(dew_vpd_risk, 100.0)),
-            1,
+        metrics["DewVPD Risk" if not prefix else "{} DewVPD Risk".format(prefix)] = (
+            round(
+                max(0.0, min(dew_vpd_risk, 100.0)),
+                1,
+            )
         )
 
 
-def _add_soil_derivatives(metrics, runtime_config):
+def _soil_metric_prefixes(metrics):
+    prefixes = []
+    suffixes = (" Soil Temp_C", " Soil Moisture")
+    for key in tuple(metrics.keys()):
+        text = str(key or "")
+        for suffix in suffixes:
+            if text.endswith(suffix):
+                prefix = text[: -len(suffix)]
+                if prefix and prefix not in prefixes:
+                    prefixes.append(prefix)
+    return tuple(prefixes)
+
+
+def _add_soil_derivatives(metrics, runtime_config, prefix=""):
     soil = runtime_config.sensor
-    temp_c = metrics.get("Soil Temp_C")
-    moisture = metrics.get("Soil Moisture")
+    label_prefix = "{} ".format(prefix) if prefix else ""
+    temp_c = metrics.get("{}Soil Temp_C".format(label_prefix))
+    moisture = metrics.get("{}Soil Moisture".format(label_prefix))
     if temp_c is not None:
-        metrics["Soil Temp_F"] = (float(temp_c) * 9.0 / 5.0) + 32.0
+        metrics["{}Soil Temp_F".format(label_prefix)] = (
+            float(temp_c) * 9.0 / 5.0
+        ) + 32.0
 
     wet = getattr(getattr(soil, "soil_thresholds", None), "wet_pct", None)
     dry = getattr(getattr(soil, "soil_thresholds", None), "dry_pct", None)
-    if moisture is not None and wet is not None and dry is not None and float(wet) > float(dry):
+    if (
+        moisture is not None
+        and wet is not None
+        and dry is not None
+        and float(wet) > float(dry)
+    ):
         deficit = 100.0 * ((float(wet) - float(moisture)) / (float(wet) - float(dry)))
-        metrics["Soil Moisture Deficit"] = round(min(max(deficit, 0.0), 100.0), 1)
+        metrics["{}Soil Moisture Deficit".format(label_prefix)] = round(
+            min(max(deficit, 0.0), 100.0),
+            1,
+        )
 
     stress = getattr(soil, "soil_stress", None)
-    deficit = metrics.get("Soil Moisture Deficit")
+    deficit = metrics.get("{}Soil Moisture Deficit".format(label_prefix))
     temp_stress = _soil_temp_stress_pct(temp_c, stress)
     if deficit is not None and temp_stress is not None and stress is not None:
         total = float(stress.moisture_weight_pct) + float(stress.temp_weight_pct)
         if total > 0:
-            ssi = ((float(deficit) * float(stress.moisture_weight_pct)) + (temp_stress * float(stress.temp_weight_pct))) / total
-            metrics["Soil Stress Index"] = round(min(max(ssi, 0.0), 100.0), 1)
+            ssi = (
+                (float(deficit) * float(stress.moisture_weight_pct))
+                + (temp_stress * float(stress.temp_weight_pct))
+            ) / total
+            metrics["{}Soil Stress Index".format(label_prefix)] = round(
+                min(max(ssi, 0.0), 100.0),
+                1,
+            )
 
 
 def _soil_temp_stress_pct(temp_c, stress):

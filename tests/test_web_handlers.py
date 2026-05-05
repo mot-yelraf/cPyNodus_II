@@ -18,7 +18,9 @@ def _runtime_config():
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for name in ("settings.toml", "sensor_i2c.toml", "switch.toml"):
-            (tmpdir_path / name).write_text((docs_root / name).read_text(), encoding="utf-8")
+            (tmpdir_path / name).write_text(
+                (docs_root / name).read_text(), encoding="utf-8"
+            )
         return Settings.from_directory(tmpdir_path).runtime_config()
 
 
@@ -118,7 +120,9 @@ def test_handle_switch_state_request_persists_last_state_when_requested():
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for name in ("settings.toml", "sensor_i2c.toml", "switch.toml"):
-            (tmpdir_path / name).write_text((docs_root / name).read_text(), encoding="utf-8")
+            (tmpdir_path / name).write_text(
+                (docs_root / name).read_text(), encoding="utf-8"
+            )
         runtime_config = Settings.from_directory(tmpdir_path).runtime_config()
 
         payload = handle_switch_state_request(
