@@ -78,6 +78,46 @@ def test_calibration_message_persists_active_sensor_toml_without_runtime_reload(
     assert transport.published_messages[-1].payload["updates"][0]["value"] == 1.5
 
 
+def test_soil_ph_calibration_persists_without_recursive_toml_dump(monkeypatch):
+    with TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        repo_root = Path(__file__).resolve().parents[1]
+        for name in ("settings.toml.def", "sensor_soil.toml.def"):
+            source = repo_root / name
+            target = tmpdir_path / name.replace(".def", "")
+            target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+        soil_path = tmpdir_path / Settings.SENSOR_SOIL_FILE
+        soil_path.write_text(
+            soil_path.read_text(encoding="utf-8").replace(
+                'DEVICE = ""', 'DEVICE = "soil"'
+            ),
+            encoding="utf-8",
+        )
+
+        runtime_config = Settings.from_directory(tmpdir_path).runtime_config()
+        transport = MQTTTransport("broker.local", 1883)
+
+        def _fail_on_reload(cls, root):
+            raise AssertionError(
+                "calibration persistence should not reload runtime config"
+            )
+
+        monkeypatch.setattr(Settings, "from_directory", classmethod(_fail_on_reload))
+        result = process_calibration_message(
+            transport,
+            runtime_config,
+            topic="nodus/soil-bd1234/calibration/set",
+            payload_text='{"message_id":"soil-ph-1","action":"apply","payload":{"offsets":[{"key":"soil_ph_offset","value":0.42}]}}',
+            settings_root=tmpdir_path,
+        )
+        soil_doc = Settings._read_toml_file(tmpdir_path / Settings.SENSOR_SOIL_FILE)
+
+    assert result.phase == "published"
+    assert result.persistence_mode == "persisted"
+    assert result.runtime_config.sensor.calibration_device.soil_ph_cal_val == 0.42
+    assert soil_doc["Calibration"]["Device"]["SOIL_PH_CAL_VAL"] == 0.42
+
+
 def test_switch_command_persists_switch_toml_last_state():
     docs_root = Path(__file__).resolve().parents[1] / "docs" / "switch_only"
     with TemporaryDirectory() as tmpdir:

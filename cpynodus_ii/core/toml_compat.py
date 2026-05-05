@@ -47,6 +47,36 @@ def dumps_with_template(document, template_text=""):
 
 
 def _emit_sections(lines, document, prefix, *, scalar_order, child_order):
+    sections = []
+    stack = [(prefix, document)]
+    seen_docs = set()
+    while stack:
+        current_prefix, current_document = stack.pop()
+        doc_id = id(current_document)
+        if doc_id in seen_docs:
+            continue
+        seen_docs.add(doc_id)
+        scalar_items, nested_items = _ordered_section_items(
+            current_document,
+            current_prefix,
+            scalar_order=scalar_order,
+            child_order=child_order,
+        )
+        if current_prefix or scalar_items:
+            sections.append((current_prefix, scalar_items))
+        for key, value in reversed(nested_items):
+            stack.append((current_prefix + (key,), value))
+
+    for index, (section_prefix, scalar_items) in enumerate(sections):
+        if index:
+            lines.append("")
+        if section_prefix:
+            lines.append("[{}]".format(".".join(section_prefix)))
+        for key, value in scalar_items:
+            lines.append("{} = {}".format(key, _format_value(value)))
+
+
+def _ordered_section_items(document, prefix, *, scalar_order, child_order):
     scalar_map = {}
     nested_map = {}
     for key, value in document.items():
@@ -76,23 +106,7 @@ def _emit_sections(lines, document, prefix, *, scalar_order, child_order):
         if key in seen:
             continue
         nested_items.append((key, value))
-
-    if prefix:
-        lines.append("[{}]".format(".".join(prefix)))
-    for key, value in scalar_items:
-        lines.append("{} = {}".format(key, _format_value(value)))
-    if prefix and nested_items:
-        lines.append("")
-    for index, (key, value) in enumerate(nested_items):
-        _emit_sections(
-            lines,
-            value,
-            prefix + (key,),
-            scalar_order=scalar_order,
-            child_order=child_order,
-        )
-        if index != len(nested_items) - 1:
-            lines.append("")
+    return scalar_items, nested_items
 
 
 def _parse_template_order(template_text):
