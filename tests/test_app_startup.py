@@ -8,15 +8,12 @@ from cpynodus_ii.app import (
     _load_settings_for_startup,
     _load_startup_ota_state,
     _mark_ota_applied_after_boot,
-    _mark_startup_warm_rebooted,
     _ota_state_path,
     _persist_learned_broker_ip,
-    _read_startup_warm_reboot_marker,
     _resolve_startup_plan,
     _should_enter_ota_mode,
     _should_fallback_to_ap,
     _startup_ap_fallback_reason,
-    _startup_warm_reboot_ready_reason,
 )
 from cpynodus_ii.core.config import MQTTConfig, NetworkConfig, RuntimeConfig
 from cpynodus_ii.core.obfuscation import PASSWORD_OBF_PREFIX
@@ -186,96 +183,6 @@ def test_persist_learned_broker_ip_writes_settings_and_obfuscates_password(tmp_p
     assert 'BROKER_IP = "10.0.0.248"' in text
     assert 'PASSWORD = "plain-wifi"' not in text
     assert PASSWORD_OBF_PREFIX + ":" in text
-
-
-def test_startup_warm_reboot_marker_uses_second_nvm_byte():
-    nvm = bytearray(4)
-
-    assert _read_startup_warm_reboot_marker(nvm) == 0
-    assert _mark_startup_warm_rebooted(nvm) is True
-    assert _read_startup_warm_reboot_marker(nvm) == 1
-
-
-def test_startup_warm_reboot_ready_after_ntp_synced():
-    runtime_config = RuntimeConfig(
-        active_profile="sensorius",
-        mqtt=MQTTConfig(broker="samhain.local", port=1883),
-    )
-    network_stack = SimpleNamespace(phase="ready", socket_pool=object())
-    mqtt_adapter = SimpleNamespace(
-        active_broker="samhain.local", broker="samhain.local"
-    )
-    ntp_state = SimpleNamespace(phase="synced")
-    plan = SimpleNamespace(mqtt_enabled=True)
-
-    reason, errors = _startup_warm_reboot_ready_reason(
-        runtime_config,
-        network_stack,
-        mqtt_adapter,
-        ntp_state,
-        plan,
-    )
-
-    assert reason == "ntp_synced"
-    assert errors == ()
-
-
-def test_startup_warm_reboot_waits_for_broker_dns(monkeypatch):
-    runtime_config = RuntimeConfig(
-        active_profile="sensorius",
-        mqtt=MQTTConfig(broker="samhain.local", port=1883),
-    )
-    network_stack = SimpleNamespace(phase="ready", socket_pool=object())
-    mqtt_adapter = SimpleNamespace(
-        active_broker="samhain.local", broker="samhain.local"
-    )
-    ntp_state = SimpleNamespace(phase="deferred")
-    plan = SimpleNamespace(mqtt_enabled=True)
-
-    monkeypatch.setattr(
-        "cpynodus_ii.app.preflight_mqtt_broker",
-        lambda adapter: ("mqtt_resolve_failed:samhain.local:-2", ""),
-    )
-
-    reason, errors = _startup_warm_reboot_ready_reason(
-        runtime_config,
-        network_stack,
-        mqtt_adapter,
-        ntp_state,
-        plan,
-    )
-
-    assert reason == ""
-    assert errors == ("mqtt_resolve_failed:samhain.local:-2",)
-
-
-def test_startup_warm_reboot_ready_after_broker_dns(monkeypatch):
-    runtime_config = RuntimeConfig(
-        active_profile="sensorius",
-        mqtt=MQTTConfig(broker="samhain.local", port=1883),
-    )
-    network_stack = SimpleNamespace(phase="ready", socket_pool=object())
-    mqtt_adapter = SimpleNamespace(
-        active_broker="samhain.local", broker="samhain.local"
-    )
-    ntp_state = SimpleNamespace(phase="deferred")
-    plan = SimpleNamespace(mqtt_enabled=True)
-
-    monkeypatch.setattr(
-        "cpynodus_ii.app.preflight_mqtt_broker",
-        lambda adapter: ("", "10.0.0.248"),
-    )
-
-    reason, errors = _startup_warm_reboot_ready_reason(
-        runtime_config,
-        network_stack,
-        mqtt_adapter,
-        ntp_state,
-        plan,
-    )
-
-    assert reason == "broker_resolved"
-    assert errors == ()
 
 
 def test_should_fallback_to_ap_when_nodusweb_has_no_ssid():

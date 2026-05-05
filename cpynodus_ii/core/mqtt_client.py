@@ -78,9 +78,7 @@ def build_mqtt_client_adapter(
             errors=("mqtt_client_module_unavailable",),
         )
 
-    broker_targets = runtime_config.mqtt.connection_targets or (
-        runtime_config.mqtt.preferred_host,
-    )
+    broker_targets = runtime_config.mqtt.connection_targets or (runtime_config.mqtt.preferred_host,)
     mqtt_socket_pool = _wrap_minimqtt_socket_pool(socket_pool)
     kwargs = {
         "socket_pool": mqtt_socket_pool,
@@ -133,23 +131,18 @@ def connect_mqtt_client(adapter, transport, *, preflight=True):
     errors = []
     active_adapter = adapter
     connected = False
-    for index, broker in enumerate(
-        adapter.broker_targets or (adapter.active_broker or adapter.broker,)
-    ):
+    for index, broker in enumerate(adapter.broker_targets or (adapter.active_broker or adapter.broker,)):
         resolve_error, resolved_ip = _resolve_broker_target(active_adapter, broker)
         if preflight and resolve_error:
             errors.append(resolve_error)
             transport.mark_disconnected()
             continue
-        connect_broker = _connect_broker_for_target(
-            active_adapter, broker, resolved_ip, preflight
-        )
-        if index > 0 or connect_broker != active_adapter.active_broker:
+        if index > 0:
             try:
                 client = _instantiate_client(
                     adapter.client_class,
                     dict(adapter.client_kwargs or {}),
-                    connect_broker,
+                    broker,
                 )
             except Exception as exc:
                 errors.append("mqtt_client_init_failed:{}".format(exc))
@@ -214,15 +207,15 @@ def sync_transport_to_client(adapter, transport):
         return MQTTClientSyncResult(
             phase="skipped",
             adapter=adapter,
-            errors=adapter.errors
-            if adapter.phase != "ready"
-            else ("transport_not_connected",),
+            errors=adapter.errors if adapter.phase != "ready" else ("transport_not_connected",),
         )
 
+    client = adapter.client
     subscribed_count = 0
     published_count = 0
-    client = adapter.client
-    for message in transport.published_messages[adapter.published_index :]:
+    for message in transport.published_messages[
+        adapter.published_index : adapter.published_index + 1
+    ]:
         payload = _serialize_payload(message.payload)
         try:
             client.publish(message.topic, payload, retain=message.retain)
@@ -292,6 +285,7 @@ def sync_transport_to_client(adapter, transport):
             errors=(),
         )
 
+    subscribed_count = 0
     pending_subscriptions = transport.subscriptions[adapter.subscription_index :]
     pending_subscription_count = len(pending_subscriptions)
     for topic in pending_subscriptions:
@@ -309,7 +303,7 @@ def sync_transport_to_client(adapter, transport):
             return MQTTClientSyncResult(
                 phase="error",
                 adapter=adapter,
-                published_count=published_count,
+                published_count=0,
                 subscribed_count=subscribed_count,
                 errors=(
                     "mqtt_subscribe_failed:topic={}:index={}/{}:{}".format(
@@ -358,9 +352,7 @@ def poll_mqtt_client(adapter, transport):
         return MQTTClientSyncResult(
             phase="skipped",
             adapter=adapter,
-            errors=adapter.errors
-            if adapter.phase != "ready"
-            else ("transport_not_connected",),
+            errors=adapter.errors if adapter.phase != "ready" else ("transport_not_connected",),
         )
 
     before = len(transport.received_messages)
@@ -468,8 +460,7 @@ def disconnect_mqtt_client(adapter, transport, runtime_config):
                     adapter=sync_result.adapter,
                     published_count=sync_result.published_count,
                     subscribed_count=sync_result.subscribed_count,
-                    errors=sync_result.errors
-                    + ("mqtt_disconnect_failed:{}".format(exc),),
+                    errors=sync_result.errors + ("mqtt_disconnect_failed:{}".format(exc),),
                 )
     finally:
         transport.mark_disconnected()
@@ -611,12 +602,7 @@ def _inner_socket_obj(socket_obj):
 
 
 def _poll_timeout_for_client(client):
-    for attr_name in (
-        "socket_timeout",
-        "_socket_timeout",
-        "recv_timeout",
-        "_recv_timeout",
-    ):
+    for attr_name in ("socket_timeout", "_socket_timeout", "recv_timeout", "_recv_timeout"):
         value = getattr(client, attr_name, None)
         if _is_positive_number(value):
             return max(0.1, min(1.0, float(value)))
@@ -641,19 +627,6 @@ def preflight_mqtt_broker(adapter, broker=None):
         or getattr(adapter, "broker", "")
     )
     return _resolve_broker_target(adapter, target)
-
-
-def _connect_broker_for_target(adapter, broker, resolved_ip, preflight):
-    """Return the broker address MiniMQTT should open directly."""
-    if not preflight or not resolved_ip:
-        return broker
-    if _looks_like_ip_literal(str(broker or "")):
-        return broker
-    if isinstance(adapter.client_kwargs, dict) and adapter.client_kwargs.get(
-        "ssl_context"
-    ):
-        return broker
-    return resolved_ip
 
 
 def _resolve_broker_target(adapter, broker):

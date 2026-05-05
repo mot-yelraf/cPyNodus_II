@@ -24,7 +24,6 @@ from cpynodus_ii.core import (
     maybe_sync_ntp,
     network_link_is_ready,
     poll_mqtt_client,
-    preflight_mqtt_broker,
     reconnect_network_stack,
     refresh_network_stack,
     sync_transport_to_client,
@@ -48,9 +47,6 @@ from cpynodus_ii.features import (
 )
 from cpynodus_ii.hardware import bind_sensor_hardware, bind_switch_hardware
 from cpynodus_ii.ota.state import FwUpdateState, load_ota_state, save_ota_state
-
-_STARTUP_WARM_REBOOT_NVM_INDEX = 1
-_STARTUP_WARM_REBOOT_MARKER = 1
 
 
 def _path_exists(path):
@@ -258,68 +254,6 @@ def _filesystem_mode_label(fs_writable):
 def _should_preflight_broker(adapter):
     targets = tuple(getattr(adapter, "broker_targets", ()) or ())
     return len(targets) > 1
-
-
-def _read_startup_warm_reboot_marker(nvm=None):
-    """Return the once-per-power-cycle warm reboot marker."""
-    if nvm is None:
-        try:
-            import microcontroller  # type: ignore
-
-            nvm = getattr(microcontroller, "nvm", None)
-        except ImportError:
-            nvm = None
-    try:
-        if nvm is None or len(nvm) <= _STARTUP_WARM_REBOOT_NVM_INDEX:
-            return -1
-        return int(nvm[_STARTUP_WARM_REBOOT_NVM_INDEX] or 0)
-    except Exception:
-        return -1
-
-
-def _mark_startup_warm_rebooted(nvm=None):
-    """Mark that startup already performed its warm reboot."""
-    if nvm is None:
-        try:
-            import microcontroller  # type: ignore
-
-            nvm = getattr(microcontroller, "nvm", None)
-        except ImportError:
-            nvm = None
-    try:
-        if nvm is None or len(nvm) <= _STARTUP_WARM_REBOOT_NVM_INDEX:
-            return False
-        nvm[_STARTUP_WARM_REBOOT_NVM_INDEX] = _STARTUP_WARM_REBOOT_MARKER
-        return True
-    except Exception:
-        return False
-
-
-def _startup_warm_reboot_ready_reason(
-    runtime_config,
-    network_stack,
-    mqtt_adapter,
-    ntp_state,
-    plan,
-):
-    """Return a clean startup marker that is good enough to warm reboot before MQTT."""
-    if not getattr(plan, "mqtt_enabled", False):
-        return "", ()
-    if not getattr(runtime_config, "mqtt_enabled", False):
-        return "", ()
-    if getattr(network_stack, "phase", "") != "ready":
-        return "", ("network_not_ready",)
-    if getattr(network_stack, "socket_pool", None) is None:
-        return "", ("socket_pool_unavailable",)
-    if str(getattr(ntp_state, "phase", "") or "") == "synced":
-        return "ntp_synced", ()
-
-    resolve_error, resolved_ip = preflight_mqtt_broker(mqtt_adapter)
-    if resolve_error:
-        return "", (resolve_error,)
-    if resolved_ip:
-        return "broker_resolved", ()
-    return "broker_preflight_ready", ()
 
 
 def _should_fallback_to_ap(runtime_config, network_stack):
@@ -597,10 +531,6 @@ async def main(*, startup_plan_override=None):
     next_periodic_gc_at = float(start_monotonic) + 60.0
     periodic_gc_count = 0
     last_mqtt_connect_attempt_at = float(start_monotonic)
-    startup_warm_reboot_done = (
-        _read_startup_warm_reboot_marker() == _STARTUP_WARM_REBOOT_MARKER
-    )
-    startup_warm_reboot_wait_logged = False
 
     connect_phase = "deferred" if plan.mqtt_enabled else "skipped"
 
@@ -877,60 +807,6 @@ async def main(*, startup_plan_override=None):
                 and recovery_decision.allow_mqtt_connect
                 and (float(now_monotonic) - float(last_mqtt_connect_attempt_at)) >= 5.0
             ):
-                if not startup_warm_reboot_done:
-                    warm_reason, warm_errors = _startup_warm_reboot_ready_reason(
-                        runtime_config,
-                        network_stack,
-                        mqtt_adapter,
-                        ntp_state,
-                        plan,
-                    )
-                    if warm_reason:
-                        startup_warm_reboot_done = True
-                        if _mark_startup_warm_rebooted():
-                            _print_log(
-                                "recovery",
-                                (
-                                    "startup action=warm_start reason={} broker={} "
-                                    "broker_ip={}"
-                                ).format(
-                                    warm_reason,
-                                    mqtt_adapter.active_broker
-                                    or mqtt_adapter.broker
-                                    or "none",
-                                    mqtt_adapter.resolved_broker_ip
-                                    or runtime_config.mqtt.broker_ip
-                                    or "none",
-                                ),
-                                start_monotonic=start_monotonic,
-                            )
-                            _soft_reboot(
-                                reason="startup:{}".format(warm_reason),
-                                start_monotonic=start_monotonic,
-                            )
-                            return
-                        _print_log(
-                            "recovery",
-                            (
-                                "startup action=warm_start_skipped "
-                                "reason=nvm_unavailable marker={}"
-                            ).format(warm_reason),
-                            start_monotonic=start_monotonic,
-                        )
-                    else:
-                        if not startup_warm_reboot_wait_logged:
-                            _print_log(
-                                "recovery",
-                                "startup action=warm_start_wait errors={}".format(
-                                    ",".join(warm_errors)
-                                    if warm_errors
-                                    else "not_ready"
-                                ),
-                                start_monotonic=start_monotonic,
-                            )
-                            startup_warm_reboot_wait_logged = True
-                        await asyncio.sleep(1)
-                        continue
                 transport.mark_connect_requested()
                 connect_started_at = time.monotonic()
                 connect_result = connect_mqtt_client(

@@ -383,8 +383,11 @@ def test_connect_sync_poll_and_disconnect_flow():
     assert disconnect_result.phase == "disconnected"
     assert transport.connected is False
     assert sync_result.adapter.client.disconnected is True
-    assert disconnect_result.published_count == 3
-    assert sync_result.adapter.client.published[-1][0] == "nodus/S1-x943fm/availability"
+    assert disconnect_result.published_count == 1
+    assert (
+        sync_result.adapter.client.published[-1][0]
+        == "nodus/aqi-x943fm/status/heartbeat"
+    )
 
 
 def test_build_mqtt_client_adapter_is_unavailable_without_socket_pool():
@@ -511,7 +514,7 @@ def test_connect_mqtt_client_learns_hostname_ip_without_required_preflight():
     assert connect_result.adapter.resolved_broker_ip == "10.0.0.4"
 
 
-def test_connect_mqtt_client_uses_resolved_ip_for_non_tls_hostname_preflight():
+def test_connect_mqtt_client_keeps_hostname_after_non_tls_preflight():
     class _ResolveOKPool:
         def getaddrinfo(self, host, port):
             assert host == "ha.local"
@@ -537,7 +540,7 @@ def test_connect_mqtt_client_uses_resolved_ip_for_non_tls_hostname_preflight():
     assert connect_result.phase == "connected"
     assert connect_result.adapter.active_broker == "ha.local"
     assert connect_result.adapter.resolved_broker_ip == "10.0.0.4"
-    assert connect_result.adapter.client.kwargs["broker"] == "10.0.0.4"
+    assert connect_result.adapter.client.kwargs["broker"] == "ha.local"
 
 
 def test_connect_mqtt_client_keeps_tls_hostname_after_preflight():
@@ -685,9 +688,13 @@ def test_sync_transport_to_client_compacts_successes_before_failed_publish():
     )
 
     sync_result = sync_transport_to_client(connect_result.adapter, transport)
+    assert sync_result.phase == "synced"
+    assert sync_result.published_count == 1
+
+    sync_result = sync_transport_to_client(sync_result.adapter, transport)
 
     assert sync_result.phase == "error"
-    assert sync_result.published_count == 1
+    assert sync_result.published_count == 0
     assert transport.published_messages == []
 
 
@@ -758,26 +765,15 @@ def test_sync_transport_to_client_publishes_before_subscribe_exception():
     transport.publish("nodus/aqi-x943fm/data", {"schema": "nodus-sensor/v1"})
     transport.subscribe("nodus/S1-x943fm/config/set")
 
-    publish_result = sync_transport_to_client(connect_result.adapter, transport)
+    sync_result = sync_transport_to_client(connect_result.adapter, transport)
 
-    assert publish_result.phase == "synced"
-    assert publish_result.published_count == 1
-    assert publish_result.subscribed_count == 0
-    assert publish_result.adapter.client.published[0][0] == "nodus/aqi-x943fm/data"
-    assert publish_result.adapter.client.loop_count == 0
+    assert sync_result.phase == "synced"
+    assert sync_result.published_count == 1
+    assert sync_result.subscribed_count == 0
+    assert sync_result.adapter.client.published[0][0] == "nodus/aqi-x943fm/data"
+    assert sync_result.adapter.client.loop_count == 0
     assert transport.published_messages == []
     assert transport.subscriptions == ["nodus/S1-x943fm/config/set"]
-
-    sync_result = sync_transport_to_client(publish_result.adapter, transport)
-    assert sync_result.phase == "error"
-    assert sync_result.published_count == 0
-    assert sync_result.subscribed_count == 0
-    assert sync_result.errors == (
-        (
-            "mqtt_subscribe_failed:topic=nodus/S1-x943fm/config/set:index=0/1:"
-            "No data received from broker for 10 seconds."
-        ),
-    )
 
 
 def test_poll_mqtt_client_marks_transport_disconnected_on_oserror():

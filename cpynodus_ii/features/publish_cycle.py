@@ -45,6 +45,26 @@ def publish_startup_cycle(
     """Publish retained startup payloads for the current runtime state."""
     topics = []
     device_id = _device_id(runtime_config)
+    meta = transport.publish(
+        mqtt_topic(runtime_config, device_id, "meta"),
+        build_runtime_meta_payload(
+            runtime_config,
+            version=version,
+            active_broker=active_broker,
+        ),
+        retain=True,
+    )
+    topics.append(meta.topic)
+
+    if runtime_config.sensor.present:
+        if sensor_snapshot is not None and sensor_snapshot.phase == "ready":
+            data = transport.publish(
+                mqtt_topic(runtime_config, runtime_config.sensor.sensor_id, "data"),
+                build_sensor_data_payload(runtime_config, sensor_snapshot),
+                retain=False,
+            )
+            topics.append(data.topic)
+
     heartbeat = transport.publish(
         mqtt_topic(runtime_config, device_id, "status", "heartbeat"),
         build_device_heartbeat_payload(runtime_config, online=True),
@@ -76,26 +96,6 @@ def publish_startup_cycle(
                 retain=True,
             )
             topics.append(availability.topic)
-
-    meta = transport.publish(
-        mqtt_topic(runtime_config, device_id, "meta"),
-        build_runtime_meta_payload(
-            runtime_config,
-            version=version,
-            active_broker=active_broker,
-        ),
-        retain=True,
-    )
-    topics.append(meta.topic)
-
-    if runtime_config.sensor.present:
-        if sensor_snapshot is not None and sensor_snapshot.phase == "ready":
-            data = transport.publish(
-                mqtt_topic(runtime_config, runtime_config.sensor.sensor_id, "data"),
-                build_sensor_data_payload(runtime_config, sensor_snapshot),
-                retain=False,
-            )
-            topics.append(data.topic)
 
     hello_payload = build_onboarding_hello_payload(
         runtime_config,
