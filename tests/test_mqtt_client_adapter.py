@@ -764,7 +764,7 @@ def test_sync_transport_to_client_publishes_before_subscribe_exception():
     assert publish_result.published_count == 1
     assert publish_result.subscribed_count == 0
     assert publish_result.adapter.client.published[0][0] == "nodus/aqi-x943fm/data"
-    assert publish_result.adapter.client.loop_count == 1
+    assert publish_result.adapter.client.loop_count == 0
     assert transport.published_messages == []
     assert transport.subscriptions == ["nodus/S1-x943fm/config/set"]
 

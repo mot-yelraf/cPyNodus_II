@@ -974,11 +974,7 @@ async def main(*, startup_plan_override=None):
                     sync_before = _transport_queue_summary(transport)
                     sync_result = sync_transport_to_client(mqtt_adapter, transport)
                     mqtt_adapter = sync_result.adapter
-                    if (
-                        sync_result.phase == "error"
-                        or sync_result.published_count
-                        or sync_result.subscribed_count
-                    ):
+                    if sync_result.phase == "error":
                         _print_log(
                             "mqtt",
                             _mqtt_sync_summary(
@@ -1100,11 +1096,7 @@ async def main(*, startup_plan_override=None):
                 sync_before = _transport_queue_summary(transport)
                 sync_result = sync_transport_to_client(mqtt_adapter, transport)
                 mqtt_adapter = sync_result.adapter
-                if (
-                    sync_result.phase == "error"
-                    or sync_result.published_count
-                    or sync_result.subscribed_count
-                ):
+                if sync_result.phase == "error":
                     _print_log(
                         "mqtt",
                         _mqtt_sync_summary(

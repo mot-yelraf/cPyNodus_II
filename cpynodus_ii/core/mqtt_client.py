@@ -270,16 +270,6 @@ def sync_transport_to_client(adapter, transport):
             subscriptions_keep_from=adapter.subscription_index + subscribed_count,
         )
     if published_count:
-        settle_error = _settle_client_after_publish(client)
-        if settle_error:
-            transport.mark_disconnected()
-            return MQTTClientSyncResult(
-                phase="error",
-                adapter=adapter,
-                published_count=published_count,
-                subscribed_count=subscribed_count,
-                errors=(settle_error,),
-            )
         return MQTTClientSyncResult(
             phase="synced",
             adapter=MQTTClientAdapter(
@@ -438,38 +428,6 @@ def poll_mqtt_client(adapter, transport):
         received_count=max(0, received_count),
         errors=(),
     )
-
-
-def _settle_client_after_publish(client):
-    loop = getattr(client, "loop", None)
-    if not callable(loop):
-        return ""
-    _ensure_minimqtt_socket_compat(client)
-    timeout = _poll_timeout_for_client(client)
-    try:
-        loop(timeout=timeout)
-    except TypeError as exc:
-        if not _is_loop_timeout_signature_error(exc):
-            if _is_minimqtt_wrapped_socket_error(exc):
-                return _minimqtt_socket_error(client, exc)
-            if _is_callback_arity_error(exc):
-                return "mqtt_publish_settle_callback_failed:{}".format(exc)
-            raise
-        loop()
-    except ValueError:
-        try:
-            loop(timeout=max(1.0, timeout))
-        except TypeError as exc:
-            if not _is_loop_timeout_signature_error(exc):
-                if _is_minimqtt_wrapped_socket_error(exc):
-                    return _minimqtt_socket_error(client, exc)
-                if _is_callback_arity_error(exc):
-                    return "mqtt_publish_settle_callback_failed:{}".format(exc)
-                raise
-            loop()
-    except OSError as exc:
-        return "mqtt_publish_settle_failed:{}".format(exc)
-    return ""
 
 
 def disconnect_mqtt_client(adapter, transport, runtime_config):
