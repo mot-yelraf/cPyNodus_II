@@ -43,6 +43,8 @@ Options:
   --delete            Delete files on destination not present in source set.
                       Supported only with `--content full`.
   --prune-deprecated  Remove target paths listed in scripts/deprecated_target_files.txt.
+  --clear-reboot-log  Remove target postmortem logs after deploy (default).
+  --keep-reboot-log   Preserve target postmortem logs.
   --help              Show this help.
 
 Examples:
@@ -60,6 +62,7 @@ DRY_RUN=0
 FORCE=0
 DELETE_MODE=0
 PRUNE_DEPRECATED=0
+CLEAR_REBOOT_LOG=1
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -89,6 +92,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --prune-deprecated)
       PRUNE_DEPRECATED=1
+      shift
+      ;;
+    --clear-reboot-log)
+      CLEAR_REBOOT_LOG=1
+      shift
+      ;;
+    --keep-reboot-log)
+      CLEAR_REBOOT_LOG=0
       shift
       ;;
     --help|-h)
@@ -254,6 +265,37 @@ prune_deprecated_targets() {
   done < "$DEPRECATED_MANIFEST"
 }
 
+clear_postmortem_logs() {
+  local destination="$1"
+  local log_name
+  local target_ref
+
+  for log_name in "_reboot.log" "_recovery.log"; do
+    target_ref="${destination%/}/$log_name"
+
+    if [[ "$TARGET" == *:* ]]; then
+      if [[ $DRY_RUN -eq 1 ]]; then
+        echo "Would remove remote postmortem log: $target_ref"
+      else
+        ssh "${TARGET%%:*}" "TARGET_PATH=$(remote_shell_quote "${TARGET_PATH_ONLY%/}/$log_name"); if [ -e \"\$TARGET_PATH\" ]; then rm -f -- \"\$TARGET_PATH\" && echo \"Removed remote postmortem log: \$TARGET_PATH\"; fi"
+      fi
+    else
+      if [[ $DRY_RUN -eq 1 ]]; then
+        if [[ -e "$target_ref" ]]; then
+          echo "Would remove local postmortem log: $target_ref"
+        else
+          echo "Would remove local postmortem log if present: $target_ref"
+        fi
+      else
+        if [[ -e "$target_ref" ]]; then
+          rm -f -- "$target_ref"
+          echo "Removed local postmortem log: $target_ref"
+        fi
+      fi
+    fi
+  done
+}
+
 run_runtime_sync() {
   local destination="$1"
   local root_runtime_files=()
@@ -317,6 +359,10 @@ fi
 
 if [[ $PRUNE_DEPRECATED -eq 1 ]]; then
   prune_deprecated_targets "$DEST"
+fi
+
+if [[ $CLEAR_REBOOT_LOG -eq 1 ]]; then
+  clear_postmortem_logs "$DEST"
 fi
 
 PROJECT_VERSION="$(get_project_version)"

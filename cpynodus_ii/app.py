@@ -32,6 +32,7 @@ from cpynodus_ii.core.mqtt import MQTTTransport
 from cpynodus_ii.core.ntp import DEFAULT_NTP_SERVER
 from cpynodus_ii.core.plan import StartupPlan
 from cpynodus_ii.core.reboot_log import append_reboot_reason_traceback
+from cpynodus_ii.core.recovery_log import append_recovery_event
 from cpynodus_ii.core.settings import Settings
 from cpynodus_ii.features import (
     SteadyState,
@@ -338,14 +339,31 @@ def _soft_reboot(*, reason="soft_reboot", start_monotonic=None):
     reload_runtime()
 
 
-def _log_recovery_soft_reboot(reboot_reason, *, fs_writable):
+def _runtime_device_id(runtime_config):
+    return (
+        runtime_config.sensor.sensor_id
+        or runtime_config.switch.device_id
+        or runtime_config.network.hostname
+        or "unknown"
+    )
+
+
+def _log_recovery_soft_reboot(reboot_reason, *, fs_writable, device_id=""):
     """Persist a recovery reboot traceback when RWFS is available."""
     if fs_writable is not True:
         return False
     return append_reboot_reason_traceback(
         reboot_reason,
         header="recovery soft reboot: {}".format(str(reboot_reason or "unknown")),
+        device_id=device_id,
     )
+
+
+def _log_recovery_event(event, detail="", *, fs_writable, device_id=""):
+    """Persist a bounded recovery event when RWFS is available."""
+    if fs_writable is not True:
+        return False
+    return append_recovery_event(event, detail, device_id=device_id)
 
 
 def _should_log_command_result(result):
@@ -636,12 +654,19 @@ async def main(*, startup_plan_override=None):
         )
         _collect_garbage()
     if startup_ap_fallback:
+        ap_fallback_detail = "reason={}".format(
+            _startup_ap_fallback_reason(startup_ap_fallback_errors),
+        )
         _print_log(
             "recovery",
-            "startup action=ap_fallback reason={}".format(
-                _startup_ap_fallback_reason(startup_ap_fallback_errors),
-            ),
+            "startup action=ap_fallback {}".format(ap_fallback_detail),
             start_monotonic=start_monotonic,
+        )
+        _log_recovery_event(
+            "ap_fallback",
+            ap_fallback_detail,
+            fs_writable=fs_writable,
+            device_id=_runtime_device_id(runtime_config),
         )
     _print_log(
         "cPyNodus_II",
@@ -687,26 +712,40 @@ async def main(*, startup_plan_override=None):
             )
             recovery_state = recovery_decision.state
             if recovery_state.phase != previous_phase:
+                phase_detail = "previous={} phase={} wifi_ready={} mqtt_connected={}".format(
+                    previous_phase,
+                    recovery_state.phase,
+                    network_link_is_ready(network_stack),
+                    transport.connected,
+                )
                 _print_log(
                     "recovery",
-                    "phase={} wifi_ready={} mqtt_connected={}".format(
-                        recovery_state.phase,
-                        network_link_is_ready(network_stack),
-                        transport.connected,
-                    ),
+                    phase_detail,
                     start_monotonic=start_monotonic,
                 )
+                _log_recovery_event(
+                    "phase_change",
+                    phase_detail,
+                    fs_writable=fs_writable,
+                    device_id=_runtime_device_id(runtime_config),
+                )
             if recovery_decision.request_soft_reboot:
+                reboot_detail = "reason={}".format(recovery_decision.reboot_reason)
                 _print_log(
                     "recovery",
-                    "action=soft_reboot reason={}".format(
-                        recovery_decision.reboot_reason
-                    ),
+                    "action=soft_reboot {}".format(reboot_detail),
                     start_monotonic=start_monotonic,
+                )
+                _log_recovery_event(
+                    "soft_reboot",
+                    reboot_detail,
+                    fs_writable=fs_writable,
+                    device_id=_runtime_device_id(runtime_config),
                 )
                 _log_recovery_soft_reboot(
                     recovery_decision.reboot_reason,
                     fs_writable=fs_writable,
+                    device_id=_runtime_device_id(runtime_config),
                 )
                 _soft_reboot(
                     reason="recovery:{}".format(
@@ -725,12 +764,19 @@ async def main(*, startup_plan_override=None):
                 )
                 network_stack = reconnect_result
                 if network_link_is_ready(network_stack):
+                    wifi_detail = "phase=recovered ipv4={}".format(
+                        network_stack.ip_address or "none"
+                    )
                     _print_log(
                         "recovery",
-                        "wifi phase=recovered ipv4={}".format(
-                            network_stack.ip_address or "none"
-                        ),
+                        "wifi {}".format(wifi_detail),
                         start_monotonic=start_monotonic,
+                    )
+                    _log_recovery_event(
+                        "wifi_recovered",
+                        wifi_detail,
+                        fs_writable=fs_writable,
+                        device_id=_runtime_device_id(runtime_config),
                     )
             if recovery_decision.attempt_mqtt_rebuild and network_link_is_ready(
                 network_stack
@@ -748,13 +794,20 @@ async def main(*, startup_plan_override=None):
                     socket_pool=network_stack.socket_pool,
                     ssl_context=network_stack.ssl_context,
                 )
+                mqtt_rebuild_detail = "broker={} socket_pool={}".format(
+                    mqtt_adapter.active_broker or mqtt_adapter.broker or "none",
+                    "ready" if network_stack.socket_pool is not None else "none",
+                )
                 _print_log(
                     "recovery",
-                    "mqtt action=rebuild broker={} socket_pool={}".format(
-                        mqtt_adapter.active_broker or mqtt_adapter.broker or "none",
-                        "ready" if network_stack.socket_pool is not None else "none",
-                    ),
+                    "mqtt action=rebuild {}".format(mqtt_rebuild_detail),
                     start_monotonic=start_monotonic,
+                )
+                _log_recovery_event(
+                    "mqtt_rebuild",
+                    mqtt_rebuild_detail,
+                    fs_writable=fs_writable,
+                    device_id=_runtime_device_id(runtime_config),
                 )
             ntp_result = maybe_sync_ntp(
                 runtime_config,

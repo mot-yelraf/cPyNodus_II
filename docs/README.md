@@ -132,6 +132,7 @@ Notes:
 - Use `--delete` if you want files removed from target when no longer present in this repo.
 - `--delete` is not supported with `--content root-py` or `--content nodus`.
 - Use `--prune-deprecated` to remove only the target paths listed in `scripts/deprecated_target_files.txt`.
+- Deploy removes target `_reboot.log` and `_recovery.log` by default so old postmortem records do not survive firmware updates; use `--keep-reboot-log` to preserve them.
 
 ## Boot Flow
 
@@ -549,6 +550,7 @@ Automations are implemented in Sensorius. Sensorius publishes the desired switch
 - **MQTT outage policy**: when Wi‑Fi is still up but MQTT is unhealthy, Nodus retries broker recovery for up to 3 minutes, including bounded socket-pool/MQTT rebuild attempts, before soft rebooting.
 - **AP recovery policy**: if startup cannot join the configured station network, Nodus falls back into AP recovery mode and soft reboots again after 10 minutes of idle AP uptime.
 - **Soft restart policy**: bounded soft restart remains the preferred recovery path for network failures on Pico2 W.
+- **Recovery diagnostics**: when the filesystem is writable, formal recovery phase changes and recovery actions are appended to `/_recovery.log` with timestamp, firmware version, and device ID headers. The file is capped at 10 KB for USB-powered postmortems.
 
 ## Web Server
 

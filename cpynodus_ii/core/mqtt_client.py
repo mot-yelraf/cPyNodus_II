@@ -5,7 +5,10 @@ behavior so the main application can reason about MQTT state through a small
 and testable interface.
 """
 
+import time
 from dataclasses import dataclass
+
+SUBSCRIPTION_RETRY_DELAY_S = 30.0
 
 
 @dataclass(frozen=True)
@@ -285,6 +288,13 @@ def sync_transport_to_client(adapter, transport):
             errors=(),
         )
 
+    if not transport.subscription_retry_ready(time.monotonic()):
+        return MQTTClientSyncResult(
+            phase="skipped",
+            adapter=adapter,
+            errors=("subscription_retry_wait",),
+        )
+
     subscribed_count = 0
     pending_subscriptions = transport.subscriptions[adapter.subscription_index :]
     pending_subscription_count = len(pending_subscriptions)
@@ -299,7 +309,9 @@ def sync_transport_to_client(adapter, transport):
                         adapter.subscription_index + subscribed_count
                     ),
                 )
-            transport.mark_disconnected()
+            transport.defer_subscription_retry(
+                time.monotonic(), SUBSCRIPTION_RETRY_DELAY_S
+            )
             return MQTTClientSyncResult(
                 phase="error",
                 adapter=adapter,
@@ -321,6 +333,7 @@ def sync_transport_to_client(adapter, transport):
             published_keep_from=0,
             subscriptions_keep_from=adapter.subscription_index + subscribed_count,
         )
+        transport.clear_subscription_retry()
 
     updated_adapter = MQTTClientAdapter(
         phase=adapter.phase,

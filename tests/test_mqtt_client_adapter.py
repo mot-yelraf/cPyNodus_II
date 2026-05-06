@@ -29,6 +29,7 @@ def _run_direct_tests():
         test_connect_mqtt_client_learns_hostname_ip_without_required_preflight,
         test_poll_mqtt_client_uses_timeout_compatible_with_socket_timeout,
         test_sync_transport_to_client_marks_transport_disconnected_on_publish_oserror,
+        test_sync_transport_to_client_defers_subscription_retry_without_disconnect,
         test_poll_mqtt_client_marks_transport_disconnected_on_oserror,
         test_disconnect_mqtt_client_swallow_shutdown_publish_oserror,
         test_disconnect_mqtt_client_reports_disconnect_oserror,
@@ -698,7 +699,7 @@ def test_sync_transport_to_client_compacts_successes_before_failed_publish():
     assert transport.published_messages == []
 
 
-def test_sync_transport_to_client_marks_transport_disconnected_on_subscribe_exception():
+def test_sync_transport_to_client_defers_subscription_retry_without_disconnect():
     runtime_config = _runtime_config()
     transport = MQTTTransport("broker.local", 1883)
     transport.mark_connect_requested()
@@ -714,7 +715,8 @@ def test_sync_transport_to_client_marks_transport_disconnected_on_subscribe_exce
     sync_result = sync_transport_to_client(connect_result.adapter, transport)
 
     assert sync_result.phase == "error"
-    assert transport.connected is False
+    assert transport.connected is True
+    assert transport.subscription_retry_after > 0.0
     assert sync_result.errors == (
         (
             "mqtt_subscribe_failed:topic=nodus/S1-x943fm/config/set:index=0/1:"
@@ -741,8 +743,9 @@ def test_sync_transport_to_client_compacts_successful_subscriptions_before_failu
 
     assert sync_result.phase == "error"
     assert sync_result.subscribed_count == 1
-    assert transport.connected is False
+    assert transport.connected is True
     assert transport.subscriptions == ["nodus/two"]
+    assert transport.subscription_retry_after > 0.0
     assert sync_result.errors == (
         (
             "mqtt_subscribe_failed:topic=nodus/two:index=1/2:"
@@ -774,6 +777,28 @@ def test_sync_transport_to_client_publishes_before_subscribe_exception():
     assert sync_result.adapter.client.loop_count == 0
     assert transport.published_messages == []
     assert transport.subscriptions == ["nodus/S1-x943fm/config/set"]
+
+
+def test_sync_transport_to_client_skips_subscription_until_retry_delay(monkeypatch):
+    runtime_config = _runtime_config()
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connect_requested()
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=object(),
+        modules={"mqtt_cls": _FakeMQTTClient},
+    )
+
+    connect_result = connect_mqtt_client(adapter, transport)
+    transport.subscribe("nodus/S1-x943fm/config/set")
+    transport.defer_subscription_retry(100.0, 30.0)
+    monkeypatch.setattr("cpynodus_ii.core.mqtt_client.time.monotonic", lambda: 120.0)
+
+    sync_result = sync_transport_to_client(connect_result.adapter, transport)
+
+    assert sync_result.phase == "skipped"
+    assert sync_result.errors == ("subscription_retry_wait",)
+    assert connect_result.adapter.client.subscribed == []
 
 
 def test_poll_mqtt_client_marks_transport_disconnected_on_oserror():
