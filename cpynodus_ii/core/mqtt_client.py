@@ -8,8 +8,6 @@ and testable interface.
 import time
 from dataclasses import dataclass
 
-SUBSCRIPTION_RETRY_DELAY_S = 30.0
-
 
 @dataclass(frozen=True)
 class MQTTClientAdapter:
@@ -40,6 +38,12 @@ class MQTTClientSyncResult:
     subscribed_count: int = 0
     received_count: int = 0
     errors: tuple = ()
+    operation: str = ""
+    topic: str = ""
+    retain: bool = False
+    payload_bytes: int = -1
+    pending_count: int = 0
+    elapsed_ms: int = -1
 
 
 def build_mqtt_client_adapter(
@@ -81,7 +85,9 @@ def build_mqtt_client_adapter(
             errors=("mqtt_client_module_unavailable",),
         )
 
-    broker_targets = runtime_config.mqtt.connection_targets or (runtime_config.mqtt.preferred_host,)
+    broker_targets = runtime_config.mqtt.connection_targets or (
+        runtime_config.mqtt.preferred_host,
+    )
     mqtt_socket_pool = _wrap_minimqtt_socket_pool(socket_pool)
     kwargs = {
         "socket_pool": mqtt_socket_pool,
@@ -134,7 +140,10 @@ def connect_mqtt_client(adapter, transport, *, preflight=True):
     errors = []
     active_adapter = adapter
     connected = False
-    for index, broker in enumerate(adapter.broker_targets or (adapter.active_broker or adapter.broker,)):
+    broker_targets = adapter.broker_targets or (
+        adapter.active_broker or adapter.broker,
+    )
+    for index, broker in enumerate(broker_targets):
         resolve_error, resolved_ip = _resolve_broker_target(active_adapter, broker)
         if preflight and resolve_error:
             errors.append(resolve_error)
@@ -210,19 +219,30 @@ def sync_transport_to_client(adapter, transport):
         return MQTTClientSyncResult(
             phase="skipped",
             adapter=adapter,
-            errors=adapter.errors if adapter.phase != "ready" else ("transport_not_connected",),
+            errors=(
+                adapter.errors
+                if adapter.phase != "ready"
+                else ("transport_not_connected",)
+            ),
         )
 
     client = adapter.client
     subscribed_count = 0
     published_count = 0
+    pending_publish_count = max(
+        0,
+        len(transport.published_messages) - int(adapter.published_index or 0),
+    )
     for message in transport.published_messages[
         adapter.published_index : adapter.published_index + 1
     ]:
         payload = _serialize_payload(message.payload)
+        payload_bytes = _payload_size(payload)
+        operation_started = time.monotonic()
         try:
             client.publish(message.topic, payload, retain=message.retain)
         except Exception as exc:
+            elapsed_ms = _elapsed_ms(operation_started)
             transport.mark_disconnected()
             drop_failed = not bool(message.retain)
             transport.compact(
@@ -253,11 +273,18 @@ def sync_transport_to_client(adapter, transport):
                 errors=(
                     "mqtt_publish_failed:{}:bytes={}:{}".format(
                         message.topic,
-                        _payload_size(payload),
+                        payload_bytes,
                         exc,
                     ),
                 ),
+                operation="publish",
+                topic=message.topic,
+                retain=bool(message.retain),
+                payload_bytes=payload_bytes,
+                pending_count=pending_publish_count,
+                elapsed_ms=elapsed_ms,
             )
+        elapsed_ms = _elapsed_ms(operation_started)
         published_count += 1
 
     if subscribed_count or published_count:
@@ -286,22 +313,25 @@ def sync_transport_to_client(adapter, transport):
             published_count=published_count,
             subscribed_count=0,
             errors=(),
-        )
-
-    if not transport.subscription_retry_ready(time.monotonic()):
-        return MQTTClientSyncResult(
-            phase="skipped",
-            adapter=adapter,
-            errors=("subscription_retry_wait",),
+            operation="publish",
+            topic=message.topic,
+            retain=bool(message.retain),
+            payload_bytes=payload_bytes,
+            pending_count=pending_publish_count,
+            elapsed_ms=elapsed_ms,
         )
 
     subscribed_count = 0
     pending_subscriptions = transport.subscriptions[adapter.subscription_index :]
     pending_subscription_count = len(pending_subscriptions)
+    last_subscribed_topic = ""
+    elapsed_ms = -1
     for topic in pending_subscriptions:
+        operation_started = time.monotonic()
         try:
             client.subscribe(topic)
         except Exception as exc:
+            elapsed_ms = _elapsed_ms(operation_started)
             if subscribed_count:
                 transport.compact(
                     published_keep_from=0,
@@ -309,9 +339,7 @@ def sync_transport_to_client(adapter, transport):
                         adapter.subscription_index + subscribed_count
                     ),
                 )
-            transport.defer_subscription_retry(
-                time.monotonic(), SUBSCRIPTION_RETRY_DELAY_S
-            )
+            transport.mark_disconnected()
             return MQTTClientSyncResult(
                 phase="error",
                 adapter=adapter,
@@ -325,15 +353,20 @@ def sync_transport_to_client(adapter, transport):
                         exc,
                     ),
                 ),
+                operation="subscribe",
+                topic=topic,
+                pending_count=pending_subscription_count,
+                elapsed_ms=elapsed_ms,
             )
+        elapsed_ms = _elapsed_ms(operation_started)
         subscribed_count += 1
+        last_subscribed_topic = topic
 
     if subscribed_count:
         transport.compact(
             published_keep_from=0,
             subscriptions_keep_from=adapter.subscription_index + subscribed_count,
         )
-        transport.clear_subscription_retry()
 
     updated_adapter = MQTTClientAdapter(
         phase=adapter.phase,
@@ -356,6 +389,10 @@ def sync_transport_to_client(adapter, transport):
         published_count=published_count,
         subscribed_count=subscribed_count,
         errors=(),
+        operation="subscribe" if subscribed_count else "",
+        topic=last_subscribed_topic,
+        pending_count=pending_subscription_count,
+        elapsed_ms=elapsed_ms,
     )
 
 
@@ -365,7 +402,11 @@ def poll_mqtt_client(adapter, transport):
         return MQTTClientSyncResult(
             phase="skipped",
             adapter=adapter,
-            errors=adapter.errors if adapter.phase != "ready" else ("transport_not_connected",),
+            errors=(
+                adapter.errors
+                if adapter.phase != "ready"
+                else ("transport_not_connected",)
+            ),
         )
 
     before = len(transport.received_messages)
@@ -473,7 +514,8 @@ def disconnect_mqtt_client(adapter, transport, runtime_config):
                     adapter=sync_result.adapter,
                     published_count=sync_result.published_count,
                     subscribed_count=sync_result.subscribed_count,
-                    errors=sync_result.errors + ("mqtt_disconnect_failed:{}".format(exc),),
+                    errors=sync_result.errors
+                    + ("mqtt_disconnect_failed:{}".format(exc),),
                 )
     finally:
         transport.mark_disconnected()
@@ -483,6 +525,24 @@ def disconnect_mqtt_client(adapter, transport, runtime_config):
         published_count=sync_result.published_count,
         subscribed_count=sync_result.subscribed_count,
         errors=sync_result.errors,
+    )
+
+
+def close_mqtt_client(adapter, transport):
+    """Close the MQTT client without publishing shutdown messages."""
+    errors = ()
+    if adapter.phase == "ready" and adapter.client is not None:
+        disconnect = getattr(adapter.client, "disconnect", None)
+        if callable(disconnect):
+            try:
+                disconnect()
+            except Exception as exc:
+                errors = ("mqtt_close_failed:{}".format(exc),)
+    transport.mark_disconnected()
+    return MQTTClientSyncResult(
+        phase="disconnected",
+        adapter=adapter,
+        errors=errors,
     )
 
 
@@ -615,7 +675,12 @@ def _inner_socket_obj(socket_obj):
 
 
 def _poll_timeout_for_client(client):
-    for attr_name in ("socket_timeout", "_socket_timeout", "recv_timeout", "_recv_timeout"):
+    for attr_name in (
+        "socket_timeout",
+        "_socket_timeout",
+        "recv_timeout",
+        "_recv_timeout",
+    ):
         value = getattr(client, attr_name, None)
         if _is_positive_number(value):
             return max(0.1, min(1.0, float(value)))
@@ -779,6 +844,14 @@ def _payload_size(payload):
         return len(payload)
     except Exception:
         return 0
+
+
+def _elapsed_ms(start_monotonic):
+    """Return elapsed milliseconds since a monotonic start value."""
+    try:
+        return int((time.monotonic() - float(start_monotonic)) * 1000)
+    except Exception:
+        return -1
 
 
 def _coerce_payload_text(message):

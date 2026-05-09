@@ -22,8 +22,11 @@ AP mode is used when:
 6. Sensorius responds with one full onboarding `nodus/<device_id>/config/set`
    envelope.
 7. Nodus publishes `config/ack`, then `config/result`.
-8. Nodus publishes retained `nodus/<device_id>/meta`.
-9. After accepted runtime changes, Nodus publishes only
+8. Nodus publishes retained compact `nodus/<device_id>/meta`.
+9. If switch channels are present, Nodus publishes retained
+   `nodus/<device_id>/meta/switch` after MQTT startup subscriptions are
+   healthy.
+10. After accepted runtime changes, Nodus publishes only
    `nodus/<device_id>/meta/patch`.
 
 ## Manual Fallback
@@ -36,6 +39,8 @@ AP mode is used when:
 
 - Bootstrap route exposure is tied to AP mode.
 - Onboarding protocol state should stay outside normal TOML config schema.
-- Sensorius should treat retained startup `meta` as the authoritative snapshot.
+- Sensorius should treat retained startup `meta` as the authoritative compact
+  device/sensor snapshot and retained `meta/switch` as the detailed switch
+  control-topic map.
 - Ordinary runtime config writes should not trigger a full retained `meta`
   republish.

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from cpynodus_ii.features.command_intake import (
     process_inbound_messages,
     process_soil_calibration_session,
+    subscribe_device_runtime_topics,
     subscribe_runtime_topics,
 )
 from cpynodus_ii.features.publish_cycle import (
@@ -78,6 +79,9 @@ def run_steady_state_iteration(
     now_monotonic=0.0,
     active_broker="",
     settings_root=None,
+    subscribe_switch_topics=True,
+    publish_switch_startup=True,
+    include_switch_meta_channels=True,
 ):
     """Process reconnect, queued commands, and cadence-gated sensor publish."""
     state = state or SteadyState()
@@ -102,7 +106,12 @@ def run_steady_state_iteration(
             switch_snapshot = snapshot_switch_states(switch_service)
         if settings_root is not None:
             onboarding_state = load_onboarding_state(settings_root)
-        subscribed_topics = subscribe_runtime_topics(transport, runtime_config)
+        if subscribe_switch_topics:
+            subscribed_topics = subscribe_runtime_topics(transport, runtime_config)
+        else:
+            subscribed_topics = subscribe_device_runtime_topics(
+                transport, runtime_config
+            )
         startup_result = publish_startup_cycle(
             transport,
             runtime_config,
@@ -111,6 +120,8 @@ def run_steady_state_iteration(
             sensor_snapshot=sensor_snapshot,
             switch_snapshot=switch_snapshot,
             active_broker=active_broker,
+            publish_switch_startup=publish_switch_startup,
+            include_switch_meta_channels=include_switch_meta_channels,
         )
         ota_status_result = publish_ota_completion_report(
             transport,

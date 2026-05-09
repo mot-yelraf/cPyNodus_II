@@ -12,7 +12,9 @@ define the contract. When other docs drift, this document wins.
 - Normal runtime sync uses only MQTT.
 - OTA uses MQTT only for the prepare/result control path; package bytes move
   over HTTP while Nodus is in temporary OTA mode.
-- Nodus publishes retained full `meta` on connect/reconnect.
+- Nodus publishes retained compact `meta` on connect/reconnect.
+- Nodus publishes retained `meta/switch` with detailed switch channel topics
+  after MQTT startup subscriptions are healthy when switch channels are present.
 - After accepted runtime changes, Nodus publishes only `meta/patch`.
 - Sensorius paces ordinary runtime config writes one key at a time per
   physical Nodus host and waits for `ack` plus successful `result`.
@@ -62,6 +64,7 @@ Bootstrap rules:
 
 - `nodus/<device_id>/status/heartbeat`
 - `nodus/<device_id>/meta`
+- `nodus/<device_id>/meta/switch`
 - `nodus/<sensor_id>/availability`
 - `nodus/<sensor_id>/data`
 - `nodus/<channel_id>/event`
@@ -115,6 +118,9 @@ Bootstrap rules:
 4. Nodus publishes `config/ack`.
 5. Nodus publishes `config/result`.
 6. Nodus publishes retained `nodus/<device_id>/meta`.
+7. If switch channels are present, Nodus publishes retained
+   `nodus/<device_id>/meta/switch` after MQTT startup subscriptions are
+   healthy.
 
 Canonical `onboard/hello` payload:
 
@@ -177,8 +183,9 @@ Canonical switch state payload:
 
 ## Retained `meta`
 
-Retained `nodus/<device_id>/meta` is the authoritative startup snapshot.
-Sensorius uses it to rebuild the local shadow copy of Nodus state.
+Retained `nodus/<device_id>/meta` is the compact authoritative startup
+snapshot. Sensorius uses it to materialize the device, sensor, core MQTT
+topics, and switch presence quickly after connect/reconnect.
 
 The payload must include:
 
@@ -195,13 +202,89 @@ The payload must include:
 - `sensor.sensor_id`, `sensor.location`, `sensor.data_topic`,
   `sensor.event_topic`, `sensor.availability_topic`,
   `sensor.display_metrics`, `sensor.display_styles`
-- `switch.device_id`, `switch.location`
-- per-channel `index`, `label`, `channel_id`, `enable_pin`, `pin`,
-  `state`, `event_topic`, `state_topic`, `set_topic`, `result_topic`,
-  `availability_topic`
+- `switch.device_id`, `switch.location`, `switch.channel_count`, and
+  `switch.meta_topic` when switch capability is present
+
+The startup `meta` payload intentionally does not include
+`switch.channels[*]`. The detailed per-channel switch topic map is published
+separately on retained `nodus/<device_id>/meta/switch`.
+
+Sensorius compatibility rule:
+
+1. If retained `meta.switch.channels` exists, parse it as the legacy embedded
+   switch topic map.
+2. Else if retained `meta.switch.meta_topic` exists, read retained
+   `meta.switch.meta_topic` and parse `nodus-meta-switch/v1`.
+3. Else if `meta.switch.channel_count > 0`, derive the default topic
+   `nodus/<device_id>/meta/switch` and read retained `nodus-meta-switch/v1`
+   as a fallback.
+4. Else treat the device as having no switch channel topic map yet and wait
+   for a later retained `meta` or `meta/switch`.
 
 Password fields in retained `meta` use the same `obf1:` obfuscation format as
 persisted TOML password fields. They are not plaintext.
+
+## Retained `meta/switch`
+
+Retained `nodus/<device_id>/meta/switch` is the authoritative switch channel
+topic map for Sensorius control. Nodus publishes it after device MQTT startup
+subscriptions have completed successfully. Sensorius should merge it with the
+latest retained `meta` for switch control materialization.
+
+Canonical topic:
+
+- `nodus/<device_id>/meta/switch`
+
+Canonical payload:
+
+```json
+{
+  "schema": "nodus-meta-switch/v1",
+  "device_id": "co2-ykdvea",
+  "switch_device_id": "switch-ykdvea",
+  "location": "OfficeDesk",
+  "channel_count": 2,
+  "channels": [
+    {
+      "index": 1,
+      "label": "Fan",
+      "channel_id": "S1-ykdvea",
+      "state": false,
+      "event_topic": "nodus/S1-ykdvea/event",
+      "state_topic": "nodus/S1-ykdvea/state",
+      "set_topic": "nodus/S1-ykdvea/config/set",
+      "ack_topic": "nodus/S1-ykdvea/config/ack",
+      "result_topic": "nodus/S1-ykdvea/config/result",
+      "availability_topic": "nodus/S1-ykdvea/availability"
+    },
+    {
+      "index": 2,
+      "label": "Humidifier",
+      "channel_id": "S2-ykdvea",
+      "state": false,
+      "event_topic": "nodus/S2-ykdvea/event",
+      "state_topic": "nodus/S2-ykdvea/state",
+      "set_topic": "nodus/S2-ykdvea/config/set",
+      "ack_topic": "nodus/S2-ykdvea/config/ack",
+      "result_topic": "nodus/S2-ykdvea/config/result",
+      "availability_topic": "nodus/S2-ykdvea/availability"
+    }
+  ],
+  "timestamp": 946709424
+}
+```
+
+`meta/switch` must include:
+
+- top-level `schema`, `device_id`, `switch_device_id`, `location`,
+  `channel_count`, `channels`, and `timestamp`
+- per-channel `index`, `label`, `channel_id`, `state`, `event_topic`,
+  `state_topic`, `set_topic`, `ack_topic`, `result_topic`, and
+  `availability_topic`
+
+Hardware pin fields are not part of the control contract. If Sensorius needs
+pin diagnostics, use `/itaot-meta` or a later diagnostic contract rather than
+startup MQTT metadata.
 
 ## Retained Command Cleanup
 

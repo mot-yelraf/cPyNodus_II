@@ -64,7 +64,8 @@ The architecture is split into three layers:
   - `nodus/<device_id>/config/ack`
   - `nodus/<device_id>/config/result`
 - Nodus TOML files are the source of truth for accepted device configuration.
-- Retained `nodus/<device_id>/meta` is the authoritative full snapshot and is published on successful MQTT startup/reconnect.
+- Retained `nodus/<device_id>/meta` is the compact authoritative startup snapshot and is published on successful MQTT startup/reconnect.
+- Retained `nodus/<device_id>/meta/switch` carries detailed switch channel control topics and is published after MQTT startup subscriptions are healthy when switch channels are present.
 - After startup, accepted runtime config writes are mirrored to Sensorius through non-retained `nodus/<device_id>/meta/patch` only; config writes do not trigger another full retained `meta` publish.
 - Runtime liveness and device materialization should come from MQTT heartbeat/availability/data topics.
 - `GET /itaot-meta` remains as optional fallback metadata for user-initiated enrichment, not background polling.

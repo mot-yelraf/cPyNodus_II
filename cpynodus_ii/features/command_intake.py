@@ -115,6 +115,31 @@ def subscribe_runtime_topics(transport, runtime_config):
         topics.append(
             transport.subscribe(mqtt_topic(runtime_config, device_id, "fwupdate"))
         )
+    topics.extend(subscribe_switch_runtime_topics(transport, runtime_config))
+    return tuple(topics)
+
+
+def subscribe_device_runtime_topics(transport, runtime_config):
+    """Subscribe the transport to device-level command topics."""
+    topics = []
+    device_id = _device_id(runtime_config)
+    if not device_id:
+        return tuple(topics)
+    topics.append(
+        transport.subscribe(mqtt_topic(runtime_config, device_id, "config", "set"))
+    )
+    topics.append(
+        transport.subscribe(mqtt_topic(runtime_config, device_id, "calibration", "set"))
+    )
+    topics.append(
+        transport.subscribe(mqtt_topic(runtime_config, device_id, "fwupdate"))
+    )
+    return tuple(topics)
+
+
+def subscribe_switch_runtime_topics(transport, runtime_config):
+    """Subscribe the transport to switch channel command topics."""
+    topics = []
     for channel in runtime_config.switch.channels:
         topics.append(
             transport.subscribe(

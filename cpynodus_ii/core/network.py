@@ -220,6 +220,7 @@ def reconnect_network_stack(
     max_attempts=1,
     retry_delay_s=0.0,
     rebuild_socket_artifacts=False,
+    force_station_reset=False,
     log_start_monotonic=None,
 ):
     """Reconnect station Wi-Fi, preserving socket artifacts when allowed."""
@@ -234,6 +235,13 @@ def reconnect_network_stack(
             retry_delay_s=retry_delay_s,
             log_start_monotonic=log_start_monotonic,
         )
+
+    if force_station_reset:
+        _network_log(
+            "network station reset reason=forced",
+            start_monotonic=log_start_monotonic,
+        )
+        _reset_station_mode(wifi_radio)
 
     connect_result = _connect_station(
         runtime_config,

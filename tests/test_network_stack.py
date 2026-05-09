@@ -468,3 +468,39 @@ def test_reconnect_network_stack_preserves_socket_artifacts_until_rebuild_reques
     assert network_link_is_ready(preserved) is True
     assert preserved.socket_pool is stack.socket_pool
     assert rebuilt.socket_pool is not stack.socket_pool
+
+
+def test_reconnect_network_stack_can_force_station_reset_before_join():
+    radio = _StaleAPStationRadio()
+    radio.ap_info = _FakeAPInfo("PeaceHill")
+    radio.ipv4_address = "10.0.0.219"
+    runtime_config = RuntimeConfig(
+        active_profile="sensorius",
+        network=NetworkConfig(
+            ssid="PeaceHill",
+            password="secretpass",
+            hostname="co2-ykdvea",
+        ),
+    )
+
+    stack = build_network_stack(
+        runtime_config,
+        wifi_radio=radio,
+        connection_manager_module=_FakeConnMgr,
+    )
+    before_disconnects = radio.disconnect_calls
+    before_stop_station = radio.stop_station_calls
+
+    rebuilt = reconnect_network_stack(
+        runtime_config,
+        stack,
+        max_attempts=1,
+        retry_delay_s=0.0,
+        rebuild_socket_artifacts=True,
+        force_station_reset=True,
+    )
+
+    assert rebuilt.phase == "ready"
+    assert radio.disconnect_calls == before_disconnects + 1
+    assert radio.stop_station_calls == before_stop_station + 1
+    assert rebuilt.socket_pool is not stack.socket_pool

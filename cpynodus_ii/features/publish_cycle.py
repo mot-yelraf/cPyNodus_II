@@ -16,6 +16,7 @@ from cpynodus_ii.features.payloads import (
     build_sensor_availability_payload,
     build_sensor_data_payload,
     build_switch_event_payload,
+    build_switch_meta_payload,
     build_switch_state_payload,
     mqtt_topic,
 )
@@ -41,6 +42,8 @@ def publish_startup_cycle(
     sensor_snapshot=None,
     switch_snapshot=None,
     active_broker="",
+    publish_switch_startup=True,
+    include_switch_meta_channels=True,
 ):
     """Publish retained startup payloads for the current runtime state."""
     topics = []
@@ -51,6 +54,7 @@ def publish_startup_cycle(
             runtime_config,
             version=version,
             active_broker=active_broker,
+            include_switch_channels=include_switch_meta_channels,
         ),
         retain=True,
     )
@@ -82,7 +86,7 @@ def publish_startup_cycle(
         )
         topics.append(availability.topic)
 
-    if runtime_config.switch.present:
+    if runtime_config.switch.present and publish_switch_startup:
         availability_timestamp = int(time())
         for channel in runtime_config.switch.channels:
             availability = transport.publish(
@@ -134,7 +138,7 @@ def publish_startup_cycle(
         }
         transport._ha_last_retained_discovery_topics = retained_topics
 
-    if runtime_config.switch.present:
+    if runtime_config.switch.present and publish_switch_startup:
         state_payloads = build_switch_state_payload(
             runtime_config, switch_snapshot or {}
         )
@@ -151,6 +155,67 @@ def publish_startup_cycle(
         phase="published",
         published_count=len(topics),
         topics=tuple(topics),
+        errors=(),
+    )
+
+
+def publish_retained_startup_refresh(
+    transport,
+    runtime_config,
+    *,
+    version,
+    active_broker="",
+    availability_debug_logger=None,
+):
+    """Publish retained identity and online status after MQTT recovery."""
+    topics = []
+    device_id = _device_id(runtime_config)
+    meta = transport.publish(
+        mqtt_topic(runtime_config, device_id, "meta"),
+        build_runtime_meta_payload(
+            runtime_config,
+            version=version,
+            active_broker=active_broker,
+            include_switch_channels=False,
+        ),
+        retain=True,
+    )
+    topics.append(meta.topic)
+    availability_result = publish_availability_refresh_cycle(
+        transport,
+        runtime_config,
+        debug_logger=availability_debug_logger,
+    )
+    topics.extend(availability_result.topics)
+    errors = availability_result.errors if availability_result.errors else ()
+    return PublishCycleResult(
+        phase="published",
+        published_count=len(topics),
+        topics=tuple(topics),
+        errors=tuple(errors),
+    )
+
+
+def publish_switch_meta_cycle(transport, runtime_config, switch_snapshot=None):
+    """Publish retained split switch metadata when switch channels exist."""
+    if not runtime_config.switch.present:
+        return PublishCycleResult(
+            phase="skipped",
+            published_count=0,
+            topics=(),
+            errors=("switch_not_present",),
+        )
+    device_id = _device_id(runtime_config)
+    topic = mqtt_topic(runtime_config, device_id, "meta", "switch")
+    message = transport.publish(
+        topic,
+        build_switch_meta_payload(runtime_config, switch_snapshot or {}),
+        retain=True,
+    )
+    return PublishCycleResult(
+        phase="published",
+        published_count=1,
+        topics=(message.topic,),
         errors=(),
     )
 
@@ -226,7 +291,7 @@ def publish_shutdown_cycle(transport, runtime_config):
     )
 
 
-def publish_availability_refresh_cycle(transport, runtime_config):
+def publish_availability_refresh_cycle(transport, runtime_config, *, debug_logger=None):
     """Republish retained online heartbeat and availability payloads."""
     topics = []
     device_id = _device_id(runtime_config)
@@ -238,9 +303,19 @@ def publish_availability_refresh_cycle(transport, runtime_config):
     topics.append(heartbeat.topic)
 
     if runtime_config.sensor.present:
+        sensor_topic = mqtt_topic(
+            runtime_config,
+            runtime_config.sensor.sensor_id,
+            "availability",
+        )
+        sensor_payload = build_sensor_availability_payload(
+            runtime_config,
+            online=True,
+        )
+        _debug_publish_payload(debug_logger, sensor_topic, sensor_payload)
         availability = transport.publish(
-            mqtt_topic(runtime_config, runtime_config.sensor.sensor_id, "availability"),
-            build_sensor_availability_payload(runtime_config, online=True),
+            sensor_topic,
+            sensor_payload,
             retain=True,
         )
         topics.append(availability.topic)
@@ -254,8 +329,14 @@ def publish_availability_refresh_cycle(transport, runtime_config):
                 "status": "online",
                 "timestamp": timestamp,
             }
+            switch_topic = mqtt_topic(
+                runtime_config,
+                channel.channel_id,
+                "availability",
+            )
+            _debug_publish_payload(debug_logger, switch_topic, payload)
             availability = transport.publish(
-                mqtt_topic(runtime_config, channel.channel_id, "availability"),
+                switch_topic,
                 payload,
                 retain=True,
             )
@@ -382,6 +463,15 @@ def _device_id(runtime_config):
         or runtime_config.switch.device_id
         or runtime_config.network.hostname
     )
+
+
+def _debug_publish_payload(debug_logger, topic, payload):
+    if debug_logger is None:
+        return
+    try:
+        debug_logger(topic, payload)
+    except Exception:
+        return
 
 
 def _ota_state_path(root):

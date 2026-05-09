@@ -22,6 +22,7 @@ from cpynodus_ii.features import (
     build_runtime_meta_payload,
     build_sensor_availability_payload,
     build_sensor_data_payload,
+    build_switch_meta_payload,
     build_switch_state_payload,
 )
 
@@ -188,6 +189,98 @@ def test_runtime_meta_payload_includes_sensor_and_switch_topics():
     assert payload["switch"]["channels"][0]["event_topic"] == "nodus/S1-x943fm/event"
     assert payload["switch"]["channels"][0]["state_topic"] == "nodus/S1-x943fm/state"
     assert payload["switch"]["channels"][0]["state"] is True
+    assert payload["switch"]["channel_count"] == 1
+    assert payload["switch"]["meta_topic"] == "nodus/aqi-x943fm/meta/switch"
+
+
+def test_switch_meta_payload_uses_split_contract_without_pin_fields():
+    runtime_config = RuntimeConfig(
+        network=NetworkConfig(hostname="aqi-x943fm"),
+        mqtt=MQTTConfig(broker="broker.local", base_topic="nodus"),
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            device="aqi",
+            sensor_id="aqi-x943fm",
+        ),
+        switch=SwitchConfig(
+            present=True,
+            device_id="switch-x943fm",
+            location="TestLab",
+            channel_count=1,
+            channels=(
+                SwitchChannelConfig(
+                    key="SWITCH_1",
+                    channel_id="S1-x943fm",
+                    label="Fan",
+                    enable_pin="GP5",
+                    control_pin="GP28",
+                    last_state=False,
+                ),
+            ),
+        ),
+    )
+
+    payload = build_switch_meta_payload(
+        runtime_config,
+        {"SWITCH_1": {"phase": "ready", "state": True}},
+    )
+
+    assert payload["schema"] == "nodus-meta-switch/v1"
+    assert payload["device_id"] == "aqi-x943fm"
+    assert payload["switch_device_id"] == "switch-x943fm"
+    assert payload["channel_count"] == 1
+    channel = payload["channels"][0]
+    assert channel["state"] is True
+    assert channel["set_topic"] == "nodus/S1-x943fm/config/set"
+    assert channel["ack_topic"] == "nodus/S1-x943fm/config/ack"
+    assert channel["result_topic"] == "nodus/S1-x943fm/config/result"
+    assert "pin" not in channel
+    assert "enable_pin" not in channel
+
+
+def test_runtime_meta_payload_can_omit_switch_channel_detail():
+    runtime_config = RuntimeConfig(
+        network=NetworkConfig(hostname="aqi-x943fm"),
+        mqtt=MQTTConfig(broker="broker.local", base_topic="nodus"),
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            device="aqi",
+            sensor_id="aqi-x943fm",
+        ),
+        switch=SwitchConfig(
+            present=True,
+            device_id="switch-x943fm",
+            location="TestLab",
+            channel_count=1,
+            channels=(
+                SwitchChannelConfig(
+                    key="SWITCH_1",
+                    channel_id="S1-x943fm",
+                    label="Fan",
+                    enable_pin="GP5",
+                    control_pin="GP28",
+                    last_state=True,
+                ),
+            ),
+        ),
+    )
+
+    payload = build_runtime_meta_payload(
+        runtime_config,
+        version="0.1.0",
+        include_switch_channels=False,
+    )
+
+    assert payload["capabilities"]["switch"] is True
+    assert payload["location_group"]["members"] == ["aqi-x943fm", "S1-x943fm"]
+    assert payload["switch"] == {
+        "device_id": "switch-x943fm",
+        "location": "TestLab",
+        "channel_count": 1,
+        "meta_topic": "nodus/aqi-x943fm/meta/switch",
+    }
     assert payload["location_group"]["members"] == ["aqi-x943fm", "S1-x943fm"]
 
 
