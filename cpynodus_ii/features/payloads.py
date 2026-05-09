@@ -227,6 +227,7 @@ def build_runtime_meta_payload(
             "sensor": sensor.present,
             "switch": switch.present,
             "fwupdate": True,
+            "log_transfer": True,
         },
         "status": {
             "state": "online",
@@ -266,6 +267,14 @@ def build_runtime_meta_payload(
             "result_topic": mqtt_topic(
                 runtime_config, device_id, "fwupdate", "result"
             ),
+        },
+        "logs": {
+            "schema": "nodus-log-transfer/v1",
+            "get_topic": mqtt_topic(runtime_config, device_id, "logs", "get"),
+            "ack_topic": mqtt_topic(runtime_config, device_id, "logs", "ack"),
+            "chunk_topic": mqtt_topic(runtime_config, device_id, "logs", "chunk"),
+            "result_topic": mqtt_topic(runtime_config, device_id, "logs", "result"),
+            "chunk_size": 512,
         },
         "location_group": {
             "location": location,

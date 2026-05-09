@@ -13,6 +13,8 @@ wins.
 - Runtime device config uses `nodus/<device_id>/config/set`.
 - Runtime switch config uses `nodus/<channel_id>/config/set`.
 - Calibration uses `nodus/<device_id>/calibration/set`.
+- Log retrieval uses `nodus/<device_id>/logs/get` and returns chunked MQTT
+  payloads on `nodus/<device_id>/logs/chunk`.
 - OTA prepare uses `nodus/<device_id>/fwupdate`; files move over HTTP after
   Nodus reboots into temporary OTA mode.
 - Nodus publishes retained compact `nodus/<device_id>/meta` on
@@ -41,6 +43,10 @@ wins.
 - `nodus/<device_id>/calibration/set`
 - `nodus/<device_id>/calibration/ack`
 - `nodus/<device_id>/calibration/result`
+- `nodus/<device_id>/logs/get`
+- `nodus/<device_id>/logs/ack`
+- `nodus/<device_id>/logs/chunk`
+- `nodus/<device_id>/logs/result`
 - `nodus/<device_id>/fwupdate`
 - `nodus/<device_id>/fwupdate/ack`
 - `nodus/<device_id>/fwupdate/result`
@@ -83,6 +89,35 @@ current contract:
 - Calibration uses `calibration/set`, `calibration/ack`,
   `calibration/result`, and `meta/patch`. Nodus does not clear
   `calibration/set`; Sensorius owns any retained command cleanup.
+- Log retrieval uses `logs/get`, `logs/ack`, `logs/chunk`, and `logs/result`.
+  Nodus accepts only known bounded runtime logs (`_reboot.log` and
+  `_recovery.log`), publishes chunks non-retained, and includes a per-chunk
+  checksum plus final file checksum. Sensorius or a host tool owns request
+  timeout handling and retained command cleanup if a retained request is used.
+
+## MQTT Log Retrieval
+
+Request payload on `nodus/<device_id>/logs/get`:
+
+```json
+{"schema":"nodus-log-transfer/v1","message_id":"log-1","filename":"_reboot.log","chunk_size":512}
+```
+
+Nodus publishes:
+
+- `logs/ack`: request acceptance, file size, and selected chunk size.
+- `logs/chunk`: base64 data, offset, next offset, sequence, size, and FNV-1a
+  checksum for that raw chunk.
+- `logs/result`: completion state, total chunks, size, and final FNV-1a file
+  checksum.
+
+Host-side retrieval tool:
+
+```sh
+cp scripts/nodus_getlogs.toml.def scripts/nodus_getlogs.toml
+python scripts/nodus_getlogs.py --device-id co2-v5p04u --all
+python scripts/nodus_log_analyze.py --device-id co2-v5p04u
+```
 
 ## Notes
 

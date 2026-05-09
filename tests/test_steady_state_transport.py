@@ -113,6 +113,7 @@ def test_steady_state_resubscribes_and_republishes_on_connect_generation_change(
         "nodus/aqi-x943fm/config/set",
         "nodus/aqi-x943fm/calibration/set",
         "nodus/aqi-x943fm/fwupdate",
+        "nodus/aqi-x943fm/logs/get",
         "nodus/S1-x943fm/config/set",
     )
     assert result.state.connection_generation == 1
@@ -141,6 +142,7 @@ def test_steady_state_can_defer_switch_subscriptions_on_connect():
         "nodus/aqi-x943fm/config/set",
         "nodus/aqi-x943fm/calibration/set",
         "nodus/aqi-x943fm/fwupdate",
+        "nodus/aqi-x943fm/logs/get",
     )
     assert transport.subscriptions == list(result.subscribed_topics)
 

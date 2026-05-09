@@ -1,0 +1,13 @@
+[mqtt]
+broker = "sensorius-hub-0.local"
+port = 1883
+base_topic = "nodus"
+use_tls = false
+username = ""
+password = ""
+
+[transfer]
+storage_dir = "build/nodus-logs"
+filenames = ["_reboot.log", "_recovery.log"]
+chunk_size = 512
+timeout_s = 60

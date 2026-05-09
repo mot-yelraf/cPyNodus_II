@@ -25,6 +25,14 @@ from cpynodus_ii.features.command_intake import (
     subscribe_runtime_topics,
     subscribe_switch_runtime_topics,
 )
+from cpynodus_ii.features.log_transfer import (
+    LogTransferCommand,
+    LogTransferSession,
+    parse_log_transfer_command,
+    process_log_transfer_message,
+    process_log_transfer_session,
+    subscribe_log_transfer_topics,
+)
 from cpynodus_ii.features.payloads import (
     build_calibration_ack_payload,
     build_calibration_result_payload,
@@ -126,6 +134,8 @@ __all__ = [
     "CommandResult",
     "DeviceConfigCommand",
     "FwUpdateCommand",
+    "LogTransferCommand",
+    "LogTransferSession",
     "SoilPhCalibrationSession",
     "apply_switch_state",
     "build_device_heartbeat_payload",
@@ -151,6 +161,7 @@ __all__ = [
     "parse_calibration_command",
     "parse_device_config_command",
     "parse_fwupdate_command",
+    "parse_log_transfer_command",
     "parse_switch_command",
     "plan_sensor_initialization",
     "plan_switch_initialization",
@@ -166,6 +177,8 @@ __all__ = [
     "process_calibration_message",
     "process_device_config_message",
     "process_fwupdate_message",
+    "process_log_transfer_message",
+    "process_log_transfer_session",
     "process_soil_calibration_session",
     "process_switch_command_message",
     "read_sensor_snapshot",
@@ -179,6 +192,7 @@ __all__ = [
     "SteadyStateResult",
     "subscribe_runtime_topics",
     "subscribe_device_runtime_topics",
+    "subscribe_log_transfer_topics",
     "subscribe_switch_runtime_topics",
     "SwitchCommand",
     "ItaotInitResult",

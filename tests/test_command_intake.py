@@ -22,11 +22,14 @@ from cpynodus_ii.features import (
     parse_calibration_command,
     parse_device_config_command,
     parse_fwupdate_command,
+    parse_log_transfer_command,
     parse_switch_command,
     process_calibration_message,
     process_device_config_message,
     process_fwupdate_message,
     process_inbound_messages,
+    process_log_transfer_message,
+    process_log_transfer_session,
     process_soil_calibration_session,
     process_switch_command_message,
     subscribe_runtime_topics,
@@ -125,6 +128,7 @@ def test_subscribe_runtime_topics_tracks_all_switch_channels():
         "nodus/switch-x943fm/config/set",
         "nodus/switch-x943fm/calibration/set",
         "nodus/switch-x943fm/fwupdate",
+        "nodus/switch-x943fm/logs/get",
         "nodus/S1-x943fm/config/set",
         "nodus/S2-x943fm/config/set",
     )
@@ -144,9 +148,75 @@ def test_subscribe_runtime_topics_uses_configured_base_topic():
         "greenhouse/switch-x943fm/config/set",
         "greenhouse/switch-x943fm/calibration/set",
         "greenhouse/switch-x943fm/fwupdate",
+        "greenhouse/switch-x943fm/logs/get",
         "greenhouse/S1-x943fm/config/set",
         "greenhouse/S2-x943fm/config/set",
     )
+
+
+def test_parse_log_transfer_command_accepts_filename_and_chunk_size():
+    command = parse_log_transfer_command(
+        '{"message_id":"log-1","filename":"_reboot.log","chunk_size":512}'
+    )
+
+    assert command.message_id == "log-1"
+    assert command.filename == "_reboot.log"
+    assert command.chunk_size == 512
+
+
+def test_process_log_transfer_message_starts_session_and_publishes_ack(tmp_path):
+    (tmp_path / "_reboot.log").write_text("boot one\nboot two\n", encoding="utf-8")
+    transport = MQTTTransport("broker.local", 1883)
+
+    result = process_log_transfer_message(
+        transport,
+        _runtime_config(),
+        topic="nodus/switch-x943fm/logs/get",
+        payload_text='{"message_id":"log-1","filename":"_reboot.log","chunk_size":8}',
+        settings_root=tmp_path,
+    )
+
+    assert result.phase == "published"
+    assert result.command_type == "logs"
+    assert result.message_id == "log-1"
+    assert transport.published_messages[0].topic == "nodus/switch-x943fm/logs/ack"
+    assert transport.published_messages[0].payload["accepted"] is True
+    assert transport.published_messages[0].payload["size"] == 18
+
+
+def test_process_log_transfer_session_publishes_chunks_then_result(tmp_path):
+    (tmp_path / "_reboot.log").write_bytes(b"abcdefghijkl")
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connected()
+    process_log_transfer_message(
+        transport,
+        _runtime_config(),
+        topic="nodus/switch-x943fm/logs/get",
+        payload_text='{"message_id":"log-1","filename":"_reboot.log","chunk_size":5}',
+        settings_root=tmp_path,
+    )
+
+    first = process_log_transfer_session(transport, _runtime_config())
+    second = process_log_transfer_session(transport, _runtime_config())
+    third = process_log_transfer_session(transport, _runtime_config())
+    done = process_log_transfer_session(transport, _runtime_config())
+
+    assert first.phase == "published"
+    assert second.phase == "published"
+    assert third.phase == "published"
+    assert done.phase == "published"
+    topics = [message.topic for message in transport.published_messages]
+    assert topics == [
+        "nodus/switch-x943fm/logs/ack",
+        "nodus/switch-x943fm/logs/chunk",
+        "nodus/switch-x943fm/logs/chunk",
+        "nodus/switch-x943fm/logs/chunk",
+        "nodus/switch-x943fm/logs/result",
+    ]
+    assert transport.published_messages[1].payload["offset"] == 0
+    assert transport.published_messages[1].payload["next_offset"] == 5
+    assert transport.published_messages[-1].payload["complete"] is True
+    assert transport.published_messages[-1].payload["chunks"] == 3
 
 
 def test_parse_fwupdate_command_accepts_prepare_payload():
