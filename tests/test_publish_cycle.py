@@ -17,6 +17,7 @@ from cpynodus_ii.features import (
     publish_sensor_cycle,
     publish_shutdown_cycle,
     publish_startup_cycle,
+    publish_switch_meta_cycle,
     publish_switch_result,
 )
 
@@ -61,14 +62,73 @@ def test_startup_cycle_publishes_heartbeat_meta_sensor_and_switch_topics():
     )
 
     assert result.phase == "published"
-    assert result.published_count == 6
+    assert result.published_count == 7
     assert "nodus/aqi-x943fm/status/heartbeat" in result.topics
     assert "nodus/aqi-x943fm/meta" in result.topics
+    assert "nodus/aqi-x943fm/meta/switch" in result.topics
     assert "nodus/aqi-x943fm/data" in result.topics
     assert "nodus/S1-x943fm/state" in result.topics
     assert transport.published_messages[0].retain is True
     topics = [message.topic for message in transport.published_messages]
-    assert topics.index("nodus/aqi-x943fm/meta") < topics.index("nodus/aqi-x943fm/data")
+    assert topics.index("nodus/aqi-x943fm/meta") < topics.index(
+        "nodus/aqi-x943fm/status/heartbeat"
+    )
+    assert topics.index("nodus/aqi-x943fm/status/heartbeat") < topics.index(
+        "nodus/aqi-x943fm/availability"
+    )
+    assert topics.index("nodus/aqi-x943fm/availability") < topics.index(
+        "nodus/aqi-x943fm/meta/switch"
+    )
+    meta_message = transport.published_messages[0]
+    assert "channels" not in meta_message.payload["switch"]
+    assert (
+        meta_message.payload["switch"]["meta_topic"]
+        == "nodus/aqi-x943fm/meta/switch"
+    )
+    switch_meta_message = next(
+        message
+        for message in transport.published_messages
+        if message.topic == "nodus/aqi-x943fm/meta/switch"
+    )
+    assert switch_meta_message.retain is True
+    assert switch_meta_message.payload["schema"] == "nodus-meta-switch/v1"
+
+
+def test_switch_meta_cycle_publishes_retained_split_channel_map():
+    transport = MQTTTransport("broker.local", 1883)
+    runtime_config = RuntimeConfig(
+        network=NetworkConfig(hostname="aqi-x943fm"),
+        mqtt=MQTTConfig(broker="broker.local", base_topic="nodus"),
+        sensor=DetectedSensor(sensor_id="aqi-x943fm"),
+        switch=SwitchConfig(
+            present=True,
+            device_id="switch-x943fm",
+            location="TestLab",
+            channel_count=1,
+            channels=(
+                SwitchChannelConfig(
+                    key="SWITCH_1",
+                    channel_id="S1-x943fm",
+                    label="Fan",
+                    enable_pin="GP5",
+                    control_pin="GP28",
+                ),
+            ),
+        ),
+    )
+
+    result = publish_switch_meta_cycle(
+        transport,
+        runtime_config,
+        {"SWITCH_1": {"phase": "ready", "state": True}},
+    )
+
+    assert result.phase == "published"
+    assert result.published_count == 1
+    assert result.topics == ("nodus/aqi-x943fm/meta/switch",)
+    assert transport.published_messages[-1].retain is True
+    assert transport.published_messages[-1].payload["schema"] == "nodus-meta-switch/v1"
+    assert transport.published_messages[-1].payload["channels"][0]["state"] is True
 
 
 def test_sensor_cycle_publishes_non_retained_sensor_data():

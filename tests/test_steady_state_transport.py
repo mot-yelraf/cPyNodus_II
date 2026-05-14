@@ -83,13 +83,19 @@ def test_transport_tracks_connection_generations():
 
     assert transport.connected is False
     assert transport.connection_generation == 0
-    assert transport.mark_connected() == 1
+    assert transport.mark_connected(now_monotonic=10.0) == 1
     assert transport.connected is True
     assert transport.connection_generation == 1
-    transport.mark_disconnected()
+    assert transport.last_connected_at == 10.0
+    assert transport.last_success_at == 10.0
+    transport.mark_success(now_monotonic=12.0)
+    assert transport.last_success_at == 12.0
+    transport.mark_disconnected(now_monotonic=13.0)
     assert transport.connected is False
-    assert transport.mark_connected() == 2
+    assert transport.last_disconnected_at == 13.0
+    assert transport.mark_connected(now_monotonic=14.0) == 2
     assert transport.connection_generation == 2
+    assert transport.last_success_at == 14.0
 
 
 def test_steady_state_resubscribes_and_republishes_on_connect_generation_change():
@@ -108,7 +114,7 @@ def test_steady_state_resubscribes_and_republishes_on_connect_generation_change(
     )
 
     assert result.startup_publish_phase == "published"
-    assert result.startup_published_count == 6
+    assert result.startup_published_count == 7
     assert result.subscribed_topics == (
         "nodus/aqi-x943fm/config/set",
         "nodus/aqi-x943fm/calibration/set",
@@ -119,6 +125,52 @@ def test_steady_state_resubscribes_and_republishes_on_connect_generation_change(
     assert result.state.last_sensor_publish_at == 10.0
     assert result.state.last_availability_publish_at == 10.0
     assert transport.subscriptions == list(result.subscribed_topics)
+    assert "nodus/aqi-x943fm/meta/switch" in [
+        message.topic for message in transport.published_messages
+    ]
+
+
+def test_steady_state_does_not_republish_switch_meta_after_startup_batch():
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connect_requested()
+    transport.mark_connected()
+    runtime_config = _runtime_config()
+
+    first = run_steady_state_iteration(
+        transport,
+        runtime_config,
+        _switch_service(),
+        _sensor_service(),
+        state=SteadyState(sensor_interval_s=60.0),
+        version="0.1.0",
+        now_monotonic=10.0,
+    )
+    transport.subscriptions.clear()
+
+    published_after_first = len(transport.published_messages)
+    second = run_steady_state_iteration(
+        transport,
+        runtime_config,
+        _switch_service(),
+        _sensor_service(),
+        state=first.state,
+        version="0.1.0",
+        now_monotonic=11.0,
+    )
+
+    assert len(transport.published_messages) == published_after_first
+
+    run_steady_state_iteration(
+        transport,
+        runtime_config,
+        _switch_service(),
+        _sensor_service(),
+        state=second.state,
+        version="0.1.0",
+        now_monotonic=12.0,
+    )
+
+    assert len(transport.published_messages) == published_after_first
 
 
 def test_steady_state_respects_sensor_publish_interval():

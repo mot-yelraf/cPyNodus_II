@@ -14,6 +14,8 @@ class RecoveryPolicy:
 
     wifi_timeout_s: float = 900.0
     wifi_retry_interval_s: float = 5.0
+    wifi_backoff_after_s: float = 60.0
+    wifi_backoff_retry_interval_s: float = 30.0
     mqtt_timeout_s: float = 180.0
     mqtt_rebuild_interval_s: float = 30.0
     ap_timeout_s: float = 600.0
@@ -67,31 +69,26 @@ def advance_recovery_state(
             )
         return RecoveryDecision(state=ap_state, allow_mqtt_connect=False)
 
-    if transport_connected:
-        return RecoveryDecision(
-            state=RecoveryState(),
-            allow_mqtt_connect=True,
-        )
-
-    if not mqtt_enabled:
-        return RecoveryDecision(
-            state=RecoveryState(),
-            allow_mqtt_connect=False,
-        )
-
     if not wifi_link_ready:
         wifi_state = _ensure_phase(state, "wifi", now_value)
-        if _phase_elapsed(wifi_state, now_value) >= float(policy.wifi_timeout_s):
+        wifi_elapsed_s = _phase_elapsed(wifi_state, now_value)
+        if wifi_elapsed_s >= float(policy.wifi_timeout_s):
             return RecoveryDecision(
                 state=wifi_state,
                 allow_mqtt_connect=False,
                 request_soft_reboot=True,
                 reboot_reason="wifi_recovery_timeout",
             )
+        retry_interval_s = float(policy.wifi_retry_interval_s)
+        if wifi_elapsed_s >= float(policy.wifi_backoff_after_s):
+            retry_interval_s = max(
+                retry_interval_s,
+                float(policy.wifi_backoff_retry_interval_s),
+            )
         attempt_wifi = _interval_elapsed(
             wifi_state.last_wifi_attempt_at,
             now_value,
-            float(policy.wifi_retry_interval_s),
+            retry_interval_s,
         )
         next_state = wifi_state
         if attempt_wifi:
@@ -105,6 +102,18 @@ def advance_recovery_state(
             state=next_state,
             allow_mqtt_connect=False,
             attempt_wifi_reconnect=attempt_wifi,
+        )
+
+    if transport_connected:
+        return RecoveryDecision(
+            state=RecoveryState(),
+            allow_mqtt_connect=True,
+        )
+
+    if not mqtt_enabled:
+        return RecoveryDecision(
+            state=RecoveryState(),
+            allow_mqtt_connect=False,
         )
 
     mqtt_state = _ensure_phase(state, "mqtt", now_value)

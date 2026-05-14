@@ -220,6 +220,7 @@ def reconnect_network_stack(
     max_attempts=1,
     retry_delay_s=0.0,
     rebuild_socket_artifacts=False,
+    reset_station=False,
     log_start_monotonic=None,
 ):
     """Reconnect station Wi-Fi, preserving socket artifacts when allowed."""
@@ -234,6 +235,9 @@ def reconnect_network_stack(
             retry_delay_s=retry_delay_s,
             log_start_monotonic=log_start_monotonic,
         )
+
+    if reset_station:
+        _reset_station_mode(wifi_radio)
 
     connect_result = _connect_station(
         runtime_config,
@@ -299,6 +303,31 @@ def network_link_is_ready(network_stack):
     return bool(_current_ip_address(wifi_radio))
 
 
+def network_error_signature(network_stack, *, had_ready_link=False):
+    """Return a compact signature for the current station failure mode."""
+    if getattr(network_stack, "phase", "") == "ready":
+        return "none"
+    errors = getattr(network_stack, "errors", ()) or ()
+    text = " ".join(str(error or "") for error in errors).lower()
+    if "network_auth_failed" in errors:
+        return "station_auth_failed"
+    if "network_ap_subnet_suspect" in errors:
+        return "station_ap_subnet"
+    if "no network with that ssid" in text:
+        if had_ready_link:
+            return "station_scan_miss_after_ready"
+        return "station_scan_miss"
+    if "unknown failure" in text:
+        if had_ready_link:
+            return "station_unknown_after_ready"
+        return "station_unknown"
+    if "network_not_connected" in errors:
+        return "station_not_connected"
+    if getattr(network_stack, "phase", "") in {"error", "unavailable"}:
+        return "station_connect_failed"
+    return "none"
+
+
 def refresh_network_stack(network_stack):
     """Refresh cached IP metadata without rebuilding network artifacts."""
     wifi_radio = getattr(network_stack, "wifi_radio", None)
@@ -329,6 +358,11 @@ def _looks_auth_failure(exc):
         or "auth" in text
         and "fail" in text
     )
+
+
+def _looks_scan_miss(exc):
+    text = str(exc or "").strip().lower()
+    return "no network with that ssid" in text
 
 
 def _resolve_wifi_radio(wifi_radio):
@@ -362,6 +396,8 @@ def _connect_station(
     connect = getattr(wifi_radio, "connect", None)
     set_hostname = getattr(wifi_radio, "hostname", None)
     last_exc = None
+    last_scan_status = ""
+    last_scan_count = -1
     attempts = max(1, int(max_attempts or 1))
     for attempt in range(1, attempts + 1):
         _network_log(
@@ -482,6 +518,24 @@ def _connect_station(
                     + _network_diagnostic_tokens(wifi_radio),
                 }
             if attempt < attempts:
+                scan_status = ""
+                scan_count = -1
+                if _looks_scan_miss(exc):
+                    scan_status, scan_count = _scan_for_station_ssid(
+                        wifi_radio,
+                        runtime_config.network.ssid,
+                    )
+                    last_scan_status = scan_status
+                    last_scan_count = scan_count
+                    _network_log(
+                        "network scan attempt={} ssid={} result={} count={}".format(
+                            attempt,
+                            runtime_config.network.ssid,
+                            scan_status,
+                            scan_count if scan_count >= 0 else "unknown",
+                        ),
+                        start_monotonic=log_start_monotonic,
+                    )
                 _network_log(
                     "network connect retry attempt={} error={}".format(
                         attempt,
@@ -491,7 +545,10 @@ def _connect_station(
                 )
                 _reset_station_mode(wifi_radio)
                 try:
-                    time.sleep(float(retry_delay_s or 0.0))
+                    settle_s = float(retry_delay_s or 0.0)
+                    if scan_status:
+                        settle_s = max(settle_s, 2.0)
+                    time.sleep(settle_s)
                 except Exception:
                     pass
     _network_log(
@@ -510,7 +567,8 @@ def _connect_station(
             str(last_exc or ""),
             "attempts={}".format(attempts),
         )
-        + _network_diagnostic_tokens(wifi_radio),
+        + _network_diagnostic_tokens(wifi_radio)
+        + _scan_diagnostic_tokens(last_scan_status, last_scan_count),
     }
 
 
@@ -531,6 +589,26 @@ def _reset_station_mode(wifi_radio):
     _call_radio_method(wifi_radio, "disconnect")
     if _call_radio_method(wifi_radio, "stop_station"):
         _call_radio_method(wifi_radio, "start_station")
+
+
+def _scan_for_station_ssid(wifi_radio, ssid):
+    start_scan = getattr(wifi_radio, "start_scanning_networks", None)
+    if not callable(start_scan):
+        return "unavailable", -1
+    count = 0
+    try:
+        networks = start_scan()
+        for network in networks:
+            count += 1
+            if _network_ssid_text(_safe_radio_attr(network, "ssid")) == str(ssid):
+                return "found", count
+            if count >= 16:
+                break
+    except Exception:
+        return "error", count
+    finally:
+        _call_radio_method(wifi_radio, "stop_scanning_networks")
+    return "missing", count
 
 
 def _call_radio_method(wifi_radio, name):
@@ -604,6 +682,25 @@ def _network_diagnostic_tokens(wifi_radio):
     if actual_ssid:
         tokens += ("actual_ssid={}".format(actual_ssid),)
     return tokens
+
+
+def _scan_diagnostic_tokens(scan_status, scan_count):
+    if not scan_status:
+        return ()
+    count_text = str(scan_count) if int(scan_count or -1) >= 0 else "unknown"
+    return (
+        "scan={}".format(scan_status),
+        "scan_count={}".format(count_text),
+    )
+
+
+def _network_ssid_text(value):
+    if isinstance(value, bytes):
+        try:
+            return value.decode("utf-8")
+        except Exception:
+            return str(value)
+    return str(value or "")
 
 
 def _exception_label(exc):

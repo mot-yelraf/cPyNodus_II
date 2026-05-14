@@ -23,6 +23,55 @@ def test_wifi_recovery_blocks_mqtt_and_requests_reconnect():
     assert decision.request_soft_reboot is False
 
 
+def test_wifi_loss_overrides_stale_mqtt_connected_state():
+    decision = advance_recovery_state(
+        RecoveryState(),
+        now_monotonic=10.0,
+        policy=RecoveryPolicy(wifi_retry_interval_s=5.0),
+        ap_mode=False,
+        wifi_link_ready=False,
+        transport_connected=True,
+    )
+
+    assert decision.state.phase == "wifi"
+    assert decision.allow_mqtt_connect is False
+    assert decision.attempt_wifi_reconnect is True
+
+
+def test_wifi_recovery_uses_backoff_interval_after_initial_window():
+    state = RecoveryState(
+        phase="wifi",
+        phase_started_at=0.0,
+        last_wifi_attempt_at=61.0,
+    )
+
+    before_backoff_retry = advance_recovery_state(
+        state,
+        now_monotonic=70.0,
+        policy=RecoveryPolicy(
+            wifi_backoff_after_s=60.0,
+            wifi_backoff_retry_interval_s=30.0,
+        ),
+        ap_mode=False,
+        wifi_link_ready=False,
+        transport_connected=False,
+    )
+    after_backoff_retry = advance_recovery_state(
+        state,
+        now_monotonic=91.0,
+        policy=RecoveryPolicy(
+            wifi_backoff_after_s=60.0,
+            wifi_backoff_retry_interval_s=30.0,
+        ),
+        ap_mode=False,
+        wifi_link_ready=False,
+        transport_connected=False,
+    )
+
+    assert before_backoff_retry.attempt_wifi_reconnect is False
+    assert after_backoff_retry.attempt_wifi_reconnect is True
+
+
 def test_wifi_recovery_requests_soft_reboot_after_timeout():
     state = RecoveryState(phase="wifi", phase_started_at=0.0, last_wifi_attempt_at=10.0)
 

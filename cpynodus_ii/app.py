@@ -22,8 +22,10 @@ from cpynodus_ii.core import (
     connect_mqtt_client,
     disconnect_mqtt_client,
     maybe_sync_ntp,
+    network_error_signature,
     network_link_is_ready,
     poll_mqtt_client,
+    preflight_mqtt_broker,
     reconnect_network_stack,
     refresh_network_stack,
     sync_transport_to_client,
@@ -47,6 +49,10 @@ from cpynodus_ii.features import (
 )
 from cpynodus_ii.hardware import bind_sensor_hardware, bind_switch_hardware
 from cpynodus_ii.ota.state import FwUpdateState, load_ota_state, save_ota_state
+
+MQTT_HOSTNAME_RESOLVE_SETTLE_S = 30.0
+MQTT_REBUILD_VERIFY_WINDOW_S = 90.0
+MQTT_REBUILD_VERIFY_PHASE_S = 10.0
 
 
 def _path_exists(path):
@@ -256,6 +262,150 @@ def _should_preflight_broker(adapter):
     return len(targets) > 1
 
 
+def _should_wait_for_broker_hostname_resolution(
+    runtime_config,
+    mqtt_adapter,
+    *,
+    now_monotonic,
+    recovery_state,
+    settle_s=MQTT_HOSTNAME_RESOLVE_SETTLE_S,
+):
+    """Return True while cold-start broker hostname resolution should settle."""
+    broker = str(getattr(runtime_config.mqtt, "broker", "") or "").strip()
+    broker_ip = str(getattr(runtime_config.mqtt, "broker_ip", "") or "").strip()
+    if not broker or not broker_ip or _looks_like_ip_literal(broker):
+        return False, ""
+    targets = tuple(getattr(mqtt_adapter, "broker_targets", ()) or ())
+    if len(targets) <= 1 or targets[0] != broker:
+        return False, ""
+    phase_started_at = float(getattr(recovery_state, "phase_started_at", -1.0))
+    if phase_started_at < 0.0:
+        return False, ""
+    elapsed_s = max(0.0, float(now_monotonic or 0.0) - phase_started_at)
+    if elapsed_s >= float(settle_s or 0.0):
+        return False, ""
+    resolve_error, resolved_ip = preflight_mqtt_broker(mqtt_adapter, broker)
+    if not resolve_error:
+        return False, "resolved_ip={}".format(resolved_ip or "unknown")
+    if not str(resolve_error).startswith("mqtt_resolve_failed:"):
+        return False, resolve_error
+    if broker_ip:
+        return False, "host={} error={} fallback_ip={}".format(
+            broker,
+            resolve_error,
+            broker_ip,
+        )
+    remaining_s = max(0, int(float(settle_s or 0.0) - elapsed_s))
+    return True, "host={} error={} retry_window_s={}".format(
+        broker,
+        resolve_error,
+        remaining_s,
+    )
+
+
+def _looks_like_ip_literal(value):
+    text = str(value or "").strip()
+    if not text:
+        return False
+    parts = text.split(".")
+    if len(parts) == 4:
+        try:
+            return all(0 <= int(part) <= 255 for part in parts)
+        except ValueError:
+            return False
+    return ":" in text
+
+
+def _wifi_recovery_elapsed_s(recovery_state, now_monotonic):
+    started_at = float(getattr(recovery_state, "phase_started_at", -1.0))
+    if started_at < 0.0:
+        return 0.0
+    return max(0.0, float(now_monotonic or 0.0) - started_at)
+
+
+def _mqtt_recovery_elapsed_s(recovery_state, now_monotonic):
+    if getattr(recovery_state, "phase", "") != "mqtt":
+        return 0.0
+    started_at = float(getattr(recovery_state, "phase_started_at", -1.0))
+    if started_at < 0.0:
+        return 0.0
+    return max(0.0, float(now_monotonic or 0.0) - started_at)
+
+
+def _should_log_wifi_failure_signature(signature, count, reset_station):
+    """Return True when a Wi-Fi failure signature should be emitted."""
+    if not signature or signature == "none":
+        return False
+    if count in (1, 3):
+        return True
+    return bool(reset_station and (int(count or 0) % 5) == 0)
+
+
+def _should_verify_mqtt_before_rebuild(
+    transport,
+    recovery_state,
+    now_monotonic,
+    *,
+    success_window_s=MQTT_REBUILD_VERIFY_WINDOW_S,
+    phase_window_s=MQTT_REBUILD_VERIFY_PHASE_S,
+):
+    """Return True when recent MQTT success should get one reconnect attempt."""
+    if _mqtt_disconnect_reason_requires_rebuild(
+        getattr(transport, "last_disconnect_reason", "")
+    ):
+        return False
+    last_success_at = float(getattr(transport, "last_success_at", -1.0))
+    if last_success_at < 0.0:
+        return False
+    now_value = float(now_monotonic or 0.0)
+    if now_value - last_success_at > float(success_window_s or 0.0):
+        return False
+    return _mqtt_recovery_elapsed_s(recovery_state, now_value) <= float(
+        phase_window_s or 0.0
+    )
+
+
+def _mqtt_disconnect_reason_requires_rebuild(reason):
+    """Return True when the MQTT client/socket should be rebuilt immediately."""
+    text = str(reason or "").strip()
+    if not text:
+        return False
+    hard_prefixes = (
+        "mqtt_poll_failed:",
+        "mqtt_publish_failed:",
+        "mqtt_subscribe_failed:",
+        "mqtt_poll_callback_failed:",
+        "mqtt_client_on_disconnect",
+    )
+    return any(text.startswith(prefix) for prefix in hard_prefixes)
+
+
+def _with_learned_broker_target(mqtt_adapter, learned_ip, runtime_config):
+    """Append a learned broker IP after configured broker targets."""
+    learned = str(learned_ip or "").strip()
+    if not learned or not _looks_like_ip_literal(learned):
+        return mqtt_adapter
+    broker = str(getattr(runtime_config.mqtt, "broker", "") or "").strip()
+    broker_ip = str(getattr(runtime_config.mqtt, "broker_ip", "") or "").strip()
+    if learned == broker or learned == broker_ip:
+        return mqtt_adapter
+    targets = tuple(getattr(mqtt_adapter, "broker_targets", ()) or ())
+    if learned in targets:
+        return mqtt_adapter
+    return replace(mqtt_adapter, broker_targets=targets + (learned,))
+
+
+def _learned_broker_candidate(current_ip, runtime_config, mqtt_adapter):
+    """Return the latest hostname-resolved broker IP candidate."""
+    active_broker = str(getattr(mqtt_adapter, "active_broker", "") or "").strip()
+    broker = str(getattr(runtime_config.mqtt, "broker", "") or "").strip()
+    resolved_ip = str(getattr(mqtt_adapter, "resolved_broker_ip", "") or "").strip()
+    broker_ip = str(getattr(runtime_config.mqtt, "broker_ip", "") or "").strip()
+    if active_broker == broker and resolved_ip and resolved_ip != broker_ip:
+        return resolved_ip
+    return str(current_ip or "").strip()
+
+
 def _should_fallback_to_ap(runtime_config, network_stack):
     if runtime_config.ap_mode:
         return False
@@ -288,13 +438,16 @@ def _station_ip_looks_recoverable(runtime_config, network_stack):
 
 
 def _persist_learned_broker_ip(runtime_config, mqtt_adapter, *, settings_root=None):
-    """Persist a resolved MQTT broker IP when the hostname connection succeeds."""
+    """Persist a learned broker IP only after direct learned-IP success."""
     learned_ip = str(getattr(mqtt_adapter, "resolved_broker_ip", "") or "").strip()
-    broker = str(getattr(runtime_config.mqtt, "broker", "") or "").strip()
     active_broker = str(getattr(mqtt_adapter, "active_broker", "") or "").strip()
-    if not settings_root or not learned_ip or not broker or active_broker != broker:
+    broker = str(getattr(runtime_config.mqtt, "broker", "") or "").strip()
+    configured_ip = str(getattr(runtime_config.mqtt, "broker_ip", "") or "").strip()
+    if not learned_ip and _looks_like_ip_literal(active_broker):
+        learned_ip = active_broker
+    if not settings_root or not learned_ip or active_broker != learned_ip:
         return runtime_config, "skipped", ()
-    if learned_ip == str(getattr(runtime_config.mqtt, "broker_ip", "") or "").strip():
+    if learned_ip in {broker, configured_ip}:
         return runtime_config, "unchanged", ()
     updated_runtime, applied_updates, errors = Settings.apply_updates_to_directory(
         settings_root,
@@ -506,6 +659,7 @@ async def main(*, startup_plan_override=None):
         socket_pool=network_stack.socket_pool,
         ssl_context=network_stack.ssl_context,
     )
+    learned_broker_ip = ""
     sensor_init = plan_sensor_initialization(runtime_config)
     switch_init = plan_switch_initialization(runtime_config)
     sensor_runtime = build_sensor_runtime(sensor_init, runtime_config)
@@ -531,6 +685,9 @@ async def main(*, startup_plan_override=None):
     next_periodic_gc_at = float(start_monotonic) + 60.0
     periodic_gc_count = 0
     last_mqtt_connect_attempt_at = float(start_monotonic)
+    wifi_was_ready = network_link_is_ready(network_stack)
+    last_wifi_failure_signature = ""
+    wifi_failure_signature_count = 0
 
     connect_phase = "deferred" if plan.mqtt_enabled else "skipped"
 
@@ -665,6 +822,10 @@ async def main(*, startup_plan_override=None):
         while True:
             now_monotonic = time.monotonic()
             network_stack = refresh_network_stack(network_stack)
+            if network_link_is_ready(network_stack):
+                wifi_was_ready = True
+                last_wifi_failure_signature = ""
+                wifi_failure_signature_count = 0
             if web_runtime is not None:
                 web_runtime.update_context(
                     runtime_config=runtime_config,
@@ -687,6 +848,8 @@ async def main(*, startup_plan_override=None):
             )
             recovery_state = recovery_decision.state
             if recovery_state.phase != previous_phase:
+                if recovery_state.phase == "wifi" and transport.connected:
+                    transport.mark_disconnected(reason="wifi_link_lost")
                 _print_log(
                     "recovery",
                     "phase={} wifi_ready={} mqtt_connected={}".format(
@@ -696,6 +859,14 @@ async def main(*, startup_plan_override=None):
                     ),
                     start_monotonic=start_monotonic,
                 )
+                if not transport.connected and transport.last_disconnect_reason:
+                    _print_log(
+                        "recovery",
+                        "mqtt disconnected reason={}".format(
+                            transport.last_disconnect_reason
+                        ),
+                        start_monotonic=start_monotonic,
+                    )
             if recovery_decision.request_soft_reboot:
                 _print_log(
                     "recovery",
@@ -715,16 +886,31 @@ async def main(*, startup_plan_override=None):
                     start_monotonic=start_monotonic,
                 )
             if recovery_decision.attempt_wifi_reconnect:
+                reset_station = (
+                    recovery_state.phase == "wifi"
+                    and _wifi_recovery_elapsed_s(recovery_state, now_monotonic)
+                    >= float(recovery_policy.wifi_backoff_after_s)
+                )
+                if reset_station:
+                    _print_log(
+                        "recovery",
+                        "wifi action=station_reset",
+                        start_monotonic=start_monotonic,
+                    )
                 reconnect_result = reconnect_network_stack(
                     runtime_config,
                     network_stack,
                     max_attempts=1,
                     retry_delay_s=0.0,
-                    rebuild_socket_artifacts=False,
+                    rebuild_socket_artifacts=reset_station,
+                    reset_station=reset_station,
                     log_start_monotonic=start_monotonic,
                 )
                 network_stack = reconnect_result
                 if network_link_is_ready(network_stack):
+                    wifi_was_ready = True
+                    last_wifi_failure_signature = ""
+                    wifi_failure_signature_count = 0
                     _print_log(
                         "recovery",
                         "wifi phase=recovered ipv4={}".format(
@@ -732,30 +918,86 @@ async def main(*, startup_plan_override=None):
                         ),
                         start_monotonic=start_monotonic,
                     )
+                else:
+                    signature = network_error_signature(
+                        network_stack,
+                        had_ready_link=wifi_was_ready,
+                    )
+                    if signature != last_wifi_failure_signature:
+                        last_wifi_failure_signature = signature
+                        wifi_failure_signature_count = 1
+                    else:
+                        wifi_failure_signature_count += 1
+                    if _should_log_wifi_failure_signature(
+                        signature,
+                        wifi_failure_signature_count,
+                        reset_station,
+                    ):
+                        _print_log(
+                            "recovery",
+                            "wifi signature={} count={} errors={}".format(
+                                signature or "none",
+                                wifi_failure_signature_count,
+                                ",".join(network_stack.errors)
+                                if network_stack.errors
+                                else "none",
+                            ),
+                            start_monotonic=start_monotonic,
+                        )
             if recovery_decision.attempt_mqtt_rebuild and network_link_is_ready(
                 network_stack
             ):
-                network_stack = reconnect_network_stack(
-                    runtime_config,
-                    network_stack,
-                    max_attempts=1,
-                    retry_delay_s=0.0,
-                    rebuild_socket_artifacts=True,
-                    log_start_monotonic=start_monotonic,
-                )
-                mqtt_adapter = build_mqtt_client_adapter(
-                    runtime_config,
-                    socket_pool=network_stack.socket_pool,
-                    ssl_context=network_stack.ssl_context,
-                )
-                _print_log(
-                    "recovery",
-                    "mqtt action=rebuild broker={} socket_pool={}".format(
-                        mqtt_adapter.active_broker or mqtt_adapter.broker or "none",
-                        "ready" if network_stack.socket_pool is not None else "none",
-                    ),
-                    start_monotonic=start_monotonic,
-                )
+                if _should_verify_mqtt_before_rebuild(
+                    transport,
+                    recovery_state,
+                    now_monotonic,
+                ):
+                    _print_log(
+                        "recovery",
+                        (
+                            "mqtt action=verify_before_rebuild "
+                            "last_success_s={:.1f}"
+                        ).format(
+                            max(
+                                0.0,
+                                float(now_monotonic)
+                                - float(getattr(transport, "last_success_at", -1.0)),
+                            )
+                        ),
+                        start_monotonic=start_monotonic,
+                    )
+                else:
+                    transport.mark_disconnected()
+                    network_stack = reconnect_network_stack(
+                        runtime_config,
+                        network_stack,
+                        max_attempts=1,
+                        retry_delay_s=0.0,
+                        rebuild_socket_artifacts=True,
+                        log_start_monotonic=start_monotonic,
+                    )
+                    mqtt_adapter = build_mqtt_client_adapter(
+                        runtime_config,
+                        socket_pool=network_stack.socket_pool,
+                        ssl_context=network_stack.ssl_context,
+                    )
+                    mqtt_adapter = _with_learned_broker_target(
+                        mqtt_adapter,
+                        learned_broker_ip,
+                        runtime_config,
+                    )
+                    _print_log(
+                        "recovery",
+                        "mqtt action=rebuild broker={} socket_pool={}".format(
+                            mqtt_adapter.active_broker
+                            or mqtt_adapter.broker
+                            or "none",
+                            "ready"
+                            if network_stack.socket_pool is not None
+                            else "none",
+                        ),
+                        start_monotonic=start_monotonic,
+                    )
             ntp_result = maybe_sync_ntp(
                 runtime_config,
                 network_stack,
@@ -807,6 +1049,32 @@ async def main(*, startup_plan_override=None):
                 and recovery_decision.allow_mqtt_connect
                 and (float(now_monotonic) - float(last_mqtt_connect_attempt_at)) >= 5.0
             ):
+                mqtt_adapter = _with_learned_broker_target(
+                    mqtt_adapter,
+                    learned_broker_ip,
+                    runtime_config,
+                )
+                dns_wait, dns_detail = _should_wait_for_broker_hostname_resolution(
+                    runtime_config,
+                    mqtt_adapter,
+                    now_monotonic=now_monotonic,
+                    recovery_state=recovery_state,
+                )
+                if dns_wait:
+                    _print_log(
+                        "mqtt",
+                        "connect phase=dns_wait {}".format(dns_detail),
+                        start_monotonic=start_monotonic,
+                    )
+                    last_mqtt_connect_attempt_at = float(now_monotonic)
+                    await asyncio.sleep(0.05)
+                    continue
+                if dns_detail:
+                    _print_log(
+                        "mqtt",
+                        "connect phase=dns_fallback {}".format(dns_detail),
+                        start_monotonic=start_monotonic,
+                    )
                 transport.mark_connect_requested()
                 connect_started_at = time.monotonic()
                 connect_result = connect_mqtt_client(
@@ -818,6 +1086,11 @@ async def main(*, startup_plan_override=None):
                 connect_phase = connect_result.phase
                 last_mqtt_connect_attempt_at = float(now_monotonic)
                 if connect_phase == "connected":
+                    learned_broker_ip = _learned_broker_candidate(
+                        learned_broker_ip,
+                        runtime_config,
+                        mqtt_adapter,
+                    )
                     runtime_config, broker_ip_phase, broker_ip_errors = (
                         _persist_learned_broker_ip(
                             runtime_config,
@@ -861,6 +1134,8 @@ async def main(*, startup_plan_override=None):
                             ),
                             start_monotonic=start_monotonic,
                         )
+                    if broker_ip_phase in {"persisted", "unchanged"}:
+                        learned_broker_ip = ""
                     _collect_garbage()
                     _log_memory_checkpoint(start_monotonic, "post_mqtt_connect")
                 elif connect_phase == "error":
@@ -936,7 +1211,8 @@ async def main(*, startup_plan_override=None):
                     "cPyNodus_II",
                     (
                         "health network_phase={} recovery_phase={} ssid={} ipv4={} "
-                        "dns_health={} ntp_health={} mqtt_connected={} active_broker={}"
+                        "dns_health={} ntp_health={} mqtt_connected={} "
+                        "active_broker={} wifi_signature={}"
                     ).format(
                         network_stack.phase,
                         recovery_state.phase,
@@ -946,6 +1222,10 @@ async def main(*, startup_plan_override=None):
                         _ntp_health_text(ntp_state),
                         transport.connected,
                         mqtt_adapter.active_broker or "none",
+                        network_error_signature(
+                            network_stack,
+                            had_ready_link=wifi_was_ready,
+                        ),
                     ),
                     start_monotonic=start_monotonic,
                 )

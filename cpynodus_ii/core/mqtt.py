@@ -5,6 +5,7 @@ feature modules can exchange MQTT work without depending directly on the vendor
 client implementation.
 """
 
+import time
 from dataclasses import dataclass
 
 
@@ -34,6 +35,10 @@ class MQTTTransport:
         self.connect_requested = False
         self.connected = False
         self.connection_generation = 0
+        self.last_connected_at = -1.0
+        self.last_success_at = -1.0
+        self.last_disconnected_at = -1.0
+        self.last_disconnect_reason = ""
         self.published_messages = []
         self.subscriptions = []
         self.received_messages = []
@@ -49,13 +54,24 @@ class MQTTTransport:
     def mark_connect_requested(self):
         self.connect_requested = True
 
-    def mark_connected(self):
+    def mark_connected(self, now_monotonic=None):
         self.connected = True
         self.connection_generation += 1
+        now_value = _monotonic_value(now_monotonic)
+        self.last_connected_at = now_value
+        self.last_success_at = now_value
         return self.connection_generation
 
-    def mark_disconnected(self):
+    def mark_disconnected(self, now_monotonic=None, reason=""):
         self.connected = False
+        self.last_disconnected_at = _monotonic_value(now_monotonic)
+        if reason:
+            self.last_disconnect_reason = str(reason or "").strip()
+
+    def mark_success(self, now_monotonic=None):
+        """Record a successful MQTT client operation."""
+        self.last_success_at = _monotonic_value(now_monotonic)
+        return self.last_success_at
 
     def compact(self, *, published_keep_from=0, subscriptions_keep_from=0):
         """Drop already-synced transport queues to limit long-run heap growth."""
@@ -100,3 +116,15 @@ class MQTTTransport:
         messages = list(self.received_messages)
         self.received_messages.clear()
         return messages
+
+
+def _monotonic_value(now_monotonic=None):
+    if now_monotonic is not None:
+        try:
+            return float(now_monotonic)
+        except Exception:
+            pass
+    try:
+        return float(time.monotonic())
+    except Exception:
+        return -1.0

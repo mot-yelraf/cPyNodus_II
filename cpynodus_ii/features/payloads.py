@@ -134,6 +134,54 @@ def build_switch_event_payload(runtime_config, channel, state, *, message_id="")
     }
 
 
+def build_switch_meta_payload(runtime_config, switch_state_snapshot=None):
+    """Build retained switch channel metadata for the split meta contract."""
+    switch = runtime_config.switch
+    device_id = (
+        runtime_config.sensor.sensor_id
+        or switch.device_id
+        or runtime_config.network.hostname
+    )
+    state_snapshot = switch_state_snapshot or {}
+    channels = []
+    for index, channel in enumerate(switch.channels, start=1):
+        snapshot = state_snapshot.get(channel.key, {})
+        state = snapshot.get("state")
+        if state is None:
+            state = bool(channel.last_state)
+        channels.append(
+            {
+                "index": index,
+                "label": channel.label,
+                "channel_id": channel.channel_id,
+                "state": bool(state),
+                "event_topic": mqtt_topic(runtime_config, channel.channel_id, "event"),
+                "state_topic": mqtt_topic(runtime_config, channel.channel_id, "state"),
+                "set_topic": mqtt_topic(
+                    runtime_config, channel.channel_id, "config", "set"
+                ),
+                "ack_topic": mqtt_topic(
+                    runtime_config, channel.channel_id, "config", "ack"
+                ),
+                "result_topic": mqtt_topic(
+                    runtime_config, channel.channel_id, "config", "result"
+                ),
+                "availability_topic": mqtt_topic(
+                    runtime_config, channel.channel_id, "availability"
+                ),
+            }
+        )
+    return {
+        "schema": "nodus-meta-switch/v1",
+        "device_id": device_id,
+        "switch_device_id": switch.device_id,
+        "location": switch.location,
+        "channel_count": len(switch.channels),
+        "channels": channels,
+        "timestamp": int(time()),
+    }
+
+
 def build_device_heartbeat_payload(runtime_config, *, online):
     """Build the compact heartbeat payload for device liveness."""
     device_id = (
@@ -234,37 +282,11 @@ def build_runtime_meta_payload(runtime_config, *, version, active_broker=""):
         }
 
     if switch.present:
-        channels = []
-        for index, channel in enumerate(switch.channels, start=1):
-            channels.append(
-                {
-                    "index": index,
-                    "label": channel.label,
-                    "channel_id": channel.channel_id,
-                    "enable_pin": channel.enable_pin,
-                    "pin": channel.control_pin,
-                    "state": bool(channel.last_state),
-                    "event_topic": mqtt_topic(
-                        runtime_config, channel.channel_id, "event"
-                    ),
-                    "state_topic": mqtt_topic(
-                        runtime_config, channel.channel_id, "state"
-                    ),
-                    "set_topic": mqtt_topic(
-                        runtime_config, channel.channel_id, "config", "set"
-                    ),
-                    "result_topic": mqtt_topic(
-                        runtime_config, channel.channel_id, "config", "result"
-                    ),
-                    "availability_topic": mqtt_topic(
-                        runtime_config, channel.channel_id, "availability"
-                    ),
-                }
-            )
         payload["switch"] = {
             "device_id": switch.device_id,
             "location": switch.location,
-            "channels": channels,
+            "channel_count": len(switch.channels),
+            "meta_topic": mqtt_topic(runtime_config, device_id, "meta", "switch"),
         }
 
     return payload

@@ -177,8 +177,9 @@ Canonical switch state payload:
 
 ## Retained `meta`
 
-Retained `nodus/<device_id>/meta` is the authoritative startup snapshot.
-Sensorius uses it to rebuild the local shadow copy of Nodus state.
+Retained `nodus/<device_id>/meta` is the compact authoritative startup
+snapshot. Sensorius uses it to materialize the device, sensor, core MQTT
+topics, and switch presence quickly after connect/reconnect.
 
 The payload must include:
 
@@ -195,13 +196,35 @@ The payload must include:
 - `sensor.sensor_id`, `sensor.location`, `sensor.data_topic`,
   `sensor.event_topic`, `sensor.availability_topic`,
   `sensor.display_metrics`, `sensor.display_styles`
-- `switch.device_id`, `switch.location`
-- per-channel `index`, `label`, `channel_id`, `enable_pin`, `pin`,
-  `state`, `event_topic`, `state_topic`, `set_topic`, `result_topic`,
-  `availability_topic`
+- `switch.device_id`, `switch.location`, `switch.channel_count`, and
+  `switch.meta_topic` when switch capability is present
+
+The startup `meta` payload intentionally does not include
+`switch.channels[*]`. The detailed per-channel switch topic map is published
+separately on retained `nodus/<device_id>/meta/switch`.
 
 Password fields in retained `meta` use the same `obf1:` obfuscation format as
 persisted TOML password fields. They are not plaintext.
+
+## Retained `meta/switch`
+
+Retained `nodus/<device_id>/meta/switch` is the authoritative switch channel
+topic map for Sensorius control. Nodus queues it with the retained startup
+identity publish batch, before runtime command subscriptions are allowed to
+block progress. Sensorius should merge it with the latest retained `meta` for
+switch control materialization.
+
+The payload must include:
+
+- top-level `schema`, `device_id`, `switch_device_id`, `location`,
+  `channel_count`, `channels`, and `timestamp`
+- per-channel `index`, `label`, `channel_id`, `state`, `event_topic`,
+  `state_topic`, `set_topic`, `ack_topic`, `result_topic`, and
+  `availability_topic`
+
+Hardware pin fields are not part of the MQTT control contract. If Sensorius
+needs pin diagnostics, use `/itaot-meta` or a later diagnostic contract rather
+than startup MQTT metadata.
 
 ## Retained Command Cleanup
 

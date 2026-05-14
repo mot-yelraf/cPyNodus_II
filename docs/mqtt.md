@@ -16,6 +16,8 @@ wins.
 - OTA prepare uses `nodus/<device_id>/fwupdate`; files move over HTTP after
   Nodus reboots into temporary OTA mode.
 - Nodus publishes retained `nodus/<device_id>/meta` on connect/reconnect.
+- Nodus publishes retained `nodus/<device_id>/meta/switch` in the startup
+  identity publish batch when switch channels are present.
 - Nodus publishes non-retained `nodus/<device_id>/meta/patch` after accepted
   runtime changes.
 - `/set` commands should normally be published non-retained. When a `/set`
@@ -29,6 +31,7 @@ wins.
 
 - `nodus/<device_id>/status/heartbeat`
 - `nodus/<device_id>/meta`
+- `nodus/<device_id>/meta/switch`
 - `nodus/<device_id>/meta/patch`
 - `nodus/<device_id>/onboard/hello`
 - `nodus/<device_id>/config/set`
@@ -67,6 +70,9 @@ current contract:
   payload to that exact topic after successful `result`. Nodus ignores empty
   `/set` payloads defensively.
 - Startup retained `meta` publishing belongs to startup and reconnect handling.
+  It is compact and excludes `switch.channels[*]`; detailed switch control
+  topics live in retained `meta/switch`, which is queued before runtime
+  command subscriptions can block startup progress.
 - Device config uses `config/set`, `config/ack`, `config/result`, and
   `meta/patch`. Nodus does not clear device `config/set`; Sensorius owns any
   retained command cleanup.

@@ -35,6 +35,7 @@ from cpynodus_ii.features.payloads import (
     build_sensor_availability_payload,
     build_sensor_data_payload,
     build_switch_event_payload,
+    build_switch_meta_payload,
     build_switch_state_payload,
 )
 from cpynodus_ii.features.publish_cycle import (
@@ -44,6 +45,7 @@ from cpynodus_ii.features.publish_cycle import (
     publish_sensor_cycle,
     publish_shutdown_cycle,
     publish_startup_cycle,
+    publish_switch_meta_cycle,
     publish_switch_result,
 )
 from cpynodus_ii.features.sensor import SensorInitialization, plan_sensor_initialization
@@ -135,6 +137,7 @@ __all__ = [
     "build_sensor_availability_payload",
     "build_sensor_data_payload",
     "build_switch_event_payload",
+    "build_switch_meta_payload",
     "build_switch_runtime",
     "build_switch_state_payload",
     "build_itaot_init_updates",
@@ -153,6 +156,7 @@ __all__ = [
     "publish_sensor_cycle",
     "publish_shutdown_cycle",
     "publish_startup_cycle",
+    "publish_switch_meta_cycle",
     "publish_switch_result",
     "process_inbound_messages",
     "process_calibration_message",

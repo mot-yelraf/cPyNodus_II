@@ -16,6 +16,7 @@ from cpynodus_ii.features.payloads import (
     build_sensor_availability_payload,
     build_sensor_data_payload,
     build_switch_event_payload,
+    build_switch_meta_payload,
     build_switch_state_payload,
     mqtt_topic,
 )
@@ -56,6 +57,23 @@ def publish_startup_cycle(
     )
     topics.append(meta.topic)
 
+    heartbeat = transport.publish(
+        mqtt_topic(runtime_config, device_id, "status", "heartbeat"),
+        build_device_heartbeat_payload(runtime_config, online=True),
+        retain=True,
+    )
+    topics.append(heartbeat.topic)
+
+    # Publish online availability before larger optional startup payloads so
+    # stale retained offline status clears even if MQTT startup later stalls.
+    if runtime_config.sensor.present:
+        availability = transport.publish(
+            mqtt_topic(runtime_config, runtime_config.sensor.sensor_id, "availability"),
+            build_sensor_availability_payload(runtime_config, online=True),
+            retain=True,
+        )
+        topics.append(availability.topic)
+
     if runtime_config.sensor.present:
         if sensor_snapshot is not None and sensor_snapshot.phase == "ready":
             data = transport.publish(
@@ -65,22 +83,13 @@ def publish_startup_cycle(
             )
             topics.append(data.topic)
 
-    heartbeat = transport.publish(
-        mqtt_topic(runtime_config, device_id, "status", "heartbeat"),
-        build_device_heartbeat_payload(runtime_config, online=True),
-        retain=True,
-    )
-    topics.append(heartbeat.topic)
-
-    # Publish online availability early so stale retained offline status is
-    # cleared even if later startup publishes fail.
-    if runtime_config.sensor.present:
-        availability = transport.publish(
-            mqtt_topic(runtime_config, runtime_config.sensor.sensor_id, "availability"),
-            build_sensor_availability_payload(runtime_config, online=True),
+    if runtime_config.switch.present:
+        switch_meta = transport.publish(
+            mqtt_topic(runtime_config, device_id, "meta", "switch"),
+            build_switch_meta_payload(runtime_config, switch_snapshot or {}),
             retain=True,
         )
-        topics.append(availability.topic)
+        topics.append(switch_meta.topic)
 
     if runtime_config.switch.present:
         availability_timestamp = int(time())
@@ -176,6 +185,30 @@ def publish_sensor_cycle(transport, runtime_config, sensor_snapshot):
         topic,
         build_sensor_data_payload(runtime_config, sensor_snapshot),
         retain=False,
+    )
+    return PublishCycleResult(
+        phase="published",
+        published_count=1,
+        topics=(message.topic,),
+        errors=(),
+    )
+
+
+def publish_switch_meta_cycle(transport, runtime_config, switch_snapshot=None):
+    """Publish retained split switch metadata when switch channels exist."""
+    if not runtime_config.switch.present:
+        return PublishCycleResult(
+            phase="skipped",
+            published_count=0,
+            topics=(),
+            errors=("switch_not_present",),
+        )
+    device_id = _device_id(runtime_config)
+    topic = mqtt_topic(runtime_config, device_id, "meta", "switch")
+    message = transport.publish(
+        topic,
+        build_switch_meta_payload(runtime_config, switch_snapshot or {}),
+        retain=True,
     )
     return PublishCycleResult(
         phase="published",

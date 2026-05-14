@@ -86,13 +86,13 @@ def run_steady_state_iteration(
     availability_result = _skipped_publish_result("availability_refresh_not_required")
     ota_status_result = _skipped_publish_result("ota_status_not_required")
     working_state = state
+    switch_snapshot = {}
 
     if (
         transport.connected
         and transport.connection_generation != state.connection_generation
     ):
         sensor_snapshot = None
-        switch_snapshot = {}
         onboarding_state = {}
         if sensor_service is not None:
             sensor_snapshot = read_sensor_snapshot(sensor_service, runtime_config)
