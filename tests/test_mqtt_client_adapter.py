@@ -2,6 +2,7 @@
 
 from cpynodus_ii.core import (
     build_mqtt_client_adapter,
+    close_mqtt_client,
     connect_mqtt_client,
     disconnect_mqtt_client,
     poll_mqtt_client,
@@ -22,14 +23,17 @@ def _run_direct_tests():
     tests = (
         test_build_mqtt_client_adapter_uses_runtime_target_and_credentials,
         test_connect_sync_poll_and_disconnect_flow,
+        test_sync_transport_to_client_records_last_publish_diagnostics,
+        test_poll_mqtt_client_records_last_loop_diagnostics,
         test_build_mqtt_client_adapter_is_unavailable_without_socket_pool,
-        test_connect_mqtt_client_falls_back_to_broker_ip_when_mdns_target_fails,
-        test_connect_mqtt_client_falls_back_when_hostname_resolution_fails_preflight,
-        test_connect_mqtt_client_can_skip_preflight_for_hostname_only_targets,
-        test_connect_mqtt_client_learns_hostname_ip_without_required_preflight,
+        test_connect_mqtt_client_uses_broker_ip_when_hostname_is_configured,
+        test_connect_mqtt_client_does_not_resolve_hostname_when_broker_ip_exists,
+        test_build_mqtt_client_adapter_requires_ip_target,
+        test_preflight_mqtt_broker_can_resolve_explicit_hostname,
         test_poll_mqtt_client_uses_timeout_compatible_with_socket_timeout,
         test_sync_transport_to_client_marks_transport_disconnected_on_publish_oserror,
         test_poll_mqtt_client_marks_transport_disconnected_on_oserror,
+        test_close_mqtt_client_disconnects_without_shutdown_publish,
         test_disconnect_mqtt_client_swallow_shutdown_publish_oserror,
         test_disconnect_mqtt_client_reports_disconnect_oserror,
         test_poll_mqtt_client_tolerates_disconnect_callback_with_two_args,
@@ -42,6 +46,10 @@ def _run_direct_tests():
         test_poll_mqtt_client_uses_raw_socket_after_exact_wrapped_arity_error,
         test_poll_mqtt_client_adapts_connected_minimqtt_socket_send_without_nbytes,
         test_poll_mqtt_client_labels_minimqtt_wrapped_socket_typeerror,
+        test_poll_mqtt_client_labels_wrapped_socket_typeerror_client_state,
+        test_poll_mqtt_client_includes_last_publish_diagnostics_on_wrapped_socket_error,
+        test_poll_mqtt_client_includes_last_loop_diagnostics_on_wrapped_socket_error,
+        test_poll_mqtt_client_marks_disconnected_when_client_reports_disconnected,
     )
     for test in tests:
         test()
@@ -174,6 +182,39 @@ class _MiniMQTTWrappedSocketFailMQTTClient(_FakeMQTTClient):
         raise TypeError("function takes 3 positional arguments but 2 were given")
 
 
+class _MiniMQTTConnectedWrappedSocketFailMQTTClient(_FakeMQTTClient):
+    def connect(self):
+        super().connect()
+        self._sock = _RecvIntoNeedsNbytesSocket()
+        self._backwards_compatible_sock = True
+
+    def loop(self, timeout=0.0):
+        raise TypeError("function takes 3 positional arguments but 2 were given")
+
+
+class _MiniMQTTConnectedWrappedSocketFailAfterCleanLoopMQTTClient(_FakeMQTTClient):
+    def connect(self):
+        super().connect()
+        self._sock = _RecvIntoNeedsNbytesSocket()
+        self._backwards_compatible_sock = True
+        self.loop_count = 0
+
+    def loop(self, timeout=0.0):
+        self.loop_count += 1
+        if self.loop_count > 1:
+            raise TypeError("function takes 3 positional arguments but 2 were given")
+
+
+class _MiniMQTTReportsDisconnectedClient(_FakeMQTTClient):
+    def connect(self):
+        super().connect()
+        self.connected = False
+        self.loop_called = False
+
+    def loop(self, timeout=0.0):
+        self.loop_called = True
+
+
 class _RecvIntoNeedsNbytesSocket:
     def __init__(self):
         self.recv_into_calls = []
@@ -304,7 +345,11 @@ class _MiniMQTTConnectedSocketSendClient(_FakeMQTTClient):
 def _runtime_config():
     return RuntimeConfig(
         active_profile="sensorius",
-        mqtt=MQTTConfig(broker="broker.local", port=1883),
+        mqtt=MQTTConfig(
+            broker="broker.local",
+            broker_ip="10.0.0.9",
+            port=1883,
+        ),
         sensor=DetectedSensor(
             family="i2c",
             interface="i2c",
@@ -349,11 +394,11 @@ def test_build_mqtt_client_adapter_uses_runtime_target_and_credentials():
     )
 
     assert adapter.phase == "ready"
-    assert adapter.broker == "ha.local"
+    assert adapter.broker == "10.0.0.4"
     assert adapter.port == 8883
-    assert adapter.broker_targets == ("ha.local", "10.0.0.4")
-    assert adapter.active_broker == "ha.local"
-    assert adapter.client.kwargs["broker"] == "ha.local"
+    assert adapter.broker_targets == ("10.0.0.4",)
+    assert adapter.active_broker == "10.0.0.4"
+    assert adapter.client.kwargs["broker"] == "10.0.0.4"
     assert adapter.client.kwargs["ssl_context"] is not None
     assert adapter.client.kwargs["username"] == "user1"
     assert adapter.client.kwargs["password"] == "pass1"
@@ -372,7 +417,7 @@ def test_connect_sync_poll_and_disconnect_flow():
     connect_result = connect_mqtt_client(adapter, transport)
     assert connect_result.phase == "connected"
     assert transport.connected is True
-    assert connect_result.adapter.active_broker == "broker.local"
+    assert connect_result.adapter.active_broker == "10.0.0.9"
 
     transport.subscribe("nodus/S1-x943fm/config/set")
     transport.publish(
@@ -412,6 +457,51 @@ def test_connect_sync_poll_and_disconnect_flow():
     )
 
 
+def test_sync_transport_to_client_records_last_publish_diagnostics():
+    runtime_config = _runtime_config()
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connect_requested()
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=object(),
+        modules={"mqtt_cls": _FakeMQTTClient},
+    )
+
+    connect_result = connect_mqtt_client(adapter, transport)
+    transport.publish(
+        "nodus/aqi-x943fm/data", {"schema": "nodus-sensor/v1"}, retain=False
+    )
+    sync_transport_to_client(connect_result.adapter, transport)
+
+    assert transport.last_publish_topic == "nodus/aqi-x943fm/data"
+    assert transport.last_publish_bytes > 0
+    assert transport.last_publish_retain == 0
+    assert transport.last_publish_socket_state == "none"
+    assert transport.last_publish_client_connected == "1"
+    assert "last_pub_topic=nodus/aqi-x943fm/data" in transport.publish_diagnostic()
+
+
+def test_poll_mqtt_client_records_last_loop_diagnostics():
+    runtime_config = _runtime_config()
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connect_requested()
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=object(),
+        modules={"mqtt_cls": _FakeMQTTClient},
+    )
+
+    connect_result = connect_mqtt_client(adapter, transport)
+    poll_result = poll_mqtt_client(connect_result.adapter, transport)
+
+    assert poll_result.phase == "polled"
+    assert transport.last_loop_received == 0
+    assert transport.last_loop_timeout == 1.0
+    assert transport.last_loop_socket_state == "none"
+    assert transport.last_loop_client_connected == "1"
+    assert "last_loop_received=0" in transport.loop_diagnostic()
+
+
 def test_build_mqtt_client_adapter_is_unavailable_without_socket_pool():
     adapter = build_mqtt_client_adapter(
         _runtime_config(),
@@ -423,41 +513,7 @@ def test_build_mqtt_client_adapter_is_unavailable_without_socket_pool():
     assert "socket_pool_unavailable" in adapter.errors
 
 
-def test_connect_mqtt_client_falls_back_to_broker_ip_when_mdns_target_fails():
-    runtime_config = RuntimeConfig(
-        active_profile="sensorius",
-        mqtt=MQTTConfig(
-            broker="ha.local",
-            broker_ip="10.0.0.4",
-            port=1883,
-        ),
-    )
-    transport = MQTTTransport("ha.local", 1883)
-    transport.mark_connect_requested()
-    _FakeMQTTClient.fail_connect_for = {"ha.local"}
-    try:
-        adapter = build_mqtt_client_adapter(
-            runtime_config,
-            socket_pool=object(),
-            modules={"mqtt_cls": _FakeMQTTClient},
-        )
-        connect_result = connect_mqtt_client(adapter, transport)
-    finally:
-        _FakeMQTTClient.fail_connect_for = set()
-
-    assert connect_result.phase == "connected"
-    assert transport.connected is True
-    assert connect_result.adapter.active_broker == "10.0.0.4"
-    assert connect_result.adapter.client.kwargs["broker"] == "10.0.0.4"
-
-
-def test_connect_mqtt_client_falls_back_when_hostname_resolution_fails_preflight():
-    class _ResolveFailPool:
-        def getaddrinfo(self, host, port):
-            if host == "ha.local":
-                raise OSError(-2)
-            return [(None, None, None, None, ("10.0.0.4", port))]
-
+def test_connect_mqtt_client_uses_broker_ip_when_hostname_is_configured():
     runtime_config = RuntimeConfig(
         active_profile="sensorius",
         mqtt=MQTTConfig(
@@ -470,7 +526,35 @@ def test_connect_mqtt_client_falls_back_when_hostname_resolution_fails_preflight
     transport.mark_connect_requested()
     adapter = build_mqtt_client_adapter(
         runtime_config,
-        socket_pool=_ResolveFailPool(),
+        socket_pool=object(),
+        modules={"mqtt_cls": _FakeMQTTClient},
+    )
+    connect_result = connect_mqtt_client(adapter, transport)
+
+    assert connect_result.phase == "connected"
+    assert transport.connected is True
+    assert connect_result.adapter.active_broker == "10.0.0.4"
+    assert connect_result.adapter.client.kwargs["broker"] == "10.0.0.4"
+
+
+def test_connect_mqtt_client_does_not_resolve_hostname_when_broker_ip_exists():
+    class _NoResolvePool:
+        def getaddrinfo(self, host, port):
+            raise AssertionError("hostname resolution should not run for MQTT connect")
+
+    runtime_config = RuntimeConfig(
+        active_profile="sensorius",
+        mqtt=MQTTConfig(
+            broker="ha.local",
+            broker_ip="10.0.0.4",
+            port=1883,
+        ),
+    )
+    transport = MQTTTransport("ha.local", 1883)
+    transport.mark_connect_requested()
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=_NoResolvePool(),
         modules={"mqtt_cls": _FakeMQTTClient},
     )
 
@@ -481,127 +565,7 @@ def test_connect_mqtt_client_falls_back_when_hostname_resolution_fails_preflight
     assert connect_result.adapter.client.kwargs["broker"] == "10.0.0.4"
 
 
-def test_connect_mqtt_client_can_skip_preflight_for_hostname_only_targets():
-    class _ResolveFailConnectOKPool:
-        def getaddrinfo(self, host, port):
-            raise OSError(-2)
-
-    runtime_config = RuntimeConfig(
-        active_profile="sensorius",
-        mqtt=MQTTConfig(
-            broker="ha.local",
-            port=1883,
-        ),
-    )
-    transport = MQTTTransport("ha.local", 1883)
-    transport.mark_connect_requested()
-    adapter = build_mqtt_client_adapter(
-        runtime_config,
-        socket_pool=_ResolveFailConnectOKPool(),
-        modules={"mqtt_cls": _FakeMQTTClient},
-    )
-
-    connect_result = connect_mqtt_client(adapter, transport, preflight=False)
-
-    assert connect_result.phase == "connected"
-    assert transport.connected is True
-    assert connect_result.adapter.active_broker == "ha.local"
-
-
-def test_connect_mqtt_client_learns_hostname_ip_without_required_preflight():
-    class _ResolveOKPool:
-        def getaddrinfo(self, host, port):
-            assert host == "ha.local"
-            return [(None, None, None, None, ("10.0.0.4", port))]
-
-    runtime_config = RuntimeConfig(
-        active_profile="sensorius",
-        mqtt=MQTTConfig(
-            broker="ha.local",
-            port=1883,
-        ),
-    )
-    transport = MQTTTransport("ha.local", 1883)
-    transport.mark_connect_requested()
-    adapter = build_mqtt_client_adapter(
-        runtime_config,
-        socket_pool=_ResolveOKPool(),
-        modules={"mqtt_cls": _FakeMQTTClient},
-    )
-
-    connect_result = connect_mqtt_client(adapter, transport, preflight=False)
-
-    assert connect_result.phase == "connected"
-    assert connect_result.adapter.active_broker == "ha.local"
-    assert connect_result.adapter.resolved_broker_ip == "10.0.0.4"
-
-
-def test_connect_mqtt_client_keeps_hostname_after_non_tls_preflight():
-    class _ResolveOKPool:
-        def getaddrinfo(self, host, port):
-            assert host == "ha.local"
-            return [(None, None, None, None, ("10.0.0.4", port))]
-
-    runtime_config = RuntimeConfig(
-        active_profile="sensorius",
-        mqtt=MQTTConfig(
-            broker="ha.local",
-            port=1883,
-        ),
-    )
-    transport = MQTTTransport("ha.local", 1883)
-    transport.mark_connect_requested()
-    adapter = build_mqtt_client_adapter(
-        runtime_config,
-        socket_pool=_ResolveOKPool(),
-        modules={"mqtt_cls": _FakeMQTTClient},
-    )
-
-    connect_result = connect_mqtt_client(adapter, transport)
-
-    assert connect_result.phase == "connected"
-    assert connect_result.adapter.active_broker == "ha.local"
-    assert connect_result.adapter.resolved_broker_ip == "10.0.0.4"
-    assert connect_result.adapter.client.kwargs["broker"] == "ha.local"
-
-
-def test_connect_mqtt_client_keeps_tls_hostname_after_preflight():
-    class _ResolveOKPool:
-        def getaddrinfo(self, host, port):
-            assert host == "ha.local"
-            return [(None, None, None, None, ("10.0.0.4", port))]
-
-    runtime_config = RuntimeConfig(
-        active_profile="homeassistant",
-        mqtt=MQTTConfig(
-            broker="ha.local",
-            port=8883,
-            use_tls=True,
-        ),
-    )
-    transport = MQTTTransport("ha.local", 8883)
-    transport.mark_connect_requested()
-    adapter = build_mqtt_client_adapter(
-        runtime_config,
-        socket_pool=_ResolveOKPool(),
-        ssl_context=object(),
-        modules={"mqtt_cls": _FakeMQTTClient},
-    )
-
-    connect_result = connect_mqtt_client(adapter, transport)
-
-    assert connect_result.phase == "connected"
-    assert connect_result.adapter.active_broker == "ha.local"
-    assert connect_result.adapter.resolved_broker_ip == "10.0.0.4"
-    assert connect_result.adapter.client.kwargs["broker"] == "ha.local"
-
-
-def test_preflight_mqtt_broker_returns_resolved_ip():
-    class _ResolveOKPool:
-        def getaddrinfo(self, host, port):
-            assert host == "ha.local"
-            return [(None, None, None, None, ("10.0.0.4", port))]
-
+def test_build_mqtt_client_adapter_requires_ip_target():
     runtime_config = RuntimeConfig(
         active_profile="sensorius",
         mqtt=MQTTConfig(
@@ -611,11 +575,36 @@ def test_preflight_mqtt_broker_returns_resolved_ip():
     )
     adapter = build_mqtt_client_adapter(
         runtime_config,
+        socket_pool=object(),
+        modules={"mqtt_cls": _FakeMQTTClient},
+    )
+
+    assert adapter.phase == "unavailable"
+    assert adapter.broker_targets == ()
+    assert "mqtt_broker_ip_unavailable" in adapter.errors
+
+
+def test_preflight_mqtt_broker_can_resolve_explicit_hostname():
+    class _ResolveOKPool:
+        def getaddrinfo(self, host, port):
+            assert host == "ha.local"
+            return [(None, None, None, None, ("10.0.0.4", port))]
+
+    runtime_config = RuntimeConfig(
+        active_profile="sensorius",
+        mqtt=MQTTConfig(
+            broker="ha.local",
+            broker_ip="10.0.0.4",
+            port=1883,
+        ),
+    )
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
         socket_pool=_ResolveOKPool(),
         modules={"mqtt_cls": _FakeMQTTClient},
     )
 
-    error, resolved_ip = preflight_mqtt_broker(adapter)
+    error, resolved_ip = preflight_mqtt_broker(adapter, "ha.local")
 
     assert error == ""
     assert resolved_ip == "10.0.0.4"
@@ -819,6 +808,29 @@ def test_poll_mqtt_client_marks_transport_disconnected_on_oserror():
     assert poll_result.phase == "error"
     assert transport.connected is False
     assert poll_result.errors == ("mqtt_poll_failed:9",)
+
+
+def test_close_mqtt_client_disconnects_without_shutdown_publish():
+    runtime_config = _runtime_config()
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connect_requested()
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=object(),
+        modules={"mqtt_cls": _FakeMQTTClient},
+    )
+    connect_result = connect_mqtt_client(adapter, transport)
+    transport.publish("nodus/aqi-x943fm/data", {"schema": "nodus-sensor/v1"})
+
+    close_result = close_mqtt_client(connect_result.adapter, transport)
+
+    assert close_result.phase == "disconnected"
+    assert transport.connected is False
+    assert transport.last_disconnect_reason == "mqtt_close_requested"
+    assert connect_result.adapter.client.disconnected is True
+    assert [message.topic for message in transport.published_messages] == [
+        "nodus/aqi-x943fm/data"
+    ]
 
 
 def test_disconnect_mqtt_client_swallow_shutdown_publish_oserror():
@@ -1052,9 +1064,96 @@ def test_poll_mqtt_client_labels_minimqtt_wrapped_socket_typeerror():
     assert poll_result.phase == "error"
     assert transport.connected is False
     assert poll_result.errors == (
-        "mqtt_poll_failed:minimqtt_socket:sock=raw backcompat=0 "
+        "mqtt_poll_failed:minimqtt_socket:sock=none client_connected=1 backcompat=0 "
         "error=function takes 3 positional arguments but 2 were given",
     )
+
+
+def test_poll_mqtt_client_labels_wrapped_socket_typeerror_client_state():
+    runtime_config = _runtime_config()
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connect_requested()
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=object(),
+        modules={"mqtt_cls": _MiniMQTTConnectedWrappedSocketFailMQTTClient},
+    )
+
+    connect_result = connect_mqtt_client(adapter, transport)
+    poll_result = poll_mqtt_client(connect_result.adapter, transport)
+
+    assert poll_result.phase == "error"
+    assert transport.connected is False
+    assert poll_result.errors == (
+        "mqtt_poll_failed:minimqtt_socket:sock=wrapped client_connected=1 "
+        "backcompat=0 error=function takes 3 positional arguments but 2 were given",
+    )
+
+
+def test_poll_mqtt_client_includes_last_publish_diagnostics_on_wrapped_socket_error():
+    runtime_config = _runtime_config()
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connect_requested()
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=object(),
+        modules={"mqtt_cls": _MiniMQTTConnectedWrappedSocketFailMQTTClient},
+    )
+
+    connect_result = connect_mqtt_client(adapter, transport)
+    transport.publish(
+        "nodus/aqi-x943fm/data", {"schema": "nodus-sensor/v1"}, retain=False
+    )
+    sync_transport_to_client(connect_result.adapter, transport)
+    poll_result = poll_mqtt_client(connect_result.adapter, transport)
+
+    assert poll_result.phase == "error"
+    assert "last_pub_topic=nodus/aqi-x943fm/data" in poll_result.errors[0]
+    assert "last_pub_sock=wrapped" in poll_result.errors[0]
+    assert "last_pub_client_connected=1" in poll_result.errors[0]
+
+
+def test_poll_mqtt_client_includes_last_loop_diagnostics_on_wrapped_socket_error():
+    runtime_config = _runtime_config()
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connect_requested()
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=object(),
+        modules={
+            "mqtt_cls": _MiniMQTTConnectedWrappedSocketFailAfterCleanLoopMQTTClient
+        },
+    )
+
+    connect_result = connect_mqtt_client(adapter, transport)
+    clean_poll_result = poll_mqtt_client(connect_result.adapter, transport)
+    assert clean_poll_result.phase == "polled"
+
+    poll_result = poll_mqtt_client(connect_result.adapter, transport)
+
+    assert poll_result.phase == "error"
+    assert "last_loop_received=0" in poll_result.errors[0]
+    assert "last_loop_sock=wrapped" in poll_result.errors[0]
+    assert "last_loop_client_connected=1" in poll_result.errors[0]
+
+
+def test_poll_mqtt_client_marks_disconnected_when_client_reports_disconnected():
+    runtime_config = _runtime_config()
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connect_requested()
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=object(),
+        modules={"mqtt_cls": _MiniMQTTReportsDisconnectedClient},
+    )
+
+    connect_result = connect_mqtt_client(adapter, transport)
+    poll_result = poll_mqtt_client(connect_result.adapter, transport)
+
+    assert poll_result.phase == "error"
+    assert transport.connected is False
+    assert poll_result.errors == ("mqtt_poll_failed:client_disconnected:sock=none",)
+    assert connect_result.adapter.client.loop_called is False
 
 
 def test_poll_mqtt_client_tolerates_two_arg_message_callback():

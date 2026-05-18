@@ -17,6 +17,7 @@ from cpynodus_ii.features.publish_cycle import (
     publish_ota_completion_report,
     publish_sensor_cycle,
     publish_startup_cycle,
+    publish_switch_meta_cycle,
 )
 from cpynodus_ii.features.sensor_service import read_sensor_snapshot
 from cpynodus_ii.features.web_services import load_onboarding_state
@@ -27,6 +28,7 @@ class SteadyState:
     """Track loop-local state across steady-state iterations."""
 
     connection_generation: int = 0
+    switch_meta_generation: int = 0
     sensor_interval_s: float = 60.0
     availability_interval_s: float = 120.0
     last_sensor_publish_at: float = -1.0
@@ -85,13 +87,16 @@ def run_steady_state_iteration(
     startup_result = _skipped_publish_result("startup_not_required")
     availability_result = _skipped_publish_result("availability_refresh_not_required")
     ota_status_result = _skipped_publish_result("ota_status_not_required")
+    switch_meta_result = _skipped_publish_result("switch_meta_not_required")
     working_state = state
     switch_snapshot = {}
+    startup_connection = False
 
     if (
         transport.connected
         and transport.connection_generation != state.connection_generation
     ):
+        startup_connection = True
         sensor_snapshot = None
         onboarding_state = {}
         if sensor_service is not None:
@@ -127,6 +132,7 @@ def run_steady_state_iteration(
             last_availability_publish_at = float(now_monotonic)
         working_state = SteadyState(
             connection_generation=transport.connection_generation,
+            switch_meta_generation=state.switch_meta_generation,
             sensor_interval_s=state.sensor_interval_s,
             availability_interval_s=state.availability_interval_s,
             last_sensor_publish_at=last_sensor_publish_at,
@@ -134,6 +140,35 @@ def run_steady_state_iteration(
             handled_message_ids=state.handled_message_ids,
             handled_message_id_limit=state.handled_message_id_limit,
         )
+
+    if (
+        transport.connected
+        and not startup_connection
+        and runtime_config.switch.present
+        and working_state.switch_meta_generation != transport.connection_generation
+        and not transport.subscriptions
+        and not transport.published_messages
+    ):
+        if switch_service is not None:
+            from cpynodus_ii.features.switch_service import snapshot_switch_states
+
+            switch_snapshot = snapshot_switch_states(switch_service)
+        switch_meta_result = publish_switch_meta_cycle(
+            transport,
+            runtime_config,
+            switch_snapshot,
+        )
+        if switch_meta_result.phase == "published":
+            working_state = SteadyState(
+                connection_generation=working_state.connection_generation,
+                switch_meta_generation=transport.connection_generation,
+                sensor_interval_s=working_state.sensor_interval_s,
+                availability_interval_s=working_state.availability_interval_s,
+                last_sensor_publish_at=working_state.last_sensor_publish_at,
+                last_availability_publish_at=working_state.last_availability_publish_at,
+                handled_message_ids=working_state.handled_message_ids,
+                handled_message_id_limit=working_state.handled_message_id_limit,
+            )
 
     command_results = process_inbound_messages(
         transport,
@@ -159,6 +194,7 @@ def run_steady_state_iteration(
     errors = []
     errors.extend(startup_result.errors)
     errors.extend(ota_status_result.errors)
+    errors.extend(switch_meta_result.errors)
     for result in command_results:
         errors.extend(result.errors)
     calibration_session_result = process_soil_calibration_session(
@@ -190,6 +226,7 @@ def run_steady_state_iteration(
         if sensor_result.phase == "published":
             working_state = SteadyState(
                 connection_generation=working_state.connection_generation,
+                switch_meta_generation=working_state.switch_meta_generation,
                 sensor_interval_s=working_state.sensor_interval_s,
                 availability_interval_s=working_state.availability_interval_s,
                 last_sensor_publish_at=float(now_monotonic),
@@ -200,6 +237,7 @@ def run_steady_state_iteration(
     else:
         working_state = SteadyState(
             connection_generation=working_state.connection_generation,
+            switch_meta_generation=working_state.switch_meta_generation,
             sensor_interval_s=working_state.sensor_interval_s,
             availability_interval_s=working_state.availability_interval_s,
             last_sensor_publish_at=working_state.last_sensor_publish_at,
@@ -230,6 +268,7 @@ def run_steady_state_iteration(
         if availability_result.phase == "published":
             working_state = SteadyState(
                 connection_generation=working_state.connection_generation,
+                switch_meta_generation=working_state.switch_meta_generation,
                 sensor_interval_s=working_state.sensor_interval_s,
                 availability_interval_s=working_state.availability_interval_s,
                 last_sensor_publish_at=working_state.last_sensor_publish_at,
@@ -257,6 +296,7 @@ def run_steady_state_iteration(
         total_published_count=(
             startup_result.published_count
             + ota_status_result.published_count
+            + switch_meta_result.published_count
             + command_published_count
             + calibration_session_result.published_count
             + sensor_result.published_count

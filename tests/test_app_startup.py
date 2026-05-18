@@ -1,26 +1,29 @@
 """Tests for startup planning, AP fallback, and settings boot behavior."""
 
 from dataclasses import replace
-from pathlib import Path
 from types import SimpleNamespace
 
 from cpynodus_ii.app import (
-    _learned_broker_candidate,
+    _broker_ip_refresh_needed,
+    _is_mqtt_subscription_failure,
     _load_settings_for_startup,
     _load_startup_ota_state,
     _mark_ota_applied_after_boot,
+    _mqtt_connect_errors_are_repeated_failures,
     _ota_state_path,
-    _persist_learned_broker_ip,
+    _refresh_broker_ip_from_hostname,
     _resolve_startup_plan,
     _should_enter_ota_mode,
     _should_fallback_to_ap,
+    _should_fast_reboot_mqtt_connect_failures,
+    _should_fast_reboot_wifi_after_ready,
+    _should_fast_reset_wifi_station,
     _should_log_wifi_failure_signature,
     _should_verify_mqtt_before_rebuild,
-    _should_wait_for_broker_hostname_resolution,
     _startup_ap_fallback_reason,
-    _with_learned_broker_target,
+    _startup_subscription_recovery_drained,
 )
-from cpynodus_ii.core import RecoveryState, build_mqtt_client_adapter
+from cpynodus_ii.core import RecoveryState
 from cpynodus_ii.core.config import MQTTConfig, NetworkConfig, RuntimeConfig
 from cpynodus_ii.core.mqtt import MQTTTransport
 from cpynodus_ii.ota.state import FwUpdateState, save_ota_state
@@ -49,87 +52,127 @@ def test_resolve_startup_plan_keeps_default_behavior_without_override():
     assert plan.web_enabled is False
 
 
-def test_broker_hostname_resolution_uses_broker_ip_fallback_on_mdns_failure():
-    class _ResolveFailPool:
-        def getaddrinfo(self, host, port):
-            raise OSError(-2)
-
-    runtime_config = RuntimeConfig(
-        active_profile="sensorius",
-        mqtt=MQTTConfig(broker="samhain.local", broker_ip="10.0.0.248"),
+def test_detects_mqtt_subscription_sync_failure():
+    subscribe_failure = SimpleNamespace(
+        phase="error",
+        errors=("mqtt_subscribe_failed:topic=nodus/device/config/set:index=0/3:",),
     )
-    adapter = build_mqtt_client_adapter(
-        runtime_config,
-        socket_pool=_ResolveFailPool(),
-        modules={"mqtt_cls": lambda **_kwargs: object()},
+    publish_failure = SimpleNamespace(
+        phase="error",
+        errors=("mqtt_publish_failed:nodus/device/data:[Errno 5]",),
     )
 
-    should_wait, detail = _should_wait_for_broker_hostname_resolution(
-        runtime_config,
-        adapter,
-        now_monotonic=15.0,
-        recovery_state=RecoveryState(phase="mqtt", phase_started_at=0.0),
-        settle_s=30.0,
+    assert _is_mqtt_subscription_failure(subscribe_failure) is True
+    assert _is_mqtt_subscription_failure(publish_failure) is False
+
+
+def test_subscription_recovery_drained_requires_empty_subscription_queue():
+    drained = SimpleNamespace(phase="synced", subscribed_count=3)
+    not_drained = SimpleNamespace(phase="synced", subscribed_count=1)
+
+    assert (
+        _startup_subscription_recovery_drained(
+            drained,
+            SimpleNamespace(subscriptions=[]),
+        )
+        is True
+    )
+    assert (
+        _startup_subscription_recovery_drained(
+            not_drained,
+            SimpleNamespace(subscriptions=["nodus/device/config/set"]),
+        )
+        is False
     )
 
-    assert should_wait is False
-    assert "samhain.local" in detail
-    assert "mqtt_resolve_failed" in detail
-    assert "fallback_ip=10.0.0.248" in detail
 
-
-def test_broker_hostname_resolution_allows_fallback_after_settle_window():
-    class _ResolveFailPool:
-        def getaddrinfo(self, host, port):
-            raise OSError(-2)
-
-    runtime_config = RuntimeConfig(
-        active_profile="sensorius",
-        mqtt=MQTTConfig(broker="samhain.local", broker_ip="10.0.0.248"),
-    )
-    adapter = build_mqtt_client_adapter(
-        runtime_config,
-        socket_pool=_ResolveFailPool(),
-        modules={"mqtt_cls": lambda **_kwargs: object()},
-    )
-
-    should_wait, detail = _should_wait_for_broker_hostname_resolution(
-        runtime_config,
-        adapter,
-        now_monotonic=31.0,
-        recovery_state=RecoveryState(phase="mqtt", phase_started_at=0.0),
-        settle_s=30.0,
-    )
-
-    assert should_wait is False
-    assert detail == ""
-
-
-def test_broker_hostname_resolution_does_not_wait_when_host_resolves():
+def test_refresh_broker_ip_persists_resolved_hostname_on_startup(tmp_path):
     class _ResolveOKPool:
         def getaddrinfo(self, host, port):
+            assert host == "samhain.local"
             return [(None, None, None, None, ("10.0.0.248", port))]
 
+    (tmp_path / "settings.toml").write_text(
+        "[Network]\n"
+        'SSID = "PeaceHill"\n'
+        'PASSWORD = "plain-wifi"\n'
+        'HOSTNAME = "co2-29j39c"\n'
+        "[Profile]\n"
+        'ACTIVE_PROFILE = "sensorius"\n'
+        "[MQTT]\n"
+        'BROKER = "samhain.local"\n'
+        'BROKER_IP = ""\n'
+        "PORT = 1883\n",
+        encoding="utf-8",
+    )
     runtime_config = RuntimeConfig(
         active_profile="sensorius",
-        mqtt=MQTTConfig(broker="samhain.local", broker_ip="10.0.0.248"),
+        network=NetworkConfig(
+            ssid="PeaceHill",
+            password="plain-wifi",
+            hostname="co2-29j39c",
+        ),
+        mqtt=MQTTConfig(broker="samhain.local", port=1883),
     )
-    adapter = build_mqtt_client_adapter(
+    network_stack = SimpleNamespace(socket_pool=_ResolveOKPool())
+
+    updated_runtime, phase, errors = _refresh_broker_ip_from_hostname(
         runtime_config,
-        socket_pool=_ResolveOKPool(),
-        modules={"mqtt_cls": lambda **_kwargs: object()},
+        network_stack,
+        settings_root=tmp_path,
     )
 
-    should_wait, detail = _should_wait_for_broker_hostname_resolution(
-        runtime_config,
-        adapter,
-        now_monotonic=15.0,
-        recovery_state=RecoveryState(phase="mqtt", phase_started_at=0.0),
-        settle_s=30.0,
+    text = (tmp_path / "settings.toml").read_text(encoding="utf-8")
+    assert phase == "persisted"
+    assert errors == ()
+    assert updated_runtime.mqtt.broker_ip == "10.0.0.248"
+    assert 'BROKER_IP = "10.0.0.248"' in text
+
+
+def test_refresh_broker_ip_updates_changed_hostname_resolution(tmp_path):
+    class _ResolveChangedPool:
+        def getaddrinfo(self, host, port):
+            assert host == "samhain.local"
+            return [(None, None, None, None, ("10.0.0.220", port))]
+
+    (tmp_path / "settings.toml").write_text(
+        "[Network]\n"
+        'SSID = "PeaceHill"\n'
+        'PASSWORD = "plain-wifi"\n'
+        'HOSTNAME = "co2-29j39c"\n'
+        "[Profile]\n"
+        'ACTIVE_PROFILE = "sensorius"\n'
+        "[MQTT]\n"
+        'BROKER = "samhain.local"\n'
+        'BROKER_IP = "10.0.0.248"\n'
+        "PORT = 1883\n",
+        encoding="utf-8",
+    )
+    runtime_config = RuntimeConfig(
+        active_profile="sensorius",
+        network=NetworkConfig(
+            ssid="PeaceHill",
+            password="plain-wifi",
+            hostname="co2-29j39c",
+        ),
+        mqtt=MQTTConfig(
+            broker="samhain.local",
+            broker_ip="10.0.0.248",
+            port=1883,
+        ),
     )
 
-    assert should_wait is False
-    assert detail == "resolved_ip=10.0.0.248"
+    updated_runtime, phase, errors = _refresh_broker_ip_from_hostname(
+        runtime_config,
+        SimpleNamespace(socket_pool=_ResolveChangedPool()),
+        settings_root=tmp_path,
+    )
+
+    text = (tmp_path / "settings.toml").read_text(encoding="utf-8")
+    assert phase == "persisted"
+    assert errors == ()
+    assert updated_runtime.mqtt.broker_ip == "10.0.0.220"
+    assert 'BROKER_IP = "10.0.0.220"' in text
 
 
 def test_mqtt_rebuild_verification_uses_recent_success_in_initial_recovery():
@@ -148,7 +191,33 @@ def test_mqtt_rebuild_verification_uses_recent_success_in_initial_recovery():
     assert should_verify is True
 
 
-def test_learned_broker_target_appends_after_configured_targets():
+def test_refresh_broker_ip_uses_volatile_resolution_without_settings_root():
+    class _ResolveOKPool:
+        def getaddrinfo(self, host, port):
+            assert host == "samhain.local"
+            return [(None, None, None, None, ("10.0.0.248", port))]
+
+    runtime_config = RuntimeConfig(
+        active_profile="sensorius",
+        mqtt=MQTTConfig(broker="samhain.local", port=1883),
+    )
+
+    updated_runtime, phase, errors = _refresh_broker_ip_from_hostname(
+        runtime_config,
+        SimpleNamespace(socket_pool=_ResolveOKPool()),
+        settings_root=None,
+    )
+
+    assert phase == "resolved_volatile"
+    assert errors == ()
+    assert updated_runtime.mqtt.broker_ip == "10.0.0.248"
+
+
+def test_refresh_broker_ip_keeps_configured_ip_when_hostname_resolution_fails():
+    class _ResolveFailPool:
+        def getaddrinfo(self, host, port):
+            raise OSError(-2)
+
     runtime_config = RuntimeConfig(
         active_profile="sensorius",
         mqtt=MQTTConfig(
@@ -157,22 +226,20 @@ def test_learned_broker_target_appends_after_configured_targets():
             port=1883,
         ),
     )
-    adapter = build_mqtt_client_adapter(
+
+    updated_runtime, phase, errors = _refresh_broker_ip_from_hostname(
         runtime_config,
-        socket_pool=object(),
-        modules={"mqtt_cls": lambda **_kwargs: object()},
+        SimpleNamespace(socket_pool=_ResolveFailPool()),
+        settings_root=None,
     )
 
-    updated = _with_learned_broker_target(
-        adapter,
-        "10.0.0.220",
-        runtime_config,
-    )
-
-    assert updated.broker_targets == ("samhain.local", "10.0.0.248", "10.0.0.220")
+    assert phase == "error"
+    assert "mqtt_resolve_failed:samhain.local" in errors[0]
+    assert updated_runtime is runtime_config
+    assert updated_runtime.mqtt.broker_ip == "10.0.0.248"
 
 
-def test_learned_broker_candidate_keeps_hostname_resolution_runtime_only():
+def test_broker_ip_refresh_needed_for_writable_startup_even_with_ip(tmp_path):
     runtime_config = RuntimeConfig(
         active_profile="sensorius",
         mqtt=MQTTConfig(
@@ -181,15 +248,30 @@ def test_learned_broker_candidate_keeps_hostname_resolution_runtime_only():
             port=1883,
         ),
     )
-    adapter = SimpleNamespace(
-        active_broker="samhain.local",
-        resolved_broker_ip="10.0.0.220",
+
+    assert _broker_ip_refresh_needed(runtime_config, settings_root=tmp_path) is True
+
+
+def test_broker_ip_refresh_skips_rofs_when_ip_is_configured():
+    runtime_config = RuntimeConfig(
+        active_profile="sensorius",
+        mqtt=MQTTConfig(
+            broker="samhain.local",
+            broker_ip="10.0.0.248",
+            port=1883,
+        ),
     )
 
-    assert (
-        _learned_broker_candidate("", runtime_config, adapter)
-        == "10.0.0.220"
+    assert _broker_ip_refresh_needed(runtime_config, settings_root=None) is False
+
+
+def test_broker_ip_refresh_needed_for_rofs_without_configured_ip():
+    runtime_config = RuntimeConfig(
+        active_profile="sensorius",
+        mqtt=MQTTConfig(broker="samhain.local", port=1883),
     )
+
+    assert _broker_ip_refresh_needed(runtime_config, settings_root=None) is True
 
 
 def test_wifi_failure_signature_logging_is_sparse():
@@ -200,6 +282,32 @@ def test_wifi_failure_signature_logging_is_sparse():
     assert _should_log_wifi_failure_signature("station_scan_miss_after_ready", 3, False)
     assert _should_log_wifi_failure_signature("station_scan_miss_after_ready", 5, True)
     assert not _should_log_wifi_failure_signature("none", 1, True)
+
+
+def test_after_ready_wifi_failures_reset_station_early():
+    assert not _should_fast_reset_wifi_station("station_scan_miss_after_ready", 1)
+    assert _should_fast_reset_wifi_station("station_scan_miss_after_ready", 2)
+    assert _should_fast_reset_wifi_station("station_unknown_after_ready", 2)
+    assert not _should_fast_reset_wifi_station("station_scan_miss", 5)
+
+
+def test_after_ready_wifi_failures_reboot_after_bounded_window():
+    assert not _should_fast_reboot_wifi_after_ready(
+        "station_scan_miss_after_ready",
+        2,
+        90.0,
+    )
+    assert not _should_fast_reboot_wifi_after_ready(
+        "station_scan_miss_after_ready",
+        3,
+        89.0,
+    )
+    assert _should_fast_reboot_wifi_after_ready(
+        "station_unknown_after_ready",
+        3,
+        90.0,
+    )
+    assert not _should_fast_reboot_wifi_after_ready("station_scan_miss", 10, 120.0)
 
 
 def test_mqtt_rebuild_verification_skips_socket_poll_failures():
@@ -241,6 +349,57 @@ def test_mqtt_rebuild_verification_skips_publish_failures():
     )
 
     assert should_verify is False
+
+
+def test_repeated_mqtt_connect_failure_detection_matches_minimqtt_error():
+    errors = (
+        "mqtt_connect_failed:10.0.0.248:('Repeated connect failures', None)",
+    )
+
+    assert _mqtt_connect_errors_are_repeated_failures(errors) is True
+    assert (
+        _mqtt_connect_errors_are_repeated_failures(("mqtt_connect_failed:5",))
+        is False
+    )
+
+
+def test_repeated_mqtt_connect_failure_fast_reboot_gate():
+    assert (
+        _should_fast_reboot_mqtt_connect_failures(
+            12,
+            100.0,
+            159.0,
+            timeout_s=60.0,
+            min_count=6,
+        )
+        is False
+    )
+    assert (
+        _should_fast_reboot_mqtt_connect_failures(
+            5,
+            100.0,
+            170.0,
+            timeout_s=60.0,
+            min_count=6,
+        )
+        is False
+    )
+    assert (
+        _should_fast_reboot_mqtt_connect_failures(
+            6,
+            100.0,
+            160.0,
+            timeout_s=60.0,
+            min_count=6,
+        )
+        is True
+    )
+
+
+def test_repeated_mqtt_connect_failure_defaults_allow_blocking_connects():
+    assert _should_fast_reboot_mqtt_connect_failures(2, 100.0, 400.0) is False
+    assert _should_fast_reboot_mqtt_connect_failures(3, 100.0, 279.0) is False
+    assert _should_fast_reboot_mqtt_connect_failures(3, 100.0, 280.0) is True
 
 
 def test_mqtt_rebuild_verification_expires_after_recovery_window():
@@ -349,85 +508,6 @@ def test_mark_ota_applied_after_boot_skips_write_on_rofs(tmp_path):
 
     assert result is pending
     assert _load_startup_ota_state(tmp_path) is None
-
-
-def test_persist_learned_broker_ip_skips_hostname_success(tmp_path):
-    runtime_config = RuntimeConfig(
-        active_profile="sensorius",
-        network=NetworkConfig(
-            ssid="PeaceHill",
-            password="plain-wifi",
-            hostname="co2-29j39c",
-        ),
-        mqtt=MQTTConfig(broker="samhain.local", port=1883),
-    )
-    mqtt_adapter = SimpleNamespace(
-        active_broker="samhain.local",
-        resolved_broker_ip="10.0.0.248",
-    )
-
-    updated_runtime, phase, errors = _persist_learned_broker_ip(
-        runtime_config,
-        mqtt_adapter,
-        settings_root=tmp_path,
-    )
-
-    assert phase == "skipped"
-    assert errors == ()
-    assert updated_runtime is runtime_config
-    assert not (tmp_path / "settings.toml").exists()
-
-
-def test_persist_learned_broker_ip_promotes_direct_learned_success(tmp_path):
-    root = Path(__file__).resolve().parents[1]
-    for name in ("settings.toml.def",):
-        (tmp_path / name).write_text((root / name).read_text(), encoding="utf-8")
-    (tmp_path / "settings.toml").write_text(
-        "[Network]\n"
-        'SSID = "PeaceHill"\n'
-        'PASSWORD = "plain-wifi"\n'
-        'AP_SSID = "Nodus_Setup"\n'
-        'AP_PASSWORD = "plain-ap"\n'
-        'HOSTNAME = "co2-29j39c"\n'
-        "HTTPPORT = 8000\n"
-        "[Profile]\n"
-        'ACTIVE_PROFILE = "sensorius"\n'
-        "[MQTT]\n"
-        'BROKER = "samhain.local"\n'
-        'BROKER_IP = "10.0.0.248"\n'
-        "PORT = 1883\n"
-        'PASSWORD = "plain-mqtt"\n',
-        encoding="utf-8",
-    )
-    runtime_config = RuntimeConfig(
-        active_profile="sensorius",
-        network=NetworkConfig(
-            ssid="PeaceHill",
-            password="plain-wifi",
-            hostname="co2-29j39c",
-        ),
-        mqtt=MQTTConfig(
-            broker="samhain.local",
-            broker_ip="10.0.0.248",
-            port=1883,
-        ),
-    )
-    mqtt_adapter = SimpleNamespace(
-        active_broker="10.0.0.220",
-        resolved_broker_ip="10.0.0.220",
-    )
-
-    updated_runtime, phase, errors = _persist_learned_broker_ip(
-        runtime_config,
-        mqtt_adapter,
-        settings_root=tmp_path,
-    )
-
-    text = (tmp_path / "settings.toml").read_text(encoding="utf-8")
-    assert phase == "persisted"
-    assert errors == ()
-    assert updated_runtime.mqtt.broker_ip == "10.0.0.220"
-    assert 'BROKER_IP = "10.0.0.220"' in text
 
 
 def test_should_fallback_to_ap_when_nodusweb_has_no_ssid():

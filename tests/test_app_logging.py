@@ -6,7 +6,10 @@ import pytest
 
 from cpynodus_ii.app import (
     _dns_health_text,
+    _hard_reboot,
+    _mqtt_disconnect_reason_requires_rebuild,
     _ntp_health_text,
+    _recovery_reboot_kind,
     _sensor_error_text,
     _sensor_issue_text,
     _should_log_command_result,
@@ -75,3 +78,38 @@ def test_soft_reboot_logs_reload_reason_before_reload(monkeypatch, capsys):
 
     captured = capsys.readouterr()
     assert "runtime action=reload reason=recovery:mqtt_recovery_timeout" in captured.out
+
+
+def test_hard_reboot_logs_reset_reason_before_reset(monkeypatch, capsys):
+    class _Microcontroller:
+        @staticmethod
+        def reset():
+            return None
+
+    monkeypatch.setitem(
+        pytest.importorskip("sys").modules,
+        "microcontroller",
+        _Microcontroller,
+    )
+
+    _hard_reboot(reason="recovery:mqtt_recovery_timeout", start_monotonic=0.0)
+
+    captured = capsys.readouterr()
+    assert "runtime action=reset reason=recovery:mqtt_recovery_timeout" in captured.out
+
+
+def test_recovery_escalations_use_soft_reload_for_serial_capture():
+    assert _recovery_reboot_kind("mqtt_recovery_timeout") == "soft"
+    assert _recovery_reboot_kind("mqtt_repeated_connect_failures") == "soft"
+    assert _recovery_reboot_kind("wifi_after_ready_failure") == "soft"
+    assert _recovery_reboot_kind("wifi_recovery_timeout") == "soft"
+
+
+def test_mqtt_connect_repeated_failures_force_station_reset_rebuild():
+    assert (
+        _mqtt_disconnect_reason_requires_rebuild(
+            "mqtt_connect_failed:10.0.0.248:('Repeated connect failures', None)"
+        )
+        is True
+    )
+    assert _mqtt_disconnect_reason_requires_rebuild("mqtt_connect_failed:5") is False

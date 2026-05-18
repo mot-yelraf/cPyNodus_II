@@ -1250,3 +1250,116 @@
   logging. The purpose of the next run is to test whether the current firmware
   can return to the 125.7 no-recovery steady state, not whether recovery can
   compensate for MQTT/socket instability.
+- 2026-05-16: `v0.26.136.2` short-run diagnostics narrowed the current
+  MiniMQTT poll failure. Both `aht-rvwi73` and `co2-ykdvea` reproduced the
+  same wrapped-socket TypeError, but the new last-publish fields showed the
+  failure consistently followed an ordinary sensor `/data` publish rather than
+  retained `/meta`, switch metadata, availability, heartbeat, or a subscription
+  operation. `aht-rvwi73` booted at `cu.usbmodem13301.log` line 5564 and
+  connected at line 5575. It then failed at line 5584:
+  `mqtt_poll_failed:minimqtt_socket:sock=wrapped client_connected=1
+  backcompat=0 error=function takes 3 positional arguments but 2 were given
+  last_pub_topic=nodus/aht-rvwi73/data last_pub_age_s=49
+  last_pub_bytes=305 last_pub_retain=0 last_pub_sock=wrapped
+  last_pub_client_connected=1 last_pub_backcompat=0`. It reconnected
+  immediately at line 5588. The same device failed again at line 5599 with
+  `last_pub_topic=nodus/aht-rvwi73/data`, `last_pub_age_s=48`, and
+  `last_pub_bytes=307`, then later hit a direct publish failure at line 5611:
+  `mqtt_publish_failed:nodus/aht-rvwi73/data:[Errno 5] Input/output error`.
+  `co2-ykdvea` booted at `cu.usbmodem13401.log` line 9832 and connected at
+  line 9843. It failed at line 9853 with `last_pub_topic=nodus/co2-ykdvea/data`,
+  `last_pub_age_s=54`, `last_pub_bytes=323`, `last_pub_sock=wrapped`, and
+  `last_pub_client_connected=1`. Recovery then saw several
+  `mqtt_connect_failed:10.0.0.248:('Repeated connect failures', None)` lines
+  before reconnecting at line 9861. Current conclusion: the poll failure is
+  most likely the detection point, not necessarily the originating operation.
+  MiniMQTT still reports connected, Wi-Fi remains ready, and the socket wrapper
+  is still present after the last successful data publish. This supports the
+  hypothesis that a successful publish can leave the MiniMQTT/socket state
+  fragile, with the following poll surfacing the arity failure.
+- 2026-05-16: `v0.26.136.3` adds the next diagnostic step without changing
+  normal serial volume. `MQTTTransport` now records compact diagnostics after a
+  successful `poll_mqtt_client()` loop: last loop age, received message count,
+  timeout used, socket wrapper state, MiniMQTT connected state, and backcompat
+  flag. Wrapped-socket poll failures now append both `last_pub_*` and
+  `last_loop_*` fields. The next 136.3 run should answer whether there was a
+  clean MQTT loop after the last `/data` publish or whether the failing poll is
+  the first poll after that publish. Expected failure shape:
+  `... last_pub_topic=... last_pub_age_s=... last_loop_age_s=...
+  last_loop_received=0 last_loop_timeout=1.0 last_loop_sock=wrapped
+  last_loop_client_connected=1 last_loop_backcompat=0`. Verification for the
+  instrumentation change: `ruff check cpynodus_ii/core/mqtt.py
+  cpynodus_ii/core/mqtt_client.py cpynodus_ii/core/recovery.py
+  cpynodus_ii/__init__.py tests/test_mqtt_client_adapter.py
+  tests/test_mqtt_transport.py tests/test_recovery_policy.py` passed, and
+  `pytest tests` passed with 328 tests.
+- 2026-05-16: `v0.26.136.5` changes the Wi-Fi side of recovery after the
+  `v0.26.136.4` hard MQTT reset exposed a post-ready SSID failure on
+  `co2-ykdvea`. In the `cu.usbmodem13401.log` run, the last captured line
+  before the broken screen interval was
+  `runtime action=reset reason=recovery:mqtt_repeated_connect_failures` at
+  14:03:11. When serial capture resumed at 15:42:23, Nodus was already in
+  `recovery phase=wifi`, with `wifi_link_lost`, repeated
+  `No network with that ssid`, and alternating
+  `station_scan_miss_after_ready` / `station_unknown_after_ready` signatures.
+  Since the sibling AHT Nodus remained healthy on the same desk, this is being
+  treated as a local post-ready station/radio state failure rather than a
+  normal AP-missing startup condition. New runtime behavior keeps normal
+  startup Wi-Fi recovery on the existing timeout, but after a known-good station
+  link it resets station mode and rebuilds socket artifacts after two
+  after-ready Wi-Fi failures, then hard resets with
+  `wifi_after_ready_failure` if those signatures persist for 90 seconds and at
+  least three failures. The next flash should show whether station reset can
+  unwind this state in-process; if not, the hard reset will bound the stuck
+  window and make the restart reason explicit.
+- 2026-05-16: `v0.26.136.6` changes recovery-owned escalation from hard reset
+  to soft reload so unattended USB serial `screen` sessions keep capturing
+  logs. The same `mqtt_recovery_timeout`, `mqtt_repeated_connect_failures`, and
+  `wifi_after_ready_failure` reasons are still logged, but recovery now emits
+  `action=soft_reboot` and then `runtime action=reload ...` instead of
+  `runtime action=reset ...`. Explicit manual/web hard restart paths remain
+  available.
+- 2026-05-16: `v0.26.136.6` cold boots on both `aht-rvwi73` and `co2-ykdvea`
+  reproduced the synchronized first-subscribe failure shape: MQTT connected in
+  `0.1s`, startup publishes/subscriptions queued, then the first
+  `config/set` subscription timed out with `No data received from broker for 10
+  seconds` and recovery fell into repeated direct-IP connect failures against
+  `10.0.0.248`. `v0.26.136.7` restores the narrow MQTT-only subscribe-failure
+  recovery behavior: close the poisoned MQTT session without shutdown publishes,
+  rebuild the MQTT adapter, reconnect, drain the existing subscription queue,
+  and suppress duplicate startup queueing for that recovered generation.
+- 2026-05-16: User reported `v0.26.136.7` cold start is working again. Serial
+  tails confirm `aht-rvwi73` booted at `18:41:35`, connected to MQTT broker
+  `10.0.0.248` in `0.1s`, queued three subscriptions, and returned to
+  `recovery phase=idle` at `18:41:36`. `co2-ykdvea` booted cleanly at
+  `18:40:13` and again at `18:41:52`, connected in `0.1s`, queued five
+  subscriptions, and returned to `recovery phase=idle` one second later. The
+  captured `v0.26.136.7` windows do not show the `v0.26.136.6` first
+  `config/set` SUBACK timeout.
+- 2026-05-17: The `v0.26.136.7` overnight run on `co2-ykdvea` shows the
+  136.6 soft-reload escalation is not strong enough for repeated MQTT connect
+  failures. In `cu.usbmodem13401.log`, the device published normally after
+  cold boot, then hit a wrapped-socket poll failure at line 3626 and repeated
+  `mqtt_connect_failed:10.0.0.248:('Repeated connect failures', None)` until
+  line 3687 emitted `action=soft_reboot reason=mqtt_repeated_connect_failures`.
+  Starting at line 3696, every soft reload rejoined Wi-Fi and synced NTP, but
+  each MQTT connect attempt blocked for about 85 seconds and failed again. The
+  sibling `aht-rvwi73` run in `cu.usbmodem13301.log` remained capable of MQTT
+  recovery in the same period, and a later true cold start of `co2-ykdvea`
+  produced fresh MQTT publishes at `11:29`, proving this was local poisoned
+  runtime state rather than an unavailable broker path. `v0.26.137.1` therefore
+  restores a hard reset for `mqtt_repeated_connect_failures` only, while keeping
+  the other recovery-owned escalations as soft reloads for serial capture.
+  Repeated MiniMQTT connect failures now also force a station reset/socket
+  artifact rebuild before reaching that hard-reset bound.
+- 2026-05-17: Powered-USB-hub testing changed the practical recovery tradeoff.
+  In the new `cu.usbmodem1334101.log` run, `v0.26.137.1` recovered most
+  wrapped-socket MQTT failures with `station_reset=1` and a rebuilt MQTT
+  session. The one bound that reached
+  `action=hard_reboot reason=mqtt_repeated_connect_failures` at 18:32:03 also
+  dropped USB CDC and terminated the unattended `screen` capture, leaving a
+  log gap until 19:42. Since preserving continuous serial logs is required for
+  this investigation, `v0.26.137.2` removes automatic hard reset from MQTT
+  recovery again and keeps the stronger repeated-connect station-reset rebuild.
+  Manual hard reset remains available when a physical power-cycle class reset is
+  intentionally needed.

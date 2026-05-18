@@ -101,11 +101,15 @@ The shared MQTT connection is configured in `[MQTT]`:
 - `USERNAME`
 - `PASSWORD`
 
-`BROKER_IP` is optional. Devices first try `BROKER`; after a successful
-hostname-based MQTT connection, a writable runtime persists the resolved address
-to `BROKER_IP` so later reconnects can fall back to the direct IP. The same
-settings rewrite obfuscates any plaintext passwords that were manually entered
-in `settings.toml`.
+`BROKER` is the canonical broker hostname from Sensorius. MQTT connections use
+IP literals only. During startup, Nodus resolves `BROKER` and writes the
+resolved address to `BROKER_IP` whenever the filesystem is writable and the
+resolved address differs from the current value. If the filesystem is read-only,
+set `BROKER_IP` manually before deployment. Read-only runtimes only attempt a
+volatile hostname resolution when `BROKER_IP` is absent, and cannot persist it.
+
+The same settings rewrite obfuscates any plaintext passwords that were manually
+entered in `settings.toml`.
 
 ## Local setup UI
 

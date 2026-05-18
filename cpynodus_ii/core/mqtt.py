@@ -39,6 +39,19 @@ class MQTTTransport:
         self.last_success_at = -1.0
         self.last_disconnected_at = -1.0
         self.last_disconnect_reason = ""
+        self.last_publish_at = -1.0
+        self.last_publish_topic = ""
+        self.last_publish_bytes = -1
+        self.last_publish_retain = 0
+        self.last_publish_socket_state = ""
+        self.last_publish_client_connected = ""
+        self.last_publish_backcompat = -1
+        self.last_loop_at = -1.0
+        self.last_loop_received = -1
+        self.last_loop_timeout = -1.0
+        self.last_loop_socket_state = ""
+        self.last_loop_client_connected = ""
+        self.last_loop_backcompat = -1
         self.published_messages = []
         self.subscriptions = []
         self.received_messages = []
@@ -72,6 +85,106 @@ class MQTTTransport:
         """Record a successful MQTT client operation."""
         self.last_success_at = _monotonic_value(now_monotonic)
         return self.last_success_at
+
+    def record_publish_success(
+        self,
+        topic,
+        *,
+        payload_bytes=-1,
+        retain=False,
+        socket_state="",
+        client_connected="",
+        backcompat=-1,
+        now_monotonic=None,
+    ):
+        """Record compact diagnostics for the last successful publish."""
+        self.last_publish_at = _monotonic_value(now_monotonic)
+        self.last_publish_topic = str(topic or "").strip()
+        try:
+            self.last_publish_bytes = int(payload_bytes)
+        except Exception:
+            self.last_publish_bytes = -1
+        self.last_publish_retain = 1 if retain else 0
+        self.last_publish_socket_state = str(socket_state or "").strip()
+        self.last_publish_client_connected = str(client_connected or "").strip()
+        try:
+            self.last_publish_backcompat = int(backcompat)
+        except Exception:
+            self.last_publish_backcompat = -1
+
+    def publish_diagnostic(self, now_monotonic=None):
+        """Return compact last-publish diagnostics for recovery logs."""
+        if not self.last_publish_topic:
+            return ""
+        age = "unknown"
+        now_value = _monotonic_value(now_monotonic)
+        if now_value >= 0.0 and self.last_publish_at >= 0.0:
+            age = str(int(max(0.0, now_value - self.last_publish_at)))
+        socket_state = self.last_publish_socket_state or "unknown"
+        client_connected = self.last_publish_client_connected or "unknown"
+        return (
+            "last_pub_topic={} last_pub_age_s={} last_pub_bytes={} "
+            "last_pub_retain={} last_pub_sock={} last_pub_client_connected={} "
+            "last_pub_backcompat={}"
+        ).format(
+            self.last_publish_topic,
+            age,
+            self.last_publish_bytes,
+            self.last_publish_retain,
+            socket_state,
+            client_connected,
+            self.last_publish_backcompat,
+        )
+
+    def record_loop_success(
+        self,
+        *,
+        received_count=0,
+        timeout=-1.0,
+        socket_state="",
+        client_connected="",
+        backcompat=-1,
+        now_monotonic=None,
+    ):
+        """Record compact diagnostics for the last successful MQTT loop."""
+        self.last_loop_at = _monotonic_value(now_monotonic)
+        try:
+            self.last_loop_received = int(received_count)
+        except Exception:
+            self.last_loop_received = -1
+        try:
+            self.last_loop_timeout = float(timeout)
+        except Exception:
+            self.last_loop_timeout = -1.0
+        self.last_loop_socket_state = str(socket_state or "").strip()
+        self.last_loop_client_connected = str(client_connected or "").strip()
+        try:
+            self.last_loop_backcompat = int(backcompat)
+        except Exception:
+            self.last_loop_backcompat = -1
+
+    def loop_diagnostic(self, now_monotonic=None):
+        """Return compact last-loop diagnostics for recovery logs."""
+        if self.last_loop_at < 0.0:
+            return ""
+        age = "unknown"
+        now_value = _monotonic_value(now_monotonic)
+        if now_value >= 0.0:
+            age = str(int(max(0.0, now_value - self.last_loop_at)))
+        socket_state = self.last_loop_socket_state or "unknown"
+        client_connected = self.last_loop_client_connected or "unknown"
+        return (
+            "last_loop_age_s={} last_loop_received={} last_loop_timeout={} "
+            "last_loop_sock={} last_loop_client_connected={} "
+            "last_loop_backcompat={}"
+        ).format(
+            age,
+            self.last_loop_received,
+            self.last_loop_timeout,
+            socket_state,
+            client_connected,
+            self.last_loop_backcompat,
+        )
 
     def compact(self, *, published_keep_from=0, subscriptions_keep_from=0):
         """Drop already-synced transport queues to limit long-run heap growth."""

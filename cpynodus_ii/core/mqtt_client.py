@@ -78,9 +78,16 @@ def build_mqtt_client_adapter(
             errors=("mqtt_client_module_unavailable",),
         )
 
-    broker_targets = runtime_config.mqtt.connection_targets or (
-        runtime_config.mqtt.preferred_host,
-    )
+    broker_targets = runtime_config.mqtt.connection_targets
+    if not broker_targets:
+        return MQTTClientAdapter(
+            phase="unavailable",
+            driver_kind="none",
+            broker=runtime_config.mqtt.preferred_host,
+            port=runtime_config.mqtt.port,
+            broker_targets=(),
+            errors=("mqtt_broker_ip_unavailable",),
+        )
     mqtt_socket_pool = _wrap_minimqtt_socket_pool(socket_pool)
     kwargs = {
         "socket_pool": mqtt_socket_pool,
@@ -133,9 +140,16 @@ def connect_mqtt_client(adapter, transport, *, preflight=True):
     errors = []
     active_adapter = adapter
     connected = False
-    for index, broker in enumerate(
-        adapter.broker_targets or (adapter.active_broker or adapter.broker,)
-    ):
+    targets = adapter.broker_targets or ()
+    if not targets:
+        error = "mqtt_connect_failed:broker_ip_unavailable"
+        transport.mark_disconnected(reason=error)
+        return MQTTClientSyncResult(
+            phase="error",
+            adapter=adapter,
+            errors=(error,),
+        )
+    for index, broker in enumerate(targets):
         resolve_error, resolved_ip = _resolve_broker_target(active_adapter, broker)
         if preflight and resolve_error:
             errors.append(resolve_error)
@@ -226,6 +240,17 @@ def sync_transport_to_client(adapter, transport):
         payload = _serialize_payload(message.payload)
         try:
             client.publish(message.topic, payload, retain=message.retain)
+            backcompat = 0
+            if getattr(client, "_backwards_compatible_sock", False):
+                backcompat = 1
+            transport.record_publish_success(
+                message.topic,
+                payload_bytes=_payload_size(payload),
+                retain=message.retain,
+                socket_state=_socket_state(getattr(client, "_sock", None)),
+                client_connected=_client_connected_state(client),
+                backcompat=backcompat,
+            )
         except Exception as exc:
             transport.mark_disconnected(
                 reason="mqtt_publish_failed:{}:{}".format(message.topic, exc)
@@ -373,20 +398,36 @@ def poll_mqtt_client(adapter, transport):
     loop = getattr(adapter.client, "loop", None)
     if callable(loop):
         _ensure_minimqtt_socket_compat(adapter.client)
+        client_connected = _client_connected_state(adapter.client)
+        if client_connected == "0":
+            error = _mqtt_poll_client_disconnected_error(adapter.client)
+            transport.mark_disconnected(reason=error)
+            return MQTTClientSyncResult(
+                phase="error",
+                adapter=adapter,
+                received_count=0,
+                errors=(error,),
+            )
         timeout = _poll_timeout_for_client(adapter.client)
+        used_timeout = timeout
         try:
             loop(timeout=timeout)
         except TypeError as exc:
             if not _is_loop_timeout_signature_error(exc):
                 if _is_minimqtt_wrapped_socket_error(exc):
-                    transport.mark_disconnected(
-                        reason=_minimqtt_socket_error(adapter.client, exc)
+                    error = _minimqtt_socket_error(
+                        adapter.client,
+                        exc,
+                        client_connected=client_connected,
+                        publish_diagnostic=transport.publish_diagnostic(),
+                        loop_diagnostic=transport.loop_diagnostic(),
                     )
+                    transport.mark_disconnected(reason=error)
                     return MQTTClientSyncResult(
                         phase="error",
                         adapter=adapter,
                         received_count=0,
-                        errors=(_minimqtt_socket_error(adapter.client, exc),),
+                        errors=(error,),
                     )
                 if _is_callback_arity_error(exc):
                     transport.mark_disconnected(
@@ -399,21 +440,28 @@ def poll_mqtt_client(adapter, transport):
                         errors=("mqtt_poll_callback_failed:{}".format(exc),),
                     )
                 raise
+            used_timeout = -1.0
             loop()
         except ValueError:
             try:
-                loop(timeout=max(1.0, timeout))
+                used_timeout = max(1.0, timeout)
+                loop(timeout=used_timeout)
             except TypeError as exc:
                 if not _is_loop_timeout_signature_error(exc):
                     if _is_minimqtt_wrapped_socket_error(exc):
-                        transport.mark_disconnected(
-                            reason=_minimqtt_socket_error(adapter.client, exc)
+                        error = _minimqtt_socket_error(
+                            adapter.client,
+                            exc,
+                            client_connected=client_connected,
+                            publish_diagnostic=transport.publish_diagnostic(),
+                            loop_diagnostic=transport.loop_diagnostic(),
                         )
+                        transport.mark_disconnected(reason=error)
                         return MQTTClientSyncResult(
                             phase="error",
                             adapter=adapter,
                             received_count=0,
-                            errors=(_minimqtt_socket_error(adapter.client, exc),),
+                            errors=(error,),
                         )
                     if _is_callback_arity_error(exc):
                         transport.mark_disconnected(
@@ -426,6 +474,7 @@ def poll_mqtt_client(adapter, transport):
                             errors=("mqtt_poll_callback_failed:{}".format(exc),),
                         )
                     raise
+                used_timeout = -1.0
                 loop()
         except OSError as exc:
             transport.mark_disconnected(reason="mqtt_poll_failed:{}".format(exc))
@@ -435,8 +484,19 @@ def poll_mqtt_client(adapter, transport):
                 received_count=0,
                 errors=("mqtt_poll_failed:{}".format(exc),),
             )
-        transport.mark_success()
     received_count = len(transport.received_messages) - before
+    if callable(loop):
+        backcompat = 0
+        if getattr(adapter.client, "_backwards_compatible_sock", False):
+            backcompat = 1
+        transport.record_loop_success(
+            received_count=received_count,
+            timeout=used_timeout,
+            socket_state=_socket_state(getattr(adapter.client, "_sock", None)),
+            client_connected=_client_connected_state(adapter.client),
+            backcompat=backcompat,
+        )
+        transport.mark_success()
     return MQTTClientSyncResult(
         phase="polled",
         adapter=adapter,
@@ -501,6 +561,24 @@ def disconnect_mqtt_client(adapter, transport, runtime_config):
     )
 
 
+def close_mqtt_client(adapter, transport):
+    """Close MQTT without queuing shutdown or offline status publishes."""
+    errors = ()
+    if adapter.phase == "ready" and adapter.client is not None:
+        disconnect = getattr(adapter.client, "disconnect", None)
+        if callable(disconnect):
+            try:
+                disconnect()
+            except Exception as exc:
+                errors = ("mqtt_close_failed:{}".format(exc),)
+    transport.mark_disconnected(reason="mqtt_close_requested")
+    return MQTTClientSyncResult(
+        phase="disconnected",
+        adapter=adapter,
+        errors=errors,
+    )
+
+
 def _resolve_mqtt_class(modules):
     if isinstance(modules, dict) and modules.get("mqtt_cls") is not None:
         return modules["mqtt_cls"]
@@ -533,7 +611,13 @@ class _MiniMQTTSocketCompat:
         self._socket_obj = socket_obj
 
     def send(self, buffer):
-        return self._send_compatible(self._socket_obj, buffer)
+        send = getattr(self._socket_obj, "send")
+        try:
+            return send(buffer)
+        except TypeError as exc:
+            if not _is_socket_nbytes_required_error(exc):
+                raise
+            return send(buffer, len(buffer))
 
     def recv_into(self, buffer, nbytes=None):
         if nbytes is None:
@@ -549,36 +633,6 @@ class _MiniMQTTSocketCompat:
         recv = getattr(self._socket_obj, "recv")
         return recv(nbytes)
 
-    def _send_compatible(self, socket_obj, buffer):
-        last_error = None
-        send = getattr(socket_obj, "send", None)
-        if callable(send):
-            try:
-                return send(buffer)
-            except TypeError as exc:
-                if not _is_socket_nbytes_required_error(exc):
-                    raise
-                last_error = exc
-            try:
-                return send(buffer, len(buffer))
-            except TypeError as exc:
-                if not _is_socket_nbytes_required_error(exc):
-                    raise
-                last_error = exc
-
-        raw_socket = _inner_socket_obj(socket_obj)
-        if raw_socket is not None and raw_socket is not socket_obj:
-            try:
-                return self._send_compatible(raw_socket, buffer)
-            except TypeError as exc:
-                if not _is_socket_nbytes_required_error(exc):
-                    raise
-                last_error = exc
-
-        if last_error is not None:
-            raise last_error
-        raise AttributeError("send")
-
     def _recv_into_from_recv(self, socket_obj, buffer, nbytes):
         recv = getattr(socket_obj, "recv")
         data = recv(nbytes)
@@ -587,64 +641,37 @@ class _MiniMQTTSocketCompat:
             buffer[:count] = data
         return count
 
-    def _try_recv_into(self, socket_obj, buffer, nbytes, prefer_single_arg):
+    def _recv_into_compatible(self, socket_obj, buffer, nbytes, prefer_single_arg):
         recv_into = getattr(socket_obj, "recv_into", None)
         if callable(recv_into):
             if prefer_single_arg:
                 try:
-                    return True, recv_into(buffer)
+                    return recv_into(buffer)
                 except TypeError as exc:
                     if not _is_socket_nbytes_required_error(exc):
                         raise
-                    last_error = exc
                 try:
-                    return True, recv_into(buffer, nbytes)
+                    return recv_into(buffer, nbytes)
                 except TypeError as exc:
                     if not _is_socket_nbytes_required_error(exc):
                         raise
-                    last_error = exc
             else:
                 try:
-                    return True, recv_into(buffer, nbytes)
+                    return recv_into(buffer, nbytes)
                 except TypeError as exc:
                     if not _is_socket_nbytes_required_error(exc):
                         raise
-                    last_error = exc
                 try:
-                    return True, recv_into(buffer)
+                    return recv_into(buffer)
                 except TypeError as exc:
                     if not _is_socket_nbytes_required_error(exc):
                         raise
-                    last_error = exc
-            return False, last_error
-        return False, None
-
-    def _recv_into_compatible(self, socket_obj, buffer, nbytes, prefer_single_arg):
-        handled, value = self._try_recv_into(
-            socket_obj,
-            buffer,
-            nbytes,
-            prefer_single_arg,
-        )
-        if handled:
-            return value
-        last_error = value
 
         raw_socket = _inner_socket_obj(socket_obj)
         if raw_socket is not None and raw_socket is not socket_obj:
-            handled, value = self._try_recv_into(raw_socket, buffer, nbytes, False)
-            if handled:
-                return value
-            if value is not None:
-                last_error = value
-            if callable(getattr(raw_socket, "recv", None)):
-                return self._recv_into_from_recv(raw_socket, buffer, nbytes)
+            return self._recv_into_compatible(raw_socket, buffer, nbytes, False)
 
-        if callable(getattr(socket_obj, "recv", None)):
-            return self._recv_into_from_recv(socket_obj, buffer, nbytes)
-        if last_error is not None:
-            raise last_error
-        raise AttributeError("recv_into")
+        return self._recv_into_from_recv(socket_obj, buffer, nbytes)
 
     def __getattr__(self, name):
         return getattr(self._socket_obj, name)
@@ -793,15 +820,67 @@ def _is_minimqtt_wrapped_socket_error(exc):
     return text == "function takes 3 positional arguments but 2 were given"
 
 
-def _minimqtt_socket_error(client, exc):
+def _minimqtt_socket_error(
+    client,
+    exc,
+    *,
+    client_connected=None,
+    publish_diagnostic="",
+    loop_diagnostic="",
+):
     socket_obj = getattr(client, "_sock", None)
-    socket_state = "wrapped" if isinstance(socket_obj, _MiniMQTTSocketCompat) else "raw"
+    socket_state = _socket_state(socket_obj)
     backwards = 1 if getattr(client, "_backwards_compatible_sock", False) else 0
-    return "mqtt_poll_failed:minimqtt_socket:sock={} backcompat={} error={}".format(
+    connected_state = client_connected
+    if connected_state is None:
+        connected_state = _client_connected_state(client)
+    error = (
+        "mqtt_poll_failed:minimqtt_socket:sock={} client_connected={} "
+        "backcompat={} error={}"
+    ).format(
         socket_state,
+        connected_state,
         backwards,
         exc,
     )
+    diagnostic = str(publish_diagnostic or "").strip()
+    if diagnostic:
+        error = "{} {}".format(error, diagnostic)
+    diagnostic = str(loop_diagnostic or "").strip()
+    if diagnostic:
+        error = "{} {}".format(error, diagnostic)
+    return error
+
+
+def _mqtt_poll_client_disconnected_error(client):
+    socket_state = _socket_state(getattr(client, "_sock", None))
+    return "mqtt_poll_failed:client_disconnected:sock={}".format(socket_state)
+
+
+def _socket_state(socket_obj):
+    if socket_obj is None:
+        return "none"
+    if isinstance(socket_obj, _MiniMQTTSocketCompat):
+        return "wrapped"
+    return "raw"
+
+
+def _client_connected_state(client):
+    for name in ("is_connected", "connected", "_connected"):
+        try:
+            value = getattr(client, name)
+        except Exception:
+            continue
+        if callable(value):
+            try:
+                value = value()
+            except Exception:
+                return "error"
+        if value is True:
+            return "1"
+        if value is False:
+            return "0"
+    return "unknown"
 
 
 def _is_socket_nbytes_required_error(exc):

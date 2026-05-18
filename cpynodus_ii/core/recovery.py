@@ -1,8 +1,8 @@
 """Define bounded recovery decisions for Wi-Fi, MQTT, and AP idle runtime.
 
 The recovery policy converts observed transport state into explicit next
-actions, including retry cadence, reconnect gating, and escalation to soft
-reboot when a fault persists beyond configured limits.
+actions, including retry cadence, reconnect gating, and reboot escalation when
+a fault persists beyond configured limits.
 """
 
 from dataclasses import dataclass
@@ -117,13 +117,6 @@ def advance_recovery_state(
         )
 
     mqtt_state = _ensure_phase(state, "mqtt", now_value)
-    if _phase_elapsed(mqtt_state, now_value) >= float(policy.mqtt_timeout_s):
-        return RecoveryDecision(
-            state=mqtt_state,
-            allow_mqtt_connect=True,
-            request_soft_reboot=True,
-            reboot_reason="mqtt_recovery_timeout",
-        )
     attempt_rebuild = _interval_elapsed(
         mqtt_state.last_mqtt_rebuild_at,
         now_value,

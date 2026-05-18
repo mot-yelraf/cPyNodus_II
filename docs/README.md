@@ -567,7 +567,10 @@ Automations are implemented in Sensorius. Sensorius publishes the desired switch
 - TLS is enabled when configured or when broker port is 8883.
 - Home Assistant discovery is supported with configurable prefixes and base topics.
 - Switch control is handled via `/set` topics; events and state are published to `/event` and `/state`.
-- Broker IP fallback is in-memory only; Nodus does not persist resolved broker IPs into `settings.toml`.
+- MQTT connects to broker IP literals only. On writable filesystems, startup
+  resolves the configured broker hostname and refreshes `MQTT.BROKER_IP` in
+  `settings.toml` when it changes; ROFS deployments should include a manually
+  configured `BROKER_IP` to avoid runtime DNS resolution.
 - Implemented Home Assistant corner case:
   - when `ACTIVE_PROFILE=homeassistant` or `ACTIVE_PROFILE=weewx`, Nodus skips the normal-mode webserver in both ROFS and RWFS
   - this policy exists because these networked MQTT-only profiles are intended to run without the normal local web UI path

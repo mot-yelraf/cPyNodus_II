@@ -84,14 +84,6 @@ def publish_startup_cycle(
             topics.append(data.topic)
 
     if runtime_config.switch.present:
-        switch_meta = transport.publish(
-            mqtt_topic(runtime_config, device_id, "meta", "switch"),
-            build_switch_meta_payload(runtime_config, switch_snapshot or {}),
-            retain=True,
-        )
-        topics.append(switch_meta.topic)
-
-    if runtime_config.switch.present:
         availability_timestamp = int(time())
         for channel in runtime_config.switch.channels:
             availability = transport.publish(

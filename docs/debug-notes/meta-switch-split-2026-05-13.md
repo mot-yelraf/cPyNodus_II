@@ -450,3 +450,126 @@ cold-boot failures where the radio stack is not fully ready for the first
 connect call.
 
 Firmware version was bumped from `v0.26.133.13` to `v0.26.134.1`.
+
+## Follow-up From `v0.26.134.11` / `v0.26.134.12` Warm-Start Attempts
+
+Warm-start testing on `co2-ykdvea` showed that the attempted follow-up fixes
+after `v0.26.134.1` made MQTT startup recovery worse.
+
+The `v0.26.134.1` soft-reboot path was slow, but resilient:
+
+- Wi-Fi joined `PeaceHill` and held IP `10.0.0.219`;
+- MQTT entered recovery and eventually connected to configured broker IP
+  `10.0.0.248` after about 85 seconds;
+- retained `meta`, heartbeat, availability, `meta/switch`, and sensor data
+  were then published successfully.
+
+The later `v0.26.134.11` and `v0.26.134.12` experiments changed that behavior
+from slow convergence into repeated MQTT connect failures:
+
+- `mqtt_connect_failed:10.0.0.248`;
+- repeated `dns_resolved resolved_ip=10.0.0.248` followed by connection
+  errors;
+- in `v0.26.134.12`, the underlying MiniMQTT cause was exposed as
+  `No data received from broker for 5 seconds`;
+- additional connect-failure rebuild logic caused repeated MQTT/socket rebuild
+  loops without restoring the data-publish path during the observed run.
+
+Interpretation:
+
+- the broker IP was not inherently bad, because `v0.26.134.1` eventually
+  connected and published using `active_broker="10.0.0.248"`;
+- Wi-Fi was not inherently bad, because the station link remained ready with
+  IP `10.0.0.219`;
+- the attempted fixes were too aggressive and interfered with the recovery
+  behavior that previously converged.
+
+Resolution:
+
+- the tracked worktree was reverted to commit `e142cc4`
+  (`first over night run without mqtt network instability, at least on one
+  Nodus. Improved mqtt and network recovery. Improved wifi scan and startup`);
+- treat `v0.26.134.1` as the current known-good baseline for warm-start
+  recovery;
+- preserve the resilient eventual-connect behavior before attempting any
+  targeted reduction in startup latency.
+
+## Follow-up From Broker Hostname/IP Policy Review
+
+The broker hostname and Nodus device hostname are separate concerns. The Nodus
+device hostname remains useful for identity, router association, and operator
+diagnostics. The startup/MQTT issue is broker target ordering.
+
+Updated policy:
+
+- `MQTT.BROKER` remains the canonical broker hostname supplied by Sensorius.
+- MQTT client connections use IP literals only.
+- On each startup with a writable filesystem, Nodus resolves `MQTT.BROKER` and
+  writes the resolved address to `MQTT.BROKER_IP` when it differs from the
+  current value.
+- If the filesystem is read-only, deployments should provide `BROKER_IP`
+  manually; read-only runtimes only attempt a volatile hostname resolution when
+  `BROKER_IP` is absent, and cannot persist it.
+- MQTT adapter target construction now uses `BROKER_IP` first and does not use
+  broker hostnames as connect targets.
+
+This keeps hostname use for human/system identity and discovery while avoiding
+hostname-based MQTT connect attempts during the fragile startup window.
+
+## Follow-up From `v0.26.136.5` Post-Ready Wi-Fi Recovery
+
+The `co2-ykdvea` `v0.26.136.4` run reproduced the earlier post-ready Wi-Fi
+failure shape: after a known-good station link and a hard MQTT repeated-connect
+reset, serial capture resumed with `recovery phase=wifi`, `wifi_link_lost`,
+repeated `No network with that ssid`, and alternating
+`station_scan_miss_after_ready` / `station_unknown_after_ready` signatures. The
+AHT sibling stayed healthy on the same network and desk, so this path is still
+being treated as local station/radio state rather than AP outage.
+
+`v0.26.136.5` adds a targeted recovery path for that condition only: once Wi-Fi
+has previously been ready, two after-ready scan-miss/unknown failures trigger a
+station reset and socket-artifact rebuild on the next reconnect attempt. If the
+same after-ready signatures persist for 90 seconds and at least three failures,
+runtime performs a hard reset with reason `wifi_after_ready_failure`. Normal
+startup Wi-Fi failures still use the longer generic Wi-Fi recovery timeout.
+
+## Follow-up From `v0.26.136.6` Unattended Serial Capture
+
+Hard recovery resets terminate unattended `screen` capture over USB serial,
+which hides the most useful post-reset window during stability tests.
+`v0.26.136.6` keeps the same recovery escalation reasons and timing but routes
+recovery-owned escalations through `supervisor.reload()` instead of
+`microcontroller.reset()`. Manual/web hard restarts and profile-reset hard
+reboots are unchanged.
+
+## Follow-up From `v0.26.136.6` Cold-Boot Subscribe Failures
+
+Both 136.6 cold boots connected MQTT quickly, then failed on the first queued
+`config/set` subscription and spiraled into repeated direct-IP connect failures.
+`v0.26.136.7` restores the targeted MQTT-only subscribe-failure recovery path:
+close the current MQTT client without shutdown publishes, rebuild the MQTT
+adapter, reconnect, drain the existing subscription queue, and suppress
+duplicate startup queueing for the recovered connection generation.
+
+User reported the 136.7 cold start working again. Captured serial tails show
+`aht-rvwi73` and `co2-ykdvea` each connected MQTT in `0.1s`, queued startup
+subscriptions, and returned to `recovery phase=idle` without the prior 136.6
+first-`config/set` SUBACK timeout in the observed window.
+
+## Follow-up From `v0.26.136.7` MQTT Soft-Reload Loop
+
+The 136.7 `co2-ykdvea` run later exposed the cost of making
+`mqtt_repeated_connect_failures` a soft reload: after the first repeated
+MiniMQTT connect-failure escalation, soft reloads rejoined Wi-Fi and synced NTP
+but never restored MQTT publishes. A true cold start at 11:29 produced retained
+meta, heartbeat, availability, and data publishes again on the same configured
+broker IP, so the broken window is being treated as local runtime state that a
+soft reload does not clear.
+
+`v0.26.137.1` kept soft reload for general MQTT recovery timeout and
+after-ready Wi-Fi recovery, but routed `mqtt_repeated_connect_failures` back to
+hard reset. Powered-hub testing then showed that hard-reset bound still drops
+USB CDC and terminates unattended `screen` logging. `v0.26.137.2` therefore
+routes `mqtt_repeated_connect_failures` back through soft reload for serial
+capture, while retaining the stronger station-reset MQTT rebuild before that
+bound is reached.

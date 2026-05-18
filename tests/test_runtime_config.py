@@ -52,9 +52,8 @@ def test_settings_from_directory_loads_switch_only_runtime_config():
     assert runtime_config.mqtt.broker == "sensoria-hub-0.local"
     assert runtime_config.mqtt.broker_ip == "10.0.0.246"
     assert runtime_config.mqtt.port == 1883
-    assert runtime_config.mqtt.preferred_host == "sensoria-hub-0.local"
+    assert runtime_config.mqtt.preferred_host == "10.0.0.246"
     assert runtime_config.mqtt.connection_targets == (
-        "sensoria-hub-0.local",
         "10.0.0.246",
     )
     assert runtime_config.homeassistant.discovery_prefix == "homeassistant"

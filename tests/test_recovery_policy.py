@@ -106,6 +106,28 @@ def test_mqtt_recovery_rebuilds_before_timeout():
     assert decision.request_soft_reboot is False
 
 
+def test_default_mqtt_recovery_does_not_reboot_on_generic_timeout():
+    state = RecoveryState(phase="mqtt", phase_started_at=0.0)
+
+    decision = advance_recovery_state(
+        state,
+        now_monotonic=181.0,
+        policy=RecoveryPolicy(),
+        ap_mode=False,
+        wifi_link_ready=True,
+        transport_connected=False,
+    )
+
+    assert decision.state.phase == "mqtt"
+    assert decision.allow_mqtt_connect is True
+    assert decision.request_soft_reboot is False
+    assert decision.reboot_reason == ""
+
+
+def test_default_mqtt_recovery_window_is_three_minutes():
+    assert RecoveryPolicy().mqtt_timeout_s == 180.0
+
+
 def test_ap_mode_requests_soft_reboot_after_timeout():
     state = RecoveryState(phase="ap", phase_started_at=0.0)
 

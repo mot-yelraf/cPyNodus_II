@@ -23,6 +23,19 @@ def _clean_str(value):
     return str(value or "").strip()
 
 
+def _looks_like_ip_literal(value):
+    text = str(value or "").strip()
+    if not text:
+        return False
+    parts = text.split(".")
+    if len(parts) == 4:
+        try:
+            return all(0 <= int(part) <= 255 for part in parts)
+        except ValueError:
+            return False
+    return ":" in text
+
+
 def _normalize_tz_offset(value):
     offset = int(value or 0)
     if -14 <= offset <= 14:
@@ -248,15 +261,15 @@ class MQTTConfig:
 
     @property
     def preferred_host(self):
-        return self.broker or self.broker_ip
+        return self.broker_ip or self.broker
 
     @property
     def connection_targets(self):
         targets = []
-        if self.broker:
-            targets.append(self.broker)
-        if self.broker_ip and self.broker_ip not in targets:
+        if self.broker_ip:
             targets.append(self.broker_ip)
+        if _looks_like_ip_literal(self.broker) and self.broker not in targets:
+            targets.append(self.broker)
         return tuple(targets)
 
 
