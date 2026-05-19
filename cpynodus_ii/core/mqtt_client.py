@@ -7,6 +7,14 @@ and testable interface.
 
 from dataclasses import dataclass
 
+MQTT_CONNECT_SOCKET_TIMEOUT_S = 3
+MQTT_POLL_SOCKET_TIMEOUT_S = 1
+MQTT_CONNECT_RETRIES = 1
+MQTT_OPTIONAL_CLIENT_KWARGS = (
+    "socket_timeout",
+    "connect_retries",
+)
+
 
 @dataclass(frozen=True)
 class MQTTClientAdapter:
@@ -93,6 +101,8 @@ def build_mqtt_client_adapter(
         "socket_pool": mqtt_socket_pool,
         "port": runtime_config.mqtt.port,
         "keep_alive": 60,
+        "socket_timeout": MQTT_CONNECT_SOCKET_TIMEOUT_S,
+        "connect_retries": MQTT_CONNECT_RETRIES,
     }
     if runtime_config.mqtt.use_tls or runtime_config.mqtt.port == 8883:
         kwargs["ssl_context"] = ssl_context
@@ -102,7 +112,8 @@ def build_mqtt_client_adapter(
         kwargs["password"] = runtime_config.mqtt.password
 
     try:
-        client = _instantiate_client(client_class, dict(kwargs), broker_targets[0])
+        client_kwargs = dict(kwargs)
+        client = _instantiate_client(client_class, client_kwargs, broker_targets[0])
     except Exception as exc:
         return MQTTClientAdapter(
             phase="error",
@@ -122,7 +133,7 @@ def build_mqtt_client_adapter(
         active_broker=broker_targets[0],
         client=client,
         client_class=client_class,
-        client_kwargs=dict(kwargs),
+        client_kwargs=dict(client_kwargs),
         errors=(),
     )
 
@@ -183,6 +194,10 @@ def connect_mqtt_client(adapter, transport, *, preflight=True):
         _bind_on_message(active_adapter.client, transport)
         try:
             active_adapter.client.connect()
+            _set_minimqtt_runtime_socket_timeout(
+                active_adapter.client,
+                MQTT_POLL_SOCKET_TIMEOUT_S,
+            )
             _ensure_minimqtt_socket_compat(active_adapter.client)
             transport.mark_connected()
             connected = True
@@ -591,7 +606,32 @@ def _resolve_mqtt_class(modules):
 
 def _instantiate_client(client_class, kwargs, broker):
     kwargs["broker"] = broker
+    try:
+        return client_class(**kwargs)
+    except TypeError as exc:
+        if not (
+            _looks_unexpected_mqtt_kwarg_error(exc)
+            and _drop_optional_mqtt_client_kwargs(kwargs)
+        ):
+            raise
     return client_class(**kwargs)
+
+
+def _drop_optional_mqtt_client_kwargs(kwargs):
+    removed = False
+    for key in MQTT_OPTIONAL_CLIENT_KWARGS:
+        if key in kwargs:
+            removed = True
+            try:
+                del kwargs[key]
+            except Exception:
+                pass
+    return removed
+
+
+def _looks_unexpected_mqtt_kwarg_error(exc):
+    text = str(exc or "").strip().lower()
+    return "keyword" in text and ("unexpected" in text or "invalid" in text)
 
 
 class _MiniMQTTSocketPoolCompat:
@@ -696,6 +736,28 @@ def _ensure_minimqtt_socket_compat(client):
         pass
 
 
+def _set_minimqtt_runtime_socket_timeout(client, timeout):
+    for attr_name in (
+        "socket_timeout",
+        "_socket_timeout",
+        "recv_timeout",
+        "_recv_timeout",
+    ):
+        value = getattr(client, attr_name, None)
+        if _is_positive_number(value):
+            try:
+                setattr(client, attr_name, timeout)
+            except Exception:
+                pass
+    socket_obj = getattr(client, "_sock", None)
+    settimeout = getattr(socket_obj, "settimeout", None)
+    if callable(settimeout):
+        try:
+            settimeout(timeout)
+        except Exception:
+            pass
+
+
 def _inner_socket_obj(socket_obj):
     for attr_name in ("_socket", "_sock", "_socket_obj"):
         try:
@@ -716,13 +778,13 @@ def _poll_timeout_for_client(client):
     ):
         value = getattr(client, attr_name, None)
         if _is_positive_number(value):
-            return max(0.1, min(1.0, float(value)))
+            return max(0.1, float(value))
     socket_obj = getattr(client, "_socket", None)
     for attr_name in ("timeout", "_timeout"):
         value = getattr(socket_obj, attr_name, None)
         if _is_positive_number(value):
-            return max(0.1, min(1.0, float(value)))
-    return 1.0
+            return max(0.1, float(value))
+    return float(MQTT_POLL_SOCKET_TIMEOUT_S)
 
 
 def _preflight_broker_target(adapter, broker):

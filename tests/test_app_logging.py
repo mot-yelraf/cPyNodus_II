@@ -14,6 +14,7 @@ from cpynodus_ii.app import (
     _sensor_issue_text,
     _should_log_command_result,
     _soft_reboot,
+    _teardown_network_for_shutdown,
 )
 
 
@@ -98,11 +99,51 @@ def test_hard_reboot_logs_reset_reason_before_reset(monkeypatch, capsys):
     assert "runtime action=reset reason=recovery:mqtt_recovery_timeout" in captured.out
 
 
-def test_recovery_escalations_use_soft_reload_for_serial_capture():
+def test_shutdown_network_teardown_logs_and_stops_radio(capsys):
+    radio = SimpleNamespace(
+        disconnect=lambda: None,
+        stop_station=lambda: None,
+        stop_ap=lambda: None,
+    )
+    network_stack = SimpleNamespace(wifi_radio=radio)
+
+    assert (
+        _teardown_network_for_shutdown(network_stack, start_monotonic=0.0)
+        is True
+    )
+
+    captured = capsys.readouterr()
+    assert "runtime network action=teardown result=1" in captured.out
+
+
+def test_recovery_escalations_use_soft_reload_when_filesystem_is_read_only():
     assert _recovery_reboot_kind("mqtt_recovery_timeout") == "soft"
     assert _recovery_reboot_kind("mqtt_repeated_connect_failures") == "soft"
     assert _recovery_reboot_kind("wifi_after_ready_failure") == "soft"
     assert _recovery_reboot_kind("wifi_recovery_timeout") == "soft"
+
+
+def test_recovery_hard_reset_is_gated_by_writable_filesystem():
+    assert (
+        _recovery_reboot_kind(
+            "mqtt_repeated_connect_failures",
+            fs_writable=True,
+        )
+        == "hard"
+    )
+    assert _recovery_reboot_kind("mqtt_recovery_timeout", fs_writable=True) == "hard"
+    assert (
+        _recovery_reboot_kind(
+            "mqtt_memory_allocation_failures",
+            fs_writable=True,
+        )
+        == "hard"
+    )
+    assert (
+        _recovery_reboot_kind("wifi_after_ready_failure", fs_writable=True)
+        == "soft"
+    )
+    assert _recovery_reboot_kind("wifi_recovery_timeout", fs_writable=True) == "soft"
 
 
 def test_mqtt_connect_repeated_failures_force_station_reset_rebuild():

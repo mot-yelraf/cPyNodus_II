@@ -6,6 +6,7 @@ from cpynodus_ii.core import (
     network_error_signature,
     network_link_is_ready,
     reconnect_network_stack,
+    teardown_network_stack,
 )
 from cpynodus_ii.core.config import NetworkConfig, RuntimeConfig
 
@@ -122,8 +123,11 @@ class _NotImplementedAPInfoRadio(_FlakyRadio):
 
 
 class _FakeScanNetwork:
-    def __init__(self, ssid):
+    def __init__(self, ssid, *, channel="", bssid="", rssi=-90):
         self.ssid = ssid
+        self.channel = channel
+        self.bssid = bssid
+        self.rssi = rssi
 
 
 class _ScanMissThenSuccessRadio:
@@ -147,6 +151,84 @@ class _ScanMissThenSuccessRadio:
 
     def stop_scanning_networks(self):
         self.stop_scan_calls += 1
+
+
+class _ScanHintThenSuccessRadio:
+    def __init__(self):
+        self.connect_calls = []
+        self.connect_kwargs = []
+        self.scan_calls = 0
+        self.stop_scan_calls = 0
+        self.hostname = ""
+        self.ipv4_address = ""
+        self.ipv4_address_ap = "192.168.4.1"
+
+    def connect(self, ssid, password, **kwargs):
+        self.connect_calls.append((ssid, password))
+        self.connect_kwargs.append(dict(kwargs))
+        if len(self.connect_calls) == 1:
+            raise ConnectionError("Unknown failure 1")
+        self.ipv4_address = "10.0.0.214"
+
+    def start_scanning_networks(self):
+        self.scan_calls += 1
+        return [
+            _FakeScanNetwork(
+                "PeaceHill",
+                channel=6,
+                bssid=b"\xc6\x50\x9c\x75\x7b\x09",
+                rssi=-29,
+            ),
+            _FakeScanNetwork(
+                "PeaceHill",
+                channel=6,
+                bssid=b"\xc6\x50\x9c\x75\x7b\x09",
+                rssi=-23,
+            ),
+        ]
+
+    def stop_scanning_networks(self):
+        self.stop_scan_calls += 1
+
+
+class _RadioCycleThenSuccessRadio:
+    def __init__(self):
+        self.connect_calls = []
+        self.enabled_values = []
+        self.disconnect_calls = 0
+        self.start_station_calls = 0
+        self.stop_ap_calls = 0
+        self.stop_station_calls = 0
+        self.hostname = ""
+        self.ipv4_address = ""
+        self.ipv4_address_ap = "192.168.4.1"
+
+    @property
+    def enabled(self):
+        return not self.enabled_values or self.enabled_values[-1]
+
+    @enabled.setter
+    def enabled(self, value):
+        self.enabled_values.append(bool(value))
+
+    def disconnect(self):
+        self.disconnect_calls += 1
+
+    def start_station(self):
+        self.start_station_calls += 1
+
+    def stop_ap(self):
+        self.stop_ap_calls += 1
+
+    def stop_station(self):
+        self.stop_station_calls += 1
+
+    def connect(self, ssid, password):
+        self.connect_calls.append((ssid, password))
+        if self.enabled_values == [False, True]:
+            self.ipv4_address = "10.0.0.214"
+            return
+        raise ConnectionError("Unknown failure 1")
 
 
 def test_build_network_stack_connects_station_mode_and_returns_socket_artifacts():
@@ -173,6 +255,23 @@ def test_build_network_stack_connects_station_mode_and_returns_socket_artifacts(
     assert stack.ip_address == "192.168.1.44"
     assert stack.socket_pool["kind"] == "socketpool"
     assert stack.ssl_context["kind"] == "ssl"
+
+
+def test_teardown_network_stack_disconnects_and_stops_station():
+    radio = _StaleAPStationRadio()
+    stack = network_module.NetworkStack(
+        phase="ready",
+        mode="station",
+        ssid="TestWiFi",
+        hostname="nodus",
+        wifi_radio=radio,
+    )
+
+    assert teardown_network_stack(stack) is True
+    assert radio.disconnect_calls == 1
+    assert radio.stop_station_calls == 1
+    assert radio.stop_ap_calls == 1
+    assert radio.start_station_calls == 0
 
 
 def test_build_network_stack_returns_ap_mode_when_requested():
@@ -213,7 +312,7 @@ def test_build_network_stack_reports_missing_wifi_modules():
     assert "wifi_module_unavailable" in stack.errors
 
 
-def test_network_error_signature_marks_station_scan_miss_after_ready():
+def test_network_error_signature_marks_station_scan_miss_after_ready(capsys):
     radio = _FlakyRadio([ConnectionError("No network with that ssid")])
     runtime_config = RuntimeConfig(
         active_profile="sensorius",
@@ -237,6 +336,11 @@ def test_network_error_signature_marks_station_scan_miss_after_ready():
         network_error_signature(stack, had_ready_link=True)
         == "station_scan_miss_after_ready"
     )
+    assert "password=secretpass" in stack.errors
+    assert (
+        "network connect error attempts=1 "
+        "error=No network with that ssid password=secretpass"
+    ) in capsys.readouterr().out
 
 
 def test_network_error_signature_keeps_auth_failure_distinct():
@@ -288,7 +392,7 @@ def test_build_network_stack_retries_transient_failures_and_then_succeeds():
     assert stack.ip_address == "192.168.1.99"
 
 
-def test_build_network_stack_scans_after_scan_miss_before_retry(monkeypatch):
+def test_build_network_stack_scans_after_scan_miss_before_retry(monkeypatch, capsys):
     sleeps = []
     monkeypatch.setattr(
         network_module.time,
@@ -321,6 +425,97 @@ def test_build_network_stack_scans_after_scan_miss_before_retry(monkeypatch):
     assert radio.scan_calls == 1
     assert radio.stop_scan_calls == 1
     assert sleeps == [2.0]
+    assert (
+        "network connect retry attempt=1 "
+        "error=No network with that ssid password=secretpass"
+    ) in capsys.readouterr().out
+
+
+def test_build_network_stack_retries_with_scanned_channel_hint(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(
+        network_module.time,
+        "sleep",
+        lambda value: sleeps.append(value),
+    )
+    radio = _ScanHintThenSuccessRadio()
+    runtime_config = RuntimeConfig(
+        active_profile="sensorius",
+        network=NetworkConfig(
+            ssid="PeaceHill",
+            password="secretpass",
+            hostname="co2-ykdvea",
+        ),
+    )
+
+    stack = build_network_stack(
+        runtime_config,
+        wifi_radio=radio,
+        connection_manager_module=_FakeConnMgr,
+        max_attempts=3,
+        retry_delay_s=0.0,
+    )
+
+    assert stack.phase == "ready"
+    assert radio.connect_calls == [
+        ("PeaceHill", "secretpass"),
+        ("PeaceHill", "secretpass"),
+    ]
+    assert radio.connect_kwargs == [
+        {},
+        {"channel": 6},
+    ]
+    assert radio.scan_calls == 1
+    assert radio.stop_scan_calls == 1
+    assert sleeps == [2.0]
+
+
+def test_reconnect_network_stack_can_cycle_radio_before_retry(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(
+        network_module.time,
+        "sleep",
+        lambda value: sleeps.append(value),
+    )
+    radio = _RadioCycleThenSuccessRadio()
+    runtime_config = RuntimeConfig(
+        active_profile="sensorius",
+        network=NetworkConfig(
+            ssid="PeaceHill",
+            password="secretpass",
+            hostname="co2-ykdvea",
+        ),
+    )
+    stack = network_module.NetworkStack(
+        phase="error",
+        mode="station",
+        ssid="PeaceHill",
+        hostname="co2-ykdvea",
+        wifi_radio=radio,
+        connection_manager_module=_FakeConnMgr,
+        errors=("network_connect_failed",),
+    )
+
+    reconnect = reconnect_network_stack(
+        runtime_config,
+        stack,
+        max_attempts=1,
+        retry_delay_s=0.0,
+        rebuild_socket_artifacts=True,
+        reset_station=True,
+        cycle_radio=True,
+    )
+
+    assert network_link_is_ready(reconnect) is True
+    assert radio.enabled_values == [False, True]
+    assert radio.disconnect_calls == 1
+    assert radio.stop_ap_calls == 1
+    assert radio.stop_station_calls == 1
+    assert radio.start_station_calls == 1
+    assert sleeps == [
+        network_module.RADIO_ENABLE_TOGGLE_SETTLE_S,
+        network_module.RADIO_CYCLE_SETTLE_S,
+    ]
 
 
 def test_build_network_stack_retries_authentication_error_before_failing():

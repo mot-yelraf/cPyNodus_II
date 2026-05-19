@@ -23,6 +23,7 @@ from cpynodus_ii.core.network import (
     network_link_is_ready,
     reconnect_network_stack,
     refresh_network_stack,
+    teardown_network_stack,
 )
 from cpynodus_ii.core.ntp import NTPResult, NTPState, maybe_sync_ntp
 from cpynodus_ii.core.recovery import (
@@ -55,4 +56,5 @@ __all__ = [
     "reconnect_network_stack",
     "refresh_network_stack",
     "sync_transport_to_client",
+    "teardown_network_stack",
 ]

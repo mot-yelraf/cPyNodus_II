@@ -22,6 +22,7 @@ from cpynodus_ii.core.mqtt import MQTTTransport
 def _run_direct_tests():
     tests = (
         test_build_mqtt_client_adapter_uses_runtime_target_and_credentials,
+        test_build_mqtt_client_adapter_drops_optional_connect_kwargs_when_unsupported,
         test_connect_sync_poll_and_disconnect_flow,
         test_sync_transport_to_client_records_last_publish_diagnostics,
         test_poll_mqtt_client_records_last_loop_diagnostics,
@@ -91,10 +92,17 @@ class _FakeMQTTClient:
         self.disconnected = True
 
 
+class _RejectOptionalMQTTKwargsClient(_FakeMQTTClient):
+    def __init__(self, **kwargs):
+        if "socket_timeout" in kwargs or "connect_retries" in kwargs:
+            raise TypeError("unexpected keyword argument 'socket_timeout'")
+        super().__init__(**kwargs)
+
+
 class _TimeoutSensitiveMQTTClient(_FakeMQTTClient):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.socket_timeout = 1
+        self.socket_timeout = kwargs.get("socket_timeout", 1)
         self.loop_timeouts = []
 
     def loop(self, timeout=0.0):
@@ -402,6 +410,23 @@ def test_build_mqtt_client_adapter_uses_runtime_target_and_credentials():
     assert adapter.client.kwargs["ssl_context"] is not None
     assert adapter.client.kwargs["username"] == "user1"
     assert adapter.client.kwargs["password"] == "pass1"
+    assert adapter.client.kwargs["socket_timeout"] == 3
+    assert adapter.client.kwargs["connect_retries"] == 1
+
+
+def test_build_mqtt_client_adapter_drops_optional_connect_kwargs_when_unsupported():
+    runtime_config = _runtime_config()
+
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=object(),
+        modules={"mqtt_cls": _RejectOptionalMQTTKwargsClient},
+    )
+
+    assert adapter.phase == "ready"
+    assert "socket_timeout" not in adapter.client.kwargs
+    assert "connect_retries" not in adapter.client.kwargs
+    assert adapter.client.kwargs["broker"] == "10.0.0.9"
 
 
 def test_connect_sync_poll_and_disconnect_flow():
@@ -629,6 +654,7 @@ def test_poll_mqtt_client_uses_timeout_compatible_with_socket_timeout():
 
     assert poll_result.phase == "polled"
     assert poll_result.received_count == 1
+    assert connect_result.adapter.client.socket_timeout == 1
     assert connect_result.adapter.client.loop_timeouts == [1.0]
 
 

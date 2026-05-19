@@ -1363,3 +1363,144 @@
   recovery again and keeps the stronger repeated-connect station-reset rebuild.
   Manual hard reset remains available when a physical power-cycle class reset is
   intentionally needed.
+- 2026-05-18: `v0.26.138.6` run tracking now has three active device logs:
+  `cu.usbmodem1334301.log` is `co2-frank`, SCD30 only;
+  `cu.usbmodem1334101.log` is `co2-ykdvea`, SCD30 plus `S1`/`S2`;
+  `cu.usbmodem133101.log` is `aht-rvwi73`, running `v0.26.137.2`.
+  The earlier `co2-ykdvea` obfuscated Wi-Fi password issue was corrected before
+  the continuing `138.6` run, so later recovery observations should not treat
+  that original credential mistake as unresolved.
+- 2026-05-18: `cu.usbmodem1334301.log` line 2533 starts a fresh
+  `co2-frank` `v0.26.138.6` boot. The run was healthy from `11:38:12` until
+  `12:06:09`: periodic health showed Wi-Fi ready, DNS healthy, NTP synced,
+  MQTT connected to `10.0.0.248`, and no sustained queue buildup. The first
+  autonomous failure in that section is line 2562:
+  `mqtt_publish_failed:nodus/co2-frank/data:bytes=317:[Errno 5] Input/output
+  error`. This should be treated as the primary trigger for that recovery
+  episode, not as an initial Wi-Fi join failure.
+- 2026-05-18: The `co2-frank` comparison against
+  `/Users/twfarley/xlogs/nodus.log` makes the regression concern stronger.
+  The same device on `v0.26.137.1` booted at `2026-05-17 15:28:43`, connected
+  MQTT at `15:28:44`, entered recovery idle at `15:28:45`, and then stayed in
+  periodic healthy idle health reports through at least `2026-05-18 06:03:39`.
+  After startup, that `137.1` window has no MQTT errors, no Wi-Fi signatures,
+  and no recovery actions beyond the initial `station_reset=0` MQTT rebuild.
+  By contrast, the `138.6` run for the same device failed after roughly
+  28 minutes and immediately converted the MQTT publish failure into
+  `station_reset=1`.
+- 2026-05-18: After the `co2-frank` publish failure, current `138.6` recovery
+  immediately rebuilt MQTT with `station_reset=1`. The following log cluster
+  reported `Unknown failure 205`, `Authentication failure`, and
+  `No network with that ssid`, then eventually recovered Wi-Fi at `12:07:54`.
+  This sequence suggests the MQTT-triggered station reset disturbed or exposed
+  Pico/CYW43 station state during recovery. It does not prove that Wi-Fi caused
+  the original publish failure.
+- 2026-05-18: Closer comparison should use commit `d2da54f`, which is the
+  `v0.26.137.2` baseline on `mqtt-socket-network-stability`. That comparison
+  changes the interpretation from the older `e142cc4` comparison: `137.2`
+  already treated hard MQTT disconnect reasons such as `mqtt_publish_failed:`
+  and `mqtt_poll_failed:` as reasons to rebuild MQTT with
+  `reset_station=True`. Therefore, the `station_reset=1` boolean after the
+  `co2-frank` publish failure is not by itself a brand-new `138.6` policy.
+  The post-`d2da54f` changes are instead in how reset/reconnect is executed and
+  diagnosed: station-reset reconnects now use three attempts with a 2 second
+  retry delay instead of one immediate attempt; Wi-Fi recovery adds pre-ready
+  station reset for repeated scan/unknown failures; Wi-Fi-phase station resets
+  can cycle the radio; scans now run for broader join failures and can provide
+  channel hints; scan-miss diagnostics include the effective password; and
+  MiniMQTT now gets explicit connect/runtime socket timeout settings.
+- 2026-05-18: Current decisions from the investigation:
+  - Keep the current `mqtt_recovery_timeout` strategy.
+  - Keep `BROKER_IP` as the primary MQTT connection target.
+  - Keep the current subscription-specific recovery logic. A subscription
+    failure should close the poisoned MQTT session, rebuild MQTT without
+    station reset, reconnect, drain the existing subscription queue, and
+    suppress duplicate startup queueing for the recovered generation.
+  - Keep the MiniMQTT/default 1 second runtime socket timeout behavior. Earlier
+    timeout investigations did not show benefit from increasing the default, so
+    `No data received from broker for 1 seconds` is currently treated as a
+    useful symptom marker rather than a reason to lengthen the timeout.
+  - Keep explicit Wi-Fi password diagnostic output on scan-miss failures during
+    this debugging phase. CircuitPython can report `No network with that ssid`
+    for invalid decoded credentials, so logging the effective password helped
+    identify the corrected `co2-ykdvea` credential issue.
+- 2026-05-18: Candidate next runtime change, not yet applied in this note:
+  keep the current `mqtt_recovery_timeout`, `BROKER_IP` primary connection,
+  subscription recovery, and 1 second runtime socket timeout decisions, but test
+  reverting the post-`d2da54f` recovery execution changes first. In practice,
+  this means restoring MQTT-triggered station-reset reconnects to the `137.2`
+  shape of one immediate reconnect attempt, and avoiding radio cycling /
+  multi-attempt Wi-Fi recovery unless the link remains down long enough to
+  prove MQTT-only recovery is insufficient. This is a narrower A/B test than
+  removing MQTT-triggered station reset entirely.
+- 2026-05-18: `cu.usbmodem1334101.log` line 4190 starts a clean
+  `co2-ykdvea` `v0.26.138.6` boot with Wi-Fi ready at `10.0.0.236` and MQTT
+  connected to broker IP `10.0.0.248`. Multiple MQTT recovery episodes before
+  line 4385 did recover: hard MQTT poll/publish failures rebuilt MQTT with
+  `station_reset=1`, logged a few direct-IP connect failures, then returned to
+  `recovery phase=idle`. The regression begins at line 4390 after another
+  `mqtt_poll_failed` event. From `15:57:17` through the end of the sampled log,
+  MQTT repeatedly reports
+  `mqtt_connect_failed:10.0.0.248:('Connect failure', None)`, recovery rebuilds
+  every 30 seconds with `station_reset=0`, and health stays
+  `network_phase=ready recovery_phase=mqtt mqtt_connected=False` with
+  `wifi_signature=none`. This is not a Wi-Fi-down loop; it is a repeated MQTT
+  connect-failure loop that the current escalation gate failed to recognize.
+- 2026-05-18: Runtime fix for the `1334101` regression is `v0.26.138.7`.
+  Keep the current `mqtt_recovery_timeout` strategy, broker-IP priority,
+  subscription recovery logic, and 1 second MiniMQTT timeout behavior, but
+  broaden repeated MQTT connect-failure detection so any
+  `mqtt_connect_failed:` error participates in the existing 3-count/180-second
+  soft-reboot gate. Previously only MiniMQTT's exact
+  `Repeated connect failures` wording was counted; plain
+  `('Connect failure', None)` errors reset the counter forever and allowed the
+  device to remain stuck in MQTT recovery.
+- 2026-05-18: Review of `/Users/twfarley/nodus.log` from line 1185 shows the
+  first two `v0.26.138.7` restarts were CircuitPython auto-reloads, not
+  firmware recovery reboots. Lines 1200 and 1220 say
+  `Code stopped by auto-reload. Reloading soon.` followed by `soft reboot`, and
+  there is no preceding `recovery action=soft_reboot` or
+  `runtime action=reload`. The concern still exposed a real policy edge:
+  `138.7` would count plain startup `mqtt_connect_failed:...('Connect failure',
+  None)` events toward the 3-count/180-second soft-reboot gate even before the
+  runtime had ever connected to MQTT.
+- 2026-05-18: Runtime refinement for that boot-time gate is `v0.26.138.8`.
+  Keep exact MiniMQTT `Repeated connect failures` behavior unchanged, but count
+  plain `mqtt_connect_failed:` errors only after the current runtime has seen at
+  least one successful MQTT operation. This preserves the fix for the
+  `1334101` post-success stuck loop while avoiding soft-reboot pressure during
+  a cold boot where Wi-Fi is ready but the broker is not accepting MQTT yet.
+- 2026-05-18: Follow-up tail of `/Users/twfarley/nodus.log` through line 1428
+  confirms that `v0.26.138.7` did later hit the firmware recovery gate twice:
+  lines 1265 and 1313 log
+  `recovery action=soft_reboot reason=mqtt_repeated_connect_failures count=12
+  elapsed_s=188` followed by `runtime action=reload`. That is the boot-time
+  behavior fixed by `v0.26.138.8`. The later `138.8` restarts are different:
+  line 1353 shows a `KeyboardInterrupt` during MiniMQTT connect, and lines 1391
+  and 1411 are CircuitPython `Code stopped by auto-reload. Reloading soon.`
+  events. There is no `runtime action=reload` after the `138.8` boots in this
+  sample, so the remaining restarts are consistent with deployment/autoreload
+  timing on the rPi-connected Nodus rather than the MQTT soft-reboot gate.
+- 2026-05-18: Later review of `/Users/twfarley/nodus.log` from line 1417
+  shows a separate `v0.26.138.8` cold-boot recovery gap on `co2-frank`.
+  The device boots cleanly with Wi-Fi ready at `10.0.0.219`, DNS/NTP healthy,
+  broker IP `10.0.0.248`, and MQTT deferred. It then repeats plain
+  `mqtt_connect_failed:10.0.0.248:('Connect failure', None)` from line 1429
+  through at least line 1719. Health remains
+  `network_phase=ready recovery_phase=mqtt mqtt_connected=False` with
+  `wifi_signature=none`; memory recovers after periodic GC; recovery rebuilds
+  every 30 seconds but always with `station_reset=0`; and there is no
+  `runtime action=reload`. This confirms that `138.8` prevents the boot-time
+  soft-reboot loop, but also leaves a cold boot with only plain connect
+  failures in MQTT recovery indefinitely.
+- 2026-05-18: The `co2-ykdvea` contrast in
+  `/Users/twfarley/cu.usbmodem1334101.log` from line 6560 looks healthy on the
+  same `v0.26.138.8`: it boots at `18:04:27`, connects MQTT at line 6572 in
+  `0.2` seconds, enters `recovery phase=idle` at line 6575, and stays healthy
+  through the current end of the sampled log at line 6589. That makes a
+  `co2-frank` reflash/power-cycle the right next control before changing
+  runtime logic again. If the clean reflash reproduces the same cold-boot
+  pattern, the likely next firmware change is a non-reboot cold-start MQTT
+  escalation, such as one station-reset/socket rebuild after sustained
+  no-success `mqtt_connect_failed:` errors, while preserving the post-success
+  soft-reboot guard for the `1334101` stuck-loop class.

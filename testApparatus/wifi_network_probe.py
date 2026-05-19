@@ -18,16 +18,24 @@ def run(
     *,
     ssid=None,
     password=None,
-    scans=3,
+    scans=0,
     attempts=3,
+    cycles=0,
     scan_limit=24,
     delay_s=2.0,
+    reset_settle_s=1.0,
+    radio_cycle_every=2,
+    radio_cycle_settle_s=3.0,
     connect=True,
     resolve=True,
     tcp=True,
     reset_station=True,
+    use_bssid=False,
 ):
-    """Scan Wi-Fi, connect with settings or supplied credentials, and test MQTT."""
+    """Connect with settings or supplied credentials, then test MQTT reachability.
+
+    By default cycles=0 keeps trying until the station gets an IP.
+    """
     runtime_config, errors = _load_runtime_config()
     if runtime_config is None:
         _log("settings phase=error errors={}".format(_join_errors(errors)))
@@ -73,8 +81,15 @@ def run(
         return False
 
     _log_radio_state(radio, "initial")
+    station_hint = None
     for index in range(max(0, int(scans or 0))):
-        scan_once(radio=radio, target_ssid=ssid, limit=scan_limit, label=index + 1)
+        networks = scan_once(
+            radio=radio,
+            target_ssid=ssid,
+            limit=scan_limit,
+            label=index + 1,
+        )
+        station_hint = _best_network_hint(station_hint, networks, ssid)
         _sleep(delay_s)
 
     if not connect:
@@ -82,45 +97,98 @@ def run(
         return True
 
     connected = False
-    for attempt in range(1, max(1, int(attempts or 1)) + 1):
+    cycle_limit = max(0, int(cycles or 0))
+    attempt_limit = max(1, int(attempts or 1))
+    cycle = 0
+    while not connected:
+        cycle += 1
+        if cycle > 1:
+            _log("connect cycle={} phase=start".format(cycle))
         if reset_station:
             _reset_station(radio)
             _log_radio_state(radio, "after_reset")
-        _log("connect attempt={} ssid={}".format(attempt, ssid))
-        started = _monotonic()
-        try:
-            radio.connect(ssid, password)
-            if hostname:
-                try:
-                    radio.hostname = hostname
-                except Exception as exc:
-                    _log("connect hostname_set_failed error={}".format(exc))
-            connected = bool(_safe_attr(radio, "ipv4_address"))
+            _sleep(reset_settle_s)
+        for attempt in range(1, attempt_limit + 1):
+            strategy = _connect_strategy(attempt, station_hint, use_bssid)
+            if strategy:
+                _log(
+                    (
+                        "connect hint cycle={} attempt={} strategy={} "
+                        "channel={} bssid={}"
+                    ).format(
+                        cycle,
+                        attempt,
+                        strategy,
+                        _hint_channel(station_hint) or "unknown",
+                        _bssid_text(_hint_bssid(station_hint)),
+                    )
+                )
             _log(
-                "connect phase=ready attempt={} elapsed_s={:.1f}".format(
+                "connect cycle={} attempt={} ssid={}".format(
+                    cycle,
                     attempt,
-                    _monotonic() - started,
+                    ssid,
                 )
             )
-            _log_radio_state(radio, "connected")
+            started = _monotonic()
+            try:
+                _connect_with_hint(radio, ssid, password, station_hint, strategy)
+                if hostname:
+                    try:
+                        radio.hostname = hostname
+                    except Exception as exc:
+                        _log("connect hostname_set_failed error={}".format(exc))
+                connected = bool(_safe_attr(radio, "ipv4_address"))
+                _log(
+                    (
+                        "connect phase=ready cycle={} attempt={} "
+                        "elapsed_s={:.1f}"
+                    ).format(
+                        cycle,
+                        attempt,
+                        _monotonic() - started,
+                    )
+                )
+                _log_radio_state(radio, "connected")
+                break
+            except Exception as exc:
+                _log(
+                    (
+                        "connect phase=error cycle={} attempt={} "
+                        "elapsed_s={:.1f} type={} error={}"
+                    ).format(
+                        cycle,
+                        attempt,
+                        _monotonic() - started,
+                        type(exc).__name__,
+                        exc,
+                    )
+                )
+                _log_radio_state(radio, "after_connect_error")
+                networks = scan_once(
+                    radio=radio,
+                    target_ssid=ssid,
+                    limit=scan_limit,
+                    label="after_error_{}_{}".format(cycle, attempt),
+                )
+                station_hint = _best_network_hint(station_hint, networks, ssid)
+                if attempt < attempt_limit:
+                    if reset_station:
+                        _reset_station(radio)
+                        _log_radio_state(radio, "after_reset")
+                        _sleep(reset_settle_s)
+                    else:
+                        _sleep(delay_s)
+        if connected:
             break
-        except Exception as exc:
-            _log(
-                "connect phase=error attempt={} elapsed_s={:.1f} type={} "
-                "error={}".format(
-                    attempt,
-                    _monotonic() - started,
-                    type(exc).__name__,
-                    exc,
-                )
-            )
-            _log_radio_state(radio, "after_connect_error")
-            scan_once(
-                radio=radio,
-                target_ssid=ssid,
-                limit=scan_limit,
-                label="after_error_{}".format(attempt),
-            )
+        if cycle_limit and cycle >= cycle_limit:
+            break
+        if int(radio_cycle_every or 0) > 0 and cycle % int(radio_cycle_every) == 0:
+            _log("radio_cycle cycle={} phase=start".format(cycle))
+            _cycle_radio(radio)
+            _log_radio_state(radio, "after_radio_cycle")
+            _sleep(radio_cycle_settle_s)
+        else:
             _sleep(delay_s)
 
     if not connected:
@@ -246,6 +314,73 @@ def _scan_wifi_networks(radio, *, target_ssid="", limit=24, collect=True):
     }
 
 
+def _connect_with_hint(radio, ssid, password, station_hint, strategy):
+    channel = _hint_channel(station_hint)
+    bssid = _hint_bssid(station_hint)
+    if strategy == "bssid" and channel and bssid:
+        try:
+            return radio.connect(ssid, password, channel=int(channel), bssid=bssid)
+        except TypeError:
+            pass
+    if strategy == "channel" and channel:
+        try:
+            return radio.connect(ssid, password, channel=int(channel))
+        except TypeError:
+            pass
+    return radio.connect(ssid, password)
+
+
+def _connect_strategy(attempt, station_hint, use_bssid):
+    if station_hint is None:
+        return ""
+    try:
+        attempt_number = int(attempt or 0)
+    except Exception:
+        attempt_number = 0
+    if use_bssid and attempt_number > 0 and attempt_number % 3 == 0:
+        return "bssid"
+    if attempt_number > 0 and attempt_number % 2 == 0:
+        return "channel"
+    return ""
+
+
+def _best_network_hint(current_hint, networks, target_ssid):
+    best = current_hint
+    target = str(target_ssid or "")
+    for network in tuple(networks or ()):
+        if _text(network.get("ssid", "")) != target:
+            continue
+        candidate = (
+            network.get("channel", None),
+            network.get("bssid", None),
+            _rssi_value(network.get("rssi", None)),
+        )
+        if best is None or _hint_rssi(candidate) > _hint_rssi(best):
+            best = candidate
+    return best
+
+
+def _hint_channel(station_hint):
+    try:
+        return station_hint[0]
+    except Exception:
+        return None
+
+
+def _hint_bssid(station_hint):
+    try:
+        return station_hint[1]
+    except Exception:
+        return None
+
+
+def _hint_rssi(station_hint):
+    try:
+        return int(station_hint[2])
+    except Exception:
+        return -999
+
+
 def _load_runtime_config():
     try:
         from cpynodus_ii.core.settings import Settings
@@ -259,13 +394,7 @@ def _load_runtime_config():
 
 
 def _probe_targets(radio, broker, broker_ip, port, *, resolve=True, tcp=True):
-    targets = []
-    broker = str(broker or "").strip()
-    broker_ip = str(broker_ip or "").strip()
-    if broker:
-        targets.append(broker)
-    if broker_ip and broker_ip not in targets:
-        targets.append(broker_ip)
+    targets = _broker_probe_targets(broker, broker_ip)
     if not targets:
         _log("broker phase=skipped reason=no_targets")
         return
@@ -282,6 +411,24 @@ def _probe_targets(radio, broker, broker_ip, port, *, resolve=True, tcp=True):
             _resolve_target(pool, target, port)
         if tcp:
             _tcp_connect_target(pool, target, port)
+
+
+def _broker_probe_targets(broker, broker_ip):
+    broker = str(broker or "").strip()
+    broker_ip = str(broker_ip or "").strip()
+    targets = []
+    if broker_ip:
+        targets.append(broker_ip)
+    if broker and broker not in targets:
+        if _looks_ip_literal(broker) or not broker_ip:
+            targets.append(broker)
+        else:
+            _log(
+                "broker host={} phase=skipped reason=broker_ip_primary".format(
+                    broker,
+                )
+            )
+    return tuple(targets)
 
 
 def _resolve_target(pool, target, port):
@@ -376,9 +523,31 @@ def _log_radio_state(radio, label):
 
 
 def _reset_station(radio):
+    _call(radio, "stop_ap")
     _call(radio, "disconnect")
     if _call(radio, "stop_station"):
         _call(radio, "start_station")
+
+
+def _cycle_radio(radio):
+    _call(radio, "disconnect")
+    _call(radio, "stop_ap")
+    _call(radio, "stop_station")
+    changed = False
+    try:
+        radio.enabled = False
+        changed = True
+    except Exception as exc:
+        _log("radio_cycle enabled_false phase=error error={}".format(exc))
+    if changed:
+        _sleep(0.5)
+    try:
+        radio.enabled = True
+        changed = True
+    except Exception as exc:
+        _log("radio_cycle enabled_true phase=error error={}".format(exc))
+    _call(radio, "start_station")
+    return changed
 
 
 def _safe_attr(target, name):

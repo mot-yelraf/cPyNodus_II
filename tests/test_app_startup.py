@@ -9,8 +9,12 @@ from cpynodus_ii.app import (
     _load_settings_for_startup,
     _load_startup_ota_state,
     _mark_ota_applied_after_boot,
+    _mqtt_client_init_memory_failed,
     _mqtt_connect_errors_are_repeated_failures,
+    _mqtt_connect_retry_interval_s,
     _ota_state_path,
+    _recovery_reconnect_attempts,
+    _recovery_reconnect_delay_s,
     _refresh_broker_ip_from_hostname,
     _resolve_startup_plan,
     _should_enter_ota_mode,
@@ -19,9 +23,15 @@ from cpynodus_ii.app import (
     _should_fast_reboot_wifi_after_ready,
     _should_fast_reset_wifi_station,
     _should_log_wifi_failure_signature,
+    _should_reboot_long_mqtt_recovery,
+    _should_reboot_mqtt_memory_failures,
+    _should_rebuild_mqtt_adapter_for_recovery,
+    _should_reset_wifi_station_before_ready,
     _should_verify_mqtt_before_rebuild,
     _startup_ap_fallback_reason,
     _startup_subscription_recovery_drained,
+    _update_mqtt_memory_failure_window,
+    _wifi_station_reset_reason,
 )
 from cpynodus_ii.core import RecoveryState
 from cpynodus_ii.core.config import MQTTConfig, NetworkConfig, RuntimeConfig
@@ -351,16 +361,59 @@ def test_mqtt_rebuild_verification_skips_publish_failures():
     assert should_verify is False
 
 
-def test_repeated_mqtt_connect_failure_detection_matches_minimqtt_error():
-    errors = (
+def test_repeated_mqtt_connect_failure_detection_matches_connect_errors():
+    repeated_errors = (
         "mqtt_connect_failed:10.0.0.248:('Repeated connect failures', None)",
     )
+    plain_errors = (
+        "mqtt_connect_failed:10.0.0.248:('Connect failure', None)",
+    )
 
-    assert _mqtt_connect_errors_are_repeated_failures(errors) is True
+    assert _mqtt_connect_errors_are_repeated_failures(repeated_errors) is True
+    assert _mqtt_connect_errors_are_repeated_failures(plain_errors) is False
     assert (
-        _mqtt_connect_errors_are_repeated_failures(("mqtt_connect_failed:5",))
+        _mqtt_connect_errors_are_repeated_failures(
+            plain_errors,
+            had_mqtt_success=True,
+        )
+        is True
+    )
+    assert (
+        _mqtt_connect_errors_are_repeated_failures(
+            plain_errors,
+            count_plain_connect_failures=True,
+        )
+        is True
+    )
+    assert (
+        _mqtt_connect_errors_are_repeated_failures(("mqtt_poll_failed:5",))
         is False
     )
+
+
+def test_recovery_reconnect_settings_only_expand_after_station_reset():
+    assert _recovery_reconnect_attempts(False) == 1
+    assert _recovery_reconnect_delay_s(False) == 0.0
+    assert _recovery_reconnect_attempts(True) == 3
+    assert _recovery_reconnect_delay_s(True) == 2.0
+
+
+def test_wifi_station_reset_extends_to_repeated_startup_failures():
+    assert (
+        _should_reset_wifi_station_before_ready("station_scan_miss", 1, False)
+        is False
+    )
+    assert (
+        _should_reset_wifi_station_before_ready("station_scan_miss", 2, False)
+        is True
+    )
+    assert _should_reset_wifi_station_before_ready("station_unknown", 2, False) is True
+    assert (
+        _should_reset_wifi_station_before_ready("station_scan_miss", 2, True)
+        is False
+    )
+
+    assert _wifi_station_reset_reason(False, True) == "before_ready_failure"
 
 
 def test_repeated_mqtt_connect_failure_fast_reboot_gate():
@@ -400,6 +453,83 @@ def test_repeated_mqtt_connect_failure_defaults_allow_blocking_connects():
     assert _should_fast_reboot_mqtt_connect_failures(2, 100.0, 400.0) is False
     assert _should_fast_reboot_mqtt_connect_failures(3, 100.0, 279.0) is False
     assert _should_fast_reboot_mqtt_connect_failures(3, 100.0, 280.0) is True
+
+
+def test_mqtt_memory_init_failure_window_and_reboot_gate():
+    errors = ("mqtt_client_init_failed", "memory allocation failed, allocating 2344")
+
+    assert _mqtt_client_init_memory_failed(errors) is True
+    count, started_at = _update_mqtt_memory_failure_window(errors, 0, -1.0, 100.0)
+    assert count == 1
+    assert started_at == 100.0
+
+    count, started_at = _update_mqtt_memory_failure_window(
+        errors,
+        count,
+        started_at,
+        110.0,
+    )
+    assert count == 2
+    assert started_at == 100.0
+    assert _should_reboot_mqtt_memory_failures(4, 100.0, 140.0) is False
+    assert _should_reboot_mqtt_memory_failures(5, 100.0, 119.0) is False
+    assert _should_reboot_mqtt_memory_failures(5, 100.0, 120.0) is True
+
+    count, started_at = _update_mqtt_memory_failure_window(
+        (),
+        count,
+        started_at,
+        130.0,
+    )
+    assert count == 0
+    assert started_at == -1.0
+
+
+def test_long_mqtt_recovery_reboot_gate():
+    state = RecoveryState(phase="mqtt", phase_started_at=100.0)
+
+    assert _should_reboot_long_mqtt_recovery(state, 999.0) is False
+    assert _should_reboot_long_mqtt_recovery(state, 1000.0) is True
+    assert (
+        _should_reboot_long_mqtt_recovery(
+            RecoveryState(phase="wifi", phase_started_at=0.0),
+            2000.0,
+        )
+        is False
+    )
+
+
+def test_plain_mqtt_broker_failures_back_off_connect_and_hold_rebuild():
+    state = RecoveryState(phase="mqtt", phase_started_at=100.0)
+    plain_failure = "mqtt_connect_failed:10.0.0.248:('Connect failure', None)"
+    repeated_failure = (
+        "mqtt_connect_failed:10.0.0.248:('Repeated connect failures', None)"
+    )
+
+    assert _mqtt_connect_retry_interval_s(state, 399.0, plain_failure) == 5.0
+    assert _mqtt_connect_retry_interval_s(state, 400.0, plain_failure) == 30.0
+    assert _mqtt_connect_retry_interval_s(state, 400.0, repeated_failure) == 5.0
+    assert (
+        _should_rebuild_mqtt_adapter_for_recovery(
+            SimpleNamespace(phase="ready"),
+            plain_failure,
+        )
+        is False
+    )
+    assert (
+        _should_rebuild_mqtt_adapter_for_recovery(
+            SimpleNamespace(phase="ready"),
+            repeated_failure,
+        )
+        is True
+    )
+    assert (
+        _should_rebuild_mqtt_adapter_for_recovery(
+            SimpleNamespace(phase="error"),
+            plain_failure,
+        )
+        is True
+    )
 
 
 def test_mqtt_rebuild_verification_expires_after_recovery_window():
