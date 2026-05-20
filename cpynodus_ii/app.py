@@ -26,6 +26,8 @@ from cpynodus_ii.core import (
     network_error_signature,
     network_link_is_ready,
     poll_mqtt_client,
+    preflight_mqtt_broker_connect,
+    preflight_mqtt_broker_tcp,
     reconnect_network_stack,
     refresh_network_stack,
     sync_transport_to_client,
@@ -58,8 +60,11 @@ MQTT_BROKER_OUTAGE_BACKOFF_AFTER_S = 300.0
 MQTT_BROKER_OUTAGE_RETRY_INTERVAL_S = 30.0
 MQTT_MEMORY_FAILURE_REBOOT_S = 20.0
 MQTT_MEMORY_FAILURE_REBOOT_MIN_COUNT = 5
-MQTT_REPEATED_CONNECT_FAILURE_REBOOT_S = 180.0
+MQTT_REPEATED_CONNECT_FAILURE_REBOOT_S = 60.0
 MQTT_REPEATED_CONNECT_FAILURE_MIN_COUNT = 3
+MQTT_PLAIN_CONNECT_STATION_RESET_S = 180.0
+MQTT_PLAIN_CONNECT_STATION_RESET_INTERVAL_S = 180.0
+SOFT_REBOOT_SETTLE_S = 1.0
 WIFI_AFTER_READY_FAILURE_SIGNATURES = (
     "station_scan_miss_after_ready",
     "station_unknown_after_ready",
@@ -79,6 +84,10 @@ HARD_RECOVERY_REBOOT_REASONS = (
     "mqtt_recovery_timeout",
     "mqtt_repeated_connect_failures",
 )
+RECOVERY_HARD_RESET_NVM_INDEX = 1
+RECOVERY_HARD_RESET_MQTT_MARKER = 77
+
+_SOFT_RELOAD_PREPARED = False
 
 
 def _path_exists(path):
@@ -305,6 +314,35 @@ def _mqtt_connect_errors_are_repeated_failures(
     return False
 
 
+def _mqtt_connect_attempt_is_connack_timeout_pattern(
+    *,
+    tcp_preflight_error,
+    connect_probe_error,
+    connect_probe_code,
+    connect_errors,
+):
+    """Return True for the warm-start TCP-OK/CONNACK-timeout failure pattern."""
+    if tcp_preflight_error:
+        return False
+    if int(connect_probe_code if connect_probe_code is not None else -1) != -1:
+        return False
+    probe_text = str(connect_probe_error or "").strip().lower()
+    if "mqtt_connect_probe_failed:" not in probe_text:
+        return False
+    if (
+        "errno 116" not in probe_text
+        and "etimedout" not in probe_text
+        and "timedout" not in probe_text
+        and "timed out" not in probe_text
+        and "timeout" not in probe_text
+    ):
+        return False
+    return _mqtt_connect_errors_are_repeated_failures(
+        connect_errors,
+        count_plain_connect_failures=True,
+    )
+
+
 def _should_fast_reboot_mqtt_connect_failures(
     failure_count,
     first_failure_at,
@@ -394,6 +432,91 @@ def _mqtt_connect_retry_interval_s(
     ):
         return MQTT_BROKER_OUTAGE_RETRY_INTERVAL_S
     return 5.0
+
+
+def _should_reset_mqtt_station_for_plain_connect_failure(
+    recovery_state,
+    now_monotonic,
+    last_disconnect_reason,
+    last_station_reset_at,
+    *,
+    reset_after_s=MQTT_PLAIN_CONNECT_STATION_RESET_S,
+    reset_interval_s=MQTT_PLAIN_CONNECT_STATION_RESET_INTERVAL_S,
+):
+    """Return True when plain MQTT connect failures need station reset."""
+    if not _is_plain_mqtt_connect_failure(last_disconnect_reason):
+        return False
+    now_value = float(now_monotonic or 0.0)
+    if _mqtt_recovery_elapsed_s(recovery_state, now_value) < float(reset_after_s):
+        return False
+    if float(last_station_reset_at or -1.0) < 0.0:
+        return True
+    return (now_value - float(last_station_reset_at)) >= float(reset_interval_s)
+
+
+def _recovery_hard_reset_marker_value(nvm=None):
+    """Return the recovery hard-reset marker byte, or -1 when unavailable."""
+    if nvm is None:
+        try:
+            import microcontroller  # type: ignore
+
+            nvm = getattr(microcontroller, "nvm", None)
+        except ImportError:
+            nvm = None
+    try:
+        if nvm is None or len(nvm) <= RECOVERY_HARD_RESET_NVM_INDEX:
+            return -1
+        return int(nvm[RECOVERY_HARD_RESET_NVM_INDEX] or 0)
+    except Exception:
+        return -1
+
+
+def _recovery_hard_reset_marker_is_set(reboot_reason, nvm=None):
+    """Return True when a persistent MQTT hard reset already ran."""
+    if str(reboot_reason or "").strip() != "mqtt_repeated_connect_failures":
+        return False
+    return _recovery_hard_reset_marker_value(nvm) == RECOVERY_HARD_RESET_MQTT_MARKER
+
+
+def _mark_recovery_hard_reset_requested(reboot_reason, nvm=None):
+    """Mark a persistent MQTT hard reset before resetting the MCU."""
+    if str(reboot_reason or "").strip() != "mqtt_repeated_connect_failures":
+        return False
+    if nvm is None:
+        try:
+            import microcontroller  # type: ignore
+
+            nvm = getattr(microcontroller, "nvm", None)
+        except ImportError:
+            nvm = None
+    try:
+        if nvm is None or len(nvm) <= RECOVERY_HARD_RESET_NVM_INDEX:
+            return False
+        nvm[RECOVERY_HARD_RESET_NVM_INDEX] = RECOVERY_HARD_RESET_MQTT_MARKER
+        return True
+    except Exception:
+        return False
+
+
+def _clear_recovery_hard_reset_marker(reboot_reason, nvm=None):
+    """Clear the persistent MQTT hard-reset marker after MQTT recovers."""
+    if str(reboot_reason or "").strip() != "mqtt_repeated_connect_failures":
+        return False
+    if nvm is None:
+        try:
+            import microcontroller  # type: ignore
+
+            nvm = getattr(microcontroller, "nvm", None)
+        except ImportError:
+            nvm = None
+    try:
+        if nvm is None or len(nvm) <= RECOVERY_HARD_RESET_NVM_INDEX:
+            return False
+        if int(nvm[RECOVERY_HARD_RESET_NVM_INDEX] or 0) != 0:
+            nvm[RECOVERY_HARD_RESET_NVM_INDEX] = 0
+        return True
+    except Exception:
+        return False
 
 
 def _should_rebuild_mqtt_adapter_for_recovery(mqtt_adapter, last_disconnect_reason):
@@ -715,7 +838,37 @@ def _enter_ap_recovery_mode(runtime_config):
     return replace(runtime_config, active_profile="nodusweb", ap_mode=True)
 
 
-def _soft_reboot(*, reason="soft_reboot", start_monotonic=None):
+def _mark_soft_reload_prepared():
+    global _SOFT_RELOAD_PREPARED
+    _SOFT_RELOAD_PREPARED = True
+
+
+def _consume_soft_reload_prepared():
+    global _SOFT_RELOAD_PREPARED
+    prepared = bool(_SOFT_RELOAD_PREPARED)
+    _SOFT_RELOAD_PREPARED = False
+    return prepared
+
+
+def _soft_reboot(*, reason="soft_reboot", start_monotonic=None, settle_s=0.0):
+    try:
+        delay_s = max(0.0, float(settle_s or 0.0))
+    except Exception:
+        delay_s = 0.0
+    if delay_s > 0.0:
+        if start_monotonic is not None:
+            _print_log(
+                "runtime",
+                "action=reload_wait reason={} delay_s={:.1f}".format(
+                    str(reason or "soft_reboot"),
+                    delay_s,
+                ),
+                start_monotonic=start_monotonic,
+            )
+        try:
+            time.sleep(delay_s)
+        except Exception:
+            pass
     if start_monotonic is not None:
         _print_log(
             "runtime",
@@ -751,9 +904,11 @@ def _hard_reboot(*, reason="hard_reboot", start_monotonic=None):
 
 def _recovery_reboot_kind(reboot_reason, *, fs_writable=False):
     """Return the reload depth needed for a recovery escalation."""
+    reason = str(reboot_reason or "").strip()
+    if reason == "mqtt_repeated_connect_failures":
+        return "hard"
     if fs_writable is not True:
         return "soft"
-    reason = str(reboot_reason or "").strip()
     if reason in HARD_RECOVERY_REBOOT_REASONS:
         return "hard"
     return "soft"
@@ -787,15 +942,22 @@ def _teardown_network_for_shutdown(
     *,
     start_monotonic,
     log_prefix="runtime",
+    cycle_radio=False,
 ):
     """Tear down Wi-Fi networking before leaving the runtime."""
     if network_stack is None:
         return False
     try:
-        torn_down = teardown_network_stack(network_stack)
+        torn_down = teardown_network_stack(
+            network_stack,
+            cycle_radio=bool(cycle_radio),
+        )
         _print_log(
             log_prefix,
-            "network action=teardown result={}".format(1 if torn_down else 0),
+            "network action=teardown result={} cycle_radio={}".format(
+                1 if torn_down else 0,
+                1 if cycle_radio else 0,
+            ),
             start_monotonic=start_monotonic,
         )
         return bool(torn_down)
@@ -812,17 +974,33 @@ def _prepare_soft_recovery_reboot(
     *,
     mqtt_adapter=None,
     transport=None,
+    runtime_config=None,
     network_stack=None,
     start_monotonic,
 ):
     """Close MQTT and station networking before a recovery reload."""
     if mqtt_adapter is not None and transport is not None:
         try:
-            close_result = close_mqtt_client(mqtt_adapter, transport)
-            if close_result.errors:
+            if (
+                bool(getattr(transport, "connected", False))
+                and runtime_config is not None
+            ):
+                mqtt_result = disconnect_mqtt_client(
+                    mqtt_adapter,
+                    transport,
+                    runtime_config,
+                )
+                action = "disconnect"
+            else:
+                mqtt_result = close_mqtt_client(mqtt_adapter, transport)
+                action = "close"
+            if mqtt_result.errors:
                 _print_log(
                     "recovery",
-                    "mqtt close errors={}".format(",".join(close_result.errors)),
+                    "mqtt {} errors={}".format(
+                        action,
+                        ",".join(mqtt_result.errors),
+                    ),
                     start_monotonic=start_monotonic,
                 )
         except Exception as exc:
@@ -836,6 +1014,7 @@ def _prepare_soft_recovery_reboot(
         network_stack,
         start_monotonic=start_monotonic,
         log_prefix="recovery",
+        cycle_radio=True,
     )
     _collect_garbage()
 
@@ -848,6 +1027,7 @@ def _perform_recovery_reboot(
     start_monotonic,
     mqtt_adapter=None,
     transport=None,
+    runtime_config=None,
     network_stack=None,
 ):
     """Persist recovery reboot context, then perform the selected reboot."""
@@ -865,10 +1045,16 @@ def _perform_recovery_reboot(
         _prepare_soft_recovery_reboot(
             mqtt_adapter=mqtt_adapter,
             transport=transport,
+            runtime_config=runtime_config,
             network_stack=network_stack,
             start_monotonic=start_monotonic,
         )
-        _soft_reboot(reason=reason, start_monotonic=start_monotonic)
+        _mark_soft_reload_prepared()
+        _soft_reboot(
+            reason=reason,
+            start_monotonic=start_monotonic,
+            settle_s=SOFT_REBOOT_SETTLE_S,
+        )
 
 
 def _should_log_command_result(result):
@@ -946,7 +1132,6 @@ def _mark_ota_applied_after_boot(ota_state, settings_root, fs_writable):
 async def main(*, startup_plan_override=None):
     """Run the current scaffold runtime."""
     start_monotonic = time.monotonic()
-    rtc_valid_at_boot = bool(_datetime_stamp())
     settings_root = "."
     settings, fs_writable, profile_reset_requested = _load_settings_for_startup(
         settings_root
@@ -1000,7 +1185,9 @@ async def main(*, startup_plan_override=None):
         )
         return
     network_stack = build_network_stack(
-        runtime_config, log_start_monotonic=start_monotonic
+        runtime_config,
+        preconnect_scan=True,
+        log_start_monotonic=start_monotonic,
     )
     startup_ap_fallback = _should_fallback_to_ap(runtime_config, network_stack)
     startup_ap_fallback_errors = tuple(network_stack.errors)
@@ -1057,6 +1244,7 @@ async def main(*, startup_plan_override=None):
     sensor_snapshot = read_sensor_snapshot(sensor_service, runtime_config)
     steady_state = SteadyState()
     ntp_state = NTPState()
+    ntp_startup_defer_logged = False
     recovery_policy = RecoveryPolicy()
     recovery_state = RecoveryState(
         phase="ap" if network_stack.phase == "ap" else "idle",
@@ -1078,6 +1266,7 @@ async def main(*, startup_plan_override=None):
     last_wifi_failure_signature = ""
     wifi_failure_signature_count = 0
     wifi_after_ready_failure_count = 0
+    last_mqtt_station_reset_at = -1.0
     if _mqtt_client_init_memory_failed(mqtt_adapter.errors):
         mqtt_client_memory_failure_count = 1
         mqtt_client_memory_failure_started_at = float(start_monotonic)
@@ -1106,6 +1295,19 @@ async def main(*, startup_plan_override=None):
             ",".join(network_stack.errors) if network_stack.errors else "none",
             mqtt_adapter.phase,
             "{}:{}".format(connect_phase, mqtt_adapter.active_broker or "none"),
+        ),
+        start_monotonic=start_monotonic,
+    )
+    _print_log(
+        "network",
+        "socket_artifacts source={} socket_pool={} ssl_context={}".format(
+            getattr(network_stack, "socket_artifact_source", "") or "unknown",
+            "ready"
+            if getattr(network_stack, "socket_pool", None) is not None
+            else "none",
+            "ready"
+            if getattr(network_stack, "ssl_context", None) is not None
+            else "none",
         ),
         start_monotonic=start_monotonic,
     )
@@ -1292,6 +1494,7 @@ async def main(*, startup_plan_override=None):
                     start_monotonic=start_monotonic,
                     mqtt_adapter=mqtt_adapter,
                     transport=transport,
+                    runtime_config=runtime_config,
                     network_stack=network_stack,
                 )
             if recovery_decision.request_soft_reboot:
@@ -1314,6 +1517,7 @@ async def main(*, startup_plan_override=None):
                     start_monotonic=start_monotonic,
                     mqtt_adapter=mqtt_adapter,
                     transport=transport,
+                    runtime_config=runtime_config,
                     network_stack=network_stack,
                 )
             if recovery_decision.attempt_wifi_reconnect:
@@ -1445,6 +1649,7 @@ async def main(*, startup_plan_override=None):
                             start_monotonic=start_monotonic,
                             mqtt_adapter=mqtt_adapter,
                             transport=transport,
+                            runtime_config=runtime_config,
                             network_stack=network_stack,
                         )
             if recovery_decision.attempt_mqtt_rebuild and network_link_is_ready(
@@ -1478,6 +1683,11 @@ async def main(*, startup_plan_override=None):
                     if not _should_rebuild_mqtt_adapter_for_recovery(
                         mqtt_adapter,
                         mqtt_disconnect_reason,
+                    ) and not _should_reset_mqtt_station_for_plain_connect_failure(
+                        recovery_state,
+                        now_monotonic,
+                        mqtt_disconnect_reason,
+                        last_mqtt_station_reset_at,
                     ):
                         _print_log(
                             "recovery",
@@ -1493,8 +1703,19 @@ async def main(*, startup_plan_override=None):
                             start_monotonic=start_monotonic,
                         )
                     else:
-                        mqtt_station_reset = _mqtt_disconnect_reason_requires_rebuild(
-                            mqtt_disconnect_reason
+                        plain_station_reset = (
+                            _should_reset_mqtt_station_for_plain_connect_failure(
+                                recovery_state,
+                                now_monotonic,
+                                mqtt_disconnect_reason,
+                                last_mqtt_station_reset_at,
+                            )
+                        )
+                        mqtt_station_reset = bool(
+                            plain_station_reset
+                            or _mqtt_disconnect_reason_requires_rebuild(
+                                mqtt_disconnect_reason
+                            )
                         )
                         close_result = close_mqtt_client(mqtt_adapter, transport)
                         if mqtt_disconnect_reason:
@@ -1511,6 +1732,21 @@ async def main(*, startup_plan_override=None):
                             )
                         if mqtt_client_memory_failure_count > 0:
                             _collect_garbage()
+                        if plain_station_reset:
+                            last_mqtt_station_reset_at = float(now_monotonic)
+                            _print_log(
+                                "recovery",
+                                (
+                                    "mqtt action=station_reset "
+                                    "reason=plain_connect_failure elapsed_s={:.0f}"
+                                ).format(
+                                    _mqtt_recovery_elapsed_s(
+                                        recovery_state,
+                                        now_monotonic,
+                                    )
+                                ),
+                                start_monotonic=start_monotonic,
+                            )
                         if (
                             mqtt_station_reset
                             or getattr(network_stack, "socket_pool", None) is None
@@ -1526,8 +1762,11 @@ async def main(*, startup_plan_override=None):
                                 ),
                                 rebuild_socket_artifacts=mqtt_station_reset,
                                 reset_station=mqtt_station_reset,
+                                cycle_radio=mqtt_station_reset,
                                 log_start_monotonic=start_monotonic,
                             )
+                            if plain_station_reset:
+                                last_mqtt_connect_attempt_at = -1.0
                         mqtt_adapter = build_mqtt_client_adapter(
                             runtime_config,
                             socket_pool=network_stack.socket_pool,
@@ -1598,52 +1837,76 @@ async def main(*, startup_plan_override=None):
                                 start_monotonic=start_monotonic,
                                 mqtt_adapter=mqtt_adapter,
                                 transport=transport,
+                                runtime_config=runtime_config,
                                 network_stack=network_stack,
                             )
-            ntp_result = maybe_sync_ntp(
-                runtime_config,
-                network_stack,
-                state=ntp_state,
-                now_monotonic=now_monotonic,
+            defer_ntp_for_mqtt = (
+                plan.ntp_enabled
+                and plan.mqtt_enabled
+                and not transport.connected
+                and getattr(transport, "last_success_at", -1.0) < 0.0
             )
-            ntp_state = ntp_result.state
-            if ntp_result.phase != "skipped":
-                _print_log(
-                    "ntp",
-                    "phase={} server={} rtc={} errors={}".format(
-                        ntp_result.phase,
-                        ntp_state.server or DEFAULT_NTP_SERVER,
-                        ntp_state.datetime_text or "unknown",
-                        ",".join(ntp_result.errors) if ntp_result.errors else "none",
-                    ),
-                    start_monotonic=start_monotonic,
-                )
-                if ntp_result.phase == "cooldown":
-                    _print_log(
-                        "ntp",
-                        "marker=cooldown_entered server={} retry_after_s={}".format(
-                            ntp_state.server or DEFAULT_NTP_SERVER,
-                            int(
-                                max(
-                                    float(ntp_state.cooldown_until)
-                                    - float(now_monotonic),
-                                    0.0,
-                                )
-                            ),
-                        ),
-                        start_monotonic=start_monotonic,
-                    )
-                elif ntp_result.phase == "disabled":
+            if defer_ntp_for_mqtt:
+                if not ntp_startup_defer_logged:
+                    ntp_startup_defer_logged = True
                     _print_log(
                         "ntp",
                         (
-                            "marker=disabled server={} "
-                            "reason=attempt_limit_exhausted"
-                        ).format(ntp_state.server or DEFAULT_NTP_SERVER),
+                            "phase=deferred reason=mqtt_startup_connect "
+                            "until=mqtt_connected"
+                        ),
                         start_monotonic=start_monotonic,
                     )
-                if ntp_result.phase == "synced":
-                    _collect_garbage()
+            else:
+                ntp_result = maybe_sync_ntp(
+                    runtime_config,
+                    network_stack,
+                    state=ntp_state,
+                    now_monotonic=now_monotonic,
+                )
+                ntp_state = ntp_result.state
+                if ntp_result.phase != "skipped":
+                    _print_log(
+                        "ntp",
+                        "phase={} server={} rtc={} errors={}".format(
+                            ntp_result.phase,
+                            ntp_state.server or DEFAULT_NTP_SERVER,
+                            ntp_state.datetime_text or "unknown",
+                            ",".join(ntp_result.errors)
+                            if ntp_result.errors
+                            else "none",
+                        ),
+                        start_monotonic=start_monotonic,
+                    )
+                    if ntp_result.phase == "cooldown":
+                        _print_log(
+                            "ntp",
+                            (
+                                "marker=cooldown_entered server={} "
+                                "retry_after_s={}"
+                            ).format(
+                                ntp_state.server or DEFAULT_NTP_SERVER,
+                                int(
+                                    max(
+                                        float(ntp_state.cooldown_until)
+                                        - float(now_monotonic),
+                                        0.0,
+                                    )
+                                ),
+                            ),
+                            start_monotonic=start_monotonic,
+                        )
+                    elif ntp_result.phase == "disabled":
+                        _print_log(
+                            "ntp",
+                            (
+                                "marker=disabled server={} "
+                                "reason=attempt_limit_exhausted"
+                            ).format(ntp_state.server or DEFAULT_NTP_SERVER),
+                            start_monotonic=start_monotonic,
+                        )
+                    if ntp_result.phase == "synced":
+                        _collect_garbage()
             if (
                 plan.mqtt_enabled
                 and not transport.connected
@@ -1750,11 +2013,59 @@ async def main(*, startup_plan_override=None):
                                 start_monotonic=start_monotonic,
                                 mqtt_adapter=mqtt_adapter,
                                 transport=transport,
+                                runtime_config=runtime_config,
                                 network_stack=network_stack,
                             )
                         await asyncio.sleep(0.05)
                         continue
                 transport.mark_connect_requested()
+                tcp_preflight_started_at = time.monotonic()
+                tcp_preflight_error, tcp_preflight_target = preflight_mqtt_broker_tcp(
+                    mqtt_adapter
+                )
+                tcp_preflight_finished_at = time.monotonic()
+                _print_log(
+                    "mqtt",
+                    (
+                        "preflight phase={} broker={} target={} port={} "
+                        "elapsed_s={:.1f} socket_source={} errors={}"
+                    ).format(
+                        "tcp_error" if tcp_preflight_error else "tcp_ok",
+                        mqtt_adapter.active_broker or mqtt_adapter.broker or "none",
+                        tcp_preflight_target or "none",
+                        mqtt_adapter.port,
+                        tcp_preflight_finished_at - tcp_preflight_started_at,
+                        getattr(network_stack, "socket_artifact_source", "")
+                        or "unknown",
+                        tcp_preflight_error or "none",
+                    ),
+                    start_monotonic=start_monotonic,
+                )
+                connect_probe_started_at = time.monotonic()
+                (
+                    connect_probe_error,
+                    connect_probe_target,
+                    connect_probe_client_id,
+                    connect_probe_code,
+                ) = preflight_mqtt_broker_connect(mqtt_adapter)
+                connect_probe_finished_at = time.monotonic()
+                _print_log(
+                    "mqtt",
+                    (
+                        "connect_probe phase={} broker={} target={} port={} "
+                        "elapsed_s={:.1f} client_id={} connack={} errors={}"
+                    ).format(
+                        "connack_error" if connect_probe_error else "connack_ok",
+                        mqtt_adapter.active_broker or mqtt_adapter.broker or "none",
+                        connect_probe_target or "none",
+                        mqtt_adapter.port,
+                        connect_probe_finished_at - connect_probe_started_at,
+                        connect_probe_client_id or "none",
+                        connect_probe_code,
+                        connect_probe_error or "none",
+                    ),
+                    start_monotonic=start_monotonic,
+                )
                 connect_started_at = time.monotonic()
                 connect_result = connect_mqtt_client(
                     mqtt_adapter,
@@ -1770,6 +2081,18 @@ async def main(*, startup_plan_override=None):
                     repeated_mqtt_connect_failure_started_at = -1.0
                     mqtt_client_memory_failure_count = 0
                     mqtt_client_memory_failure_started_at = -1.0
+                    last_mqtt_station_reset_at = -1.0
+                    if _recovery_hard_reset_marker_is_set(
+                        "mqtt_repeated_connect_failures"
+                    ):
+                        _clear_recovery_hard_reset_marker(
+                            "mqtt_repeated_connect_failures"
+                        )
+                        _print_log(
+                            "recovery",
+                            "action=clear_hard_reset_marker reason=mqtt_connected",
+                            start_monotonic=start_monotonic,
+                        )
                     _print_log(
                         "mqtt",
                         "connect phase={} broker={} elapsed_s={:.1f}".format(
@@ -1847,13 +2170,11 @@ async def main(*, startup_plan_override=None):
                         ),
                         start_monotonic=start_monotonic,
                     )
-                    if _mqtt_connect_errors_are_repeated_failures(
-                        connect_result.errors,
-                        had_mqtt_success=float(
-                            getattr(transport, "last_success_at", -1.0)
-                        )
-                        >= 0.0,
-                        count_plain_connect_failures=rtc_valid_at_boot,
+                    if _mqtt_connect_attempt_is_connack_timeout_pattern(
+                        tcp_preflight_error=tcp_preflight_error,
+                        connect_probe_error=connect_probe_error,
+                        connect_probe_code=connect_probe_code,
+                        connect_errors=connect_result.errors,
                     ):
                         if repeated_mqtt_connect_failure_count <= 0:
                             repeated_mqtt_connect_failure_started_at = float(
@@ -1866,6 +2187,36 @@ async def main(*, startup_plan_override=None):
                             connect_finished_at,
                         ):
                             reboot_reason = "mqtt_repeated_connect_failures"
+                            if _recovery_hard_reset_marker_is_set(reboot_reason):
+                                _print_log(
+                                    "recovery",
+                                    (
+                                        "action=hard_reboot_suppressed reason={} "
+                                        "marker=nvm count={} elapsed_s={}"
+                                    ).format(
+                                        reboot_reason,
+                                        repeated_mqtt_connect_failure_count,
+                                        int(
+                                            max(
+                                                0.0,
+                                                float(connect_finished_at)
+                                                - float(
+                                                    repeated_mqtt_connect_failure_started_at
+                                                ),
+                                            )
+                                        ),
+                                    ),
+                                    start_monotonic=start_monotonic,
+                                )
+                                repeated_mqtt_connect_failure_count = 0
+                                repeated_mqtt_connect_failure_started_at = -1.0
+                                await asyncio.sleep(0.05)
+                                continue
+                            marker_status = (
+                                "set"
+                                if _mark_recovery_hard_reset_requested(reboot_reason)
+                                else "unavailable"
+                            )
                             reboot_kind = _recovery_reboot_kind(
                                 reboot_reason,
                                 fs_writable=fs_writable,
@@ -1874,7 +2225,7 @@ async def main(*, startup_plan_override=None):
                                 "recovery",
                                 (
                                     "action={}_reboot reason={} count={} "
-                                    "elapsed_s={}"
+                                    "elapsed_s={} marker={}"
                                 ).format(
                                     reboot_kind,
                                     reboot_reason,
@@ -1888,6 +2239,7 @@ async def main(*, startup_plan_override=None):
                                             ),
                                         )
                                     ),
+                                    marker_status,
                                 ),
                                 start_monotonic=start_monotonic,
                             )
@@ -1898,6 +2250,7 @@ async def main(*, startup_plan_override=None):
                                 start_monotonic=start_monotonic,
                                 mqtt_adapter=mqtt_adapter,
                                 transport=transport,
+                                runtime_config=runtime_config,
                                 network_stack=network_stack,
                             )
                     else:
@@ -2071,7 +2424,14 @@ async def main(*, startup_plan_override=None):
         )
         raise
     finally:
-        if transport.connected:
+        shutdown_prepared_for_reload = _consume_soft_reload_prepared()
+        if shutdown_prepared_for_reload:
+            _print_log(
+                "runtime",
+                "shutdown cleanup=skipped reason=prepared_reload",
+                start_monotonic=start_monotonic,
+            )
+        elif transport.connected:
             try:
                 disconnect_result = disconnect_mqtt_client(
                     mqtt_adapter,
@@ -2099,10 +2459,30 @@ async def main(*, startup_plan_override=None):
                     "disconnect phase=error errors={}".format(str(exc)),
                     start_monotonic=start_monotonic,
                 )
-        _teardown_network_for_shutdown(
-            network_stack,
-            start_monotonic=start_monotonic,
-        )
+        else:
+            try:
+                close_result = close_mqtt_client(mqtt_adapter, transport)
+                if close_result.errors:
+                    _print_log(
+                        "mqtt",
+                        "close phase={} errors={}".format(
+                            close_result.phase,
+                            ",".join(close_result.errors),
+                        ),
+                        start_monotonic=start_monotonic,
+                    )
+            except Exception as exc:
+                _print_log(
+                    "mqtt",
+                    "close phase=error errors={}".format(str(exc)),
+                    start_monotonic=start_monotonic,
+                )
+        if not shutdown_prepared_for_reload:
+            _teardown_network_for_shutdown(
+                network_stack,
+                start_monotonic=start_monotonic,
+                cycle_radio=True,
+            )
         if loop_error is not None:
             _print_log(
                 "runtime",

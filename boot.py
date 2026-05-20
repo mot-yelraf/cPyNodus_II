@@ -12,11 +12,13 @@ import board
 import digitalio
 import microcontroller
 import storage
+import supervisor
 import usb_cdc
 
 # ---------- user-configurable pins ----------
 RW_GUARD_PIN_NAME = "GP14"  # pull to GND for app R/W + REPL (no USB drive)
 ENABLE_USB_DATA_CDC = True  # keep secondary CDC channel behavior unchanged
+DISABLE_RUNTIME_AUTORELOAD = True
 
 _boot_warnings = []
 
@@ -50,6 +52,24 @@ def _stamp():
     return "{}s".format(elapsed)
 
 
+def _disable_auto_reload():
+    runtime = getattr(supervisor, "runtime", None)
+    if runtime is not None:
+        try:
+            runtime.autoreload = False
+            return True
+        except Exception:
+            pass
+    disable = getattr(supervisor, "disable_autoreload", None)
+    if callable(disable):
+        try:
+            disable()
+            return True
+        except Exception:
+            pass
+    return False
+
+
 # ---------- read the guard pin ----------
 guard_pin = None
 is_guard_low = False
@@ -72,7 +92,8 @@ try:
 except Exception as exc:
     _warn("NVM update failed: {err}".format(err=exc))
 
-# Clear the app-level cold-boot bounce marker only on true power events.
+# Clear the app-level reboot marker only on true power events. Runtime recovery
+# can use this byte to avoid repeated reset loops across warm restarts.
 try:
     reset_reason = getattr(getattr(microcontroller, "cpu", None), "reset_reason", None)
     reset_text = "" if reset_reason is None else str(reset_reason).strip().lower()
@@ -105,6 +126,9 @@ else:
         storage.remount("/", readonly=True)
     except Exception as exc:
         _warn("remount ro failed: {err}".format(err=exc))
+
+if DISABLE_RUNTIME_AUTORELOAD:
+    _disable_auto_reload()
 
 if guard_pin is not None:
     try:

@@ -130,6 +130,46 @@ class _FakeScanNetwork:
         self.rssi = rssi
 
 
+class _PreconnectScanRadio:
+    def __init__(self):
+        self.events = []
+        self.connect_calls = []
+        self.hostname = ""
+        self.ipv4_address = ""
+        self.ipv4_address_ap = "192.168.4.1"
+
+    def start_scanning_networks(self):
+        self.events.append("scan")
+        return [
+            _FakeScanNetwork(
+                "PeaceHill",
+                channel=6,
+                bssid=b"\xc6\x50\x9c\x75\x7b\x09",
+                rssi=-31,
+            )
+        ]
+
+    def stop_scanning_networks(self):
+        self.events.append("stop_scan")
+
+    def disconnect(self):
+        self.events.append("disconnect")
+
+    def stop_station(self):
+        self.events.append("stop_station")
+
+    def start_station(self):
+        self.events.append("start_station")
+
+    def stop_ap(self):
+        self.events.append("stop_ap")
+
+    def connect(self, ssid, password):
+        self.events.append("connect")
+        self.connect_calls.append((ssid, password))
+        self.ipv4_address = "10.0.0.219"
+
+
 class _ScanMissThenSuccessRadio:
     def __init__(self):
         self.connect_calls = []
@@ -255,6 +295,81 @@ def test_build_network_stack_connects_station_mode_and_returns_socket_artifacts(
     assert stack.ip_address == "192.168.1.44"
     assert stack.socket_pool["kind"] == "socketpool"
     assert stack.ssl_context["kind"] == "ssl"
+    assert stack.socket_artifact_source == "connection_manager"
+
+
+def test_build_network_stack_prefers_direct_socket_artifacts(monkeypatch):
+    radio = _FakeRadio()
+    runtime_config = RuntimeConfig(
+        active_profile="sensorius",
+        network=NetworkConfig(
+            ssid="TestWiFi",
+            password="secretpass",
+            hostname="aqi-x943fm",
+        ),
+    )
+    direct_pool = {"kind": "direct_socketpool", "radio": radio}
+    direct_ssl = {"kind": "direct_ssl"}
+    monkeypatch.setattr(
+        network_module,
+        "_build_direct_socket_pool",
+        lambda wifi_radio: direct_pool if wifi_radio is radio else None,
+    )
+    monkeypatch.setattr(
+        network_module,
+        "_build_direct_ssl_context",
+        lambda: direct_ssl,
+    )
+
+    stack = build_network_stack(
+        runtime_config,
+        wifi_radio=radio,
+        connection_manager_module=_FakeConnMgr,
+    )
+
+    assert stack.phase == "ready"
+    assert stack.socket_pool is direct_pool
+    assert stack.ssl_context is direct_ssl
+    assert stack.socket_artifact_source == "direct"
+
+
+def test_build_network_stack_can_scan_before_startup_station_reset(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(
+        network_module.time,
+        "sleep",
+        lambda value: sleeps.append(value),
+    )
+    radio = _PreconnectScanRadio()
+    runtime_config = RuntimeConfig(
+        active_profile="sensorius",
+        network=NetworkConfig(
+            ssid="PeaceHill",
+            password="secretpass",
+            hostname="co2-frank",
+        ),
+    )
+
+    stack = build_network_stack(
+        runtime_config,
+        wifi_radio=radio,
+        connection_manager_module=_FakeConnMgr,
+        preconnect_scan=True,
+    )
+
+    assert stack.phase == "ready"
+    assert stack.ip_address == "10.0.0.219"
+    assert radio.connect_calls == [("PeaceHill", "secretpass")]
+    assert radio.events == [
+        "scan",
+        "stop_scan",
+        "disconnect",
+        "stop_station",
+        "start_station",
+        "stop_ap",
+        "connect",
+    ]
+    assert sleeps == [network_module.STATION_RESET_SETTLE_S]
 
 
 def test_teardown_network_stack_disconnects_and_stops_station():
@@ -272,6 +387,35 @@ def test_teardown_network_stack_disconnects_and_stops_station():
     assert radio.stop_station_calls == 1
     assert radio.stop_ap_calls == 1
     assert radio.start_station_calls == 0
+
+
+def test_teardown_network_stack_can_cycle_radio_power(monkeypatch):
+    monkeypatch.setattr(network_module.time, "sleep", lambda _seconds: None)
+
+    class _PowerCycleRadio(_StaleAPStationRadio):
+        def __init__(self):
+            super().__init__()
+            self.enabled_changes = []
+
+        @property
+        def enabled(self):
+            return True
+
+        @enabled.setter
+        def enabled(self, value):
+            self.enabled_changes.append(bool(value))
+
+    radio = _PowerCycleRadio()
+    stack = network_module.NetworkStack(
+        phase="ready",
+        mode="station",
+        ssid="TestWiFi",
+        hostname="nodus",
+        wifi_radio=radio,
+    )
+
+    assert teardown_network_stack(stack, cycle_radio=True) is True
+    assert radio.enabled_changes == [False, True]
 
 
 def test_build_network_stack_returns_ap_mode_when_requested():
@@ -468,6 +612,52 @@ def test_build_network_stack_retries_with_scanned_channel_hint(monkeypatch):
     assert radio.scan_calls == 1
     assert radio.stop_scan_calls == 1
     assert sleeps == [2.0]
+
+
+def test_build_network_stack_reuses_preconnect_hint_after_join_failure(
+    monkeypatch,
+    capsys,
+):
+    sleeps = []
+    monkeypatch.setattr(
+        network_module.time,
+        "sleep",
+        lambda value: sleeps.append(value),
+    )
+    radio = _ScanHintThenSuccessRadio()
+    runtime_config = RuntimeConfig(
+        active_profile="sensorius",
+        network=NetworkConfig(
+            ssid="PeaceHill",
+            password="secretpass",
+            hostname="co2-frank",
+        ),
+    )
+
+    stack = build_network_stack(
+        runtime_config,
+        wifi_radio=radio,
+        connection_manager_module=_FakeConnMgr,
+        max_attempts=3,
+        retry_delay_s=0.0,
+        preconnect_scan=True,
+    )
+
+    assert stack.phase == "ready"
+    assert radio.connect_calls == [
+        ("PeaceHill", "secretpass"),
+        ("PeaceHill", "secretpass"),
+    ]
+    assert radio.connect_kwargs == [
+        {},
+        {"channel": 6},
+    ]
+    assert radio.scan_calls == 1
+    assert radio.stop_scan_calls == 1
+    assert sleeps == [2.0]
+    assert "network scan attempt=1 ssid=PeaceHill result=skipped_hint" in (
+        capsys.readouterr().out
+    )
 
 
 def test_reconnect_network_stack_can_cycle_radio_before_retry(monkeypatch):
@@ -737,8 +927,8 @@ def test_build_network_stack_retries_ap_subnet_station_ip():
         ("PeaceHill", "secretpass"),
     ]
     assert radio.stop_ap_calls == 3
-    assert radio.stop_station_calls == 2
-    assert radio.start_station_calls == 2
+    assert radio.stop_station_calls == 3
+    assert radio.start_station_calls == 3
 
 
 def test_reconnect_network_stack_preserves_socket_artifacts_until_rebuild_requested():
@@ -775,7 +965,9 @@ def test_reconnect_network_stack_preserves_socket_artifacts_until_rebuild_reques
 
     assert network_link_is_ready(preserved) is True
     assert preserved.socket_pool is stack.socket_pool
+    assert preserved.socket_artifact_source == stack.socket_artifact_source
     assert rebuilt.socket_pool is not stack.socket_pool
+    assert rebuilt.socket_artifact_source == "connection_manager"
 
 
 def test_reconnect_network_stack_can_force_station_reset_before_retry():

@@ -11,6 +11,7 @@ def _run_direct_tests():
         test_transport_subscribe_deduplicates_topics,
         test_transport_records_publish_diagnostic,
         test_transport_records_loop_diagnostic,
+        test_transport_receives_lightweight_message,
         test_transport_compact_discards_synced_entries,
     )
     for test in tests:
@@ -88,6 +89,18 @@ def test_transport_records_loop_diagnostic():
     assert "last_loop_sock=wrapped" in diagnostic
     assert "last_loop_client_connected=1" in diagnostic
     assert "last_loop_backcompat=0" in diagnostic
+
+
+def test_transport_receives_lightweight_message():
+    transport = MQTTTransport("broker.local", 1883)
+
+    message = transport.receive(" nodus/a/set ", "ON")
+
+    assert message.topic == "nodus/a/set"
+    assert message.payload_text == "ON"
+    assert hasattr(message, "__slots__")
+    assert not hasattr(message, "__dict__")
+    assert transport.received_messages[-1] is message
 
 
 def test_transport_compact_discards_synced_entries():

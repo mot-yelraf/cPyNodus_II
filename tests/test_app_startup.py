@@ -10,6 +10,7 @@ from cpynodus_ii.app import (
     _load_startup_ota_state,
     _mark_ota_applied_after_boot,
     _mqtt_client_init_memory_failed,
+    _mqtt_connect_attempt_is_connack_timeout_pattern,
     _mqtt_connect_errors_are_repeated_failures,
     _mqtt_connect_retry_interval_s,
     _ota_state_path,
@@ -26,6 +27,7 @@ from cpynodus_ii.app import (
     _should_reboot_long_mqtt_recovery,
     _should_reboot_mqtt_memory_failures,
     _should_rebuild_mqtt_adapter_for_recovery,
+    _should_reset_mqtt_station_for_plain_connect_failure,
     _should_reset_wifi_station_before_ready,
     _should_verify_mqtt_before_rebuild,
     _startup_ap_fallback_reason,
@@ -391,6 +393,69 @@ def test_repeated_mqtt_connect_failure_detection_matches_connect_errors():
     )
 
 
+def test_mqtt_connack_timeout_pattern_requires_tcp_ok_probe_timeout_and_connect_error():
+    plain_errors = (
+        "mqtt_connect_failed:10.0.0.248:('Connect failure', None)",
+    )
+
+    assert (
+        _mqtt_connect_attempt_is_connack_timeout_pattern(
+            tcp_preflight_error="",
+            connect_probe_error=(
+                "mqtt_connect_probe_failed:10.0.0.248:OSError:[Errno 116] "
+                "ETIMEDOUT"
+            ),
+            connect_probe_code=-1,
+            connect_errors=plain_errors,
+        )
+        is True
+    )
+    assert (
+        _mqtt_connect_attempt_is_connack_timeout_pattern(
+            tcp_preflight_error="mqtt_tcp_preflight_failed:10.0.0.248:timeout",
+            connect_probe_error=(
+                "mqtt_connect_probe_failed:10.0.0.248:OSError:[Errno 116] "
+                "ETIMEDOUT"
+            ),
+            connect_probe_code=-1,
+            connect_errors=plain_errors,
+        )
+        is False
+    )
+    assert (
+        _mqtt_connect_attempt_is_connack_timeout_pattern(
+            tcp_preflight_error="",
+            connect_probe_error="",
+            connect_probe_code=0,
+            connect_errors=plain_errors,
+        )
+        is False
+    )
+    assert (
+        _mqtt_connect_attempt_is_connack_timeout_pattern(
+            tcp_preflight_error="",
+            connect_probe_error=(
+                "mqtt_connect_probe_failed:10.0.0.248:connack_code=5"
+            ),
+            connect_probe_code=5,
+            connect_errors=plain_errors,
+        )
+        is False
+    )
+    assert (
+        _mqtt_connect_attempt_is_connack_timeout_pattern(
+            tcp_preflight_error="",
+            connect_probe_error=(
+                "mqtt_connect_probe_failed:10.0.0.248:OSError:[Errno 116] "
+                "ETIMEDOUT"
+            ),
+            connect_probe_code=-1,
+            connect_errors=("mqtt_poll_failed:[Errno 116]",),
+        )
+        is False
+    )
+
+
 def test_recovery_reconnect_settings_only_expand_after_station_reset():
     assert _recovery_reconnect_attempts(False) == 1
     assert _recovery_reconnect_delay_s(False) == 0.0
@@ -451,8 +516,8 @@ def test_repeated_mqtt_connect_failure_fast_reboot_gate():
 
 def test_repeated_mqtt_connect_failure_defaults_allow_blocking_connects():
     assert _should_fast_reboot_mqtt_connect_failures(2, 100.0, 400.0) is False
-    assert _should_fast_reboot_mqtt_connect_failures(3, 100.0, 279.0) is False
-    assert _should_fast_reboot_mqtt_connect_failures(3, 100.0, 280.0) is True
+    assert _should_fast_reboot_mqtt_connect_failures(3, 100.0, 159.0) is False
+    assert _should_fast_reboot_mqtt_connect_failures(3, 100.0, 160.0) is True
 
 
 def test_mqtt_memory_init_failure_window_and_reboot_gate():
@@ -499,7 +564,7 @@ def test_long_mqtt_recovery_reboot_gate():
     )
 
 
-def test_plain_mqtt_broker_failures_back_off_connect_and_hold_rebuild():
+def test_plain_mqtt_broker_failures_back_off_connect_before_station_reset():
     state = RecoveryState(phase="mqtt", phase_started_at=100.0)
     plain_failure = "mqtt_connect_failed:10.0.0.248:('Connect failure', None)"
     repeated_failure = (
@@ -522,6 +587,51 @@ def test_plain_mqtt_broker_failures_back_off_connect_and_hold_rebuild():
             repeated_failure,
         )
         is True
+    )
+    assert (
+        _should_reset_mqtt_station_for_plain_connect_failure(
+            state,
+            279.0,
+            plain_failure,
+            -1.0,
+        )
+        is False
+    )
+    assert (
+        _should_reset_mqtt_station_for_plain_connect_failure(
+            state,
+            280.0,
+            plain_failure,
+            -1.0,
+        )
+        is True
+    )
+    assert (
+        _should_reset_mqtt_station_for_plain_connect_failure(
+            state,
+            400.0,
+            plain_failure,
+            250.0,
+        )
+        is False
+    )
+    assert (
+        _should_reset_mqtt_station_for_plain_connect_failure(
+            state,
+            430.0,
+            plain_failure,
+            250.0,
+        )
+        is True
+    )
+    assert (
+        _should_reset_mqtt_station_for_plain_connect_failure(
+            state,
+            430.0,
+            repeated_failure,
+            -1.0,
+        )
+        is False
     )
     assert (
         _should_rebuild_mqtt_adapter_for_recovery(

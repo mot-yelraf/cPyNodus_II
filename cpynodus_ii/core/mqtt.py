@@ -18,12 +18,14 @@ class PublishedMessage:
     retain: bool = False
 
 
-@dataclass(frozen=True)
 class ReceivedMessage:
     """Capture one received message for host-testable command intake."""
 
-    topic: str
-    payload_text: str
+    __slots__ = ("topic", "payload_text")
+
+    def __init__(self, topic, payload_text):
+        self.topic = topic
+        self.payload_text = payload_text
 
 
 class MQTTTransport:
@@ -218,10 +220,19 @@ class MQTTTransport:
         return topic
 
     def receive(self, topic, payload_text):
-        message = ReceivedMessage(
-            topic=str(topic or "").strip(),
-            payload_text=str(payload_text or ""),
-        )
+        if topic is None:
+            topic_text = ""
+        elif isinstance(topic, str):
+            topic_text = topic.strip()
+        else:
+            topic_text = str(topic or "").strip()
+        if payload_text is None:
+            payload_value = ""
+        elif isinstance(payload_text, str):
+            payload_value = payload_text
+        else:
+            payload_value = str(payload_text or "")
+        message = ReceivedMessage(topic_text, payload_value)
         self.received_messages.append(message)
         return message
 

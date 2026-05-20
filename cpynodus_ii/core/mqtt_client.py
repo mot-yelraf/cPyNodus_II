@@ -13,6 +13,7 @@ MQTT_CONNECT_RETRIES = 1
 MQTT_OPTIONAL_CLIENT_KWARGS = (
     "socket_timeout",
     "connect_retries",
+    "client_id",
 )
 
 
@@ -30,6 +31,8 @@ class MQTTClientAdapter:
     client: object | None = None
     client_class: object | None = None
     client_kwargs: dict | None = None
+    socket_compat_enabled: bool = False
+    flexible_callback_enabled: bool = False
     published_index: int = 0
     subscription_index: int = 0
     errors: tuple = ()
@@ -96,7 +99,12 @@ def build_mqtt_client_adapter(
             broker_targets=(),
             errors=("mqtt_broker_ip_unavailable",),
         )
-    mqtt_socket_pool = _wrap_minimqtt_socket_pool(socket_pool)
+    socket_compat_enabled = _should_enable_socket_compat(modules)
+    flexible_callback_enabled = _should_enable_flexible_callback(modules)
+    if _should_wrap_socket_pool_before_connect(modules):
+        mqtt_socket_pool = _wrap_minimqtt_socket_pool(socket_pool)
+    else:
+        mqtt_socket_pool = socket_pool
     kwargs = {
         "socket_pool": mqtt_socket_pool,
         "port": runtime_config.mqtt.port,
@@ -104,6 +112,9 @@ def build_mqtt_client_adapter(
         "socket_timeout": MQTT_CONNECT_SOCKET_TIMEOUT_S,
         "connect_retries": MQTT_CONNECT_RETRIES,
     }
+    client_id = _runtime_mqtt_client_id(runtime_config)
+    if client_id:
+        kwargs["client_id"] = client_id
     if runtime_config.mqtt.use_tls or runtime_config.mqtt.port == 8883:
         kwargs["ssl_context"] = ssl_context
     if runtime_config.mqtt.username:
@@ -134,6 +145,8 @@ def build_mqtt_client_adapter(
         client=client,
         client_class=client_class,
         client_kwargs=dict(client_kwargs),
+        socket_compat_enabled=socket_compat_enabled,
+        flexible_callback_enabled=flexible_callback_enabled,
         errors=(),
     )
 
@@ -147,10 +160,6 @@ def connect_mqtt_client(adapter, transport, *, preflight=True):
             errors=adapter.errors,
         )
 
-    _bind_on_message(adapter.client, transport)
-    errors = []
-    active_adapter = adapter
-    connected = False
     targets = adapter.broker_targets or ()
     if not targets:
         error = "mqtt_connect_failed:broker_ip_unavailable"
@@ -160,6 +169,56 @@ def connect_mqtt_client(adapter, transport, *, preflight=True):
             adapter=adapter,
             errors=(error,),
         )
+
+    if len(targets) > 1:
+        return _connect_mqtt_client_with_fallback(
+            adapter,
+            transport,
+            targets,
+            preflight=preflight,
+        )
+
+    broker = targets[0]
+    error, resolved_ip = _resolve_broker_target(adapter, broker)
+    if preflight and error:
+        transport.mark_disconnected(reason=error)
+        return MQTTClientSyncResult(
+            phase="error",
+            adapter=adapter,
+            errors=(error,),
+        )
+
+    _bind_on_message(
+        adapter.client,
+        transport,
+        flexible=adapter.flexible_callback_enabled,
+    )
+    try:
+        adapter.client.connect()
+        _set_minimqtt_runtime_socket_timeout(
+            adapter.client,
+            MQTT_POLL_SOCKET_TIMEOUT_S,
+        )
+        if adapter.socket_compat_enabled:
+            _ensure_minimqtt_socket_compat(adapter.client)
+        transport.mark_connected()
+        return _mqtt_connect_success_result(adapter, resolved_ip)
+    except Exception as exc:
+        error = "mqtt_connect_failed:{}:{}".format(broker, exc)
+        close_errors = _force_close_mqtt_client_socket(adapter.client)[1]
+        transport.mark_disconnected(reason=error)
+        return MQTTClientSyncResult(
+            phase="error",
+            adapter=adapter,
+            errors=(error,) + close_errors,
+        )
+
+
+def _connect_mqtt_client_with_fallback(adapter, transport, targets, *, preflight=True):
+    errors = []
+    active_adapter = adapter
+    connected = False
+    resolved_ip = ""
     for index, broker in enumerate(targets):
         resolve_error, resolved_ip = _resolve_broker_target(active_adapter, broker)
         if preflight and resolve_error:
@@ -187,24 +246,33 @@ def connect_mqtt_client(adapter, transport, *, preflight=True):
                 client=client,
                 client_class=adapter.client_class,
                 client_kwargs=dict(adapter.client_kwargs or {}),
+                socket_compat_enabled=adapter.socket_compat_enabled,
+                flexible_callback_enabled=adapter.flexible_callback_enabled,
                 published_index=adapter.published_index,
                 subscription_index=adapter.subscription_index,
                 errors=adapter.errors,
             )
-        _bind_on_message(active_adapter.client, transport)
+        _bind_on_message(
+            active_adapter.client,
+            transport,
+            flexible=active_adapter.flexible_callback_enabled,
+        )
         try:
             active_adapter.client.connect()
             _set_minimqtt_runtime_socket_timeout(
                 active_adapter.client,
                 MQTT_POLL_SOCKET_TIMEOUT_S,
             )
-            _ensure_minimqtt_socket_compat(active_adapter.client)
+            if active_adapter.socket_compat_enabled:
+                _ensure_minimqtt_socket_compat(active_adapter.client)
             transport.mark_connected()
             connected = True
             break
         except Exception as exc:
             error = "mqtt_connect_failed:{}:{}".format(broker, exc)
             errors.append(error)
+            close_errors = _force_close_mqtt_client_socket(active_adapter.client)[1]
+            errors.extend(close_errors)
             transport.mark_disconnected(reason=error)
 
     if not connected:
@@ -216,22 +284,36 @@ def connect_mqtt_client(adapter, transport, *, preflight=True):
 
     return MQTTClientSyncResult(
         phase="connected",
-        adapter=MQTTClientAdapter(
-            phase=active_adapter.phase,
-            driver_kind=active_adapter.driver_kind,
-            broker=active_adapter.broker,
-            port=active_adapter.port,
-            broker_targets=active_adapter.broker_targets,
-            active_broker=active_adapter.active_broker,
-            resolved_broker_ip=resolved_ip,
-            client=active_adapter.client,
-            client_class=active_adapter.client_class,
-            client_kwargs=active_adapter.client_kwargs,
-            published_index=active_adapter.published_index,
-            subscription_index=active_adapter.subscription_index,
-            errors=active_adapter.errors,
-        ),
+        adapter=_mqtt_connected_adapter(active_adapter, resolved_ip),
         errors=(),
+    )
+
+
+def _mqtt_connect_success_result(adapter, resolved_ip):
+    return MQTTClientSyncResult(
+        phase="connected",
+        adapter=_mqtt_connected_adapter(adapter, resolved_ip),
+        errors=(),
+    )
+
+
+def _mqtt_connected_adapter(adapter, resolved_ip):
+    return MQTTClientAdapter(
+        phase=adapter.phase,
+        driver_kind=adapter.driver_kind,
+        broker=adapter.broker,
+        port=adapter.port,
+        broker_targets=adapter.broker_targets,
+        active_broker=adapter.active_broker,
+        resolved_broker_ip=resolved_ip,
+        client=adapter.client,
+        client_class=adapter.client_class,
+        client_kwargs=adapter.client_kwargs,
+        socket_compat_enabled=adapter.socket_compat_enabled,
+        flexible_callback_enabled=adapter.flexible_callback_enabled,
+        published_index=adapter.published_index,
+        subscription_index=adapter.subscription_index,
+        errors=adapter.errors,
     )
 
 
@@ -246,101 +328,143 @@ def sync_transport_to_client(adapter, transport):
             else ("transport_not_connected",),
         )
 
-    client = adapter.client
-    subscribed_count = 0
-    published_count = 0
-    for message in transport.published_messages[
-        adapter.published_index : adapter.published_index + 1
-    ]:
-        payload = _serialize_payload(message.payload)
-        try:
-            client.publish(message.topic, payload, retain=message.retain)
-            backcompat = 0
-            if getattr(client, "_backwards_compatible_sock", False):
-                backcompat = 1
-            transport.record_publish_success(
-                message.topic,
-                payload_bytes=_payload_size(payload),
-                retain=message.retain,
-                socket_state=_socket_state(getattr(client, "_sock", None)),
-                client_connected=_client_connected_state(client),
-                backcompat=backcompat,
-            )
-        except Exception as exc:
-            transport.mark_disconnected(
-                reason="mqtt_publish_failed:{}:{}".format(message.topic, exc)
-            )
-            drop_failed = not bool(message.retain)
-            transport.compact(
-                published_keep_from=adapter.published_index
-                + published_count
-                + (1 if drop_failed else 0),
-                subscriptions_keep_from=adapter.subscription_index + subscribed_count,
-            )
-            return MQTTClientSyncResult(
-                phase="error",
-                adapter=MQTTClientAdapter(
-                    phase=adapter.phase,
-                    driver_kind=adapter.driver_kind,
-                    broker=adapter.broker,
-                    port=adapter.port,
-                    broker_targets=adapter.broker_targets,
-                    active_broker=adapter.active_broker,
-                    resolved_broker_ip=adapter.resolved_broker_ip,
-                    client=adapter.client,
-                    client_class=adapter.client_class,
-                    client_kwargs=adapter.client_kwargs,
-                    published_index=0,
-                    subscription_index=0,
-                    errors=adapter.errors,
-                ),
-                published_count=published_count,
-                subscribed_count=subscribed_count,
-                errors=(
-                    "mqtt_publish_failed:{}:bytes={}:{}".format(
-                        message.topic,
-                        _payload_size(payload),
-                        exc,
-                    ),
-                ),
-            )
-        published_count += 1
-
-    if subscribed_count or published_count:
-        transport.mark_success()
+    if adapter.published_index >= len(transport.published_messages):
+        return _sync_subscriptions_to_client(adapter, transport)
+    message = transport.published_messages[adapter.published_index]
+    try:
+        _publish_mqtt_qos0(
+            adapter.client,
+            message.topic,
+            _serialize_payload(message.payload),
+            message.retain,
+        )
+    except Exception as exc:
+        transport.mark_disconnected(
+            reason="mqtt_publish_failed:{}:{}".format(message.topic, exc)
+        )
         transport.compact(
-            published_keep_from=adapter.published_index + published_count,
-            subscriptions_keep_from=adapter.subscription_index + subscribed_count,
+            published_keep_from=adapter.published_index
+            + (0 if message.retain else 1),
+            subscriptions_keep_from=adapter.subscription_index,
         )
-    if published_count:
         return MQTTClientSyncResult(
-            phase="synced",
-            adapter=MQTTClientAdapter(
-                phase=adapter.phase,
-                driver_kind=adapter.driver_kind,
-                broker=adapter.broker,
-                port=adapter.port,
-                broker_targets=adapter.broker_targets,
-                active_broker=adapter.active_broker,
-                resolved_broker_ip=adapter.resolved_broker_ip,
-                client=adapter.client,
-                client_class=adapter.client_class,
-                client_kwargs=adapter.client_kwargs,
-                published_index=0,
-                subscription_index=0,
-                errors=adapter.errors,
-            ),
-            published_count=published_count,
+            phase="error",
+            adapter=_mqtt_adapter_with_queue_indexes(adapter, 0, 0),
+            published_count=0,
             subscribed_count=0,
-            errors=(),
+            errors=(
+                "mqtt_publish_failed:{}:bytes={}:{}".format(
+                    message.topic,
+                    _payload_size(_serialize_payload(message.payload)),
+                    exc,
+                ),
+            ),
         )
+    transport.mark_success()
+    transport.compact(
+        published_keep_from=adapter.published_index + 1,
+        subscriptions_keep_from=adapter.subscription_index,
+    )
+    return MQTTClientSyncResult(
+        phase="synced",
+        adapter=_mqtt_adapter_with_queue_indexes(adapter, 0, 0),
+        published_count=1,
+        subscribed_count=0,
+        errors=(),
+    )
 
+
+def _publish_mqtt_qos0(client, topic, payload, retain):
+    sock = getattr(client, "_sock", None)
+    if sock is None or not callable(getattr(sock, "send", None)):
+        client.publish(topic, payload, retain=retain)
+        return
+    _send_mqtt_packet(sock, _mqtt_qos0_publish_packet(topic, payload, retain))
+
+
+def _mqtt_qos0_publish_packet(topic, payload, retain):
+    topic_bytes = _mqtt_bytes(topic)
+    payload_bytes = _mqtt_bytes(payload)
+    remaining = 2 + len(topic_bytes) + len(payload_bytes)
+    remaining_bytes = _mqtt_remaining_length(remaining)
+    header = 0x31 if retain else 0x30
+    packet = bytearray(1 + len(remaining_bytes) + remaining)
+    packet[0] = header
+    offset = 1
+    for byte in remaining_bytes:
+        packet[offset] = byte
+        offset += 1
+    packet[offset] = (len(topic_bytes) >> 8) & 0xFF
+    packet[offset + 1] = len(topic_bytes) & 0xFF
+    offset += 2
+    packet[offset : offset + len(topic_bytes)] = topic_bytes
+    offset += len(topic_bytes)
+    packet[offset : offset + len(payload_bytes)] = payload_bytes
+    return packet
+
+
+def _mqtt_bytes(value):
+    if isinstance(value, bytes):
+        return value
+    return str(value or "").encode("utf-8")
+
+
+def _runtime_mqtt_client_id(runtime_config):
+    for section_name, attr_name in (
+        ("sensor", "sensor_id"),
+        ("switch", "device_id"),
+        ("network", "hostname"),
+    ):
+        section = getattr(runtime_config, section_name, None)
+        value = str(getattr(section, attr_name, "") or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _mqtt_remaining_length(value):
+    encoded = bytearray()
+    remaining = int(value or 0)
+    while True:
+        digit = remaining % 128
+        remaining = remaining // 128
+        if remaining > 0:
+            digit = digit | 0x80
+        encoded.append(digit)
+        if remaining <= 0:
+            break
+    return encoded
+
+
+def _send_mqtt_packet(sock, packet):
+    total = len(packet)
+    sent_total = 0
+    while sent_total < total:
+        sent = _send_socket_bytes(sock, packet[sent_total:])
+        if sent is None:
+            return
+        sent_total += int(sent or 0)
+        if sent <= 0:
+            raise OSError("mqtt_socket_send_zero")
+
+
+def _send_socket_bytes(sock, data):
+    send = getattr(sock, "send")
+    try:
+        return send(data)
+    except TypeError as exc:
+        if not _is_socket_nbytes_required_error(exc):
+            raise
+        return send(data, len(data))
+
+
+def _sync_subscriptions_to_client(adapter, transport):
     subscribed_count = 0
     pending_subscriptions = transport.subscriptions[adapter.subscription_index :]
     pending_subscription_count = len(pending_subscriptions)
     for topic in pending_subscriptions:
         try:
-            client.subscribe(topic)
+            _subscribe_mqtt_qos0(adapter.client, topic)
         except Exception as exc:
             if subscribed_count:
                 transport.compact(
@@ -374,7 +498,139 @@ def sync_transport_to_client(adapter, transport):
             subscriptions_keep_from=adapter.subscription_index + subscribed_count,
         )
 
-    updated_adapter = MQTTClientAdapter(
+    updated_adapter = _mqtt_adapter_with_queue_indexes(adapter, 0, 0)
+    return MQTTClientSyncResult(
+        phase="synced",
+        adapter=updated_adapter,
+        published_count=0,
+        subscribed_count=subscribed_count,
+        errors=(),
+    )
+
+
+def _subscribe_mqtt_qos0(client, topic):
+    sock = getattr(client, "_sock", None)
+    if (
+        sock is None
+        or not callable(getattr(sock, "send", None))
+        or not _socket_can_recv(sock)
+    ):
+        client.subscribe(topic)
+        return
+    packet_id = _next_mqtt_packet_id(client)
+    _send_mqtt_packet(sock, _mqtt_qos0_subscribe_packet(topic, packet_id))
+    _read_mqtt_suback(sock, packet_id)
+
+
+def _mqtt_qos0_subscribe_packet(topic, packet_id):
+    topic_bytes = _mqtt_bytes(topic)
+    remaining = 2 + 2 + len(topic_bytes) + 1
+    remaining_bytes = _mqtt_remaining_length(remaining)
+    packet = bytearray(1 + len(remaining_bytes) + remaining)
+    packet[0] = 0x82
+    offset = 1
+    for byte in remaining_bytes:
+        packet[offset] = byte
+        offset += 1
+    packet[offset] = (packet_id >> 8) & 0xFF
+    packet[offset + 1] = packet_id & 0xFF
+    offset += 2
+    packet[offset] = (len(topic_bytes) >> 8) & 0xFF
+    packet[offset + 1] = len(topic_bytes) & 0xFF
+    offset += 2
+    packet[offset : offset + len(topic_bytes)] = topic_bytes
+    offset += len(topic_bytes)
+    packet[offset] = 0
+    return packet
+
+
+def _next_mqtt_packet_id(client):
+    try:
+        packet_id = int(getattr(client, "_cpynodus_packet_id", 0)) + 1
+    except Exception:
+        packet_id = 1
+    if packet_id > 0xFFFF:
+        packet_id = 1
+    try:
+        setattr(client, "_cpynodus_packet_id", packet_id)
+    except Exception:
+        pass
+    return packet_id
+
+
+def _read_mqtt_suback(sock, packet_id):
+    header = _recv_mqtt_byte(sock)
+    if header != 0x90:
+        raise OSError("mqtt_suback_unexpected:{:02x}".format(header))
+    remaining = _recv_mqtt_remaining_length(sock)
+    payload = _recv_socket_exact(sock, remaining)
+    if len(payload) < 3:
+        raise OSError("mqtt_suback_short:{}".format(len(payload)))
+    received_id = (payload[0] << 8) | payload[1]
+    if received_id != packet_id:
+        raise OSError("mqtt_suback_packet_id:{}:{}".format(received_id, packet_id))
+    return_code = payload[2]
+    if return_code > 2:
+        raise OSError("mqtt_suback_failed:{}".format(return_code))
+
+
+def _recv_mqtt_remaining_length(sock):
+    multiplier = 1
+    value = 0
+    while True:
+        encoded = _recv_mqtt_byte(sock)
+        value += (encoded & 0x7F) * multiplier
+        if (encoded & 0x80) == 0:
+            return value
+        multiplier *= 128
+        if multiplier > 128 * 128 * 128:
+            raise OSError("mqtt_remaining_length_invalid")
+
+
+def _recv_mqtt_byte(sock):
+    data = _recv_socket_exact(sock, 1)
+    if not data:
+        raise OSError("mqtt_socket_recv_empty")
+    return data[0]
+
+
+def _recv_socket_exact(sock, nbytes):
+    data = bytearray()
+    remaining = int(nbytes or 0)
+    while remaining > 0:
+        chunk = _recv_socket_bytes(sock, remaining)
+        if not chunk:
+            raise OSError("mqtt_socket_recv_empty")
+        data.extend(chunk)
+        remaining -= len(chunk)
+    return data
+
+
+def _recv_socket_bytes(sock, nbytes):
+    recv = getattr(sock, "recv", None)
+    if callable(recv):
+        return recv(nbytes)
+    recv_into = getattr(sock, "recv_into", None)
+    if callable(recv_into):
+        buffer = bytearray(nbytes)
+        try:
+            count = recv_into(buffer, nbytes)
+        except TypeError as exc:
+            if not _is_socket_nbytes_required_error(exc):
+                raise
+            count = recv_into(buffer)
+        return bytes(buffer[: int(count or 0)])
+    raise OSError("mqtt_socket_recv_unavailable")
+
+
+def _socket_can_recv(sock):
+    return callable(getattr(sock, "recv", None)) or callable(
+        getattr(sock, "recv_into", None)
+    )
+
+
+def _mqtt_adapter_with_queue_indexes(adapter, published_index, subscription_index):
+    return MQTTClientAdapter(
         phase=adapter.phase,
         driver_kind=adapter.driver_kind,
         broker=adapter.broker,
@@ -385,16 +641,11 @@ def sync_transport_to_client(adapter, transport):
         client=adapter.client,
         client_class=adapter.client_class,
         client_kwargs=adapter.client_kwargs,
-        published_index=0,
-        subscription_index=0,
+        socket_compat_enabled=adapter.socket_compat_enabled,
+        flexible_callback_enabled=adapter.flexible_callback_enabled,
+        published_index=published_index,
+        subscription_index=subscription_index,
         errors=adapter.errors,
-    )
-    return MQTTClientSyncResult(
-        phase="synced",
-        adapter=updated_adapter,
-        published_count=published_count,
-        subscribed_count=subscribed_count,
-        errors=(),
     )
 
 
@@ -409,6 +660,374 @@ def poll_mqtt_client(adapter, transport):
             else ("transport_not_connected",),
         )
 
+    if adapter.socket_compat_enabled:
+        return _poll_mqtt_client_compat(adapter, transport)
+    return _poll_mqtt_client_raw(adapter, transport)
+
+
+def _poll_mqtt_client_raw(adapter, transport):
+    before = len(transport.received_messages)
+    if _client_connected_state(adapter.client) == "0":
+        transport.mark_disconnected(
+            reason=_mqtt_poll_client_disconnected_error(adapter.client)
+        )
+        return MQTTClientSyncResult(
+            phase="error",
+            adapter=adapter,
+            received_count=0,
+            errors=(_mqtt_poll_client_disconnected_error(adapter.client),),
+        )
+    socket_result = _poll_mqtt_client_socket(adapter, transport, before)
+    if socket_result is not None:
+        return socket_result
+    try:
+        adapter.client.loop(timeout=_poll_timeout_for_client(adapter.client))
+    except TypeError as exc:
+        if _is_loop_timeout_signature_error(exc):
+            adapter.client.loop()
+        elif _is_minimqtt_wrapped_socket_error(exc):
+            error = _minimqtt_socket_error(
+                adapter.client,
+                exc,
+                client_connected=_client_connected_state(adapter.client),
+                publish_diagnostic=transport.publish_diagnostic(),
+                loop_diagnostic=transport.loop_diagnostic(),
+            )
+            transport.mark_disconnected(reason=error)
+            return MQTTClientSyncResult(
+                phase="error",
+                adapter=adapter,
+                received_count=0,
+                errors=(error,),
+            )
+        elif _is_callback_arity_error(exc):
+            transport.mark_disconnected(
+                reason="mqtt_poll_callback_failed:{}".format(exc)
+            )
+            return MQTTClientSyncResult(
+                phase="error",
+                adapter=adapter,
+                received_count=0,
+                errors=("mqtt_poll_callback_failed:{}".format(exc),),
+            )
+        else:
+            raise
+    except ValueError:
+        try:
+            adapter.client.loop(
+                timeout=max(1.0, _poll_timeout_for_client(adapter.client))
+            )
+        except TypeError as exc:
+            if _is_loop_timeout_signature_error(exc):
+                adapter.client.loop()
+            elif _is_minimqtt_wrapped_socket_error(exc):
+                error = _minimqtt_socket_error(
+                    adapter.client,
+                    exc,
+                    client_connected=_client_connected_state(adapter.client),
+                    publish_diagnostic=transport.publish_diagnostic(),
+                    loop_diagnostic=transport.loop_diagnostic(),
+                )
+                transport.mark_disconnected(reason=error)
+                return MQTTClientSyncResult(
+                    phase="error",
+                    adapter=adapter,
+                    received_count=0,
+                    errors=(error,),
+                )
+            elif _is_callback_arity_error(exc):
+                transport.mark_disconnected(
+                    reason="mqtt_poll_callback_failed:{}".format(exc)
+                )
+                return MQTTClientSyncResult(
+                    phase="error",
+                    adapter=adapter,
+                    received_count=0,
+                    errors=("mqtt_poll_callback_failed:{}".format(exc),),
+                )
+            else:
+                raise
+        except RuntimeError as exc:
+            if not _is_pystack_exhausted(exc):
+                raise
+            error = _mqtt_poll_pystack_error(
+                adapter.client,
+                "minimqtt_loop_retry",
+                exc,
+            )
+            transport.mark_disconnected(reason=error)
+            return MQTTClientSyncResult(
+                phase="error",
+                adapter=adapter,
+                received_count=0,
+                errors=(error,),
+            )
+    except OSError as exc:
+        transport.mark_disconnected(reason="mqtt_poll_failed:{}".format(exc))
+        return MQTTClientSyncResult(
+            phase="error",
+            adapter=adapter,
+            received_count=0,
+            errors=("mqtt_poll_failed:{}".format(exc),),
+        )
+    except RuntimeError as exc:
+        if not _is_pystack_exhausted(exc):
+            raise
+        error = _mqtt_poll_pystack_error(adapter.client, "minimqtt_loop", exc)
+        transport.mark_disconnected(reason=error)
+        return MQTTClientSyncResult(
+            phase="error",
+            adapter=adapter,
+            received_count=0,
+            errors=(error,),
+        )
+    transport.record_loop_success(
+        received_count=len(transport.received_messages) - before,
+        timeout=_poll_timeout_for_client(adapter.client),
+        socket_state=_socket_state(getattr(adapter.client, "_sock", None)),
+        client_connected=_client_connected_state(adapter.client),
+        backcompat=0,
+    )
+    transport.mark_success()
+    return MQTTClientSyncResult(
+        phase="polled",
+        adapter=adapter,
+        received_count=max(0, len(transport.received_messages) - before),
+        errors=(),
+    )
+
+
+def _poll_mqtt_client_socket(adapter, transport, before_count):
+    sock = getattr(adapter.client, "_sock", None)
+    if sock is None or not _socket_can_recv(sock):
+        return None
+    try:
+        received_count = _poll_mqtt_socket_once(sock, transport)
+    except OSError as exc:
+        transport.mark_disconnected(reason="mqtt_poll_failed:{}".format(exc))
+        return MQTTClientSyncResult(
+            phase="error",
+            adapter=adapter,
+            received_count=0,
+            errors=("mqtt_poll_failed:{}".format(exc),),
+        )
+    except RuntimeError as exc:
+        if not _is_pystack_exhausted(exc):
+            raise
+        error = _mqtt_poll_pystack_error(adapter.client, "raw_socket", exc)
+        transport.mark_disconnected(reason=error)
+        return MQTTClientSyncResult(
+            phase="error",
+            adapter=adapter,
+            received_count=0,
+            errors=(error,),
+        )
+    received_total = max(
+        int(received_count or 0),
+        len(transport.received_messages) - before_count,
+    )
+    transport.record_loop_success(
+        received_count=received_total,
+        timeout=_poll_timeout_for_client(adapter.client),
+        socket_state=_socket_state(sock),
+        client_connected=_client_connected_state(adapter.client),
+        backcompat=0,
+    )
+    transport.mark_success()
+    return MQTTClientSyncResult(
+        phase="polled",
+        adapter=adapter,
+        received_count=max(0, received_total),
+        errors=(),
+    )
+
+
+def _poll_mqtt_socket_once(sock, transport):
+    stage = "header"
+    recv = getattr(sock, "recv", None)
+    recv_into = getattr(sock, "recv_into", None)
+    can_recv = callable(recv)
+    can_recv_into = callable(recv_into)
+    scratch = bytearray(1)
+    try:
+        if can_recv:
+            data = recv(1)
+            if not data:
+                raise OSError("mqtt_socket_recv_empty")
+            header = data[0]
+        elif can_recv_into:
+            try:
+                count = recv_into(scratch, 1)
+            except TypeError as exc:
+                if not _is_socket_nbytes_required_error(exc):
+                    raise
+                count = recv_into(scratch)
+            if not count:
+                raise OSError("mqtt_socket_recv_empty")
+            header = scratch[0]
+        else:
+            raise OSError("mqtt_socket_recv_unavailable")
+    except OSError as exc:
+        if _is_mqtt_poll_no_data_error(exc):
+            return 0
+        raise
+    except RuntimeError as exc:
+        if _is_pystack_exhausted(exc):
+            raise RuntimeError("raw_stage={}:{}".format(stage, exc))
+        raise
+    stage = "remaining_length"
+    try:
+        packet_type = (header >> 4) & 0x0F
+        multiplier = 1
+        remaining = 0
+        while True:
+            if can_recv:
+                data = recv(1)
+                if not data:
+                    raise OSError("mqtt_socket_recv_empty")
+                encoded = data[0]
+            else:
+                try:
+                    count = recv_into(scratch, 1)
+                except TypeError as exc:
+                    if not _is_socket_nbytes_required_error(exc):
+                        raise
+                    count = recv_into(scratch)
+                if not count:
+                    raise OSError("mqtt_socket_recv_empty")
+                encoded = scratch[0]
+            remaining += (encoded & 0x7F) * multiplier
+            if (encoded & 0x80) == 0:
+                break
+            multiplier *= 128
+            if multiplier > 128 * 128 * 128:
+                raise OSError("mqtt_remaining_length_invalid")
+        packet = b""
+        if remaining:
+            stage = "payload"
+            packet = bytearray(remaining)
+            offset = 0
+            if can_recv:
+                while offset < remaining:
+                    data = recv(remaining - offset)
+                    if not data:
+                        raise OSError("mqtt_socket_recv_empty")
+                    count = len(data)
+                    packet[offset : offset + count] = data
+                    offset += count
+            else:
+                packet_view = memoryview(packet)
+                while offset < remaining:
+                    try:
+                        count = recv_into(packet_view[offset:], remaining - offset)
+                    except TypeError as exc:
+                        if not _is_socket_nbytes_required_error(exc):
+                            raise
+                        count = recv_into(packet_view[offset:])
+                    if not count:
+                        raise OSError("mqtt_socket_recv_empty")
+                    offset += int(count)
+        if packet_type == 3:
+            if len(packet) < 2:
+                raise OSError("mqtt_publish_short:{}".format(len(packet)))
+            topic_len = (packet[0] << 8) | packet[1]
+            topic_start = 2
+            topic_end = topic_start + topic_len
+            if len(packet) < topic_end:
+                raise OSError(
+                    "mqtt_publish_topic_short:{}:{}".format(
+                        len(packet),
+                        topic_len,
+                    )
+                )
+            stage = "topic_decode"
+            topic_data = packet[topic_start:topic_end]
+            try:
+                topic = topic_data.decode("utf-8")
+            except Exception:
+                topic = bytes(topic_data).decode("utf-8", errors="ignore")
+            offset = topic_end
+            qos = (header >> 1) & 0x03
+            if qos:
+                if len(packet) < offset + 2:
+                    raise OSError("mqtt_publish_packet_id_short")
+                packet_id = (packet[offset] << 8) | packet[offset + 1]
+                offset += 2
+                if qos == 1:
+                    stage = "puback"
+                    _send_mqtt_packet(sock, _mqtt_puback_packet(packet_id))
+            stage = "payload_decode"
+            payload_data = packet[offset:]
+            try:
+                payload_text = payload_data.decode("utf-8")
+            except Exception:
+                payload_text = bytes(payload_data).decode("utf-8", errors="ignore")
+            stage = "transport_receive"
+            transport.receive(topic, payload_text)
+            return 1
+        if packet_type == 14:
+            raise OSError("mqtt_disconnect_packet")
+        return 0
+    except RuntimeError as exc:
+        if _is_pystack_exhausted(exc):
+            raise RuntimeError("raw_stage={}:{}".format(stage, exc))
+        raise
+
+
+def _mqtt_puback_packet(packet_id):
+    return bytes((0x40, 0x02, (packet_id >> 8) & 0xFF, packet_id & 0xFF))
+
+
+def _is_mqtt_poll_no_data_error(exc):
+    errno = getattr(exc, "errno", None)
+    if errno in (11, 116):
+        return True
+    args = getattr(exc, "args", ()) or ()
+    if args and args[0] in (11, 116):
+        return True
+    text = str(exc or "").lower()
+    if "timeout" in text or "timed out" in text:
+        return True
+    if "etimedout" in text or "eagain" in text:
+        return True
+    if "errno 116" in text or "errno 11" in text:
+        return True
+    if "would block" in text or "again" in text:
+        return True
+    return "mqtt_socket_recv_empty" in text
+
+
+def _is_pystack_exhausted(exc):
+    text = str(exc or "").lower()
+    return "pystack exhausted" in text
+
+
+def _mqtt_poll_pystack_error(client, source, exc):
+    sock = getattr(client, "_sock", None)
+    return (
+        "mqtt_poll_failed:pystack source={} sock={} caps={} "
+        "client_connected={} error={}"
+    ).format(
+        str(source or "unknown"),
+        _socket_state(sock),
+        _socket_capability_summary(sock),
+        _client_connected_state(client),
+        exc,
+    )
+
+
+def _socket_capability_summary(sock):
+    if sock is None:
+        return "none"
+    return "{}:send{} recv{} recv_into{}".format(
+        type(sock).__name__,
+        1 if callable(getattr(sock, "send", None)) else 0,
+        1 if callable(getattr(sock, "recv", None)) else 0,
+        1 if callable(getattr(sock, "recv_into", None)) else 0,
+    )
+
+
+def _poll_mqtt_client_compat(adapter, transport):
     before = len(transport.received_messages)
     loop = getattr(adapter.client, "loop", None)
     if callable(loop):
@@ -491,6 +1110,21 @@ def poll_mqtt_client(adapter, transport):
                     raise
                 used_timeout = -1.0
                 loop()
+            except RuntimeError as exc:
+                if not _is_pystack_exhausted(exc):
+                    raise
+                error = _mqtt_poll_pystack_error(
+                    adapter.client,
+                    "compat_loop_retry",
+                    exc,
+                )
+                transport.mark_disconnected(reason=error)
+                return MQTTClientSyncResult(
+                    phase="error",
+                    adapter=adapter,
+                    received_count=0,
+                    errors=(error,),
+                )
         except OSError as exc:
             transport.mark_disconnected(reason="mqtt_poll_failed:{}".format(exc))
             return MQTTClientSyncResult(
@@ -498,6 +1132,17 @@ def poll_mqtt_client(adapter, transport):
                 adapter=adapter,
                 received_count=0,
                 errors=("mqtt_poll_failed:{}".format(exc),),
+            )
+        except RuntimeError as exc:
+            if not _is_pystack_exhausted(exc):
+                raise
+            error = _mqtt_poll_pystack_error(adapter.client, "compat_loop", exc)
+            transport.mark_disconnected(reason=error)
+            return MQTTClientSyncResult(
+                phase="error",
+                adapter=adapter,
+                received_count=0,
+                errors=(error,),
             )
     received_count = len(transport.received_messages) - before
     if callable(loop):
@@ -566,6 +1211,17 @@ def disconnect_mqtt_client(adapter, transport, runtime_config):
                     + ("mqtt_disconnect_failed:{}".format(exc),),
                 )
     finally:
+        _closed_socket, close_errors = _force_close_mqtt_client_socket(
+            adapter.client
+        )
+        if close_errors:
+            sync_result = MQTTClientSyncResult(
+                phase="error",
+                adapter=sync_result.adapter,
+                published_count=sync_result.published_count,
+                subscribed_count=sync_result.subscribed_count,
+                errors=sync_result.errors + close_errors,
+            )
         transport.mark_disconnected(reason="mqtt_disconnect_requested")
     return MQTTClientSyncResult(
         phase="disconnected",
@@ -585,13 +1241,70 @@ def close_mqtt_client(adapter, transport):
             try:
                 disconnect()
             except Exception as exc:
-                errors = ("mqtt_close_failed:{}".format(exc),)
+                if not _is_not_connected_close_error(exc):
+                    errors = ("mqtt_close_failed:{}".format(exc),)
+        _closed_socket, close_errors = _force_close_mqtt_client_socket(adapter.client)
+        errors = errors + close_errors
     transport.mark_disconnected(reason="mqtt_close_requested")
     return MQTTClientSyncResult(
         phase="disconnected",
         adapter=adapter,
         errors=errors,
     )
+
+
+def _force_close_mqtt_client_socket(client):
+    """Close a MiniMQTT socket even when disconnect refuses the client state."""
+    if client is None:
+        return False, ()
+    sock = getattr(client, "_sock", None)
+    had_socket = sock is not None
+    errors = ()
+    close_socket = getattr(client, "_close_socket", None)
+    if callable(close_socket):
+        try:
+            close_socket()
+            sock = None
+        except Exception as exc:
+            errors = ("mqtt_socket_close_failed:{}".format(exc),)
+            sock = getattr(client, "_sock", sock)
+    if sock is not None:
+        extra_errors = _close_raw_mqtt_socket(client, sock)
+        errors = errors + extra_errors
+    try:
+        setattr(client, "_sock", None)
+    except Exception:
+        pass
+    try:
+        setattr(client, "_is_connected", False)
+    except Exception:
+        pass
+    return had_socket, errors
+
+
+def _close_raw_mqtt_socket(client, sock):
+    errors = ()
+    connection_manager = getattr(client, "_connection_manager", None)
+    close_socket = getattr(connection_manager, "close_socket", None)
+    if callable(close_socket):
+        try:
+            close_socket(sock)
+            return ()
+        except Exception as exc:
+            errors = ("mqtt_socket_close_failed:{}".format(exc),)
+    close = getattr(sock, "close", None)
+    if callable(close):
+        try:
+            close()
+            return ()
+        except Exception as exc:
+            errors = errors + ("mqtt_socket_direct_close_failed:{}".format(exc),)
+    return errors
+
+
+def _is_not_connected_close_error(exc):
+    text = str(exc or "").strip().lower()
+    return "not connected" in text
 
 
 def _resolve_mqtt_class(modules):
@@ -725,6 +1438,27 @@ def _wrap_minimqtt_socket_pool(socket_pool):
     return _MiniMQTTSocketPoolCompat(socket_pool)
 
 
+def _should_wrap_socket_pool_before_connect(modules):
+    if not isinstance(modules, dict):
+        return False
+    return bool(modules.get("wrap_socket_pool_before_connect", False))
+
+
+def _should_enable_socket_compat(modules):
+    if not isinstance(modules, dict):
+        return False
+    return bool(
+        modules.get("wrap_socket_pool_before_connect", False)
+        or modules.get("wrap_socket_after_connect", False)
+    )
+
+
+def _should_enable_flexible_callback(modules):
+    if not isinstance(modules, dict):
+        return False
+    return bool(modules.get("flexible_callback", False))
+
+
 def _ensure_minimqtt_socket_compat(client):
     socket_obj = getattr(client, "_sock", None)
     if socket_obj is None or isinstance(socket_obj, _MiniMQTTSocketCompat):
@@ -800,6 +1534,250 @@ def preflight_mqtt_broker(adapter, broker=None):
         or getattr(adapter, "broker", "")
     )
     return _resolve_broker_target(adapter, target)
+
+
+def preflight_mqtt_broker_tcp(adapter, broker=None, *, timeout_s=None):
+    """Open and close a TCP socket to the MQTT broker using adapter sockets."""
+    target = (
+        broker
+        or getattr(adapter, "active_broker", "")
+        or getattr(adapter, "broker", "")
+    )
+    target = str(target or "").strip()
+    if not target:
+        return "mqtt_tcp_preflight_failed:empty_broker", ""
+
+    resolve_error, resolved_ip = _resolve_broker_target(adapter, target)
+    if resolve_error:
+        return resolve_error, ""
+    connect_target = resolved_ip or target
+
+    socket_pool = None
+    if isinstance(adapter.client_kwargs, dict):
+        socket_pool = adapter.client_kwargs.get("socket_pool")
+    if socket_pool is None:
+        return "mqtt_tcp_preflight_failed:{}:socket_pool_unavailable".format(
+            connect_target
+        ), connect_target
+
+    socket_factory = getattr(socket_pool, "socket", None)
+    if not callable(socket_factory):
+        return "mqtt_tcp_preflight_failed:{}:socket_unavailable".format(
+            connect_target
+        ), connect_target
+
+    sock = None
+    try:
+        sock = socket_factory()
+        settimeout = getattr(sock, "settimeout", None)
+        if callable(settimeout):
+            settimeout(
+                MQTT_CONNECT_SOCKET_TIMEOUT_S if timeout_s is None else timeout_s
+            )
+        sock.connect((connect_target, int(getattr(adapter, "port", 1883) or 1883)))
+        return "", connect_target
+    except Exception as exc:
+        return "mqtt_tcp_preflight_failed:{}:{}:{}".format(
+            connect_target,
+            type(exc).__name__,
+            exc,
+        ), connect_target
+    finally:
+        if sock is not None:
+            close = getattr(sock, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
+
+
+def preflight_mqtt_broker_connect(adapter, broker=None, *, timeout_s=None):
+    """Perform a raw MQTT CONNECT/CONNACK probe using adapter sockets."""
+    target = (
+        broker
+        or getattr(adapter, "active_broker", "")
+        or getattr(adapter, "broker", "")
+    )
+    target = str(target or "").strip()
+    if not target:
+        return "mqtt_connect_probe_failed:empty_broker", "", "", -1
+
+    resolve_error, resolved_ip = _resolve_broker_target(adapter, target)
+    if resolve_error:
+        return resolve_error, "", "", -1
+    connect_target = resolved_ip or target
+
+    if _mqtt_adapter_uses_tls(adapter):
+        return "mqtt_connect_probe_skipped:{}:tls_enabled".format(
+            connect_target
+        ), connect_target, "", -1
+
+    socket_pool = _mqtt_adapter_socket_pool(adapter)
+    if socket_pool is None:
+        return "mqtt_connect_probe_failed:{}:socket_pool_unavailable".format(
+            connect_target
+        ), connect_target, "", -1
+
+    socket_factory = getattr(socket_pool, "socket", None)
+    if not callable(socket_factory):
+        return "mqtt_connect_probe_failed:{}:socket_unavailable".format(
+            connect_target
+        ), connect_target, "", -1
+
+    sock = None
+    client_id = _mqtt_probe_client_id(adapter)
+    return_code = -1
+    try:
+        sock = socket_factory()
+        settimeout = getattr(sock, "settimeout", None)
+        if callable(settimeout):
+            settimeout(
+                MQTT_CONNECT_SOCKET_TIMEOUT_S if timeout_s is None else timeout_s
+            )
+        sock.connect((connect_target, int(getattr(adapter, "port", 1883) or 1883)))
+        _send_mqtt_packet(sock, _mqtt_connect_packet(adapter, client_id))
+        header = _recv_mqtt_byte(sock)
+        if header != 0x20:
+            return (
+                "mqtt_connect_probe_failed:{}:unexpected_header:{:02x}".format(
+                    connect_target,
+                    header,
+                ),
+                connect_target,
+                client_id,
+                return_code,
+            )
+        remaining = _recv_mqtt_remaining_length(sock)
+        payload = _recv_socket_exact(sock, remaining)
+        if len(payload) < 2:
+            return (
+                "mqtt_connect_probe_failed:{}:short_connack:{}".format(
+                    connect_target,
+                    len(payload),
+                ),
+                connect_target,
+                client_id,
+                return_code,
+            )
+        return_code = int(payload[1])
+        if return_code:
+            return (
+                "mqtt_connect_probe_failed:{}:connack_code={}".format(
+                    connect_target,
+                    return_code,
+                ),
+                connect_target,
+                client_id,
+                return_code,
+            )
+        _send_mqtt_packet(sock, bytes((0xE0, 0x00)))
+        return "", connect_target, client_id, return_code
+    except Exception as exc:
+        return (
+            "mqtt_connect_probe_failed:{}:{}:{}".format(
+                connect_target,
+                type(exc).__name__,
+                exc,
+            ),
+            connect_target,
+            client_id,
+            return_code,
+        )
+    finally:
+        if sock is not None:
+            close = getattr(sock, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
+
+
+def _mqtt_adapter_socket_pool(adapter):
+    if isinstance(adapter.client_kwargs, dict):
+        return adapter.client_kwargs.get("socket_pool")
+    return None
+
+
+def _mqtt_adapter_uses_tls(adapter):
+    if int(getattr(adapter, "port", 0) or 0) == 8883:
+        return True
+    if isinstance(adapter.client_kwargs, dict):
+        return adapter.client_kwargs.get("ssl_context") is not None
+    return False
+
+
+def _mqtt_probe_client_id(adapter):
+    if isinstance(adapter.client_kwargs, dict):
+        value = adapter.client_kwargs.get("client_id")
+        if value:
+            return _mqtt_text(value)
+    client = getattr(adapter, "client", None)
+    for attr_name in ("client_id", "_client_id", "_client_identifier"):
+        value = getattr(client, attr_name, None)
+        if value:
+            return _mqtt_text(value)
+    return "cpynodus-probe"
+
+
+def _mqtt_text(value):
+    if isinstance(value, bytes):
+        try:
+            return value.decode("utf-8")
+        except Exception:
+            return "cpynodus-probe"
+    return str(value or "").strip() or "cpynodus-probe"
+
+
+def _mqtt_connect_packet(adapter, client_id):
+    client_id_bytes = _mqtt_bytes(client_id)
+    username = ""
+    password = ""
+    if isinstance(adapter.client_kwargs, dict):
+        username = adapter.client_kwargs.get("username") or ""
+        password = adapter.client_kwargs.get("password") or ""
+    username_bytes = _mqtt_bytes(username) if username else b""
+    password_bytes = _mqtt_bytes(password) if password else b""
+    connect_flags = 0x02
+    if username_bytes:
+        connect_flags |= 0x80
+    if password_bytes:
+        connect_flags |= 0x40
+    keep_alive = 60
+    remaining = 10 + 2 + len(client_id_bytes)
+    if username_bytes:
+        remaining += 2 + len(username_bytes)
+    if password_bytes:
+        remaining += 2 + len(password_bytes)
+    remaining_bytes = _mqtt_remaining_length(remaining)
+    packet = bytearray(1 + len(remaining_bytes) + remaining)
+    packet[0] = 0x10
+    offset = 1
+    for byte in remaining_bytes:
+        packet[offset] = byte
+        offset += 1
+    packet[offset : offset + 6] = b"\x00\x04MQTT"
+    offset += 6
+    packet[offset] = 0x04
+    packet[offset + 1] = connect_flags
+    packet[offset + 2] = (keep_alive >> 8) & 0xFF
+    packet[offset + 3] = keep_alive & 0xFF
+    offset += 4
+    offset = _write_mqtt_utf8(packet, offset, client_id_bytes)
+    if username_bytes:
+        offset = _write_mqtt_utf8(packet, offset, username_bytes)
+    if password_bytes:
+        offset = _write_mqtt_utf8(packet, offset, password_bytes)
+    return packet
+
+
+def _write_mqtt_utf8(packet, offset, value_bytes):
+    packet[offset] = (len(value_bytes) >> 8) & 0xFF
+    packet[offset + 1] = len(value_bytes) & 0xFF
+    offset += 2
+    packet[offset : offset + len(value_bytes)] = value_bytes
+    return offset + len(value_bytes)
 
 
 def _resolve_broker_target(adapter, broker):
@@ -954,15 +1932,19 @@ def _is_socket_nbytes_required_error(exc):
     return False
 
 
-def _bind_on_message(client, transport):
-    def _on_message(*args):
-        if len(args) >= 3:
-            _, topic, message = args[-3:]
-        elif len(args) == 2:
-            topic, message = args
-        else:
-            raise TypeError("mqtt_on_message_callback_args_invalid")
-        transport.receive(topic, _coerce_payload_text(message))
+def _bind_on_message(client, transport, *, flexible=False):
+    if flexible:
+        def _on_message(*args):
+            if len(args) >= 3:
+                _, topic, message = args[-3:]
+            elif len(args) == 2:
+                topic, message = args
+            else:
+                raise TypeError("mqtt_on_message_callback_args_invalid")
+            transport.receive(topic, _coerce_payload_text(message))
+    else:
+        def _on_message(_client, topic, message):
+            transport.receive(topic, _coerce_payload_text(message))
 
     try:
         client.on_message = _on_message
@@ -994,9 +1976,9 @@ def _payload_size(payload):
 
 
 def _coerce_payload_text(message):
-    if isinstance(message, bytes):
+    if isinstance(message, (bytes, bytearray)):
         try:
-            return message.decode("utf-8")
+            return bytes(message).decode("utf-8")
         except Exception:
-            return message.decode("utf-8", errors="ignore")
+            return bytes(message).decode("utf-8", errors="ignore")
     return str(message)

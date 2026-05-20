@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 RADIO_CYCLE_SETTLE_S = 3.0
 RADIO_ENABLE_TOGGLE_SETTLE_S = 0.5
+STATION_RESET_SETTLE_S = 0.5
 
 
 def _network_log(message, *, start_monotonic=None):
@@ -58,6 +59,7 @@ class NetworkStack:
     ip_address: str = ""
     socket_pool: object | None = None
     ssl_context: object | None = None
+    socket_artifact_source: str = ""
     wifi_radio: object | None = None
     connection_manager_module: object | None = None
     errors: tuple = ()
@@ -70,6 +72,8 @@ def build_network_stack(
     connection_manager_module=None,
     max_attempts=3,
     retry_delay_s=1.0,
+    preconnect_scan=False,
+    station_reset_settle_s=STATION_RESET_SETTLE_S,
     log_start_monotonic=None,
 ):
     """Build the runtime network stack needed by MQTT and networked profiles."""
@@ -81,6 +85,7 @@ def build_network_stack(
         ap_ip_address = ""
         socket_pool = None
         ssl_context = None
+        socket_artifact_source = ""
         if wifi_radio is not None:
             start_ap = getattr(wifi_radio, "start_ap", None)
             if callable(start_ap):
@@ -103,17 +108,18 @@ def build_network_stack(
                 except Exception:
                     pass
             ap_ip_address = _current_ap_ip_address(wifi_radio)
-            if connection_manager_module is not None:
-                try:
-                    socket_pool = connection_manager_module.get_radio_socketpool(
-                        wifi_radio
-                    )
-                    ssl_context = connection_manager_module.get_radio_ssl_context(
-                        wifi_radio
-                    )
-                except Exception:
-                    socket_pool = None
-                    ssl_context = None
+            try:
+                (
+                    socket_pool,
+                    ssl_context,
+                    socket_artifact_source,
+                ) = _build_socket_artifacts(
+                    wifi_radio, connection_manager_module
+                )
+            except Exception:
+                socket_pool = None
+                ssl_context = None
+                socket_artifact_source = ""
         return NetworkStack(
             phase="ap",
             mode="ap",
@@ -122,6 +128,7 @@ def build_network_stack(
             ip_address=ap_ip_address,
             socket_pool=socket_pool,
             ssl_context=ssl_context,
+            socket_artifact_source=socket_artifact_source,
             wifi_radio=wifi_radio,
             connection_manager_module=connection_manager_module,
             errors=(),
@@ -186,6 +193,8 @@ def build_network_stack(
         wifi_radio,
         max_attempts=max_attempts,
         retry_delay_s=retry_delay_s,
+        preconnect_scan=preconnect_scan,
+        station_reset_settle_s=station_reset_settle_s,
         log_start_monotonic=log_start_monotonic,
     )
     if connect_result["phase"] != "ready":
@@ -200,8 +209,9 @@ def build_network_stack(
             errors=connect_result["errors"],
         )
 
-    socket_pool = connection_manager_module.get_radio_socketpool(wifi_radio)
-    ssl_context = connection_manager_module.get_radio_ssl_context(wifi_radio)
+    socket_pool, ssl_context, socket_artifact_source = _build_socket_artifacts(
+        wifi_radio, connection_manager_module
+    )
     return NetworkStack(
         phase="ready",
         mode="station",
@@ -210,6 +220,7 @@ def build_network_stack(
         ip_address=connect_result["ip_address"],
         socket_pool=socket_pool,
         ssl_context=ssl_context,
+        socket_artifact_source=socket_artifact_source,
         wifi_radio=wifi_radio,
         connection_manager_module=connection_manager_module,
         errors=(),
@@ -225,6 +236,7 @@ def reconnect_network_stack(
     rebuild_socket_artifacts=False,
     reset_station=False,
     cycle_radio=False,
+    station_reset_settle_s=STATION_RESET_SETTLE_S,
     log_start_monotonic=None,
 ):
     """Reconnect station Wi-Fi, preserving socket artifacts when allowed."""
@@ -237,6 +249,8 @@ def reconnect_network_stack(
             runtime_config,
             max_attempts=max_attempts,
             retry_delay_s=retry_delay_s,
+            preconnect_scan=False,
+            station_reset_settle_s=station_reset_settle_s,
             log_start_monotonic=log_start_monotonic,
         )
 
@@ -254,6 +268,8 @@ def reconnect_network_stack(
         max_attempts=max_attempts,
         retry_delay_s=retry_delay_s,
         log_start_monotonic=log_start_monotonic,
+        reset_before_connect=not reset_station,
+        station_reset_settle_s=station_reset_settle_s,
     )
     if connect_result["phase"] != "ready":
         return NetworkStack(
@@ -264,6 +280,9 @@ def reconnect_network_stack(
             ip_address=connect_result["ip_address"],
             socket_pool=None if rebuild_socket_artifacts else network_stack.socket_pool,
             ssl_context=None if rebuild_socket_artifacts else network_stack.ssl_context,
+            socket_artifact_source=""
+            if rebuild_socket_artifacts
+            else getattr(network_stack, "socket_artifact_source", ""),
             wifi_radio=wifi_radio,
             connection_manager_module=connection_manager_module,
             errors=connect_result["errors"],
@@ -271,6 +290,7 @@ def reconnect_network_stack(
 
     socket_pool = network_stack.socket_pool
     ssl_context = network_stack.ssl_context
+    socket_artifact_source = getattr(network_stack, "socket_artifact_source", "")
     if rebuild_socket_artifacts or socket_pool is None or ssl_context is None:
         connection_manager_module = _resolve_connection_manager(
             connection_manager_module
@@ -286,8 +306,13 @@ def reconnect_network_stack(
                 connection_manager_module=None,
                 errors=("connection_manager_unavailable",),
             )
-        socket_pool = connection_manager_module.get_radio_socketpool(wifi_radio)
-        ssl_context = connection_manager_module.get_radio_ssl_context(wifi_radio)
+        (
+            socket_pool,
+            ssl_context,
+            socket_artifact_source,
+        ) = _build_socket_artifacts(
+            wifi_radio, connection_manager_module
+        )
     return NetworkStack(
         phase="ready",
         mode="station",
@@ -296,6 +321,7 @@ def reconnect_network_stack(
         ip_address=connect_result["ip_address"],
         socket_pool=socket_pool,
         ssl_context=ssl_context,
+        socket_artifact_source=socket_artifact_source,
         wifi_radio=wifi_radio,
         connection_manager_module=connection_manager_module,
         errors=(),
@@ -365,6 +391,7 @@ def refresh_network_stack(network_stack):
         ip_address=ip_address,
         socket_pool=network_stack.socket_pool,
         ssl_context=network_stack.ssl_context,
+        socket_artifact_source=getattr(network_stack, "socket_artifact_source", ""),
         wifi_radio=network_stack.wifi_radio,
         connection_manager_module=network_stack.connection_manager_module,
         errors=network_stack.errors,
@@ -442,6 +469,9 @@ def _connect_station(
     max_attempts,
     retry_delay_s,
     log_start_monotonic=None,
+    reset_before_connect=True,
+    preconnect_scan=False,
+    station_reset_settle_s=STATION_RESET_SETTLE_S,
 ):
     connect = getattr(wifi_radio, "connect", None)
     set_hostname = getattr(wifi_radio, "hostname", None)
@@ -450,6 +480,37 @@ def _connect_station(
     last_scan_count = -1
     station_hint = None
     attempts = max(1, int(max_attempts or 1))
+    if preconnect_scan:
+        scan_status, scan_count, scan_hint = _scan_for_station_ssid(
+            wifi_radio,
+            runtime_config.network.ssid,
+        )
+        last_scan_status = scan_status
+        last_scan_count = scan_count
+        if scan_hint is not None:
+            station_hint = scan_hint
+        _network_log(
+            (
+                "network scan phase=preconnect ssid={} result={} count={} "
+                "channel={} bssid={}"
+            ).format(
+                runtime_config.network.ssid,
+                scan_status,
+                scan_count if scan_count >= 0 else "unknown",
+                _station_hint_channel(scan_hint) or "none",
+                _bssid_text(_station_hint_bssid(scan_hint)),
+            ),
+            start_monotonic=log_start_monotonic,
+        )
+    if reset_before_connect and _reset_station_mode(wifi_radio):
+        _network_log(
+            "network station reset phase=startup",
+            start_monotonic=log_start_monotonic,
+        )
+        try:
+            time.sleep(max(0.0, float(station_reset_settle_s or 0.0)))
+        except Exception:
+            pass
     for attempt in range(1, attempts + 1):
         _network_log(
             "network connect attempt={} ssid={}".format(
@@ -592,14 +653,19 @@ def _connect_station(
                 scan_count = -1
                 scan_hint = None
                 if _looks_station_join_failure(exc):
-                    scan_status, scan_count, scan_hint = _scan_for_station_ssid(
-                        wifi_radio,
-                        runtime_config.network.ssid,
-                    )
+                    if station_hint is not None:
+                        scan_status = "skipped_hint"
+                        scan_count = 0
+                        scan_hint = station_hint
+                    else:
+                        scan_status, scan_count, scan_hint = _scan_for_station_ssid(
+                            wifi_radio,
+                            runtime_config.network.ssid,
+                        )
+                        if scan_hint is not None:
+                            station_hint = scan_hint
                     last_scan_status = scan_status
                     last_scan_count = scan_count
-                    if scan_hint is not None:
-                        station_hint = scan_hint
                     _network_log(
                         (
                             "network scan attempt={} ssid={} result={} count={} "
@@ -672,6 +738,53 @@ def _reset_station_mode(wifi_radio, *, cycle_radio=False):
     cycled_radio = _cycle_radio_power(wifi_radio) if cycle_radio else False
     if stopped_station or cycled_radio:
         _call_radio_method(wifi_radio, "start_station")
+    return bool(stopped_station or cycled_radio)
+
+
+def _build_socket_artifacts(wifi_radio, connection_manager_module):
+    socket_pool = _build_direct_socket_pool(wifi_radio)
+    ssl_context = _build_direct_ssl_context()
+    if socket_pool is not None:
+        if ssl_context is None and connection_manager_module is not None:
+            try:
+                ssl_context = connection_manager_module.get_radio_ssl_context(
+                    wifi_radio
+                )
+            except Exception:
+                ssl_context = None
+        return socket_pool, ssl_context, "direct"
+    if connection_manager_module is None:
+        return None, None, ""
+    return (
+        connection_manager_module.get_radio_socketpool(wifi_radio),
+        connection_manager_module.get_radio_ssl_context(wifi_radio),
+        "connection_manager",
+    )
+
+
+def _build_direct_socket_pool(wifi_radio):
+    try:
+        import socketpool  # type: ignore
+    except Exception:
+        return None
+    try:
+        return socketpool.SocketPool(wifi_radio)
+    except Exception:
+        return None
+
+
+def _build_direct_ssl_context():
+    try:
+        import ssl  # type: ignore
+    except Exception:
+        return None
+    create_context = getattr(ssl, "create_default_context", None)
+    if not callable(create_context):
+        return None
+    try:
+        return create_context()
+    except Exception:
+        return None
 
 
 def _connect_with_station_hint(connect, runtime_config, station_hint, strategy):
