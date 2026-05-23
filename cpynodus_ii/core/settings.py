@@ -1130,6 +1130,9 @@ class Settings:
                     apvpd_rh_cal_val=float(
                         i2c_device_cal_doc.get("APVPD_RH_CAL_VAL", 0.0)
                     ),
+                    altitude_meters=float(
+                        i2c_device_cal_doc.get("ALTITUDE_METERS", 0.0)
+                    ),
                 ),
             )
 

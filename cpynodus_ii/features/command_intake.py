@@ -1480,6 +1480,7 @@ def _calibration_attr_name(section, key_upper):
         "SOIL_TEMP_MOIST_VAL": "soil_temp_moist_val",
         "SOIL_PH_CAL_VAL": "soil_ph_cal_val",
         "SOIL_EC_CAL_VAL": "soil_ec_cal_val",
+        "ALTITUDE_METERS": "altitude_meters",
     }
     return mapping.get(key_upper, "")
 

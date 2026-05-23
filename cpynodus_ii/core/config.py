@@ -164,7 +164,7 @@ class SoilStressConfig:
 
 @dataclass
 class SensorCalibration:
-    """Normalized additive calibration offsets for sensor metrics."""
+    """Normalized calibration values for sensor metrics and device setup."""
 
     temp_offset: float = 0.0
     rh_offset: float = 0.0
@@ -175,6 +175,7 @@ class SensorCalibration:
     ppfd_offset: float = 0.0
     apvpd_temp_cal_val: float = 0.0
     apvpd_rh_cal_val: float = 0.0
+    altitude_meters: float = 0.0
     soil_temp_cal_val: float = 0.0
     soil_temp_moist_val: float = 0.0
     soil_ph_cal_val: float = 0.0
@@ -190,6 +191,7 @@ class SensorCalibration:
         _raw_setattr(self, "ppfd_offset", float(self.ppfd_offset or 0.0))
         _raw_setattr(self, "apvpd_temp_cal_val", float(self.apvpd_temp_cal_val or 0.0))
         _raw_setattr(self, "apvpd_rh_cal_val", float(self.apvpd_rh_cal_val or 0.0))
+        _raw_setattr(self, "altitude_meters", float(self.altitude_meters or 0.0))
         _raw_setattr(self, "soil_temp_cal_val", float(self.soil_temp_cal_val or 0.0))
         _raw_setattr(
             self, "soil_temp_moist_val", float(self.soil_temp_moist_val or 0.0)

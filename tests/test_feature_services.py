@@ -132,6 +132,8 @@ class _FakeSCD4X:
     def __init__(self, transport, *, address=0x62):
         self.transport = transport
         self.address = address
+        self.altitude = 0
+        self.altitude_at_start = None
         self.data_ready = True
         self.CO2 = 845.4
         self.temperature = 23.5
@@ -139,6 +141,7 @@ class _FakeSCD4X:
         self.periodic_started = False
 
     def start_periodic_measurement(self):
+        self.altitude_at_start = self.altitude
         self.periodic_started = True
 
 
@@ -155,6 +158,7 @@ class _FlakySCD4X(_FakeSCD4X):
 class _FakeSCD30:
     def __init__(self, transport):
         self.transport = transport
+        self.altitude = 0
         self.data_available = True
         self.co2_reads = 0
         self.temperature = 23.5
@@ -208,6 +212,40 @@ def test_sensor_service_starts_bme680_for_aqi_config():
     assert sensor_service.phase == "ready"
     assert sensor_service.driver_kind == "adafruit_bme680"
     assert sensor_service.driver.address == 119
+
+
+def test_sensor_service_applies_altitude_for_bme680():
+    runtime_config = RuntimeConfig(
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            active_config_file="sensor_i2c.toml",
+            device="aqi",
+            sensor_id="aqi-1",
+            i2c=I2CConfig(bus=0, scl_pin="GP1", sda_pin="GP0", address=0x77),
+            calibration_device=SensorCalibration(altitude_meters=1500.0),
+        )
+    )
+    sensor_runtime = build_sensor_runtime(
+        plan_sensor_initialization(runtime_config),
+        runtime_config,
+    )
+    sensor_adapter = bind_sensor_hardware(
+        sensor_runtime,
+        runtime_config,
+        board_module=SimpleNamespace(GP0="pin-gp0", GP1="pin-gp1"),
+        busio_module=SimpleNamespace(I2C=_FakeI2C, UART=_FakeUART),
+    )
+
+    sensor_service = start_sensor_service(
+        sensor_runtime,
+        sensor_adapter,
+        runtime_config,
+        modules={"adafruit_bme680": SimpleNamespace(Adafruit_BME680_I2C=_FakeBME680)},
+    )
+
+    assert sensor_service.phase == "ready"
+    assert sensor_service.driver.sea_level_pressure > 1008.5
 
 
 def test_sensor_service_reports_missing_i2c_sensor_at_startup():
@@ -332,6 +370,41 @@ def test_sensor_service_starts_periodic_measurement_for_scd41():
     assert sensor_service.driver.address == 0x62
 
 
+def test_sensor_service_applies_altitude_before_scd41_periodic_start():
+    runtime_config = RuntimeConfig(
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            active_config_file="sensor_i2c.toml",
+            device="co2",
+            sensor_id="co2-29j39c",
+            i2c=I2CConfig(bus=0, scl_pin="GP1", sda_pin="GP0", address=0x62),
+            calibration_device=SensorCalibration(altitude_meters=1612.4),
+        )
+    )
+    sensor_runtime = build_sensor_runtime(
+        plan_sensor_initialization(runtime_config),
+        runtime_config,
+    )
+    sensor_adapter = bind_sensor_hardware(
+        sensor_runtime,
+        runtime_config,
+        board_module=SimpleNamespace(GP0="pin-gp0", GP1="pin-gp1"),
+        busio_module=SimpleNamespace(I2C=_FakeI2C, UART=_FakeUART),
+    )
+
+    sensor_service = start_sensor_service(
+        sensor_runtime,
+        sensor_adapter,
+        runtime_config,
+        modules={"adafruit_scd4x": SimpleNamespace(SCD4X=_FakeSCD4X)},
+    )
+
+    assert sensor_service.phase == "ready"
+    assert sensor_service.driver.altitude == 1612
+    assert sensor_service.driver.altitude_at_start == 1612
+
+
 def test_sensor_service_retries_scd41_startup_once():
     _FlakySCD4X.attempts = 0
     runtime_config = RuntimeConfig(
@@ -399,6 +472,40 @@ def test_sensor_service_reports_scd41_startup_exception_type():
     assert sensor_service.phase == "error"
     assert "sensor_not_found" in sensor_service.errors
     assert "sensor_not_found:OSError:no_i2c_device" in sensor_service.errors
+
+
+def test_sensor_service_applies_altitude_for_scd30():
+    runtime_config = RuntimeConfig(
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            active_config_file="sensor_i2c.toml",
+            device="co2",
+            sensor_id="co2-29j39c",
+            i2c=I2CConfig(bus=0, scl_pin="GP1", sda_pin="GP0", address=0x61),
+            calibration_device=SensorCalibration(altitude_meters=1499.6),
+        )
+    )
+    sensor_runtime = build_sensor_runtime(
+        plan_sensor_initialization(runtime_config),
+        runtime_config,
+    )
+    sensor_adapter = bind_sensor_hardware(
+        sensor_runtime,
+        runtime_config,
+        board_module=SimpleNamespace(GP0="pin-gp0", GP1="pin-gp1"),
+        busio_module=SimpleNamespace(I2C=_FakeI2C, UART=_FakeUART),
+    )
+
+    sensor_service = start_sensor_service(
+        sensor_runtime,
+        sensor_adapter,
+        runtime_config,
+        modules={"adafruit_scd30": SimpleNamespace(SCD30=_FakeSCD30)},
+    )
+
+    assert sensor_service.phase == "ready"
+    assert sensor_service.driver.altitude == 1500
 
 
 def test_scd41_snapshot_waits_until_data_ready():
@@ -845,6 +952,42 @@ def test_sensor_service_starts_bme280_for_avpd_config():
     assert sensor_service.phase == "ready"
     assert sensor_service.driver_kind == "adafruit_bme280"
     assert sensor_service.driver.address == 0x76
+
+
+def test_sensor_service_applies_altitude_for_bme280():
+    runtime_config = RuntimeConfig(
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            active_config_file="sensor_i2c.toml",
+            device="avpd",
+            sensor_id="avpd-1",
+            i2c=I2CConfig(bus=0, scl_pin="GP1", sda_pin="GP0", address=0x76),
+            calibration_device=SensorCalibration(altitude_meters=1500.0),
+        )
+    )
+    sensor_runtime = build_sensor_runtime(
+        plan_sensor_initialization(runtime_config),
+        runtime_config,
+    )
+    sensor_adapter = bind_sensor_hardware(
+        sensor_runtime,
+        runtime_config,
+        board_module=SimpleNamespace(GP0="pin-gp0", GP1="pin-gp1"),
+        busio_module=SimpleNamespace(I2C=_FakeI2C, UART=_FakeUART),
+    )
+
+    sensor_service = start_sensor_service(
+        sensor_runtime,
+        sensor_adapter,
+        runtime_config,
+        modules={
+            "adafruit_bme280.basic": SimpleNamespace(Adafruit_BME280_I2C=_FakeBME280)
+        },
+    )
+
+    assert sensor_service.phase == "ready"
+    assert sensor_service.driver.sea_level_pressure > 1008.5
 
 
 def test_sensor_service_reads_aht_snapshot_with_temp_humidity_derivatives():

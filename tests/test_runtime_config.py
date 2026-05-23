@@ -118,6 +118,28 @@ def test_settings_from_directory_loads_sensor_switch_runtime_config():
     assert runtime_config.switch.channels[1].last_state is False
 
 
+def test_settings_from_directory_loads_i2c_altitude_calibration():
+    with TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        (tmpdir_path / "settings.toml").write_text(
+            '[Profile]\nACTIVE_PROFILE = "sensorius"\n',
+            encoding="utf-8",
+        )
+        (tmpdir_path / "sensor_i2c.toml").write_text(
+            (
+                '[Sensor]\nDEVICE = "co2"\nSENSOR_ID = "co2-1"\n'
+                "[I2Cbus]\nI2C_BUS = 0\nI2C_SCL = \"GP1\"\n"
+                'I2C_SDA = "GP0"\nI2C_ADDR = 98\n'
+                "[Calibration.Device]\nALTITUDE_METERS = 1609.3\n"
+            ),
+            encoding="utf-8",
+        )
+
+        runtime_config = Settings.from_directory(tmpdir_path).runtime_config()
+
+    assert runtime_config.sensor.calibration_device.altitude_meters == 1609.3
+
+
 def test_settings_from_directory_prefers_soil_sensor_file_when_soil_config_is_active():
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)

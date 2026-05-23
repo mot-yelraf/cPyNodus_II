@@ -381,6 +381,7 @@ def _start_i2c_sensor_service(sensor, sensor_adapter, modules):
                 device, sensor.interface, transport, "missing_adafruit_bme680"
             )
         driver = module.Adafruit_BME680_I2C(transport, address=sensor.i2c.address)
+        _apply_bme_altitude(driver, sensor)
         return SensorService(
             phase="ready",
             device=device,
@@ -398,7 +399,7 @@ def _start_i2c_sensor_service(sensor, sensor_adapter, modules):
                 return _sensor_service_error(
                     device, sensor.interface, transport, "missing_adafruit_scd4x"
                 )
-            driver = _start_scd4x_driver(module, transport, sensor.i2c.address)
+            driver = _start_scd4x_driver(module, transport, sensor.i2c.address, sensor)
             return SensorService(
                 phase="ready",
                 device=device,
@@ -414,6 +415,7 @@ def _start_i2c_sensor_service(sensor, sensor_adapter, modules):
                 device, sensor.interface, transport, "missing_adafruit_scd30"
             )
         driver = module.SCD30(transport)
+        _apply_direct_altitude(driver, sensor)
         return SensorService(
             phase="ready",
             device=device,
@@ -471,6 +473,7 @@ def _start_i2c_sensor_service(sensor, sensor_adapter, modules):
             )
         if device == "avpd":
             driver = module.Adafruit_BME280_I2C(transport, address=sensor.i2c.address)
+            _apply_bme_altitude(driver, sensor)
             return SensorService(
                 phase="ready",
                 device=device,
@@ -492,6 +495,8 @@ def _start_i2c_sensor_service(sensor, sensor_adapter, modules):
                 address=sensor.secondary_i2c.address,
             ),
         )
+        _apply_bme_altitude(driver.ambient, sensor)
+        _apply_bme_altitude(driver.plant, sensor)
         return SensorService(
             phase="ready",
             device=device,
@@ -558,11 +563,12 @@ def _load_module(name, modules, error_code):
         return None
 
 
-def _start_scd4x_driver(module, transport, address):
+def _start_scd4x_driver(module, transport, address, sensor):
     last_exc = None
     for attempt in range(2):
         try:
             driver = module.SCD4X(transport, address=address)
+            _apply_direct_altitude(driver, sensor)
             driver.start_periodic_measurement()
             return driver
         except Exception as exc:
@@ -570,6 +576,53 @@ def _start_scd4x_driver(module, transport, address):
             if attempt == 0:
                 sleep(0.25)
     raise last_exc
+
+
+def _configured_altitude_meters(sensor):
+    calibration = getattr(sensor, "calibration_device", None)
+    if calibration is None:
+        return None
+    try:
+        altitude = float(getattr(calibration, "altitude_meters", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return None
+    if altitude == 0.0:
+        return None
+    return altitude
+
+
+def _apply_direct_altitude(driver, sensor):
+    """Apply altitude compensation to drivers with a writable altitude field."""
+    altitude = _configured_altitude_meters(sensor)
+    if altitude is None:
+        return False
+    try:
+        driver.altitude = int(round(altitude))
+        return True
+    except Exception:
+        return False
+
+
+def _apply_bme_altitude(driver, sensor):
+    """Set BME sea-level pressure so its altitude output matches configuration."""
+    altitude = _configured_altitude_meters(sensor)
+    if altitude is None:
+        return False
+    try:
+        pressure = getattr(driver, "pressure", None)
+    except Exception:
+        return False
+    pressure_hpa = _scale_pressure_hpa(pressure)
+    if pressure_hpa is None:
+        return False
+    factor = 1.0 - (altitude / 44330.0)
+    if factor <= 0.0:
+        return False
+    try:
+        driver.sea_level_pressure = float(pressure_hpa) / (factor**5.255)
+        return True
+    except Exception:
+        return False
 
 
 def _sensor_data_ready(driver, *, driver_kind=""):

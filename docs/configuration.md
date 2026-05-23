@@ -138,6 +138,8 @@ The built-in `/setup` web UI provides pane-based editing for:
 
 Calibration offsets in `[Calibration.System]` and `[Calibration.Device]` are additive corrections.
 For example, a `CO2_OFFSET = -400.0` reduces the live measured `CO2` value by `400 ppm` before publish.
+`Calibration.Device.ALTITUDE_METERS` is device setup calibration, not an additive metric offset.
+When set to a non-zero meters value, BME280/BME680 drivers use it to calibrate altitude through sea-level pressure, and SCD30/SCD4x drivers use it for CO2 altitude compensation at driver startup.
 
 Corner case:
 

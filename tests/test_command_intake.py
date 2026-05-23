@@ -688,6 +688,20 @@ def test_process_calibration_message_updates_runtime_calibration_offsets():
     assert result.runtime_config.sensor.calibration_device.temp_offset == 1.5
 
 
+def test_process_calibration_message_updates_runtime_altitude():
+    transport = MQTTTransport("broker.local", 1883)
+
+    result = process_calibration_message(
+        transport,
+        _runtime_config(),
+        topic="nodus/switch-x943fm/calibration/set",
+        payload_text='{"message_id":"cal-alt","action":"apply","payload":{"offsets":[{"key":"Calibration.Device.ALTITUDE_METERS","value":1609.3}]}}',
+    )
+
+    assert result.phase == "published"
+    assert result.runtime_config.sensor.calibration_device.altitude_meters == 1609.3
+
+
 def test_process_inbound_messages_handles_device_topics_before_switch_topics():
     transport = MQTTTransport("broker.local", 1883)
     transport.receive(

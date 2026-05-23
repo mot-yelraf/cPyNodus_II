@@ -92,17 +92,23 @@ def test_apply_web_config_updates_applies_live_display_location_and_switch_label
             {"section": "Display", "key": "METRIC_1", "value": "CO2"},
             {"section": "Display.Style", "key": "METRIC_1", "value": "Gauge"},
             {"section": "Calibration.Device", "key": "CO2_OFFSET", "value": -125.0},
+            {
+                "section": "Calibration.Device",
+                "key": "ALTITUDE_METERS",
+                "value": 1609.3,
+            },
         ),
     )
 
     assert result.errors == ()
-    assert len(result.live_updates) == 5
+    assert len(result.live_updates) == 6
     assert result.restart_required_updates == ()
     assert result.runtime_config.sensor.location == "Bench B"
     assert result.runtime_config.switch.channels[0].label == "Exhaust"
     assert result.runtime_config.sensor.display.metrics[0] == "CO2"
     assert result.runtime_config.sensor.display.styles[0] == "Gauge"
     assert result.runtime_config.sensor.calibration_device.co2_offset == -125.0
+    assert result.runtime_config.sensor.calibration_device.altitude_meters == 1609.3
 
 
 def test_apply_web_config_updates_persists_restart_fields_without_live_change():

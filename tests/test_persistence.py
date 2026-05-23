@@ -66,7 +66,7 @@ def test_calibration_message_persists_active_sensor_toml_without_runtime_reload(
             transport,
             runtime_config,
             topic="nodus/aqi-x943fm/calibration/set",
-            payload_text='{"message_id":"cal-1","action":"apply","payload":{"offsets":[{"key":"Calibration.Device.TEMP_OFFSET","value":1.5}]}}',
+            payload_text='{"message_id":"cal-1","action":"apply","payload":{"offsets":[{"key":"Calibration.Device.TEMP_OFFSET","value":1.5},{"key":"Calibration.Device.ALTITUDE_METERS","value":1609.3}]}}',
             settings_root=tmpdir_path,
         )
         sensor_doc = Settings._read_toml_file(tmpdir_path / Settings.SENSOR_I2C_FILE)
@@ -74,7 +74,9 @@ def test_calibration_message_persists_active_sensor_toml_without_runtime_reload(
     assert result.phase == "published"
     assert result.persistence_mode == "persisted"
     assert result.runtime_config.sensor.calibration_device.temp_offset == 1.5
+    assert result.runtime_config.sensor.calibration_device.altitude_meters == 1609.3
     assert sensor_doc["Calibration"]["Device"]["TEMP_OFFSET"] == 1.5
+    assert sensor_doc["Calibration"]["Device"]["ALTITUDE_METERS"] == 1609.3
     assert transport.published_messages[-1].payload["updates"][0]["value"] == 1.5
 
 
