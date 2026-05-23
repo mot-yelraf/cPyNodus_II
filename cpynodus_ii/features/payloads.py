@@ -197,7 +197,13 @@ def build_device_heartbeat_payload(runtime_config, *, online):
     }
 
 
-def build_runtime_meta_payload(runtime_config, *, version, active_broker=""):
+def build_runtime_meta_payload(
+    runtime_config,
+    *,
+    version,
+    active_broker="",
+    include_switch_channels=False,
+):
     """Build the retained runtime metadata payload."""
     sensor = runtime_config.sensor
     switch = runtime_config.switch
@@ -221,6 +227,7 @@ def build_runtime_meta_payload(runtime_config, *, version, active_broker=""):
             "sensor": sensor.present,
             "switch": switch.present,
             "fwupdate": True,
+            "log_transfer": True,
         },
         "status": {
             "state": "online",
@@ -261,6 +268,14 @@ def build_runtime_meta_payload(runtime_config, *, version, active_broker=""):
                 runtime_config, device_id, "fwupdate", "result"
             ),
         },
+        "logs": {
+            "schema": "nodus-log-transfer/v1",
+            "get_topic": mqtt_topic(runtime_config, device_id, "logs", "get"),
+            "ack_topic": mqtt_topic(runtime_config, device_id, "logs", "ack"),
+            "chunk_topic": mqtt_topic(runtime_config, device_id, "logs", "chunk"),
+            "result_topic": mqtt_topic(runtime_config, device_id, "logs", "result"),
+            "chunk_size": 512,
+        },
         "location_group": {
             "location": location,
             "members": members,
@@ -282,12 +297,42 @@ def build_runtime_meta_payload(runtime_config, *, version, active_broker=""):
         }
 
     if switch.present:
+        channels = []
+        if include_switch_channels:
+            for index, channel in enumerate(switch.channels, start=1):
+                channels.append(
+                    {
+                        "index": index,
+                        "label": channel.label,
+                        "channel_id": channel.channel_id,
+                        "enable_pin": channel.enable_pin,
+                        "pin": channel.control_pin,
+                        "state": bool(channel.last_state),
+                        "event_topic": mqtt_topic(
+                            runtime_config, channel.channel_id, "event"
+                        ),
+                        "state_topic": mqtt_topic(
+                            runtime_config, channel.channel_id, "state"
+                        ),
+                        "set_topic": mqtt_topic(
+                            runtime_config, channel.channel_id, "config", "set"
+                        ),
+                        "result_topic": mqtt_topic(
+                            runtime_config, channel.channel_id, "config", "result"
+                        ),
+                        "availability_topic": mqtt_topic(
+                            runtime_config, channel.channel_id, "availability"
+                        ),
+                    }
+                )
         payload["switch"] = {
             "device_id": switch.device_id,
             "location": switch.location,
             "channel_count": len(switch.channels),
             "meta_topic": mqtt_topic(runtime_config, device_id, "meta", "switch"),
         }
+        if include_switch_channels:
+            payload["switch"]["channels"] = channels
 
     return payload
 

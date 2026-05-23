@@ -57,6 +57,7 @@ class MQTTTransport:
         self.published_messages = []
         self.subscriptions = []
         self.received_messages = []
+        self.subscription_retry_after = 0.0
 
     @classmethod
     def from_settings(cls, settings):
@@ -218,6 +219,19 @@ class MQTTTransport:
             return topic
         self.subscriptions.append(topic)
         return topic
+
+    def defer_subscription_retry(self, now_monotonic, delay_s):
+        self.subscription_retry_after = float(now_monotonic or 0.0) + float(
+            delay_s or 0.0
+        )
+
+    def subscription_retry_ready(self, now_monotonic):
+        return float(now_monotonic or 0.0) >= float(
+            self.subscription_retry_after or 0.0
+        )
+
+    def clear_subscription_retry(self):
+        self.subscription_retry_after = 0.0
 
     def receive(self, topic, payload_text):
         if topic is None:

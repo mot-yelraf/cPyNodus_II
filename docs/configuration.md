@@ -111,6 +111,20 @@ volatile hostname resolution when `BROKER_IP` is absent, and cannot persist it.
 The same settings rewrite obfuscates any plaintext passwords that were manually
 entered in `settings.toml`.
 
+## Host MQTT Log Retrieval Tool
+
+The host-side `scripts/nodus_getlogs.py` tool can request bounded Nodus runtime
+logs over MQTT and save the completed file locally. Copy
+`scripts/nodus_getlogs.toml.def` to `scripts/nodus_getlogs.toml` and set:
+
+- `[mqtt]`: `broker`, `port`, `base_topic`, optional TLS, username, and password
+- `[transfer]`: `storage_dir`, default `filenames`, `chunk_size`, and `timeout_s`
+
+The tool writes successful transfers under `storage_dir/<device_id>/`.
+Use `scripts/nodus_log_analyze.py` to summarize transferred `_recovery.log`
+and `_reboot.log` files by event type, recovery reason, topic, broker, phase
+transition, and reboot reason.
+
 ## Local setup UI
 
 The built-in `/setup` web UI provides pane-based editing for:

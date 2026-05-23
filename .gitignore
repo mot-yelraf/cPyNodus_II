@@ -1,0 +1,8 @@
+# Python host-side cache artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Test and lint caches
+.pytest_cache/
+.ruff_cache/

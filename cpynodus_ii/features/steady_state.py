@@ -10,8 +10,10 @@ from dataclasses import dataclass
 from cpynodus_ii.features.command_intake import (
     process_inbound_messages,
     process_soil_calibration_session,
+    subscribe_device_runtime_topics,
     subscribe_runtime_topics,
 )
+from cpynodus_ii.features.log_transfer import process_log_transfer_session
 from cpynodus_ii.features.publish_cycle import (
     publish_availability_refresh_cycle,
     publish_ota_completion_report,
@@ -55,6 +57,8 @@ class SteadyStateResult:
     command_published_count: int
     calibration_session_phase: str
     calibration_session_published_count: int
+    log_transfer_phase: str
+    log_transfer_published_count: int
     total_published_count: int
     errors: tuple = ()
 
@@ -79,6 +83,9 @@ def run_steady_state_iteration(
     now_monotonic=0.0,
     active_broker="",
     settings_root=None,
+    subscribe_switch_topics=True,
+    publish_switch_startup=True,
+    include_switch_meta_channels=False,
 ):
     """Process reconnect, queued commands, and cadence-gated sensor publish."""
     state = state or SteadyState()
@@ -108,7 +115,12 @@ def run_steady_state_iteration(
             from cpynodus_ii.features.web_services import load_onboarding_state
 
             onboarding_state = load_onboarding_state(settings_root)
-        subscribed_topics = subscribe_runtime_topics(transport, runtime_config)
+        if subscribe_switch_topics:
+            subscribed_topics = subscribe_runtime_topics(transport, runtime_config)
+        else:
+            subscribed_topics = subscribe_device_runtime_topics(
+                transport, runtime_config
+            )
         startup_result = publish_startup_cycle(
             transport,
             runtime_config,
@@ -117,6 +129,8 @@ def run_steady_state_iteration(
             sensor_snapshot=sensor_snapshot,
             switch_snapshot=switch_snapshot,
             active_broker=active_broker,
+            publish_switch_startup=publish_switch_startup,
+            include_switch_meta_channels=include_switch_meta_channels,
         )
         ota_status_result = publish_ota_completion_report(
             transport,
@@ -211,6 +225,11 @@ def run_steady_state_iteration(
     if calibration_session_result.runtime_config is not None:
         updated_runtime_config = calibration_session_result.runtime_config
     errors.extend(calibration_session_result.errors)
+    log_transfer_result = process_log_transfer_session(
+        transport,
+        updated_runtime_config,
+    )
+    errors.extend(log_transfer_result.errors)
 
     sensor_result = _skipped_publish_result("sensor_poll_interval_not_elapsed")
     should_poll_sensor = (
@@ -297,12 +316,15 @@ def run_steady_state_iteration(
         command_published_count=command_published_count,
         calibration_session_phase=calibration_session_result.phase,
         calibration_session_published_count=calibration_session_result.published_count,
+        log_transfer_phase=log_transfer_result.phase,
+        log_transfer_published_count=log_transfer_result.published_count,
         total_published_count=(
             startup_result.published_count
             + ota_status_result.published_count
             + switch_meta_result.published_count
             + command_published_count
             + calibration_session_result.published_count
+            + log_transfer_result.published_count
             + sensor_result.published_count
             + availability_result.published_count
         ),

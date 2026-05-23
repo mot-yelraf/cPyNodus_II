@@ -132,6 +132,7 @@ Notes:
 - Use `--delete` if you want files removed from target when no longer present in this repo.
 - `--delete` is not supported with `--content root-py` or `--content nodus`.
 - Use `--prune-deprecated` to remove only the target paths listed in `scripts/deprecated_target_files.txt`.
+- Deploy removes target `_reboot.log` and `_recovery.log` by default so old postmortem records do not survive firmware updates; use `--keep-reboot-log` to preserve them.
 
 ## Boot Flow
 
@@ -549,6 +550,7 @@ Automations are implemented in Sensorius. Sensorius publishes the desired switch
 - **MQTT outage policy**: when Wi‑Fi is still up but MQTT is unhealthy, Nodus retries broker recovery for up to 3 minutes, including bounded socket-pool/MQTT rebuild attempts, before soft rebooting.
 - **AP recovery policy**: if startup cannot join the configured station network, Nodus falls back into AP recovery mode and soft reboots again after 10 minutes of idle AP uptime.
 - **Soft restart policy**: bounded soft restart remains the preferred recovery path for network failures on Pico2 W.
+- **Recovery diagnostics**: when the filesystem is writable, formal recovery phase changes and recovery actions are appended to `/_recovery.log` with timestamp, firmware version, and device ID headers. The file is capped at 10 KB for USB-powered postmortems.
 
 ## Web Server
 
@@ -626,7 +628,7 @@ Automations are implemented in Sensorius. Sensorius publishes the desired switch
 - `DEBUG_MODULES` in `cPyUtils.py` controls module‑level debug output.
 - Keep web routes small; heavy handlers can destabilize startup on constrained devices.
 - Add Device flow uses `POST /itaot-init`, then MQTT onboarding topics (`nodus/<device_id>/onboard/hello`, `config/set`, `config/ack`, `config/result`) as the authoritative configuration path.
-- Nodus TOML files are the source of truth for accepted config. Sensorius should use retained `nodus/<device_id>/meta` as the full snapshot at startup/reconnect, then consume `nodus/<device_id>/meta/patch` for accepted steady-state config deltas.
+- Nodus TOML files are the source of truth for accepted config. Sensorius should use retained `nodus/<device_id>/meta` as the compact startup/reconnect snapshot, retained `nodus/<device_id>/meta/switch` as the switch control-topic map when switch channels are present, then consume `nodus/<device_id>/meta/patch` for accepted steady-state config deltas.
 - `GET /itaot-meta` remains available as optional, on-demand UI metadata fallback; it is not required for onboarding success.
 
 ## Testing (manual)

@@ -236,6 +236,7 @@ def reconnect_network_stack(
     rebuild_socket_artifacts=False,
     reset_station=False,
     cycle_radio=False,
+    force_station_reset=False,
     station_reset_settle_s=STATION_RESET_SETTLE_S,
     log_start_monotonic=None,
 ):
@@ -254,7 +255,13 @@ def reconnect_network_stack(
             log_start_monotonic=log_start_monotonic,
         )
 
+    reset_station = bool(reset_station or force_station_reset)
     if reset_station:
+        if force_station_reset:
+            _network_log(
+                "network station reset reason=forced",
+                start_monotonic=log_start_monotonic,
+            )
         _reset_station_mode(wifi_radio, cycle_radio=cycle_radio)
         if cycle_radio:
             try:

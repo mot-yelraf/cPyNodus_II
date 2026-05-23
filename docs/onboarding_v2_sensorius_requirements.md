@@ -108,6 +108,7 @@ Sensorius must treat non-200 or malformed response as `INIT_FAILED` and stop pro
    - `nodus/<device_id>/config/result`
 5. Runtime metadata (retained):
    - `nodus/<device_id>/meta`
+   - `nodus/<device_id>/meta/switch` when switch channels are present
 
 ### `onboard/hello` Payload (example)
 ```json
@@ -227,16 +228,28 @@ Use stable short error strings to keep UI and recovery behavior predictable:
 7. `not_ready`
 
 ### `meta` Payload Field Notes
-`nodus/<device_id>/meta` (`schema = "nodus-meta/v1"`) includes:
+`nodus/<device_id>/meta` (`schema = "nodus-meta/v1"`) is the compact retained
+startup snapshot. It includes:
 1. `network`, `profile`, and `mqtt` shadow fields for Sensorius TOML materialization.
 2. `sensor.display_metrics` for Sensorius TOML `[Display]` materialization.
 3. `sensor.display_styles` for Sensorius TOML `[Display.Style]` materialization.
-4. `switch.channels[*]` with `channel_id`, `state`, `event_topic`, `state_topic`, `set_topic`, and `availability_topic`.
+4. `switch.device_id`, `switch.location`, `switch.channel_count`, and `switch.meta_topic` when switch channels are present.
 5. `location_group` grouping metadata.
 
 Password fields in `meta` must be `obf1:` obfuscated, not plaintext.
 
 Sensorius should treat `meta` as eventual (it may be deferred briefly on low memory) and should not block onboarding success on immediate meta arrival.
+
+`nodus/<device_id>/meta/switch` (`schema = "nodus-meta-switch/v1"`) is the
+retained detailed switch control map. Nodus publishes it after MQTT startup
+subscriptions are healthy. It includes `switch_device_id`, `location`,
+`channel_count`, and `channels[*]` entries with `channel_id`, `state`,
+`event_topic`, `state_topic`, `set_topic`, `result_topic`, and
+`availability_topic`.
+
+Sensorius should remain backward compatible by first parsing legacy
+`meta.switch.channels` when present, then using `meta.switch.meta_topic`, and
+then falling back to `nodus/<device_id>/meta/switch` when `channel_count > 0`.
 
 ## Sensorius Add-Device State Machine
 States:

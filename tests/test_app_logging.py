@@ -13,11 +13,13 @@ from cpynodus_ii.app import (
     _cycle_wifi_radio_for_warm_start,
     _dns_health_text,
     _hard_reboot,
+    _is_mqtt_subscription_failure,
     _mark_recovery_hard_reset_requested,
     _mark_soft_reload_cleanup_requested,
     _mark_soft_reload_prepared,
     _mark_unprepared_shutdown_cleanup,
     _mqtt_disconnect_reason_requires_rebuild,
+    _ntp_allowed_for_startup,
     _ntp_health_text,
     _recovery_hard_reset_marker_is_set,
     _recovery_reboot_kind,
@@ -26,6 +28,7 @@ from cpynodus_ii.app import (
     _sensor_issue_text,
     _should_log_command_result,
     _soft_reboot,
+    _startup_subscription_recovery_drained,
     _teardown_network_for_shutdown,
 )
 from cpynodus_ii.core.config import RuntimeConfig
@@ -78,6 +81,111 @@ def test_dns_health_reports_ok_when_network_ready_without_dns_errors():
 def test_ntp_health_uses_state_phase_or_idle():
     assert _ntp_health_text(SimpleNamespace(phase="synced")) == "synced"
     assert _ntp_health_text(SimpleNamespace(phase="")) == "idle"
+
+
+def test_ntp_waits_for_mqtt_startup_when_mqtt_enabled():
+    assert (
+        _ntp_allowed_for_startup(
+            mqtt_enabled=True,
+            transport=SimpleNamespace(connected=False, subscriptions=()),
+        )
+        is False
+    )
+    assert (
+        _ntp_allowed_for_startup(
+            mqtt_enabled=True,
+            transport=SimpleNamespace(connected=True, subscriptions=("topic",)),
+        )
+        is False
+    )
+    assert (
+        _ntp_allowed_for_startup(
+            mqtt_enabled=True,
+            transport=SimpleNamespace(
+                connected=True, subscriptions=(), published_messages=("message",)
+            ),
+        )
+        is False
+    )
+    assert (
+        _ntp_allowed_for_startup(
+            mqtt_enabled=True,
+            transport=SimpleNamespace(
+                connected=True, subscriptions=(), published_messages=()
+            ),
+        )
+        is True
+    )
+
+
+def test_ntp_can_run_without_mqtt_enabled():
+    assert (
+        _ntp_allowed_for_startup(
+            mqtt_enabled=False,
+            transport=SimpleNamespace(connected=False, subscriptions=("topic",)),
+        )
+        is True
+    )
+
+
+def test_ntp_startup_guard_allows_mqtt_work_after_sync():
+    assert (
+        _ntp_allowed_for_startup(
+            mqtt_enabled=True,
+            transport=SimpleNamespace(
+                connected=True, subscriptions=("topic",), published_messages=("msg",)
+            ),
+            ntp_state=SimpleNamespace(phase="synced"),
+        )
+        is True
+    )
+
+
+def test_startup_subscription_recovery_drained_requires_successful_subscriptions():
+    assert (
+        _startup_subscription_recovery_drained(
+            SimpleNamespace(phase="synced", subscribed_count=4),
+            SimpleNamespace(subscriptions=()),
+        )
+        is True
+    )
+    assert (
+        _startup_subscription_recovery_drained(
+            SimpleNamespace(phase="synced", subscribed_count=4),
+            SimpleNamespace(subscriptions=("topic",)),
+        )
+        is False
+    )
+    assert (
+        _startup_subscription_recovery_drained(
+            SimpleNamespace(phase="error", subscribed_count=0),
+            SimpleNamespace(subscriptions=()),
+        )
+        is False
+    )
+
+
+def test_mqtt_subscription_failure_detects_subscribe_sync_errors():
+    assert (
+        _is_mqtt_subscription_failure(
+            SimpleNamespace(
+                phase="error",
+                operation="subscribe",
+                errors=("mqtt_subscribe_failed:topic=a",),
+            )
+        )
+        is True
+    )
+    assert (
+        _is_mqtt_subscription_failure(
+            SimpleNamespace(
+                phase="error",
+                operation="publish",
+                errors=("mqtt_publish_failed:topic=a",),
+            )
+        )
+        is False
+    )
 
 
 def test_soft_reboot_logs_reload_reason_before_reload(monkeypatch, capsys):

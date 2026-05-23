@@ -14,6 +14,7 @@ from cpynodus_ii.core.config import (
 from cpynodus_ii.core.mqtt import MQTTTransport
 from cpynodus_ii.features import (
     publish_availability_refresh_cycle,
+    publish_retained_startup_refresh,
     publish_sensor_cycle,
     publish_shutdown_cycle,
     publish_startup_cycle,
@@ -135,6 +136,145 @@ def test_switch_meta_cycle_publishes_retained_split_channel_map():
     assert transport.published_messages[-1].payload["channels"][0]["state"] is True
 
 
+def test_startup_cycle_can_skip_switch_retained_startup_topics():
+    transport = MQTTTransport("broker.local", 1883)
+    runtime_config = RuntimeConfig(
+        network=NetworkConfig(hostname="aqi-x943fm"),
+        mqtt=MQTTConfig(broker="broker.local", base_topic="nodus"),
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            device="aqi",
+            sensor_id="aqi-x943fm",
+            location="TestLab",
+        ),
+        switch=SwitchConfig(
+            present=True,
+            device_id="switch-x943fm",
+            location="TestLab",
+            channel_count=1,
+            channels=(
+                SwitchChannelConfig(
+                    key="SWITCH_1",
+                    channel_id="S1-x943fm",
+                    label="Fan",
+                    enable_pin="GP5",
+                    control_pin="GP28",
+                ),
+            ),
+        ),
+    )
+
+    result = publish_startup_cycle(
+        transport,
+        runtime_config,
+        version="0.1.0",
+        sensor_snapshot=SimpleNamespace(phase="ready", metrics={"Temperature": 24.5}),
+        switch_snapshot={"SWITCH_1": {"phase": "ready", "state": True}},
+        publish_switch_startup=False,
+    )
+
+    assert result.phase == "published"
+    assert "nodus/aqi-x943fm/meta" in result.topics
+    assert "nodus/aqi-x943fm/data" in result.topics
+    assert "nodus/aqi-x943fm/status/heartbeat" in result.topics
+    assert "nodus/aqi-x943fm/availability" in result.topics
+    assert "nodus/S1-x943fm/availability" not in result.topics
+    assert "nodus/S1-x943fm/state" not in result.topics
+
+
+def test_startup_cycle_can_publish_reduced_switch_meta():
+    transport = MQTTTransport("broker.local", 1883)
+    runtime_config = RuntimeConfig(
+        network=NetworkConfig(hostname="aqi-x943fm"),
+        mqtt=MQTTConfig(broker="broker.local", base_topic="nodus"),
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            device="aqi",
+            sensor_id="aqi-x943fm",
+            location="TestLab",
+        ),
+        switch=SwitchConfig(
+            present=True,
+            device_id="switch-x943fm",
+            location="TestLab",
+            channel_count=1,
+            channels=(
+                SwitchChannelConfig(
+                    key="SWITCH_1",
+                    channel_id="S1-x943fm",
+                    label="Fan",
+                    enable_pin="GP5",
+                    control_pin="GP28",
+                ),
+            ),
+        ),
+    )
+
+    publish_startup_cycle(
+        transport,
+        runtime_config,
+        version="0.1.0",
+        sensor_snapshot=SimpleNamespace(phase="ready", metrics={"Temperature": 24.5}),
+        switch_snapshot={"SWITCH_1": {"phase": "ready", "state": True}},
+        include_switch_meta_channels=False,
+    )
+
+    meta = transport.published_messages[0].payload
+    assert meta["capabilities"]["switch"] is True
+    assert meta["switch"] == {
+        "device_id": "switch-x943fm",
+        "location": "TestLab",
+        "channel_count": 1,
+        "meta_topic": "nodus/aqi-x943fm/meta/switch",
+    }
+
+
+def test_switch_meta_cycle_publishes_retained_split_topic():
+    transport = MQTTTransport("broker.local", 1883)
+    runtime_config = RuntimeConfig(
+        network=NetworkConfig(hostname="aqi-x943fm"),
+        mqtt=MQTTConfig(broker="broker.local", base_topic="nodus"),
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            device="aqi",
+            sensor_id="aqi-x943fm",
+            location="TestLab",
+        ),
+        switch=SwitchConfig(
+            present=True,
+            device_id="switch-x943fm",
+            location="TestLab",
+            channel_count=1,
+            channels=(
+                SwitchChannelConfig(
+                    key="SWITCH_1",
+                    channel_id="S1-x943fm",
+                    label="Fan",
+                    enable_pin="GP5",
+                    control_pin="GP28",
+                ),
+            ),
+        ),
+    )
+
+    result = publish_switch_meta_cycle(
+        transport,
+        runtime_config,
+        switch_snapshot={"SWITCH_1": {"phase": "ready", "state": True}},
+    )
+
+    assert result.phase == "published"
+    assert result.topics == ("nodus/aqi-x943fm/meta/switch",)
+    assert transport.published_messages[0].retain is True
+    payload = transport.published_messages[0].payload
+    assert payload["schema"] == "nodus-meta-switch/v1"
+    assert payload["channels"][0]["state"] is True
+    assert payload["channels"][0]["set_topic"] == "nodus/S1-x943fm/config/set"
+
+
 def test_sensor_cycle_publishes_non_retained_sensor_data():
     transport = MQTTTransport("broker.local", 1883)
     runtime_config = RuntimeConfig(
@@ -252,6 +392,105 @@ def test_availability_refresh_cycle_republishes_retained_heartbeat_and_online_to
     assert transport.published_messages[0].payload["status"] == "online"
     assert transport.published_messages[1].payload["status"] == "online"
     assert transport.published_messages[2].payload["status"] == "online"
+
+
+def test_retained_startup_refresh_publishes_meta_heartbeat_and_availability_only():
+    transport = MQTTTransport("broker.local", 1883)
+    runtime_config = RuntimeConfig(
+        network=NetworkConfig(hostname="aqi-x943fm"),
+        mqtt=MQTTConfig(broker="broker.local", base_topic="nodus"),
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            device="aqi",
+            sensor_id="aqi-x943fm",
+        ),
+        switch=SwitchConfig(
+            present=True,
+            device_id="switch-x943fm",
+            channel_count=1,
+            channels=(
+                SwitchChannelConfig(
+                    key="SWITCH_1",
+                    channel_id="S1-x943fm",
+                    label="Fan",
+                    enable_pin="GP5",
+                    control_pin="GP28",
+                ),
+            ),
+        ),
+    )
+
+    result = publish_retained_startup_refresh(
+        transport,
+        runtime_config,
+        version="v0.26.128.13",
+        active_broker="10.0.0.248",
+    )
+
+    assert result.phase == "published"
+    assert result.published_count == 4
+    assert result.topics == (
+        "nodus/aqi-x943fm/meta",
+        "nodus/aqi-x943fm/status/heartbeat",
+        "nodus/aqi-x943fm/availability",
+        "nodus/S1-x943fm/availability",
+    )
+    assert all(message.retain is True for message in transport.published_messages)
+    assert "nodus/aqi-x943fm/data" not in result.topics
+    assert "nodus/S1-x943fm/state" not in result.topics
+    assert transport.published_messages[0].payload["version"] == "v0.26.128.13"
+    assert (
+        transport.published_messages[0].payload["mqtt"]["active_broker"]
+        == "10.0.0.248"
+    )
+
+
+def test_retained_startup_refresh_can_log_availability_payloads():
+    transport = MQTTTransport("broker.local", 1883)
+    logged = []
+    runtime_config = RuntimeConfig(
+        network=NetworkConfig(hostname="aqi-x943fm"),
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            device="aqi",
+            sensor_id="aqi-x943fm",
+        ),
+        switch=SwitchConfig(
+            present=True,
+            device_id="switch-x943fm",
+            channel_count=1,
+            channels=(
+                SwitchChannelConfig(
+                    key="SWITCH_1",
+                    channel_id="S1-x943fm",
+                    label="Fan",
+                    enable_pin="GP5",
+                    control_pin="GP28",
+                ),
+            ),
+        ),
+    )
+
+    publish_retained_startup_refresh(
+        transport,
+        runtime_config,
+        version="v0.26.128.16",
+        availability_debug_logger=lambda topic, payload: logged.append(
+            (topic, payload)
+        ),
+    )
+
+    assert len(logged) == 2
+    assert logged[0][0] == "nodus/aqi-x943fm/availability"
+    assert logged[0][1]["schema"] == "nodus-availability/v1"
+    assert logged[0][1]["sensor_id"] == "aqi-x943fm"
+    assert logged[0][1]["status"] == "online"
+    assert logged[1][0] == "nodus/S1-x943fm/availability"
+    assert logged[1][1]["schema"] == "nodus-availability/v1"
+    assert logged[1][1]["channel_id"] == "S1-x943fm"
+    assert logged[1][1]["status"] == "online"
 
 
 def test_sensor_cycle_preserves_snapshot_errors_when_skipped():

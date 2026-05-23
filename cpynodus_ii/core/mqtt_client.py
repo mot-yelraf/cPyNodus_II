@@ -5,11 +5,13 @@ behavior so the main application can reason about MQTT state through a small
 and testable interface.
 """
 
+import time
 from dataclasses import dataclass
 
 MQTT_CONNECT_SOCKET_TIMEOUT_S = 3
 MQTT_POLL_SOCKET_TIMEOUT_S = 1
 MQTT_CONNECT_RETRIES = 1
+MQTT_SLOW_OPERATION_MS = 10000
 MQTT_OPTIONAL_CLIENT_KWARGS = (
     "socket_timeout",
     "connect_retries",
@@ -48,6 +50,12 @@ class MQTTClientSyncResult:
     subscribed_count: int = 0
     received_count: int = 0
     errors: tuple = ()
+    operation: str = ""
+    topic: str = ""
+    retain: bool = False
+    payload_bytes: int = -1
+    pending_count: int = 0
+    elapsed_ms: int = -1
 
 
 def build_mqtt_client_adapter(
@@ -317,7 +325,7 @@ def _mqtt_connected_adapter(adapter, resolved_ip):
     )
 
 
-def sync_transport_to_client(adapter, transport):
+def sync_transport_to_client(adapter, transport, *, slow_operation_ms=None):
     """Flush newly queued subscriptions and publishes to the bound client."""
     if adapter.phase != "ready" or adapter.client is None or not transport.connected:
         return MQTTClientSyncResult(
@@ -328,10 +336,30 @@ def sync_transport_to_client(adapter, transport):
             else ("transport_not_connected",),
         )
 
-    if adapter.published_index >= len(transport.published_messages):
-        return _sync_subscriptions_to_client(adapter, transport)
-    message = transport.published_messages[adapter.published_index]
+    slow_threshold = _slow_operation_threshold_ms(slow_operation_ms)
+    pending_publish_count = max(
+        0,
+        len(transport.published_messages) - int(adapter.published_index or 0),
+    )
+    pending_subscription_count = len(
+        transport.subscriptions[adapter.subscription_index :]
+    )
+    publish_index = _next_publish_index(adapter, transport)
+    if pending_subscription_count:
+        publish_index = _next_startup_priority_publish_index(adapter, transport)
+
+    if publish_index is None:
+        return _sync_subscriptions_to_client(
+            adapter,
+            transport,
+            slow_threshold=slow_threshold,
+            pending_subscription_count=pending_subscription_count,
+        )
+
+    message = transport.published_messages[publish_index]
     payload = _serialize_payload(message.payload)
+    payload_bytes = _payload_size(payload)
+    operation_started = time.monotonic()
     try:
         _publish_mqtt_qos0(
             adapter.client,
@@ -340,14 +368,12 @@ def sync_transport_to_client(adapter, transport):
             message.retain,
         )
     except Exception as exc:
+        elapsed_ms = _elapsed_ms(operation_started)
         transport.mark_disconnected(
             reason="mqtt_publish_failed:{}:{}".format(message.topic, exc)
         )
-        transport.compact(
-            published_keep_from=adapter.published_index
-            + (0 if message.retain else 1),
-            subscriptions_keep_from=adapter.subscription_index,
-        )
+        if not bool(message.retain):
+            _drop_published_message(transport, publish_index)
         return MQTTClientSyncResult(
             phase="error",
             adapter=_mqtt_adapter_with_queue_indexes(adapter, 0, 0),
@@ -356,30 +382,66 @@ def sync_transport_to_client(adapter, transport):
             errors=(
                 "mqtt_publish_failed:{}:bytes={}:{}".format(
                     message.topic,
-                    _payload_size(payload),
+                    payload_bytes,
                     exc,
                 ),
             ),
+            operation="publish",
+            topic=message.topic,
+            retain=bool(message.retain),
+            payload_bytes=payload_bytes,
+            pending_count=pending_publish_count,
+            elapsed_ms=elapsed_ms,
         )
+    elapsed_ms = _elapsed_ms(operation_started)
     transport.record_publish_success(
         message.topic,
-        payload_bytes=_payload_size(payload),
+        payload_bytes=payload_bytes,
         retain=message.retain,
         socket_state=_socket_state(getattr(adapter.client, "_sock", None)),
         client_connected=_client_connected_state(adapter.client),
         backcompat=1 if adapter.socket_compat_enabled else 0,
     )
     transport.mark_success()
-    transport.compact(
-        published_keep_from=adapter.published_index + 1,
-        subscriptions_keep_from=adapter.subscription_index,
-    )
+    _drop_published_message(transport, publish_index)
+    if _operation_is_slow(elapsed_ms, slow_threshold):
+        transport.mark_disconnected(
+            reason="mqtt_publish_slow:{}:elapsed_ms={}".format(
+                message.topic,
+                elapsed_ms,
+            )
+        )
+        return MQTTClientSyncResult(
+            phase="error",
+            adapter=_mqtt_adapter_with_queue_indexes(adapter, 0, 0),
+            published_count=1,
+            subscribed_count=0,
+            errors=(
+                "mqtt_publish_slow:{}:bytes={}:elapsed_ms={}".format(
+                    message.topic,
+                    payload_bytes,
+                    elapsed_ms,
+                ),
+            ),
+            operation="publish",
+            topic=message.topic,
+            retain=bool(message.retain),
+            payload_bytes=payload_bytes,
+            pending_count=pending_publish_count,
+            elapsed_ms=elapsed_ms,
+        )
     return MQTTClientSyncResult(
         phase="synced",
         adapter=_mqtt_adapter_with_queue_indexes(adapter, 0, 0),
         published_count=1,
         subscribed_count=0,
         errors=(),
+        operation="publish",
+        topic=message.topic,
+        retain=bool(message.retain),
+        payload_bytes=payload_bytes,
+        pending_count=pending_publish_count,
+        elapsed_ms=elapsed_ms,
     )
 
 
@@ -467,14 +529,25 @@ def _send_socket_bytes(sock, data):
         return send(data, len(data))
 
 
-def _sync_subscriptions_to_client(adapter, transport):
+def _sync_subscriptions_to_client(
+    adapter,
+    transport,
+    *,
+    slow_threshold=MQTT_SLOW_OPERATION_MS,
+    pending_subscription_count=None,
+):
     subscribed_count = 0
     pending_subscriptions = transport.subscriptions[adapter.subscription_index :]
-    pending_subscription_count = len(pending_subscriptions)
+    if pending_subscription_count is None:
+        pending_subscription_count = len(pending_subscriptions)
+    last_subscribed_topic = ""
+    elapsed_ms = -1
     for topic in pending_subscriptions:
+        operation_started = time.monotonic()
         try:
             _subscribe_mqtt_qos0(adapter.client, topic)
         except Exception as exc:
+            elapsed_ms = _elapsed_ms(operation_started)
             if subscribed_count:
                 transport.compact(
                     published_keep_from=0,
@@ -498,8 +571,44 @@ def _sync_subscriptions_to_client(adapter, transport):
                         exc,
                     ),
                 ),
+                operation="subscribe",
+                topic=topic,
+                pending_count=pending_subscription_count,
+                elapsed_ms=elapsed_ms,
             )
+        elapsed_ms = _elapsed_ms(operation_started)
         subscribed_count += 1
+        last_subscribed_topic = topic
+        if _operation_is_slow(elapsed_ms, slow_threshold):
+            transport.compact(
+                published_keep_from=0,
+                subscriptions_keep_from=adapter.subscription_index
+                + subscribed_count,
+            )
+            transport.mark_disconnected(
+                reason="mqtt_subscribe_slow:{}:elapsed_ms={}".format(
+                    topic,
+                    elapsed_ms,
+                )
+            )
+            return MQTTClientSyncResult(
+                phase="error",
+                adapter=adapter,
+                published_count=0,
+                subscribed_count=subscribed_count,
+                errors=(
+                    "mqtt_subscribe_slow:topic={}:index={}/{}:elapsed_ms={}".format(
+                        topic,
+                        subscribed_count - 1,
+                        pending_subscription_count,
+                        elapsed_ms,
+                    ),
+                ),
+                operation="subscribe",
+                topic=topic,
+                pending_count=pending_subscription_count,
+                elapsed_ms=elapsed_ms,
+            )
 
     if subscribed_count:
         transport.compact(
@@ -514,6 +623,10 @@ def _sync_subscriptions_to_client(adapter, transport):
         published_count=0,
         subscribed_count=subscribed_count,
         errors=(),
+        operation="subscribe" if subscribed_count else "",
+        topic=last_subscribed_topic,
+        pending_count=pending_subscription_count,
+        elapsed_ms=elapsed_ms,
     )
 
 
@@ -1990,6 +2103,78 @@ def _payload_size(payload):
         return len(payload)
     except Exception:
         return 0
+
+
+def _next_publish_index(adapter, transport):
+    try:
+        index = int(getattr(adapter, "published_index", 0) or 0)
+    except Exception:
+        index = 0
+    try:
+        if index < len(getattr(transport, "published_messages", ()) or ()):
+            return max(0, index)
+    except Exception:
+        pass
+    return None
+
+
+def _next_startup_priority_publish_index(adapter, transport):
+    """Return the next retained status publish before startup subscriptions."""
+    start_index = _next_publish_index(adapter, transport)
+    if start_index is None:
+        return None
+    messages = getattr(transport, "published_messages", ()) or ()
+    for index in range(start_index, len(messages)):
+        message = messages[index]
+        if _is_startup_priority_publish(message):
+            return index
+    return None
+
+
+def _is_startup_priority_publish(message):
+    """Return True for retained identity/status topics that unblock startup."""
+    if not bool(getattr(message, "retain", False)):
+        return False
+    topic = str(getattr(message, "topic", "") or "").strip().lower()
+    if topic.startswith("homeassistant/"):
+        return False
+    return (
+        topic.endswith("/meta")
+        or "/meta/" in topic
+        or topic.endswith("/status/heartbeat")
+        or topic.endswith("/availability")
+    )
+
+
+def _drop_published_message(transport, index):
+    try:
+        del transport.published_messages[int(index)]
+    except Exception:
+        transport.compact(published_keep_from=int(index or 0) + 1)
+
+
+def _slow_operation_threshold_ms(value):
+    if value is None:
+        return MQTT_SLOW_OPERATION_MS
+    try:
+        return int(value)
+    except Exception:
+        return MQTT_SLOW_OPERATION_MS
+
+
+def _operation_is_slow(elapsed_ms, threshold_ms):
+    try:
+        return int(threshold_ms) > 0 and int(elapsed_ms) > int(threshold_ms)
+    except Exception:
+        return False
+
+
+def _elapsed_ms(start_monotonic):
+    """Return elapsed milliseconds since a monotonic start value."""
+    try:
+        return int((time.monotonic() - float(start_monotonic)) * 1000)
+    except Exception:
+        return -1
 
 
 def _coerce_payload_text(message):

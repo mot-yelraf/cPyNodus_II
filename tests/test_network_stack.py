@@ -972,6 +972,8 @@ def test_reconnect_network_stack_preserves_socket_artifacts_until_rebuild_reques
 
 def test_reconnect_network_stack_can_force_station_reset_before_retry():
     radio = _StaleAPStationRadio()
+    radio.ap_info = _FakeAPInfo("PeaceHill")
+    radio.ipv4_address = "10.0.0.219"
     runtime_config = RuntimeConfig(
         active_profile="sensorius",
         network=NetworkConfig(
@@ -985,8 +987,9 @@ def test_reconnect_network_stack_can_force_station_reset_before_retry():
         wifi_radio=radio,
         connection_manager_module=_FakeConnMgr,
     )
+    before_disconnects = radio.disconnect_calls
+    before_stop_station = radio.stop_station_calls
 
-    radio.ipv4_address = ""
     reconnect = reconnect_network_stack(
         runtime_config,
         stack,
@@ -994,10 +997,11 @@ def test_reconnect_network_stack_can_force_station_reset_before_retry():
         retry_delay_s=0.0,
         rebuild_socket_artifacts=True,
         reset_station=True,
+        force_station_reset=True,
     )
 
     assert network_link_is_ready(reconnect) is True
-    assert radio.disconnect_calls >= 1
-    assert radio.stop_station_calls >= 1
+    assert radio.disconnect_calls == before_disconnects + 1
+    assert radio.stop_station_calls == before_stop_station + 1
     assert radio.start_station_calls >= 1
     assert reconnect.socket_pool is not stack.socket_pool

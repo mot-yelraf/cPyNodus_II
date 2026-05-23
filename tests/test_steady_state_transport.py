@@ -119,6 +119,7 @@ def test_steady_state_resubscribes_and_republishes_on_connect_generation_change(
         "nodus/aqi-x943fm/config/set",
         "nodus/aqi-x943fm/calibration/set",
         "nodus/aqi-x943fm/fwupdate",
+        "nodus/aqi-x943fm/logs/get",
         "nodus/S1-x943fm/config/set",
     )
     assert result.state.connection_generation == 1
@@ -173,6 +174,81 @@ def test_steady_state_does_not_duplicate_switch_meta_after_startup_queues_drain(
     )
 
     assert transport.published_messages == []
+
+
+def test_steady_state_can_defer_switch_subscriptions_on_connect():
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connect_requested()
+    transport.mark_connected()
+
+    result = run_steady_state_iteration(
+        transport,
+        _runtime_config(),
+        _switch_service(),
+        _sensor_service(),
+        state=SteadyState(sensor_interval_s=60.0),
+        version="0.1.0",
+        now_monotonic=10.0,
+        subscribe_switch_topics=False,
+    )
+
+    assert result.subscribed_topics == (
+        "nodus/aqi-x943fm/config/set",
+        "nodus/aqi-x943fm/calibration/set",
+        "nodus/aqi-x943fm/fwupdate",
+        "nodus/aqi-x943fm/logs/get",
+    )
+    assert transport.subscriptions == list(result.subscribed_topics)
+
+
+def test_steady_state_can_skip_switch_retained_startup_topics_on_connect():
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connect_requested()
+    transport.mark_connected()
+
+    result = run_steady_state_iteration(
+        transport,
+        _runtime_config(),
+        _switch_service(),
+        _sensor_service(),
+        state=SteadyState(sensor_interval_s=60.0),
+        version="0.1.0",
+        now_monotonic=10.0,
+        publish_switch_startup=False,
+    )
+
+    assert result.startup_publish_phase == "published"
+    assert "nodus/aqi-x943fm/meta" in [
+        message.topic for message in transport.published_messages
+    ]
+    assert "nodus/S1-x943fm/availability" not in [
+        message.topic for message in transport.published_messages
+    ]
+    assert "nodus/S1-x943fm/state" not in [
+        message.topic for message in transport.published_messages
+    ]
+
+
+def test_steady_state_can_publish_reduced_switch_meta_on_connect():
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connect_requested()
+    transport.mark_connected()
+
+    run_steady_state_iteration(
+        transport,
+        _runtime_config(),
+        _switch_service(),
+        _sensor_service(),
+        state=SteadyState(sensor_interval_s=60.0),
+        version="0.1.0",
+        now_monotonic=10.0,
+        include_switch_meta_channels=False,
+    )
+
+    meta = transport.published_messages[0].payload
+    assert meta["capabilities"]["switch"] is True
+    assert meta["switch"]["channel_count"] == 1
+    assert "channels" not in meta["switch"]
 
 
 def test_steady_state_respects_sensor_publish_interval():

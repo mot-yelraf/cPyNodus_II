@@ -10,6 +10,10 @@ from dataclasses import dataclass, replace
 
 from cpynodus_ii.core.config import RuntimeConfig
 from cpynodus_ii.core.settings import Settings
+from cpynodus_ii.features.log_transfer import (
+    process_log_transfer_message,
+    subscribe_log_transfer_topics,
+)
 from cpynodus_ii.features.payloads import (
     build_calibration_ack_payload,
     build_calibration_result_payload,
@@ -115,6 +119,33 @@ def subscribe_runtime_topics(transport, runtime_config):
         topics.append(
             transport.subscribe(mqtt_topic(runtime_config, device_id, "fwupdate"))
         )
+        topics.extend(subscribe_log_transfer_topics(transport, runtime_config))
+    topics.extend(subscribe_switch_runtime_topics(transport, runtime_config))
+    return tuple(topics)
+
+
+def subscribe_device_runtime_topics(transport, runtime_config):
+    """Subscribe the transport to device-level command topics."""
+    topics = []
+    device_id = _device_id(runtime_config)
+    if not device_id:
+        return tuple(topics)
+    topics.append(
+        transport.subscribe(mqtt_topic(runtime_config, device_id, "config", "set"))
+    )
+    topics.append(
+        transport.subscribe(mqtt_topic(runtime_config, device_id, "calibration", "set"))
+    )
+    topics.append(
+        transport.subscribe(mqtt_topic(runtime_config, device_id, "fwupdate"))
+    )
+    topics.extend(subscribe_log_transfer_topics(transport, runtime_config))
+    return tuple(topics)
+
+
+def subscribe_switch_runtime_topics(transport, runtime_config):
+    """Subscribe the transport to switch channel command topics."""
+    topics = []
     for channel in runtime_config.switch.channels:
         topics.append(
             transport.subscribe(
@@ -175,6 +206,22 @@ def process_inbound_messages(
 
         if message.topic == mqtt_topic(current_runtime_config, device_id, "fwupdate"):
             result = process_fwupdate_message(
+                transport,
+                current_runtime_config,
+                topic=message.topic,
+                payload_text=message.payload_text,
+                duplicate_message_ids=seen_message_ids,
+                settings_root=settings_root,
+            )
+            if result.message_id:
+                seen_message_ids.add(result.message_id)
+            results.append(result)
+            continue
+
+        if message.topic == mqtt_topic(
+            current_runtime_config, device_id, "logs", "get"
+        ):
+            result = process_log_transfer_message(
                 transport,
                 current_runtime_config,
                 topic=message.topic,
