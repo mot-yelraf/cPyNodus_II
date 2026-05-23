@@ -856,6 +856,7 @@ def _scan_for_station_ssid(wifi_radio, ssid):
             count += 1
             if _network_ssid_text(_safe_radio_attr(network, "ssid")) == str(ssid):
                 best_hint = _best_station_hint(best_hint, network)
+                break
             if count >= 16:
                 break
     except Exception:

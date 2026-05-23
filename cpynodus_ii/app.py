@@ -28,6 +28,7 @@ from cpynodus_ii.core import (
     poll_mqtt_client,
     preflight_mqtt_broker_connect,
     preflight_mqtt_broker_tcp,
+    raw_mqtt_connect_enabled,
     reconnect_network_stack,
     refresh_network_stack,
     sync_transport_to_client,
@@ -416,16 +417,38 @@ def _mqtt_connect_attempt_is_connack_timeout_pattern(
     connect_errors,
 ):
     """Return True for the warm-start TCP-OK/CONNACK-timeout failure pattern."""
-    if not _mqtt_connect_probe_is_connack_timeout(
+    if _mqtt_connect_probe_is_connack_timeout(
         tcp_preflight_error=tcp_preflight_error,
         connect_probe_error=connect_probe_error,
         connect_probe_code=connect_probe_code,
     ):
+        return _mqtt_connect_errors_are_repeated_failures(
+            connect_errors,
+            count_plain_connect_failures=True,
+        )
+    if tcp_preflight_error or connect_probe_error:
         return False
-    return _mqtt_connect_errors_are_repeated_failures(
-        connect_errors,
-        count_plain_connect_failures=True,
-    )
+    return _mqtt_connect_errors_indicate_raw_connack_timeout(connect_errors)
+
+
+def _mqtt_connect_errors_indicate_raw_connack_timeout(errors):
+    """Return True when raw MQTT connect times out after TCP opened."""
+    for error in tuple(errors or ()):
+        text = str(error or "").strip().lower()
+        if not text.startswith("mqtt_connect_failed:") or ":raw:" not in text:
+            continue
+        if (
+            "errno 116" in text
+            or "etimedout" in text
+            or "timedout" in text
+            or "timed out" in text
+            or "timeout" in text
+            or "errno 119" in text
+            or "einprogress" in text
+            or "operation now in progress" in text
+        ):
+            return True
+    return False
 
 
 def _mqtt_connect_probe_is_connack_timeout(
@@ -498,7 +521,7 @@ def _mqtt_preconnect_probe(
     start_monotonic,
     connect_delay_s=None,
 ):
-    """Run bounded TCP and raw MQTT probes before MiniMQTT connect."""
+    """Run bounded TCP and raw MQTT probes before startup MQTT connect."""
     max_attempts = max(1, int(MQTT_PREFLIGHT_RETRIES or 1))
     tcp_preflight_error = ""
     tcp_preflight_target = ""
@@ -560,6 +583,35 @@ def _mqtt_preconnect_probe(
                 "none",
                 connect_probe_code,
                 connect_probe_error,
+            ),
+            start_monotonic=start_monotonic,
+        )
+        return (
+            tcp_preflight_error,
+            tcp_preflight_target,
+            tcp_preflight_finished_at,
+            connect_probe_error,
+            connect_probe_target,
+            connect_probe_client_id,
+            connect_probe_code,
+            connect_probe_finished_at,
+        )
+
+    if raw_mqtt_connect_enabled(adapter):
+        _print_log(
+            "mqtt",
+            (
+                "connect_probe phase=skipped broker={} target={} port={} "
+                "elapsed_s={:.1f} client_id={} connack={} reason={} errors={}"
+            ).format(
+                broker,
+                connect_probe_target or "none",
+                adapter.port,
+                0.0,
+                "none",
+                connect_probe_code,
+                "raw_connect",
+                "none",
             ),
             start_monotonic=start_monotonic,
         )
@@ -1500,9 +1552,7 @@ def _refresh_broker_ip_from_hostname(
 
 
 def _broker_ip_refresh_needed(runtime_config, *, settings_root=None):
-    """Return True when resolving MQTT.BROKER is worth attempting."""
-    if settings_root:
-        return True
+    """Return True when no literal MQTT broker IP is configured yet."""
     return not bool(str(getattr(runtime_config.mqtt, "broker_ip", "") or "").strip())
 
 
@@ -3955,11 +4005,14 @@ async def main(*, startup_plan_override=None):
                         continue
                     await asyncio.sleep(0.05)
                     continue
+                mqtt_connect_mode = (
+                    "raw" if raw_mqtt_connect_enabled(mqtt_adapter) else "minimqtt"
+                )
                 _print_log(
                     "mqtt",
                     (
                         "connect_decision attempt={} raw_pattern={} "
-                        "will_minimqtt=1 repeated_count={} "
+                        "will_minimqtt={} connect_mode={} repeated_count={} "
                         "hard_reset_elapsed_s={}"
                     ).format(
                         mqtt_connect_attempt_count,
@@ -3967,6 +4020,8 @@ async def main(*, startup_plan_override=None):
                             connack_timeout_candidate=connack_timeout_candidate,
                             socket_progress_candidate=socket_progress_candidate,
                         ),
+                        0 if mqtt_connect_mode == "raw" else 1,
+                        mqtt_connect_mode,
                         repeated_mqtt_connect_failure_count,
                         _elapsed_since_s(
                             repeated_mqtt_connect_failure_started_at,

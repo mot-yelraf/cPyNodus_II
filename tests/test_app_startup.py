@@ -266,7 +266,7 @@ def test_refresh_broker_ip_keeps_configured_ip_when_hostname_resolution_fails():
     assert updated_runtime.mqtt.broker_ip == "10.0.0.248"
 
 
-def test_broker_ip_refresh_needed_for_writable_startup_even_with_ip(tmp_path):
+def test_broker_ip_refresh_skips_writable_startup_when_ip_is_configured(tmp_path):
     runtime_config = RuntimeConfig(
         active_profile="sensorius",
         mqtt=MQTTConfig(
@@ -276,7 +276,7 @@ def test_broker_ip_refresh_needed_for_writable_startup_even_with_ip(tmp_path):
         ),
     )
 
-    assert _broker_ip_refresh_needed(runtime_config, settings_root=tmp_path) is True
+    assert _broker_ip_refresh_needed(runtime_config, settings_root=tmp_path) is False
 
 
 def test_broker_ip_refresh_skips_rofs_when_ip_is_configured():
@@ -478,6 +478,17 @@ def test_mqtt_connack_timeout_pattern_requires_tcp_ok_probe_timeout_and_connect_
     assert (
         _mqtt_connect_attempt_is_connack_timeout_pattern(
             tcp_preflight_error="",
+            connect_probe_error="",
+            connect_probe_code=-1,
+            connect_errors=(
+                "mqtt_connect_failed:10.0.0.248:raw:OSError:[Errno 116] ETIMEDOUT",
+            ),
+        )
+        is True
+    )
+    assert (
+        _mqtt_connect_attempt_is_connack_timeout_pattern(
+            tcp_preflight_error="",
             connect_probe_error=("mqtt_connect_probe_failed:10.0.0.248:connack_code=5"),
             connect_probe_code=5,
             connect_errors=plain_errors,
@@ -561,6 +572,46 @@ def test_mqtt_preconnect_probe_retries_socket_progress_before_success(monkeypatc
     assert len(tcp_calls) == 2
     assert len(connect_calls) == 1
     assert sleeps == [0.5, 0.5]
+
+
+def test_mqtt_preconnect_probe_skips_connack_probe_for_raw_connect(monkeypatch):
+    tcp_calls = []
+    connect_calls = []
+    sleeps = []
+
+    class _SocketPool:
+        def socket(self):
+            return object()
+
+    def fake_tcp(_adapter):
+        tcp_calls.append(1)
+        return "", "10.0.0.4"
+
+    def fake_connect(_adapter):
+        connect_calls.append(1)
+        return "", "10.0.0.4", "aqi-wfcp7p", 0
+
+    monkeypatch.setattr(app_module, "preflight_mqtt_broker_tcp", fake_tcp)
+    monkeypatch.setattr(app_module, "preflight_mqtt_broker_connect", fake_connect)
+    monkeypatch.setattr(app_module.time, "sleep", lambda delay: sleeps.append(delay))
+
+    result = _mqtt_preconnect_probe(
+        SimpleNamespace(
+            active_broker="10.0.0.4",
+            broker="samhain.local",
+            port=1883,
+            socket_compat_enabled=False,
+            client_kwargs={"socket_pool": _SocketPool()},
+        ),
+        SimpleNamespace(socket_artifact_source="direct"),
+        start_monotonic=0.0,
+    )
+
+    assert result[0] == ""
+    assert result[3] == ""
+    assert len(tcp_calls) == 1
+    assert connect_calls == []
+    assert sleeps == []
 
 
 def test_mqtt_preconnect_delay_adapts_after_connect_failures(monkeypatch):

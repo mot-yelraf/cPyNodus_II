@@ -231,6 +231,23 @@ class _ScanHintThenSuccessRadio:
         self.stop_scan_calls += 1
 
 
+class _ScanShouldStopAfterTargetRadio:
+    def __init__(self):
+        self.stop_scan_calls = 0
+
+    def start_scanning_networks(self):
+        yield _FakeScanNetwork(
+            "PeaceHill",
+            channel=6,
+            bssid=b"\xc6\x50\x9c\x75\x7b\x09",
+            rssi=-29,
+        )
+        raise AssertionError("scan continued after target SSID")
+
+    def stop_scanning_networks(self):
+        self.stop_scan_calls += 1
+
+
 class _RadioCycleThenSuccessRadio:
     def __init__(self):
         self.connect_calls = []
@@ -612,6 +629,17 @@ def test_build_network_stack_retries_with_scanned_channel_hint(monkeypatch):
     assert radio.scan_calls == 1
     assert radio.stop_scan_calls == 1
     assert sleeps == [2.0]
+
+
+def test_station_scan_stops_after_target_ssid_is_found():
+    radio = _ScanShouldStopAfterTargetRadio()
+
+    status, count, hint = network_module._scan_for_station_ssid(radio, "PeaceHill")
+
+    assert status == "found"
+    assert count == 1
+    assert network_module._station_hint_channel(hint) == 6
+    assert radio.stop_scan_calls == 1
 
 
 def test_build_network_stack_reuses_preconnect_hint_after_join_failure(

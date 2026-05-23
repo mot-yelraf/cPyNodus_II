@@ -16,6 +16,7 @@ from cpynodus_ii.core.mqtt_client import (
     preflight_mqtt_broker,
     preflight_mqtt_broker_connect,
     preflight_mqtt_broker_tcp,
+    raw_mqtt_connect_enabled,
     sync_transport_to_client,
 )
 from cpynodus_ii.core.network import (
@@ -57,6 +58,7 @@ __all__ = [
     "preflight_mqtt_broker",
     "preflight_mqtt_broker_connect",
     "preflight_mqtt_broker_tcp",
+    "raw_mqtt_connect_enabled",
     "reconnect_network_stack",
     "refresh_network_stack",
     "sync_transport_to_client",

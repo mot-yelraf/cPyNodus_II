@@ -196,6 +196,10 @@ def connect_mqtt_client(adapter, transport, *, preflight=True):
             errors=(error,),
         )
 
+    raw_result = _connect_mqtt_client_raw(adapter, transport, broker, resolved_ip)
+    if raw_result is not None:
+        return raw_result
+
     _bind_on_message(
         adapter.client,
         transport,
@@ -260,6 +264,20 @@ def _connect_mqtt_client_with_fallback(adapter, transport, targets, *, preflight
                 subscription_index=adapter.subscription_index,
                 errors=adapter.errors,
             )
+        raw_result = _connect_mqtt_client_raw(
+            active_adapter,
+            transport,
+            broker,
+            resolved_ip,
+        )
+        if raw_result is not None:
+            if raw_result.phase == "connected":
+                active_adapter = raw_result.adapter
+                connected = True
+                break
+            errors.extend(raw_result.errors)
+            continue
+
         _bind_on_message(
             active_adapter.client,
             transport,
@@ -303,6 +321,109 @@ def _mqtt_connect_success_result(adapter, resolved_ip):
         adapter=_mqtt_connected_adapter(adapter, resolved_ip),
         errors=(),
     )
+
+
+def _connect_mqtt_client_raw(adapter, transport, broker, resolved_ip):
+    """Connect with a raw MQTT CONNECT packet when MiniMQTT handoff is unsafe."""
+    if not raw_mqtt_connect_enabled(adapter):
+        return None
+    socket_pool = _mqtt_adapter_socket_pool(adapter)
+    socket_factory = getattr(socket_pool, "socket", None)
+    if not callable(socket_factory):
+        return None
+    connect_target = str(resolved_ip or broker or "").strip()
+    if not connect_target:
+        return None
+
+    sock = None
+    client_id = _mqtt_probe_client_id(adapter)
+    try:
+        sock = socket_factory()
+        settimeout = getattr(sock, "settimeout", None)
+        if callable(settimeout):
+            settimeout(MQTT_CONNECT_SOCKET_TIMEOUT_S)
+        sock.connect((connect_target, int(getattr(adapter, "port", 1883) or 1883)))
+        _send_mqtt_packet(sock, _mqtt_connect_packet(adapter, client_id))
+        _read_mqtt_connack(sock, connect_target)
+        _bind_on_message(
+            adapter.client,
+            transport,
+            flexible=adapter.flexible_callback_enabled,
+        )
+        _adopt_raw_mqtt_socket(adapter.client, sock)
+        sock = None
+        _set_minimqtt_runtime_socket_timeout(
+            adapter.client,
+            MQTT_POLL_SOCKET_TIMEOUT_S,
+        )
+        transport.mark_connected()
+        return _mqtt_connect_success_result(adapter, resolved_ip or connect_target)
+    except Exception as exc:
+        close_errors = ()
+        if sock is not None:
+            close_errors = _close_raw_mqtt_socket(adapter.client, sock)
+        error = "mqtt_connect_failed:{}:raw:{}:{}".format(
+            broker,
+            type(exc).__name__,
+            exc,
+        )
+        transport.mark_disconnected(reason=error)
+        return MQTTClientSyncResult(
+            phase="error",
+            adapter=adapter,
+            errors=(error,) + close_errors,
+        )
+
+
+def _read_mqtt_connack(sock, target):
+    header = _recv_mqtt_byte(sock)
+    if header != 0x20:
+        raise OSError("mqtt_connack_unexpected:{}:{:02x}".format(target, header))
+    remaining = _recv_mqtt_remaining_length(sock)
+    payload = _recv_socket_exact(sock, remaining)
+    if len(payload) < 2:
+        raise OSError("mqtt_connack_short:{}:{}".format(target, len(payload)))
+    return_code = int(payload[1])
+    if return_code:
+        raise OSError("mqtt_connack_code:{}:{}".format(target, return_code))
+    return return_code
+
+
+def _adopt_raw_mqtt_socket(client, sock):
+    try:
+        setattr(client, "_sock", sock)
+    except Exception:
+        pass
+    try:
+        setattr(client, "_is_connected", True)
+    except Exception:
+        pass
+    try:
+        setattr(client, "connected", True)
+    except Exception:
+        pass
+    try:
+        setattr(client, "_backwards_compatible_sock", not _socket_can_recv_into(sock))
+    except Exception:
+        pass
+    try:
+        setattr(client, "_last_msg_sent_timestamp", int(time.monotonic() * 1000))
+    except Exception:
+        pass
+
+
+def _socket_can_recv_into(sock):
+    return callable(getattr(sock, "recv_into", None))
+
+
+def raw_mqtt_connect_enabled(adapter):
+    """Return True when startup should use the raw MQTT connect path."""
+    if bool(getattr(adapter, "socket_compat_enabled", False)) or _mqtt_adapter_uses_tls(
+        adapter
+    ):
+        return False
+    socket_pool = _mqtt_adapter_socket_pool(adapter)
+    return callable(getattr(socket_pool, "socket", None))
 
 
 def _mqtt_connected_adapter(adapter, resolved_ip):
@@ -1823,16 +1944,18 @@ def preflight_mqtt_broker_connect(
 
 
 def _mqtt_adapter_socket_pool(adapter):
-    if isinstance(adapter.client_kwargs, dict):
-        return adapter.client_kwargs.get("socket_pool")
+    client_kwargs = getattr(adapter, "client_kwargs", None)
+    if isinstance(client_kwargs, dict):
+        return client_kwargs.get("socket_pool")
     return None
 
 
 def _mqtt_adapter_uses_tls(adapter):
     if int(getattr(adapter, "port", 0) or 0) == 8883:
         return True
-    if isinstance(adapter.client_kwargs, dict):
-        return adapter.client_kwargs.get("ssl_context") is not None
+    client_kwargs = getattr(adapter, "client_kwargs", None)
+    if isinstance(client_kwargs, dict):
+        return client_kwargs.get("ssl_context") is not None
     return False
 
 

@@ -49,6 +49,8 @@ def _run_direct_tests():
         test_preflight_mqtt_broker_tcp_reports_socket_connect_errors,
         test_preflight_mqtt_broker_connect_reads_connack_and_disconnects,
         test_preflight_mqtt_broker_connect_reports_connack_refusal,
+        test_connect_mqtt_client_adopts_raw_connack_socket,
+        test_connect_mqtt_client_reports_raw_connack_refusal,
         test_poll_mqtt_client_uses_timeout_compatible_with_socket_timeout,
         test_sync_transport_to_client_marks_transport_disconnected_on_publish_oserror,
         test_sync_transport_to_client_subscribes_before_low_priority_publish,
@@ -57,6 +59,7 @@ def _run_direct_tests():
         test_sync_transport_to_client_disconnects_on_subscribe_failure,
         test_poll_mqtt_client_marks_transport_disconnected_on_oserror,
         test_close_mqtt_client_disconnects_without_shutdown_publish,
+        test_close_mqtt_client_keeps_pending_publish_queue,
         test_close_mqtt_client_force_closes_socket_when_client_is_not_connected,
         test_disconnect_mqtt_client_swallow_shutdown_publish_oserror,
         test_disconnect_mqtt_client_reports_disconnect_oserror,
@@ -639,6 +642,16 @@ class _ConnectProbeSocketPool:
 
     def socket(self):
         return self.socket_obj
+
+
+class _MiniMQTTConnectShouldNotRunClient(_FakeMQTTClient):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.connect_calls = 0
+
+    def connect(self):
+        self.connect_calls += 1
+        raise AssertionError("MiniMQTT connect should not run")
 
 
 class _MiniMQTTConnectedExactArityWrappedRawSocketClient(_FakeMQTTClient):
@@ -1316,6 +1329,69 @@ def test_preflight_mqtt_broker_connect_reports_connack_refusal():
     assert socket_pool.socket_obj.closed is True
 
 
+def test_connect_mqtt_client_adopts_raw_connack_socket():
+    socket_pool = _ConnectProbeSocketPool()
+    runtime_config = RuntimeConfig(
+        active_profile="sensorius",
+        mqtt=MQTTConfig(
+            broker="ha.local",
+            broker_ip="10.0.0.4",
+            port=1883,
+        ),
+        sensor=DetectedSensor(sensor_id="aqi-x943fm"),
+    )
+    transport = MQTTTransport("ha.local", 1883)
+    transport.mark_connect_requested()
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=socket_pool,
+        modules={"mqtt_cls": _MiniMQTTConnectShouldNotRunClient},
+    )
+
+    connect_result = connect_mqtt_client(adapter, transport)
+
+    assert connect_result.phase == "connected"
+    assert transport.connected is True
+    assert adapter.client.connect_calls == 0
+    assert adapter.client._sock is socket_pool.socket_obj
+    assert adapter.client._is_connected is True
+    assert socket_pool.socket_obj.closed is False
+    packet = bytes(socket_pool.socket_obj.sent)
+    assert packet[0] == 0x10
+    assert b"\x00\x04MQTT" in packet
+    assert b"aqi-x943fm" in packet
+    assert packet[-2:] != b"\xe0\x00"
+
+
+def test_connect_mqtt_client_reports_raw_connack_refusal():
+    socket_pool = _ConnectProbeSocketPool(b"\x20\x02\x00\x02")
+    runtime_config = RuntimeConfig(
+        active_profile="sensorius",
+        mqtt=MQTTConfig(
+            broker="ha.local",
+            broker_ip="10.0.0.4",
+            port=1883,
+        ),
+    )
+    transport = MQTTTransport("ha.local", 1883)
+    transport.mark_connect_requested()
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=socket_pool,
+        modules={"mqtt_cls": _MiniMQTTConnectShouldNotRunClient},
+    )
+
+    connect_result = connect_mqtt_client(adapter, transport)
+
+    assert connect_result.phase == "error"
+    assert transport.connected is False
+    assert socket_pool.socket_obj.closed is True
+    assert adapter.client.connect_calls == 0
+    assert connect_result.errors[0].startswith(
+        "mqtt_connect_failed:10.0.0.4:raw:OSError:mqtt_connack_code"
+    )
+
+
 def test_poll_mqtt_client_uses_timeout_compatible_with_socket_timeout():
     runtime_config = _runtime_config()
     transport = MQTTTransport("broker.local", 1883)
@@ -1573,7 +1649,7 @@ def test_sync_transport_to_client_disconnects_after_slow_publish():
     assert transport.published_messages == []
 
 
-def test_close_mqtt_client_disconnects_without_shutdown_publish():
+def test_close_mqtt_client_keeps_pending_publish_queue():
     runtime_config = _runtime_config()
     transport = MQTTTransport("broker.local", 1883)
     adapter = build_mqtt_client_adapter(
