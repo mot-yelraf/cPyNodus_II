@@ -12,7 +12,7 @@ from cpynodus_ii.core.config import (
     SwitchConfig,
 )
 from cpynodus_ii.core.mqtt import MQTTTransport
-from cpynodus_ii.features import (
+from cpynodus_ii.features.publish_cycle import (
     publish_availability_refresh_cycle,
     publish_retained_startup_refresh,
     publish_sensor_cycle,

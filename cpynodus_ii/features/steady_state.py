@@ -13,7 +13,6 @@ from cpynodus_ii.features.command_intake import (
     subscribe_device_runtime_topics,
     subscribe_runtime_topics,
 )
-from cpynodus_ii.features.log_transfer import process_log_transfer_session
 from cpynodus_ii.features.publish_cycle import (
     publish_availability_refresh_cycle,
     publish_ota_completion_report,
@@ -225,7 +224,7 @@ def run_steady_state_iteration(
     if calibration_session_result.runtime_config is not None:
         updated_runtime_config = calibration_session_result.runtime_config
     errors.extend(calibration_session_result.errors)
-    log_transfer_result = process_log_transfer_session(
+    log_transfer_result = _process_log_transfer_session(
         transport,
         updated_runtime_config,
     )
@@ -334,3 +333,11 @@ def run_steady_state_iteration(
 
 def _skipped_publish_result(error):
     return _SkippedPublishResult(errors=(error,))
+
+
+def _process_log_transfer_session(transport, runtime_config):
+    if getattr(transport, "_log_transfer_session", None) is None:
+        return _skipped_publish_result("log_transfer_not_required")
+    from cpynodus_ii.features.log_transfer import process_log_transfer_session
+
+    return process_log_transfer_session(transport, runtime_config)

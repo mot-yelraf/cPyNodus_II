@@ -208,6 +208,10 @@ The startup `meta` payload intentionally does not include
 `switch.channels[*]`. The detailed per-channel switch topic map is published
 separately on retained `nodus/<device_id>/meta/switch`.
 
+The startup `meta` payload also intentionally does not include the log-transfer
+topic map. When `capabilities.log_transfer` is true, Sensorius should use the
+deterministic `nodus/<device_id>/logs/{get,ack,chunk,result}` topic family.
+
 Sensorius compatibility rule:
 
 1. If retained `meta.switch.channels` exists, parse it as the legacy embedded

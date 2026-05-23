@@ -204,30 +204,6 @@ def publish_retained_startup_refresh(
     )
 
 
-def publish_switch_meta_cycle(transport, runtime_config, switch_snapshot=None):
-    """Publish retained split switch metadata when switch channels exist."""
-    if not runtime_config.switch.present:
-        return PublishCycleResult(
-            phase="skipped",
-            published_count=0,
-            topics=(),
-            errors=("switch_not_present",),
-        )
-    device_id = _device_id(runtime_config)
-    topic = mqtt_topic(runtime_config, device_id, "meta", "switch")
-    message = transport.publish(
-        topic,
-        build_switch_meta_payload(runtime_config, switch_snapshot or {}),
-        retain=True,
-    )
-    return PublishCycleResult(
-        phase="published",
-        published_count=1,
-        topics=(message.topic,),
-        errors=(),
-    )
-
-
 def publish_sensor_cycle(transport, runtime_config, sensor_snapshot):
     """Publish one non-retained sensor data cycle when a ready snapshot exists."""
     if sensor_snapshot is None or sensor_snapshot.phase != "ready":

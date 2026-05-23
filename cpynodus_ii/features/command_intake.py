@@ -10,10 +10,6 @@ from dataclasses import dataclass, replace
 
 from cpynodus_ii.core.config import RuntimeConfig
 from cpynodus_ii.core.settings import Settings
-from cpynodus_ii.features.log_transfer import (
-    process_log_transfer_message,
-    subscribe_log_transfer_topics,
-)
 from cpynodus_ii.features.payloads import (
     build_calibration_ack_payload,
     build_calibration_result_payload,
@@ -119,7 +115,7 @@ def subscribe_runtime_topics(transport, runtime_config):
         topics.append(
             transport.subscribe(mqtt_topic(runtime_config, device_id, "fwupdate"))
         )
-        topics.extend(subscribe_log_transfer_topics(transport, runtime_config))
+        topics.extend(_subscribe_log_transfer_topics(transport, runtime_config))
     topics.extend(subscribe_switch_runtime_topics(transport, runtime_config))
     return tuple(topics)
 
@@ -139,7 +135,7 @@ def subscribe_device_runtime_topics(transport, runtime_config):
     topics.append(
         transport.subscribe(mqtt_topic(runtime_config, device_id, "fwupdate"))
     )
-    topics.extend(subscribe_log_transfer_topics(transport, runtime_config))
+    topics.extend(_subscribe_log_transfer_topics(transport, runtime_config))
     return tuple(topics)
 
 
@@ -221,7 +217,7 @@ def process_inbound_messages(
         if message.topic == mqtt_topic(
             current_runtime_config, device_id, "logs", "get"
         ):
-            result = process_log_transfer_message(
+            result = _process_log_transfer_message(
                 transport,
                 current_runtime_config,
                 topic=message.topic,
@@ -1574,6 +1570,34 @@ def _device_id(runtime_config):
         runtime_config.sensor.sensor_id
         or runtime_config.switch.device_id
         or runtime_config.network.hostname
+    )
+
+
+def _subscribe_log_transfer_topics(transport, runtime_config):
+    device_id = _device_id(runtime_config)
+    if not device_id:
+        return ()
+    return (transport.subscribe(mqtt_topic(runtime_config, device_id, "logs", "get")),)
+
+
+def _process_log_transfer_message(
+    transport,
+    runtime_config,
+    *,
+    topic,
+    payload_text,
+    duplicate_message_ids=(),
+    settings_root=None,
+):
+    from cpynodus_ii.features.log_transfer import process_log_transfer_message
+
+    return process_log_transfer_message(
+        transport,
+        runtime_config,
+        topic=topic,
+        payload_text=payload_text,
+        duplicate_message_ids=duplicate_message_ids,
+        settings_root=settings_root,
     )
 
 

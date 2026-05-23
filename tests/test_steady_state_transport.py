@@ -9,7 +9,7 @@ from cpynodus_ii.core.config import (
     SwitchConfig,
 )
 from cpynodus_ii.core.mqtt import MQTTTransport
-from cpynodus_ii.features import SteadyState, run_steady_state_iteration
+from cpynodus_ii.features.steady_state import SteadyState, run_steady_state_iteration
 
 
 def _switch_service():

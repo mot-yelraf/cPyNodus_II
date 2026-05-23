@@ -82,6 +82,9 @@ current contract:
   command subscriptions can block startup progress. New compact `meta`
   payloads expose `switch.meta_topic`; older payloads may still embed
   `switch.channels`.
+- Log-transfer topics are deterministic from the device id and are not embedded
+  in retained startup `meta`; use the topic family listed above when
+  `capabilities.log_transfer` is true.
 - Device config uses `config/set`, `config/ack`, `config/result`, and
   `meta/patch`. Nodus does not clear device `config/set`; Sensorius owns any
   retained command cleanup.

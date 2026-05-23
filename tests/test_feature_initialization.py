@@ -12,7 +12,8 @@ from cpynodus_ii.core.config import (
     SwitchConfig,
 )
 from cpynodus_ii.core.settings import Settings
-from cpynodus_ii.features import plan_sensor_initialization, plan_switch_initialization
+from cpynodus_ii.features.sensor import plan_sensor_initialization
+from cpynodus_ii.features.switch import plan_switch_initialization
 
 
 def test_sensor_initialization_is_ready_for_i2c_sensor_config():

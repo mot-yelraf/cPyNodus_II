@@ -5,7 +5,7 @@ from tempfile import TemporaryDirectory
 
 from cpynodus_ii.core.mqtt import MQTTTransport
 from cpynodus_ii.core.settings import Settings
-from cpynodus_ii.features import (
+from cpynodus_ii.features.command_intake import (
     process_calibration_message,
     process_device_config_message,
     process_switch_command_message,

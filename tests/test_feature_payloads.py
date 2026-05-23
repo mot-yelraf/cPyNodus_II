@@ -1,5 +1,6 @@
 """Tests for normalized MQTT and runtime payload generation."""
 
+import json
 from types import SimpleNamespace
 
 from cpynodus_ii.core.config import (
@@ -12,7 +13,7 @@ from cpynodus_ii.core.config import (
     SwitchConfig,
 )
 from cpynodus_ii.core.obfuscation import decode_password
-from cpynodus_ii.features import (
+from cpynodus_ii.features.payloads import (
     build_calibration_ack_payload,
     build_calibration_result_payload,
     build_config_ack_payload,
@@ -160,20 +161,13 @@ def test_runtime_meta_payload_includes_sensor_and_switch_topics():
     assert payload["status"]["heartbeat_topic"] == "nodus/aqi-x943fm/status/heartbeat"
     assert payload["capabilities"]["fwupdate"] is True
     assert payload["capabilities"]["log_transfer"] is True
+    assert "logs" not in payload
     assert payload["fwupdate"] == {
         "schema": "nodus-fwupdate/v1",
         "transport": "http",
         "prepare_topic": "nodus/aqi-x943fm/fwupdate",
         "ack_topic": "nodus/aqi-x943fm/fwupdate/ack",
         "result_topic": "nodus/aqi-x943fm/fwupdate/result",
-    }
-    assert payload["logs"] == {
-        "schema": "nodus-log-transfer/v1",
-        "get_topic": "nodus/aqi-x943fm/logs/get",
-        "ack_topic": "nodus/aqi-x943fm/logs/ack",
-        "chunk_topic": "nodus/aqi-x943fm/logs/chunk",
-        "result_topic": "nodus/aqi-x943fm/logs/result",
-        "chunk_size": 512,
     }
     assert payload["mqtt"]["broker"] == "broker.local"
     assert payload["mqtt"]["broker_ip"] == "10.0.0.20"
@@ -290,6 +284,85 @@ def test_runtime_meta_payload_can_omit_switch_channel_detail():
     }
     assert "channels" not in payload["switch"]
     assert payload["location_group"]["members"] == ["aqi-x943fm", "S1-x943fm"]
+    assert "logs" not in payload
+
+
+def test_compact_runtime_meta_stays_below_startup_payload_budget():
+    runtime_config = RuntimeConfig(
+        active_profile="sensorius",
+        network=NetworkConfig(hostname="co2-ykdvea", ssid="PeaceHill"),
+        mqtt=MQTTConfig(
+            broker="10.0.0.248",
+            broker_ip="10.0.0.248",
+            base_topic="nodus",
+        ),
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            device="co2",
+            sensor_id="co2-ykdvea",
+            serial_number="ykdvea",
+            location="OfficeTest",
+            display=DisplayConfig(
+                metrics=(
+                    "DewVPD Risk",
+                    "Dew Point",
+                    "Temperature_F",
+                    "Humidity",
+                    "Rel-Humidity",
+                    "Dew Point_F",
+                    "Temperature",
+                    "Dew Point Deficit",
+                    "Ambient VPD",
+                    "CO2",
+                ),
+                styles=(
+                    "gauge",
+                    "graph24hr",
+                    "graph24hr",
+                    "gauge",
+                    "gauge",
+                    "graph24hr",
+                    "graph24hr",
+                    "gauge",
+                    "gauge",
+                    "gauge",
+                ),
+            ),
+        ),
+        switch=SwitchConfig(
+            present=True,
+            device_id="switch-ykdvea",
+            serial_number="ykdvea",
+            location="OfficeDesk",
+            channel_count=2,
+            channels=(
+                SwitchChannelConfig(
+                    key="SWITCH_1",
+                    channel_id="S1-ykdvea",
+                    label="Fan",
+                    last_state=True,
+                ),
+                SwitchChannelConfig(
+                    key="SWITCH_2",
+                    channel_id="S2-ykdvea",
+                    label="Humidifier",
+                    last_state=False,
+                ),
+            ),
+        ),
+    )
+
+    payload = build_runtime_meta_payload(
+        runtime_config,
+        version="v0.26.143.3",
+        active_broker="10.0.0.248",
+        include_switch_channels=False,
+    )
+    encoded = json.dumps(payload, separators=(",", ":"))
+
+    assert "logs" not in payload
+    assert len(encoded) < 1500
 
 
 def test_switch_meta_payload_includes_channel_topic_map_without_pin_fields():

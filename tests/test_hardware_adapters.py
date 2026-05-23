@@ -14,12 +14,10 @@ from cpynodus_ii.core.config import (
     SwitchConfig,
 )
 from cpynodus_ii.core.settings import Settings
-from cpynodus_ii.features import (
-    build_sensor_runtime,
-    build_switch_runtime,
-    plan_sensor_initialization,
-    plan_switch_initialization,
-)
+from cpynodus_ii.features.sensor import plan_sensor_initialization
+from cpynodus_ii.features.sensor_runtime import build_sensor_runtime
+from cpynodus_ii.features.switch import plan_switch_initialization
+from cpynodus_ii.features.switch_runtime import build_switch_runtime
 from cpynodus_ii.hardware import bind_sensor_hardware, bind_switch_hardware
 
 

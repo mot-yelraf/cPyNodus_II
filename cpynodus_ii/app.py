@@ -37,10 +37,8 @@ from cpynodus_ii.core.mqtt import MQTTTransport
 from cpynodus_ii.core.ntp import DEFAULT_NTP_SERVER
 from cpynodus_ii.core.plan import StartupPlan
 from cpynodus_ii.core.reboot_log import append_reboot_reason_traceback
-from cpynodus_ii.core.recovery_log import append_recovery_event
 from cpynodus_ii.core.settings import Settings
 from cpynodus_ii.features.command_intake import subscribe_switch_runtime_topics
-from cpynodus_ii.features.publish_cycle import publish_switch_meta_cycle
 from cpynodus_ii.features.sensor import plan_sensor_initialization
 from cpynodus_ii.features.sensor_runtime import build_sensor_runtime
 from cpynodus_ii.features.sensor_service import (
@@ -52,7 +50,6 @@ from cpynodus_ii.features.steady_state import SteadyState, run_steady_state_iter
 from cpynodus_ii.features.switch import plan_switch_initialization
 from cpynodus_ii.features.switch_runtime import build_switch_runtime
 from cpynodus_ii.features.switch_service import (
-    snapshot_switch_states,
     start_switch_service,
     stop_switch_service,
 )
@@ -80,7 +77,6 @@ MQTT_STARTUP_CONDITIONING_SOFT_RELOAD_ENABLED = True
 MQTT_STARTUP_CONDITIONING_TIMEOUT_S = 3.0
 MQTT_STARTUP_CONDITIONING_RETRIES = 1
 MQTT_STARTUP_SUBSCRIBE_SETTLE_S = 0.0
-MQTT_SWITCH_META_DELAY_S = 0.0
 SENSOR_NOT_FOUND_REBOOT_S = 60.0
 SENSOR_NOT_FOUND_REBOOT_MIN_COUNT = 6
 SOFT_REBOOT_SETTLE_S = 1.0
@@ -255,17 +251,6 @@ def _mqtt_sync_summary(sync_result, transport, *, source, before_queues):
         _mqtt_sync_operation_summary(sync_result),
         errors,
     )
-
-
-def _should_log_mqtt_sync(sync_result, *, now_monotonic, trace_until):
-    """Return True when one MQTT sync operation should be logged."""
-    if getattr(sync_result, "phase", "") == "error":
-        return True
-    if float(now_monotonic or 0.0) > float(trace_until or -1.0):
-        return False
-    if sync_result.published_count or sync_result.subscribed_count:
-        return True
-    return bool(getattr(sync_result, "operation", "") or "")
 
 
 def _sensor_error_text(*parts):
@@ -1822,6 +1807,8 @@ def _log_recovery_event(event, detail="", *, fs_writable, device_id=""):
     """Persist a bounded recovery event when RWFS is available."""
     if fs_writable is not True:
         return False
+    from cpynodus_ii.core.recovery_log import append_recovery_event
+
     return append_recovery_event(event, detail, device_id=device_id)
 
 
@@ -2357,7 +2344,6 @@ async def main(*, startup_plan_override=None):
     next_health_at = float(start_monotonic) + 300.0
     next_periodic_gc_at = float(start_monotonic) + 60.0
     periodic_gc_count = 0
-    mqtt_sync_trace_until = -1.0
     mqtt_connect_attempt_count = 0
     last_mqtt_connect_attempt_at = float(start_monotonic)
     repeated_mqtt_connect_failure_count = 0
@@ -2371,8 +2357,6 @@ async def main(*, startup_plan_override=None):
     mqtt_subscribe_recovery_pending = False
     mqtt_connack_timeout_recovery_pending = False
     deferred_switch_subscription_generation = 0
-    switch_meta_generation = 0
-    switch_meta_publish_at = -1.0
     startup_subscribe_settle_generation = 0
     startup_subscribe_settle_until = -1.0
     last_ntp_defer_detail = ""
@@ -4034,15 +4018,10 @@ async def main(*, startup_plan_override=None):
                         ),
                         start_monotonic=start_monotonic,
                     )
-                    mqtt_sync_trace_until = float(now_monotonic) + 180.0
                     sync_before = _transport_queue_summary(transport)
                     sync_result = sync_transport_to_client(mqtt_adapter, transport)
                     mqtt_adapter = sync_result.adapter
-                    if _should_log_mqtt_sync(
-                        sync_result,
-                        now_monotonic=now_monotonic,
-                        trace_until=mqtt_sync_trace_until,
-                    ):
+                    if sync_result.phase == "error":
                         _print_log(
                             "mqtt",
                             _mqtt_sync_summary(
@@ -4066,8 +4045,6 @@ async def main(*, startup_plan_override=None):
                         )
                         mqtt_subscribe_recovery_pending = False
                         if runtime_config.switch.present:
-                            switch_meta_generation = transport.connection_generation
-                            switch_meta_publish_at = -1.0
                             deferred_switch_subscription_generation = (
                                 transport.connection_generation
                             )
@@ -4076,19 +4053,16 @@ async def main(*, startup_plan_override=None):
                             (
                                 "recovery phase=subscription_recovered "
                                 "action=suppress_duplicate_startup_queue gen={} "
-                                "{} retained_replay=disabled switch_meta_delay_s={:.1f}"
+                                "{} retained_replay=disabled"
                             ).format(
                                 transport.connection_generation,
                                 _transport_queue_summary(transport),
-                                MQTT_SWITCH_META_DELAY_S,
                             ),
                             start_monotonic=start_monotonic,
                         )
                     if _is_mqtt_subscription_failure(sync_result):
                         mqtt_subscribe_recovery_pending = True
                         deferred_switch_subscription_generation = 0
-                        switch_meta_generation = 0
-                        switch_meta_publish_at = -1.0
                         startup_subscribe_settle_generation = 0
                         startup_subscribe_settle_until = -1.0
                         mqtt_adapter = _recover_mqtt_subscription_failure(
@@ -4328,8 +4302,6 @@ async def main(*, startup_plan_override=None):
                     sensor_not_found_failure_started_at = -1.0
             if iteration.subscribed_topics:
                 if runtime_config.switch.present:
-                    switch_meta_generation = transport.connection_generation
-                    switch_meta_publish_at = -1.0
                     deferred_switch_subscription_generation = (
                         transport.connection_generation
                     )
@@ -4450,11 +4422,7 @@ async def main(*, startup_plan_override=None):
                     sync_before = _transport_queue_summary(transport)
                     sync_result = sync_transport_to_client(mqtt_adapter, transport)
                     mqtt_adapter = sync_result.adapter
-                    if _should_log_mqtt_sync(
-                        sync_result,
-                        now_monotonic=now_monotonic,
-                        trace_until=mqtt_sync_trace_until,
-                    ):
+                    if sync_result.phase == "error":
                         _print_log(
                             "mqtt",
                             _mqtt_sync_summary(
@@ -4468,8 +4436,6 @@ async def main(*, startup_plan_override=None):
                     if _is_mqtt_subscription_failure(sync_result):
                         mqtt_subscribe_recovery_pending = True
                         deferred_switch_subscription_generation = 0
-                        switch_meta_generation = 0
-                        switch_meta_publish_at = -1.0
                         startup_subscribe_settle_generation = 0
                         startup_subscribe_settle_until = -1.0
                         mqtt_adapter = _recover_mqtt_subscription_failure(
@@ -4490,56 +4456,8 @@ async def main(*, startup_plan_override=None):
                         _collect_garbage()
                         await asyncio.sleep(0.05)
                         continue
-                    switch_meta_waiting = False
                     if (
-                        switch_meta_generation == transport.connection_generation
-                        and not getattr(transport, "published_messages", ())
-                        and not getattr(transport, "subscriptions", ())
-                    ):
-                        if float(switch_meta_publish_at) < 0.0:
-                            switch_meta_publish_at = (
-                                float(now_monotonic) + MQTT_SWITCH_META_DELAY_S
-                            )
-                            if MQTT_SWITCH_META_DELAY_S > 0.0:
-                                _print_log(
-                                    "mqtt",
-                                    (
-                                        "switch_meta phase=scheduled gen={} "
-                                        "delay_s={:.1f}"
-                                    ).format(
-                                        transport.connection_generation,
-                                        MQTT_SWITCH_META_DELAY_S,
-                                    ),
-                                    start_monotonic=start_monotonic,
-                                )
-                        if float(now_monotonic) >= float(switch_meta_publish_at):
-                            switch_snapshot = snapshot_switch_states(switch_service)
-                            switch_meta_result = publish_switch_meta_cycle(
-                                transport,
-                                runtime_config,
-                                switch_snapshot=switch_snapshot,
-                            )
-                            switch_meta_generation = 0
-                            switch_meta_publish_at = -1.0
-                            if switch_meta_result.phase == "published":
-                                _print_log(
-                                    "mqtt",
-                                    (
-                                        "switch_meta queued topics={} gen={} "
-                                        "delay_s={:.1f} {}"
-                                    ).format(
-                                        ",".join(switch_meta_result.topics),
-                                        transport.connection_generation,
-                                        MQTT_SWITCH_META_DELAY_S,
-                                        _transport_queue_summary(transport),
-                                    ),
-                                    start_monotonic=start_monotonic,
-                                )
-                        else:
-                            switch_meta_waiting = True
-                    if (
-                        not switch_meta_waiting
-                        and deferred_switch_subscription_generation
+                        deferred_switch_subscription_generation
                         == transport.connection_generation
                         and not getattr(transport, "published_messages", ())
                         and not getattr(transport, "subscriptions", ())
