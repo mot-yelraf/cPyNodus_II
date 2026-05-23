@@ -80,6 +80,7 @@ MQTT_STARTUP_CONDITIONING_RETRIES = 1
 MQTT_STARTUP_SUBSCRIBE_SETTLE_S = 0.0
 SENSOR_NOT_FOUND_REBOOT_S = 60.0
 SENSOR_NOT_FOUND_REBOOT_MIN_COUNT = 6
+SENSOR_NOT_FOUND_REINIT_MAX_ATTEMPTS = 2
 SOFT_REBOOT_SETTLE_S = 1.0
 WARM_START_RADIO_SETTLE_S = 1.0
 WIFI_AFTER_READY_FAILURE_SIGNATURES = (
@@ -327,6 +328,18 @@ def _should_reboot_sensor_not_found(
         and float(first_failure_at) >= 0.0
         and elapsed_s >= float(timeout_s or 0.0)
     )
+
+
+def _restart_sensor_stack(sensor_runtime, sensor_service, runtime_config):
+    """Rebind sensor hardware and return a fresh adapter, service, and snapshot."""
+    stop_sensor_service(sensor_service)
+    _collect_garbage()
+    sensor_adapter = bind_sensor_hardware(sensor_runtime, runtime_config)
+    sensor_service = start_sensor_service(
+        sensor_runtime, sensor_adapter, runtime_config
+    )
+    sensor_snapshot = read_sensor_snapshot(sensor_service, runtime_config)
+    return sensor_adapter, sensor_service, sensor_snapshot
 
 
 def _dns_health_text(network_stack, mqtt_adapter, ntp_state):
@@ -2416,6 +2429,7 @@ async def main(*, startup_plan_override=None):
     wifi_after_ready_failure_count = 0
     sensor_not_found_failure_count = 0
     sensor_not_found_failure_started_at = -1.0
+    sensor_reinit_attempt_count = 0
     last_mqtt_station_reset_at = -1.0
     if _mqtt_client_init_memory_failed(mqtt_adapter.errors):
         mqtt_client_memory_failure_count = 1
@@ -4314,7 +4328,62 @@ async def main(*, startup_plan_override=None):
                         sensor_not_found_failure_started_at,
                         now_monotonic,
                     ):
+                        elapsed_s = int(
+                            max(
+                                0.0,
+                                float(now_monotonic)
+                                - float(sensor_not_found_failure_started_at),
+                            )
+                        )
                         reboot_reason = "sensor_not_found"
+                        if (
+                            sensor_reinit_attempt_count
+                            < SENSOR_NOT_FOUND_REINIT_MAX_ATTEMPTS
+                        ):
+                            sensor_reinit_attempt_count += 1
+                            (
+                                sensor_adapter,
+                                sensor_service,
+                                sensor_snapshot,
+                            ) = _restart_sensor_stack(
+                                sensor_runtime,
+                                sensor_service,
+                                runtime_config,
+                            )
+                            steady_state = replace(
+                                steady_state,
+                                last_sensor_publish_at=-1.0,
+                            )
+                            reinit_issue = _sensor_error_text(
+                                sensor_runtime,
+                                sensor_adapter,
+                                sensor_service,
+                                sensor_snapshot,
+                            )
+                            _print_log(
+                                "recovery",
+                                (
+                                    "sensor action=reinit reason={} attempt={} "
+                                    "count={} elapsed_s={} adapter={} service={} "
+                                    "metrics={} errors={}"
+                                ).format(
+                                    reboot_reason,
+                                    sensor_reinit_attempt_count,
+                                    sensor_not_found_failure_count,
+                                    elapsed_s,
+                                    sensor_adapter.phase,
+                                    sensor_service.phase,
+                                    len((sensor_snapshot.metrics or {})),
+                                    reinit_issue or "none",
+                                ),
+                                start_monotonic=start_monotonic,
+                            )
+                            sensor_not_found_failure_count = 0
+                            sensor_not_found_failure_started_at = -1.0
+                            if sensor_snapshot.phase == "ready":
+                                sensor_reinit_attempt_count = 0
+                            await asyncio.sleep(0.05)
+                            continue
                         reboot_kind = _recovery_reboot_kind(
                             reboot_reason,
                             fs_writable=fs_writable,
@@ -4328,13 +4397,7 @@ async def main(*, startup_plan_override=None):
                                 reboot_kind,
                                 reboot_reason,
                                 sensor_not_found_failure_count,
-                                int(
-                                    max(
-                                        0.0,
-                                        float(now_monotonic)
-                                        - float(sensor_not_found_failure_started_at),
-                                    )
-                                ),
+                                elapsed_s,
                                 sensor_issue or "sensor_not_found",
                             ),
                             start_monotonic=start_monotonic,
@@ -4355,6 +4418,7 @@ async def main(*, startup_plan_override=None):
                 else:
                     sensor_not_found_failure_count = 0
                     sensor_not_found_failure_started_at = -1.0
+                    sensor_reinit_attempt_count = 0
             if iteration.subscribed_topics:
                 if runtime_config.switch.present:
                     deferred_switch_subscription_generation = (

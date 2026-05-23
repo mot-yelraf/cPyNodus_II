@@ -27,6 +27,7 @@ from cpynodus_ii.app import (
     _refresh_broker_ip_from_hostname,
     _reset_mqtt_preflight_connect_delay,
     _resolve_startup_plan,
+    _restart_sensor_stack,
     _runtime_device_id,
     _sensor_errors_indicate_not_found,
     _should_enter_ota_mode,
@@ -896,6 +897,53 @@ def test_sensor_not_found_window_and_reboot_gate():
     )
     assert count == 0
     assert started_at == -1.0
+
+
+def test_restart_sensor_stack_stops_rebinds_and_reads_snapshot(monkeypatch):
+    events = []
+    sensor_runtime = SimpleNamespace(phase="ready")
+    runtime_config = RuntimeConfig()
+    old_service = SimpleNamespace(phase="error")
+    new_adapter = SimpleNamespace(phase="bound")
+    new_service = SimpleNamespace(phase="ready")
+    new_snapshot = SimpleNamespace(phase="ready", metrics={"Temperature": 24.0})
+
+    def fake_stop_sensor_service(service):
+        events.append(("stop", service))
+
+    def fake_bind_sensor_hardware(runtime, config):
+        events.append(("bind", runtime, config))
+        return new_adapter
+
+    def fake_start_sensor_service(runtime, adapter, config):
+        events.append(("start", runtime, adapter, config))
+        return new_service
+
+    def fake_read_sensor_snapshot(service, config):
+        events.append(("read", service, config))
+        return new_snapshot
+
+    monkeypatch.setattr(app_module, "stop_sensor_service", fake_stop_sensor_service)
+    monkeypatch.setattr(app_module, "bind_sensor_hardware", fake_bind_sensor_hardware)
+    monkeypatch.setattr(app_module, "start_sensor_service", fake_start_sensor_service)
+    monkeypatch.setattr(app_module, "read_sensor_snapshot", fake_read_sensor_snapshot)
+    monkeypatch.setattr(app_module, "_collect_garbage", lambda: None)
+
+    adapter, service, snapshot = _restart_sensor_stack(
+        sensor_runtime,
+        old_service,
+        runtime_config,
+    )
+
+    assert adapter is new_adapter
+    assert service is new_service
+    assert snapshot is new_snapshot
+    assert events == [
+        ("stop", old_service),
+        ("bind", sensor_runtime, runtime_config),
+        ("start", sensor_runtime, new_adapter, runtime_config),
+        ("read", new_service, runtime_config),
+    ]
 
 
 def test_long_mqtt_recovery_reboot_gate():
