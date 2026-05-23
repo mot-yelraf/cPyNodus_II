@@ -623,15 +623,15 @@ def test_build_network_stack_retries_with_scanned_channel_hint(monkeypatch):
         ("PeaceHill", "secretpass"),
     ]
     assert radio.connect_kwargs == [
-        {},
-        {"channel": 6},
+        {"timeout": network_module.STATION_CONNECT_TIMEOUT_S},
+        {"channel": 6, "timeout": network_module.STATION_CONNECT_TIMEOUT_S},
     ]
     assert radio.scan_calls == 1
     assert radio.stop_scan_calls == 1
     assert sleeps == [2.0]
 
 
-def test_station_scan_stops_after_target_ssid_is_found():
+def test_station_scan_stops_after_target_ssid_is_found(capsys):
     radio = _ScanShouldStopAfterTargetRadio()
 
     status, count, hint = network_module._scan_for_station_ssid(radio, "PeaceHill")
@@ -640,6 +640,9 @@ def test_station_scan_stops_after_target_ssid_is_found():
     assert count == 1
     assert network_module._station_hint_channel(hint) == 6
     assert radio.stop_scan_calls == 1
+    output = capsys.readouterr().out
+    assert "network scan phase=begin ssid=PeaceHill" in output
+    assert "network scan phase=end ssid=PeaceHill result=found count=1" in output
 
 
 def test_build_network_stack_reuses_preconnect_hint_after_join_failure(
@@ -677,8 +680,8 @@ def test_build_network_stack_reuses_preconnect_hint_after_join_failure(
         ("PeaceHill", "secretpass"),
     ]
     assert radio.connect_kwargs == [
-        {},
-        {"channel": 6},
+        {"timeout": network_module.STATION_CONNECT_TIMEOUT_S},
+        {"channel": 6, "timeout": network_module.STATION_CONNECT_TIMEOUT_S},
     ]
     assert radio.scan_calls == 1
     assert radio.stop_scan_calls == 1

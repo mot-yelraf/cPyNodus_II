@@ -11,6 +11,7 @@ from dataclasses import dataclass
 RADIO_CYCLE_SETTLE_S = 3.0
 RADIO_ENABLE_TOGGLE_SETTLE_S = 0.5
 STATION_RESET_SETTLE_S = 0.5
+STATION_CONNECT_TIMEOUT_S = 6.0
 
 
 def _network_log(message, *, start_monotonic=None):
@@ -74,6 +75,7 @@ def build_network_stack(
     retry_delay_s=1.0,
     preconnect_scan=False,
     station_reset_settle_s=STATION_RESET_SETTLE_S,
+    station_connect_timeout_s=STATION_CONNECT_TIMEOUT_S,
     log_start_monotonic=None,
 ):
     """Build the runtime network stack needed by MQTT and networked profiles."""
@@ -195,6 +197,7 @@ def build_network_stack(
         retry_delay_s=retry_delay_s,
         preconnect_scan=preconnect_scan,
         station_reset_settle_s=station_reset_settle_s,
+        station_connect_timeout_s=station_connect_timeout_s,
         log_start_monotonic=log_start_monotonic,
     )
     if connect_result["phase"] != "ready":
@@ -238,6 +241,7 @@ def reconnect_network_stack(
     cycle_radio=False,
     force_station_reset=False,
     station_reset_settle_s=STATION_RESET_SETTLE_S,
+    station_connect_timeout_s=STATION_CONNECT_TIMEOUT_S,
     log_start_monotonic=None,
 ):
     """Reconnect station Wi-Fi, preserving socket artifacts when allowed."""
@@ -252,6 +256,7 @@ def reconnect_network_stack(
             retry_delay_s=retry_delay_s,
             preconnect_scan=False,
             station_reset_settle_s=station_reset_settle_s,
+            station_connect_timeout_s=station_connect_timeout_s,
             log_start_monotonic=log_start_monotonic,
         )
 
@@ -277,6 +282,7 @@ def reconnect_network_stack(
         log_start_monotonic=log_start_monotonic,
         reset_before_connect=not reset_station,
         station_reset_settle_s=station_reset_settle_s,
+        station_connect_timeout_s=station_connect_timeout_s,
     )
     if connect_result["phase"] != "ready":
         return NetworkStack(
@@ -479,6 +485,7 @@ def _connect_station(
     reset_before_connect=True,
     preconnect_scan=False,
     station_reset_settle_s=STATION_RESET_SETTLE_S,
+    station_connect_timeout_s=STATION_CONNECT_TIMEOUT_S,
 ):
     connect = getattr(wifi_radio, "connect", None)
     set_hostname = getattr(wifi_radio, "hostname", None)
@@ -491,6 +498,7 @@ def _connect_station(
         scan_status, scan_count, scan_hint = _scan_for_station_ssid(
             wifi_radio,
             runtime_config.network.ssid,
+            log_start_monotonic=log_start_monotonic,
         )
         last_scan_status = scan_status
         last_scan_count = scan_count
@@ -549,6 +557,7 @@ def _connect_station(
                     runtime_config,
                     station_hint,
                     hint_strategy,
+                    station_connect_timeout_s,
                 )
             if runtime_config.network.hostname and set_hostname is not None:
                 try:
@@ -659,15 +668,28 @@ def _connect_station(
                 scan_status = ""
                 scan_count = -1
                 scan_hint = None
+                station_reset_done = False
                 if _looks_station_join_failure(exc):
                     if station_hint is not None:
                         scan_status = "skipped_hint"
                         scan_count = 0
                         scan_hint = station_hint
                     else:
+                        station_reset_done = _reset_station_mode(wifi_radio)
+                        if station_reset_done:
+                            try:
+                                time.sleep(
+                                    max(
+                                        0.0,
+                                        float(station_reset_settle_s or 0.0),
+                                    )
+                                )
+                            except Exception:
+                                pass
                         scan_status, scan_count, scan_hint = _scan_for_station_ssid(
                             wifi_radio,
                             runtime_config.network.ssid,
+                            log_start_monotonic=log_start_monotonic,
                         )
                         if scan_hint is not None:
                             station_hint = scan_hint
@@ -695,7 +717,8 @@ def _connect_station(
                     ),
                     start_monotonic=log_start_monotonic,
                 )
-                _reset_station_mode(wifi_radio)
+                if not station_reset_done:
+                    _reset_station_mode(wifi_radio)
                 try:
                     settle_s = float(retry_delay_s or 0.0)
                     if scan_status:
@@ -794,21 +817,72 @@ def _build_direct_ssl_context():
         return None
 
 
-def _connect_with_station_hint(connect, runtime_config, station_hint, strategy):
+def _connect_with_station_hint(
+    connect,
+    runtime_config,
+    station_hint,
+    strategy,
+    timeout_s=STATION_CONNECT_TIMEOUT_S,
+):
     ssid = runtime_config.network.ssid
     password = runtime_config.network.password
     channel = _station_hint_channel(station_hint)
     bssid = _station_hint_bssid(station_hint)
     if strategy == "bssid" and channel and bssid:
         try:
-            return connect(ssid, password, channel=int(channel), bssid=bssid)
+            return _call_station_connect(
+                connect,
+                ssid,
+                password,
+                channel=int(channel),
+                bssid=bssid,
+                timeout_s=timeout_s,
+            )
         except TypeError:
             pass
     if strategy == "channel" and channel:
         try:
-            return connect(ssid, password, channel=int(channel))
+            return _call_station_connect(
+                connect,
+                ssid,
+                password,
+                channel=int(channel),
+                timeout_s=timeout_s,
+            )
         except TypeError:
             pass
+    return _call_station_connect(connect, ssid, password, timeout_s=timeout_s)
+
+
+def _call_station_connect(
+    connect,
+    ssid,
+    password,
+    *,
+    channel=None,
+    bssid=None,
+    timeout_s=STATION_CONNECT_TIMEOUT_S,
+):
+    kwargs = {}
+    if channel:
+        kwargs["channel"] = int(channel)
+    if bssid:
+        kwargs["bssid"] = bssid
+    try:
+        timeout_value = float(timeout_s or 0.0)
+    except Exception:
+        timeout_value = 0.0
+    if timeout_value > 0.0:
+        kwargs["timeout"] = timeout_value
+        try:
+            return connect(ssid, password, **kwargs)
+        except TypeError:
+            try:
+                del kwargs["timeout"]
+            except Exception:
+                pass
+    if kwargs:
+        return connect(ssid, password, **kwargs)
     return connect(ssid, password)
 
 
@@ -844,12 +918,17 @@ def _cycle_radio_power(wifi_radio):
     return changed
 
 
-def _scan_for_station_ssid(wifi_radio, ssid):
+def _scan_for_station_ssid(wifi_radio, ssid, *, log_start_monotonic=None):
     start_scan = getattr(wifi_radio, "start_scanning_networks", None)
     if not callable(start_scan):
         return "unavailable", -1, None
     count = 0
     best_hint = None
+    status = "active"
+    _network_log(
+        "network scan phase=begin ssid={}".format(ssid),
+        start_monotonic=log_start_monotonic,
+    )
     try:
         networks = start_scan()
         for network in networks:
@@ -859,13 +938,32 @@ def _scan_for_station_ssid(wifi_radio, ssid):
                 break
             if count >= 16:
                 break
+        if best_hint is not None:
+            status = "found"
+            return status, count, best_hint
+        status = "missing"
+        return status, count, None
     except Exception:
-        return "error", count, best_hint
+        status = "error"
+        return status, count, best_hint
+    except BaseException:
+        status = "aborted"
+        raise
     finally:
         _call_radio_method(wifi_radio, "stop_scanning_networks")
-    if best_hint is not None:
-        return "found", count, best_hint
-    return "missing", count, None
+        _network_log(
+            (
+                "network scan phase=end ssid={} result={} count={} "
+                "channel={} bssid={}"
+            ).format(
+                ssid,
+                status,
+                count if count >= 0 else "unknown",
+                _station_hint_channel(best_hint) or "none",
+                _bssid_text(_station_hint_bssid(best_hint)),
+            ),
+            start_monotonic=log_start_monotonic,
+        )
 
 
 def _best_station_hint(current_hint, network):
