@@ -331,11 +331,12 @@ def sync_transport_to_client(adapter, transport):
     if adapter.published_index >= len(transport.published_messages):
         return _sync_subscriptions_to_client(adapter, transport)
     message = transport.published_messages[adapter.published_index]
+    payload = _serialize_payload(message.payload)
     try:
         _publish_mqtt_qos0(
             adapter.client,
             message.topic,
-            _serialize_payload(message.payload),
+            payload,
             message.retain,
         )
     except Exception as exc:
@@ -355,11 +356,19 @@ def sync_transport_to_client(adapter, transport):
             errors=(
                 "mqtt_publish_failed:{}:bytes={}:{}".format(
                     message.topic,
-                    _payload_size(_serialize_payload(message.payload)),
+                    _payload_size(payload),
                     exc,
                 ),
             ),
         )
+    transport.record_publish_success(
+        message.topic,
+        payload_bytes=_payload_size(payload),
+        retain=message.retain,
+        socket_state=_socket_state(getattr(adapter.client, "_sock", None)),
+        client_connected=_client_connected_state(adapter.client),
+        backcompat=1 if adapter.socket_compat_enabled else 0,
+    )
     transport.mark_success()
     transport.compact(
         published_keep_from=adapter.published_index + 1,
@@ -1592,7 +1601,13 @@ def preflight_mqtt_broker_tcp(adapter, broker=None, *, timeout_s=None):
                     pass
 
 
-def preflight_mqtt_broker_connect(adapter, broker=None, *, timeout_s=None):
+def preflight_mqtt_broker_connect(
+    adapter,
+    broker=None,
+    *,
+    timeout_s=None,
+    client_id=None,
+):
     """Perform a raw MQTT CONNECT/CONNACK probe using adapter sockets."""
     target = (
         broker
@@ -1626,7 +1641,7 @@ def preflight_mqtt_broker_connect(adapter, broker=None, *, timeout_s=None):
         ), connect_target, "", -1
 
     sock = None
-    client_id = _mqtt_probe_client_id(adapter)
+    client_id = _mqtt_probe_client_id(adapter, client_id)
     return_code = -1
     try:
         sock = socket_factory()
@@ -1708,7 +1723,9 @@ def _mqtt_adapter_uses_tls(adapter):
     return False
 
 
-def _mqtt_probe_client_id(adapter):
+def _mqtt_probe_client_id(adapter, client_id=None):
+    if client_id is not None:
+        return _mqtt_text(client_id)
     if isinstance(adapter.client_kwargs, dict):
         value = adapter.client_kwargs.get("client_id")
         if value:

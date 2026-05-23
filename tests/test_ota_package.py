@@ -103,22 +103,23 @@ def test_build_ota_package_records_deployable_deletes(tmp_path):
     assert manifest["delete"] == ["cpynodus_ii/obsolete.py"]
 
 
-def test_build_ota_package_includes_ota_test_file(tmp_path):
+def test_build_ota_package_includes_root_runtime_file(tmp_path):
     repo = _init_repo(tmp_path / "repo")
     _write(repo / "cpynodus_ii" / "__init__.py", '__version__ = "v0.26.123.8"\n')
     _git(repo, "add", ".")
     _git(repo, "commit", "-m", "tag a")
     _git(repo, "tag", "tagA")
 
-    _write(repo / "ota_test.py", "VALUE = 1\n")
+    root_file = "ota_test.py"
+    _write(repo / root_file, "VALUE = 1\n")
     _git(repo, "add", ".")
     _git(repo, "commit", "-m", "tag b")
     _git(repo, "tag", "tagB")
 
     manifest = build_ota_package(repo, "tagA", "tagB", tmp_path / "package")
 
-    assert manifest["files"][0]["path"] == "ota_test.py"
-    assert (tmp_path / "package" / "files" / "ota_test.py").read_text(
+    assert manifest["files"][0]["path"] == root_file
+    assert (tmp_path / "package" / "files" / root_file).read_text(
         encoding="utf-8"
     ) == "VALUE = 1\n"
 
@@ -343,9 +344,9 @@ def test_push_ota_package_sends_begin_files_and_commit(tmp_path):
     ]
     begin_payload = json.loads(opener.requests[1][0].data.decode("utf-8"))
     assert begin_payload["package_id"] == "ota-tagA-to-tagB"
-    assert opener.requests[3][0].data == (
-        package / "files" / "ota_test.py"
-    ).read_bytes()
+    assert (
+        opener.requests[3][0].data == (package / "files" / "ota_test.py").read_bytes()
+    )
     assert opener.requests[3][0].headers["X-nodus-file-path"] == "ota_test.py"
     assert logs[:3] == [
         "status http://10.0.0.213:8000",
@@ -496,9 +497,7 @@ class _FakeOtaOpener:
         if url.endswith("/ota/file/begin?path=ota_test.py"):
             return _FakeResponse({"accepted": True, "phase": "staging"})
         if "/ota/file/chunk?path=ota_test.py&offset=0" in url:
-            return _FakeResponse(
-                {"accepted": True, "phase": "staging", "offset": 22}
-            )
+            return _FakeResponse({"accepted": True, "phase": "staging", "offset": 22})
         if url.endswith("/ota/file/end?path=ota_test.py"):
             return _FakeResponse({"accepted": True, "phase": "staging"})
         if url.endswith("/ota/commit"):

@@ -3,21 +3,32 @@
 from dataclasses import replace
 from types import SimpleNamespace
 
+import cpynodus_ii.app as app_module
 from cpynodus_ii.app import (
     _broker_ip_refresh_needed,
+    _increase_mqtt_preflight_connect_delay,
     _is_mqtt_subscription_failure,
     _load_settings_for_startup,
     _load_startup_ota_state,
     _mark_ota_applied_after_boot,
+    _maybe_reboot_for_mqtt_failure_budget,
     _mqtt_client_init_memory_failed,
     _mqtt_connect_attempt_is_connack_timeout_pattern,
     _mqtt_connect_errors_are_repeated_failures,
     _mqtt_connect_retry_interval_s,
+    _mqtt_error_indicates_socket_progress,
+    _mqtt_preconnect_has_socket_progress,
+    _mqtt_preconnect_probe,
+    _mqtt_repeated_failure_budget_exhausted,
+    _mqtt_repeated_failure_elapsed_s,
     _ota_state_path,
     _recovery_reconnect_attempts,
     _recovery_reconnect_delay_s,
     _refresh_broker_ip_from_hostname,
+    _reset_mqtt_preflight_connect_delay,
     _resolve_startup_plan,
+    _runtime_device_id,
+    _sensor_errors_indicate_not_found,
     _should_enter_ota_mode,
     _should_fallback_to_ap,
     _should_fast_reboot_mqtt_connect_failures,
@@ -26,13 +37,17 @@ from cpynodus_ii.app import (
     _should_log_wifi_failure_signature,
     _should_reboot_long_mqtt_recovery,
     _should_reboot_mqtt_memory_failures,
+    _should_reboot_sensor_not_found,
     _should_rebuild_mqtt_adapter_for_recovery,
     _should_reset_mqtt_station_for_plain_connect_failure,
     _should_reset_wifi_station_before_ready,
     _should_verify_mqtt_before_rebuild,
     _startup_ap_fallback_reason,
+    _startup_conditioning_enabled_for_current_run,
     _startup_subscription_recovery_drained,
     _update_mqtt_memory_failure_window,
+    _update_sensor_not_found_window,
+    _wifi_signature_text,
     _wifi_station_reset_reason,
 )
 from cpynodus_ii.core import RecoveryState
@@ -296,6 +311,44 @@ def test_wifi_failure_signature_logging_is_sparse():
     assert not _should_log_wifi_failure_signature("none", 1, True)
 
 
+def test_wifi_signature_text_reports_ready_for_health_log():
+    assert _wifi_signature_text(SimpleNamespace(phase="ready")) == "ready"
+    assert (
+        _wifi_signature_text(
+            SimpleNamespace(
+                phase="error",
+                errors=("No network with that ssid",),
+            ),
+            had_ready_link=True,
+        )
+        == "station_scan_miss_after_ready"
+    )
+
+
+def test_runtime_device_id_prefers_sensor_then_switch_then_hostname():
+    assert (
+        _runtime_device_id(
+            SimpleNamespace(
+                sensor=SimpleNamespace(sensor_id="aqi-wfcp7p"),
+                switch=SimpleNamespace(device_id="switch-wfcp7p"),
+                network=SimpleNamespace(hostname="nodus-wfcp7p"),
+            )
+        )
+        == "aqi-wfcp7p"
+    )
+    assert (
+        _runtime_device_id(
+            SimpleNamespace(
+                sensor=SimpleNamespace(sensor_id=""),
+                switch=SimpleNamespace(device_id="switch-wfcp7p"),
+                network=SimpleNamespace(hostname="nodus-wfcp7p"),
+            )
+        )
+        == "switch-wfcp7p"
+    )
+    assert _runtime_device_id(SimpleNamespace()) == "cPyNodus_II"
+
+
 def test_after_ready_wifi_failures_reset_station_early():
     assert not _should_fast_reset_wifi_station("station_scan_miss_after_ready", 1)
     assert _should_fast_reset_wifi_station("station_scan_miss_after_ready", 2)
@@ -367,9 +420,7 @@ def test_repeated_mqtt_connect_failure_detection_matches_connect_errors():
     repeated_errors = (
         "mqtt_connect_failed:10.0.0.248:('Repeated connect failures', None)",
     )
-    plain_errors = (
-        "mqtt_connect_failed:10.0.0.248:('Connect failure', None)",
-    )
+    plain_errors = ("mqtt_connect_failed:10.0.0.248:('Connect failure', None)",)
 
     assert _mqtt_connect_errors_are_repeated_failures(repeated_errors) is True
     assert _mqtt_connect_errors_are_repeated_failures(plain_errors) is False
@@ -387,23 +438,17 @@ def test_repeated_mqtt_connect_failure_detection_matches_connect_errors():
         )
         is True
     )
-    assert (
-        _mqtt_connect_errors_are_repeated_failures(("mqtt_poll_failed:5",))
-        is False
-    )
+    assert _mqtt_connect_errors_are_repeated_failures(("mqtt_poll_failed:5",)) is False
 
 
 def test_mqtt_connack_timeout_pattern_requires_tcp_ok_probe_timeout_and_connect_error():
-    plain_errors = (
-        "mqtt_connect_failed:10.0.0.248:('Connect failure', None)",
-    )
+    plain_errors = ("mqtt_connect_failed:10.0.0.248:('Connect failure', None)",)
 
     assert (
         _mqtt_connect_attempt_is_connack_timeout_pattern(
             tcp_preflight_error="",
             connect_probe_error=(
-                "mqtt_connect_probe_failed:10.0.0.248:OSError:[Errno 116] "
-                "ETIMEDOUT"
+                "mqtt_connect_probe_failed:10.0.0.248:OSError:[Errno 116] ETIMEDOUT"
             ),
             connect_probe_code=-1,
             connect_errors=plain_errors,
@@ -414,8 +459,7 @@ def test_mqtt_connack_timeout_pattern_requires_tcp_ok_probe_timeout_and_connect_
         _mqtt_connect_attempt_is_connack_timeout_pattern(
             tcp_preflight_error="mqtt_tcp_preflight_failed:10.0.0.248:timeout",
             connect_probe_error=(
-                "mqtt_connect_probe_failed:10.0.0.248:OSError:[Errno 116] "
-                "ETIMEDOUT"
+                "mqtt_connect_probe_failed:10.0.0.248:OSError:[Errno 116] ETIMEDOUT"
             ),
             connect_probe_code=-1,
             connect_errors=plain_errors,
@@ -434,9 +478,7 @@ def test_mqtt_connack_timeout_pattern_requires_tcp_ok_probe_timeout_and_connect_
     assert (
         _mqtt_connect_attempt_is_connack_timeout_pattern(
             tcp_preflight_error="",
-            connect_probe_error=(
-                "mqtt_connect_probe_failed:10.0.0.248:connack_code=5"
-            ),
+            connect_probe_error=("mqtt_connect_probe_failed:10.0.0.248:connack_code=5"),
             connect_probe_code=5,
             connect_errors=plain_errors,
         )
@@ -446,13 +488,106 @@ def test_mqtt_connack_timeout_pattern_requires_tcp_ok_probe_timeout_and_connect_
         _mqtt_connect_attempt_is_connack_timeout_pattern(
             tcp_preflight_error="",
             connect_probe_error=(
-                "mqtt_connect_probe_failed:10.0.0.248:OSError:[Errno 116] "
-                "ETIMEDOUT"
+                "mqtt_connect_probe_failed:10.0.0.248:OSError:[Errno 116] ETIMEDOUT"
             ),
             connect_probe_code=-1,
             connect_errors=("mqtt_poll_failed:[Errno 116]",),
         )
         is False
+    )
+
+
+def test_mqtt_socket_progress_pattern_matches_errno_119_only():
+    assert (
+        _mqtt_error_indicates_socket_progress(
+            "mqtt_tcp_preflight_failed:10.0.0.248:OSError:[Errno 119] EINPROGRESS"
+        )
+        is True
+    )
+    assert (
+        _mqtt_error_indicates_socket_progress(
+            "mqtt_connect_probe_failed:10.0.0.248:OSError:Operation now in progress"
+        )
+        is True
+    )
+    assert (
+        _mqtt_error_indicates_socket_progress(
+            "mqtt_connect_probe_failed:10.0.0.248:OSError:[Errno 116] ETIMEDOUT"
+        )
+        is False
+    )
+    assert (
+        _mqtt_preconnect_has_socket_progress(
+            tcp_preflight_error="",
+            connect_probe_error="mqtt_connect_probe_failed:host:OSError:EINPROGRESS",
+        )
+        is True
+    )
+
+
+def test_mqtt_preconnect_probe_retries_socket_progress_before_success(monkeypatch):
+    tcp_calls = []
+    connect_calls = []
+    sleeps = []
+
+    def fake_tcp(_adapter):
+        tcp_calls.append(1)
+        if len(tcp_calls) == 1:
+            return (
+                "mqtt_tcp_preflight_failed:10.0.0.4:OSError:[Errno 119] EINPROGRESS",
+                "10.0.0.4",
+            )
+        return "", "10.0.0.4"
+
+    def fake_connect(_adapter):
+        connect_calls.append(1)
+        return "", "10.0.0.4", "aqi-wfcp7p", 0
+
+    monkeypatch.setattr(app_module, "MQTT_PREFLIGHT_RETRIES", 3)
+    monkeypatch.setattr(app_module, "MQTT_PREFLIGHT_RETRY_DELAY_S", 0.5)
+    monkeypatch.setattr(app_module, "MQTT_PREFLIGHT_CONNECT_DELAY_S", 0.5)
+    monkeypatch.setattr(app_module, "preflight_mqtt_broker_tcp", fake_tcp)
+    monkeypatch.setattr(app_module, "preflight_mqtt_broker_connect", fake_connect)
+    monkeypatch.setattr(app_module.time, "sleep", lambda delay: sleeps.append(delay))
+
+    result = _mqtt_preconnect_probe(
+        SimpleNamespace(active_broker="10.0.0.4", broker="samhain.local", port=1883),
+        SimpleNamespace(socket_artifact_source="direct"),
+        start_monotonic=0.0,
+    )
+
+    assert result[0] == ""
+    assert result[3] == ""
+    assert len(tcp_calls) == 2
+    assert len(connect_calls) == 1
+    assert sleeps == [0.5, 0.5]
+
+
+def test_mqtt_preconnect_delay_adapts_after_connect_failures(monkeypatch):
+    monkeypatch.setattr(app_module, "MQTT_PREFLIGHT_CONNECT_DELAY_S", 5.0)
+    monkeypatch.setattr(app_module, "MQTT_PREFLIGHT_CONNECT_DELAY_STEP_S", 3.0)
+    monkeypatch.setattr(app_module, "MQTT_PREFLIGHT_CONNECT_DELAY_MAX_S", 11.0)
+
+    assert (
+        _increase_mqtt_preflight_connect_delay(
+            5.0,
+            start_monotonic=0.0,
+        )
+        == 8.0
+    )
+    assert (
+        _increase_mqtt_preflight_connect_delay(
+            10.0,
+            start_monotonic=0.0,
+        )
+        == 11.0
+    )
+    assert (
+        _reset_mqtt_preflight_connect_delay(
+            11.0,
+            start_monotonic=0.0,
+        )
+        == 5.0
     )
 
 
@@ -465,17 +600,14 @@ def test_recovery_reconnect_settings_only_expand_after_station_reset():
 
 def test_wifi_station_reset_extends_to_repeated_startup_failures():
     assert (
-        _should_reset_wifi_station_before_ready("station_scan_miss", 1, False)
-        is False
+        _should_reset_wifi_station_before_ready("station_scan_miss", 1, False) is False
     )
     assert (
-        _should_reset_wifi_station_before_ready("station_scan_miss", 2, False)
-        is True
+        _should_reset_wifi_station_before_ready("station_scan_miss", 2, False) is True
     )
     assert _should_reset_wifi_station_before_ready("station_unknown", 2, False) is True
     assert (
-        _should_reset_wifi_station_before_ready("station_scan_miss", 2, True)
-        is False
+        _should_reset_wifi_station_before_ready("station_scan_miss", 2, True) is False
     )
 
     assert _wifi_station_reset_reason(False, True) == "before_ready_failure"
@@ -520,6 +652,123 @@ def test_repeated_mqtt_connect_failure_defaults_allow_blocking_connects():
     assert _should_fast_reboot_mqtt_connect_failures(3, 100.0, 160.0) is True
 
 
+def test_repeated_mqtt_failure_budget_uses_first_failure_time():
+    assert _mqtt_repeated_failure_elapsed_s(100.0, 159.9) == 59
+    assert _mqtt_repeated_failure_elapsed_s(-1.0, 400.0) == 0
+    assert _mqtt_repeated_failure_budget_exhausted(100.0, 159.0) is False
+    assert _mqtt_repeated_failure_budget_exhausted(100.0, 160.0) is True
+
+
+def test_startup_conditioning_runs_only_for_soft_reload(monkeypatch):
+    monkeypatch.setattr(app_module, "MQTT_STARTUP_CONDITIONING_ENABLED", False)
+    monkeypatch.setattr(
+        app_module,
+        "MQTT_STARTUP_CONDITIONING_SOFT_RELOAD_ENABLED",
+        True,
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_startup_run_reason_text",
+        lambda: "RunReason.STARTUP",
+    )
+
+    assert _startup_conditioning_enabled_for_current_run(False) is False
+    assert _startup_conditioning_enabled_for_current_run(True) is True
+
+    monkeypatch.setattr(
+        app_module,
+        "_startup_run_reason_text",
+        lambda: "RunReason.SUPERVISOR_RELOAD",
+    )
+    assert _startup_conditioning_enabled_for_current_run(False) is True
+
+    monkeypatch.setattr(
+        app_module,
+        "MQTT_STARTUP_CONDITIONING_SOFT_RELOAD_ENABLED",
+        False,
+    )
+    assert _startup_conditioning_enabled_for_current_run(False) is False
+
+    monkeypatch.setattr(app_module, "MQTT_STARTUP_CONDITIONING_ENABLED", True)
+    assert _startup_conditioning_enabled_for_current_run(False) is True
+
+
+def test_mqtt_failure_budget_reboots_after_three_preconnect_failures(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(
+        app_module,
+        "_recovery_hard_reset_marker_is_set",
+        lambda _reason: False,
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_mark_recovery_hard_reset_requested",
+        lambda _reason: True,
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_perform_recovery_reboot",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    assert (
+        _maybe_reboot_for_mqtt_failure_budget(
+            failure_count=3,
+            first_failure_at=100.0,
+            now_monotonic=112.0,
+            fs_writable=False,
+            start_monotonic=0.0,
+        )
+        == "reboot"
+    )
+    assert calls[0][0][:2] == ("mqtt_repeated_connect_failures", "hard")
+
+
+def test_mqtt_failure_marker_defers_fast_reset_but_allows_budget(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(
+        app_module,
+        "_recovery_hard_reset_marker_is_set",
+        lambda _reason: True,
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_mark_recovery_hard_reset_requested",
+        lambda _reason: True,
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_perform_recovery_reboot",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    assert (
+        _maybe_reboot_for_mqtt_failure_budget(
+            failure_count=3,
+            first_failure_at=100.0,
+            now_monotonic=112.0,
+            fs_writable=False,
+            start_monotonic=0.0,
+        )
+        == "none"
+    )
+    assert calls == []
+
+    assert (
+        _maybe_reboot_for_mqtt_failure_budget(
+            failure_count=3,
+            first_failure_at=100.0,
+            now_monotonic=160.0,
+            fs_writable=False,
+            start_monotonic=0.0,
+        )
+        == "reboot"
+    )
+    assert calls[0][0][:2] == ("mqtt_repeated_connect_failures", "hard")
+
+
 def test_mqtt_memory_init_failure_window_and_reboot_gate():
     errors = ("mqtt_client_init_failed", "memory allocation failed, allocating 2344")
 
@@ -545,6 +794,54 @@ def test_mqtt_memory_init_failure_window_and_reboot_gate():
         count,
         started_at,
         130.0,
+    )
+    assert count == 0
+    assert started_at == -1.0
+
+
+def test_sensor_not_found_window_and_reboot_gate():
+    errors = (
+        "sensor_not_found",
+        "sensor_not_found:ValueError:No_I2C_device_at_address:_0x77",
+    )
+
+    assert _sensor_errors_indicate_not_found(errors) is True
+    count, started_at = _update_sensor_not_found_window(errors, 0, -1.0, 100.0)
+    assert count == 1
+    assert started_at == 100.0
+    count, started_at = _update_sensor_not_found_window(
+        errors,
+        count,
+        started_at,
+        120.0,
+    )
+    assert count == 2
+    assert started_at == 100.0
+    assert (
+        _should_reboot_sensor_not_found(
+            5,
+            100.0,
+            170.0,
+            timeout_s=60.0,
+            min_count=6,
+        )
+        is False
+    )
+    assert (
+        _should_reboot_sensor_not_found(
+            6,
+            100.0,
+            160.0,
+            timeout_s=60.0,
+            min_count=6,
+        )
+        is True
+    )
+    count, started_at = _update_sensor_not_found_window(
+        ("sensor_metrics_empty",),
+        count,
+        started_at,
+        180.0,
     )
     assert count == 0
     assert started_at == -1.0

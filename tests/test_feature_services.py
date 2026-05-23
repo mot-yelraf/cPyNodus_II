@@ -265,6 +265,36 @@ def test_sensor_snapshot_reports_empty_metrics_as_error():
     assert "sensor_metrics_empty" in snapshot.errors
 
 
+def test_sensor_snapshot_classifies_i2c_read_oserror_as_sensor_not_found():
+    class _MissingAQIDriver:
+        @property
+        def temperature(self):
+            raise OSError(19, "No such device")
+
+    runtime_config = RuntimeConfig(
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            active_config_file="sensor_i2c.toml",
+            device="aqi",
+            sensor_id="aqi-1",
+            i2c=I2CConfig(bus=1, scl_pin="GP3", sda_pin="GP2", address=0x77),
+        )
+    )
+    sensor_service = SimpleNamespace(
+        phase="ready",
+        driver=_MissingAQIDriver(),
+        errors=(),
+    )
+
+    snapshot = read_sensor_snapshot(sensor_service, runtime_config)
+
+    assert snapshot.phase == "error"
+    assert snapshot.metrics == {}
+    assert snapshot.errors[0] == "sensor_not_found"
+    assert snapshot.errors[1].startswith("sensor_not_found:OSError:")
+
+
 def test_sensor_service_starts_periodic_measurement_for_scd41():
     runtime_config = RuntimeConfig(
         sensor=DetectedSensor(

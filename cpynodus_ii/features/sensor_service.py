@@ -178,6 +178,16 @@ def read_sensor_snapshot(sensor_service, runtime_config):
             errors=sensor_service.errors,
         )
 
+    try:
+        return _read_ready_sensor_snapshot(sensor_service, runtime_config, sensor)
+    except Exception as exc:
+        error = "sensor_read_failed"
+        if _is_sensor_not_found_exception(exc):
+            error = "sensor_not_found"
+        return _sensor_snapshot_error(sensor, error, exc)
+
+
+def _read_ready_sensor_snapshot(sensor_service, runtime_config, sensor):
     if sensor.device == "aqi":
         temp_c = _apply_linear_calibration(
             getattr(sensor_service.driver, "temperature", None),
@@ -623,6 +633,43 @@ def _sensor_service_error(device, interface, transport, error, exc=None):
         transport=transport,
         errors=errors,
     )
+
+
+def _sensor_snapshot_error(sensor, error, exc=None):
+    errors = (error,)
+    if exc is not None:
+        errors += (_exception_error_token(error, exc),)
+    return SensorSnapshot(
+        phase="error",
+        sensor_id=sensor.sensor_id,
+        device=sensor.device,
+        metrics={},
+        errors=errors,
+    )
+
+
+def _is_sensor_not_found_exception(exc):
+    text = str(exc or "").strip().lower().replace(" ", "_")
+    markers = (
+        "no_such_device",
+        "no_i2c_device",
+        "no_i2c_device_at_address",
+    )
+    for marker in markers:
+        if marker in text:
+            return True
+    try:
+        if int(getattr(exc, "errno", -1)) == 19:
+            return True
+    except Exception:
+        pass
+    for arg in tuple(getattr(exc, "args", ()) or ()):
+        try:
+            if int(arg) == 19:
+                return True
+        except Exception:
+            pass
+    return False
 
 
 def _exception_error_token(error, exc):

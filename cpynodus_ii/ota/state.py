@@ -1,9 +1,9 @@
 """Persist the small reboot handoff record used by OTA mode.
 
 Nodus receives the `/fwupdate` MQTT prepare command during normal operation,
-writes this state record, then soft-reboots into a temporary HTTP-only OTA
-runtime. The record is intentionally compact so it can be read and rewritten
-on CircuitPython without allocating large JSON structures.
+writes this state record, then reboots into a temporary HTTP-only OTA runtime.
+The record is intentionally compact so it can be read and rewritten on
+CircuitPython without allocating large JSON structures.
 """
 
 import json
@@ -17,7 +17,7 @@ FWUPDATE_TOPIC_SUFFIX = "fwupdate"
 
 @dataclass(frozen=True)
 class FwUpdateState:
-    """Describe the OTA handoff state that survives soft reboot.
+    """Describe the OTA handoff state that survives reboot.
 
     `prior_profile` lets normal runtime resume the same profile after a
     successful update. `package_id` binds the MQTT prepare request to the

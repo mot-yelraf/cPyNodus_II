@@ -62,10 +62,10 @@ def test_startup_cycle_publishes_heartbeat_meta_sensor_and_switch_topics():
     )
 
     assert result.phase == "published"
-    assert result.published_count == 6
+    assert result.published_count == 7
     assert "nodus/aqi-x943fm/status/heartbeat" in result.topics
     assert "nodus/aqi-x943fm/meta" in result.topics
-    assert "nodus/aqi-x943fm/meta/switch" not in result.topics
+    assert "nodus/aqi-x943fm/meta/switch" in result.topics
     assert "nodus/aqi-x943fm/data" in result.topics
     assert "nodus/S1-x943fm/state" in result.topics
     assert transport.published_messages[0].retain is True
@@ -76,12 +76,26 @@ def test_startup_cycle_publishes_heartbeat_meta_sensor_and_switch_topics():
     assert topics.index("nodus/aqi-x943fm/status/heartbeat") < topics.index(
         "nodus/aqi-x943fm/availability"
     )
+    assert topics.index("nodus/aqi-x943fm/data") < topics.index(
+        "nodus/aqi-x943fm/meta/switch"
+    )
+    assert topics.index("nodus/aqi-x943fm/meta/switch") < topics.index(
+        "nodus/S1-x943fm/availability"
+    )
     meta_message = transport.published_messages[0]
     assert "channels" not in meta_message.payload["switch"]
     assert (
         meta_message.payload["switch"]["meta_topic"]
         == "nodus/aqi-x943fm/meta/switch"
     )
+    switch_meta = next(
+        message
+        for message in transport.published_messages
+        if message.topic == "nodus/aqi-x943fm/meta/switch"
+    )
+    assert switch_meta.retain is True
+    assert switch_meta.payload["schema"] == "nodus-meta-switch/v1"
+    assert switch_meta.payload["channels"][0]["state"] is True
 
 
 def test_switch_meta_cycle_publishes_retained_split_channel_map():

@@ -9,11 +9,28 @@ Or copy this file to the CIRCUITPY root and run:
 
     import platform_test
     platform_test.run()
+
+Warm-start MQTT diagnostics should avoid resetting station state or touching NTP:
+
+    import gc; gc.collect(); import platform_test
+    platform_test.run(
+        mqtt_mode="warm_diagnostics",
+        scans=0,
+        reset_station=False,
+        sync_ntp=False,
+        mqtt_rounds=3,
+    )
+
+To compare startup parameters from the current state without a pre-cleanup
+connect, run the warm-start matrix:
+
+    import gc; gc.collect(); import platform_test
+    platform_test.run(mqtt_mode="warm_start_matrix")
 """
 
 import time
 
-PLATFORM_TEST_VERSION = "v0.26.140.20.1"
+PLATFORM_TEST_VERSION = "v0.26.141.2"
 
 
 def run(
@@ -29,6 +46,7 @@ def run(
     round_timeout_s=8.0,
     poll_interval_s=0.25,
     reset_station=True,
+    sync_ntp=True,
 ):
     """Run one platform smoke test and print detailed serial diagnostics."""
     started = _monotonic()
@@ -86,6 +104,33 @@ def run(
         _set_hostname(radio, hostname)
     _log_radio_state(radio, "initial")
 
+    mode = str(mqtt_mode or "direct").strip().lower()
+    if mode in ("warm_start_matrix", "warm_trigger_matrix"):
+        matrix_ok = _mqtt_warm_start_matrix(
+            radio,
+            runtime_config,
+            ssid,
+            password,
+            broker,
+            broker_ip,
+            broker_target,
+            port,
+            device_id,
+            time_config,
+            ntp_server,
+            ntp_ip,
+            scan_limit,
+            connect_attempts,
+        )
+        result = "pass" if matrix_ok else "fail"
+        _log(
+            "platform phase=done result={} elapsed_s={:.1f}".format(
+                result,
+                _monotonic() - started,
+            )
+        )
+        return matrix_ok
+
     hint = None
     scan_count = max(0, int(scans or 0))
     for index in range(scan_count):
@@ -121,7 +166,9 @@ def run(
         _resolve(pool, broker_ip, port, label="broker_ip")
     _tcp_probe(pool, broker_target, port)
 
-    if not _sync_ntp(pool, time_config, ntp_server, ntp_ip):
+    if not sync_ntp:
+        _log("ntp phase=skipped reason=disabled")
+    elif not _sync_ntp(pool, time_config, ntp_server, ntp_ip):
         _log("ntp phase=warning result=unsynced")
 
     mqtt_ok = _mqtt_platform_round_trip(
@@ -131,10 +178,11 @@ def run(
         port,
         base_topic,
         device_id,
-        mqtt_mode=str(mqtt_mode or "direct").strip().lower(),
+        mqtt_mode=mode,
         rounds=max(1, int(mqtt_rounds or 1)),
         timeout_s=float(round_timeout_s or 8.0),
         poll_interval_s=float(poll_interval_s or 0.25),
+        radio=radio,
     )
     result = "pass" if mqtt_ok else "fail"
     _log(
@@ -345,21 +393,30 @@ def _resolve(pool, target, port, *, label):
     return ""
 
 
-def _tcp_probe(pool, target, port):
+def _tcp_probe(pool, target, port, label="tcp"):
     started = _monotonic()
     sock = None
-    _log("tcp phase=start target={} port={}".format(target, int(port or 1883)))
+    prefix = "tcp" if label == "tcp" else "tcp label={}".format(label)
+    _log("{} phase=start target={} port={}".format(
+        prefix,
+        target,
+        int(port or 1883),
+    ))
     try:
         sock = pool.socket()
         settimeout = getattr(sock, "settimeout", None)
         if callable(settimeout):
             settimeout(3)
         sock.connect((target, int(port or 1883)))
-        _log("tcp phase=ok elapsed_s={:.1f}".format(_monotonic() - started))
+        _log("{} phase=ok elapsed_s={:.1f}".format(
+            prefix,
+            _monotonic() - started,
+        ))
         return True
     except Exception as exc:
         _log(
-            "tcp phase=error elapsed_s={:.1f} type={} error={}".format(
+            "{} phase=error elapsed_s={:.1f} type={} error={}".format(
+                prefix,
                 _monotonic() - started,
                 type(exc).__name__,
                 exc,
@@ -451,8 +508,22 @@ def _mqtt_platform_round_trip(
     rounds,
     timeout_s,
     poll_interval_s,
+    radio=None,
 ):
     mode = mqtt_mode or "direct"
+    if mode in ("warm_diagnostics", "warm_diag"):
+        return _mqtt_warm_diagnostics(
+            pool,
+            runtime_config,
+            broker_target,
+            port,
+            base_topic,
+            device_id,
+            rounds=rounds,
+            timeout_s=timeout_s,
+            poll_interval_s=poll_interval_s,
+            radio=radio,
+        )
     if mode == "matrix":
         return _mqtt_mode_matrix(
             pool,
@@ -857,11 +928,596 @@ def _mqtt_connect_matrix(pool, runtime_config, broker_target, port, device_id):
     return failed == 0
 
 
-def _mqtt_raw_connect_probe(pool, broker_target, port, device_id):
+def _mqtt_warm_start_matrix(
+    radio,
+    runtime_config,
+    ssid,
+    password,
+    broker,
+    broker_ip,
+    broker_target,
+    port,
+    device_id,
+    time_config,
+    ntp_server,
+    ntp_ip,
+    scan_limit,
+    connect_attempts,
+):
+    """Compare app-like and platform-like warm-start MQTT setup paths."""
+    scenarios = (
+        ("app_like", 1, 1, 0),
+        ("app_like_ntp_first", 1, 1, 1),
+        ("reset_no_scan", 0, 1, 0),
+        ("platform_plain", 0, 0, 0),
+    )
+    passed = 0
+    failed = 0
+    _log(
+        "warm_start_matrix phase=start broker={} port={} scenarios={}".format(
+            broker_target,
+            port,
+            len(scenarios),
+        )
+    )
+    for name, scan_count, reset_station, ntp_first in scenarios:
+        ok = _mqtt_warm_start_scenario(
+            radio,
+            runtime_config,
+            ssid,
+            password,
+            broker,
+            broker_ip,
+            broker_target,
+            port,
+            device_id,
+            time_config,
+            ntp_server,
+            ntp_ip,
+            scan_limit,
+            connect_attempts,
+            name,
+            scan_count,
+            reset_station,
+            ntp_first,
+        )
+        if ok:
+            passed += 1
+        else:
+            failed += 1
+        _sleep(0.5)
+    _log("warm_start_matrix phase=summary passed={} failed={}".format(
+        passed,
+        failed,
+    ))
+    return failed == 0
+
+
+def _mqtt_warm_start_scenario(
+    radio,
+    runtime_config,
+    ssid,
+    password,
+    broker,
+    broker_ip,
+    broker_target,
+    port,
+    device_id,
+    time_config,
+    ntp_server,
+    ntp_ip,
+    scan_limit,
+    connect_attempts,
+    name,
+    scan_count,
+    reset_station,
+    ntp_first,
+):
+    _collect()
+    _log_memory("{}_before".format(name))
+    _log_radio_state(radio, "{}_before".format(name))
+    _log(
+        (
+            "warm_start_matrix scenario={} phase=start scan={} "
+            "reset_station={} ntp_first={}"
+        ).format(
+            name,
+            scan_count,
+            reset_station,
+            ntp_first,
+        )
+    )
+
+    hint = None
+    if scan_count:
+        networks = _scan(radio, ssid, scan_limit, "{}_preconnect".format(name))
+        hint = _best_hint(None, networks, ssid)
+        if hint is None:
+            _log(
+                "warm_start_matrix scenario={} phase=error "
+                "errors=target_ssid_not_found".format(name)
+            )
+            return False
+    else:
+        _log("warm_start_matrix scenario={} scan phase=skipped".format(name))
+
+    if reset_station:
+        _reset_station(radio)
+        _sleep(0.5)
+        _log_radio_state(radio, "{}_after_reset".format(name))
+
+    if not reset_station and _radio_has_ip(radio):
+        _log(
+            "warm_start_matrix scenario={} wifi phase=skipped "
+            "reason=already_connected".format(name)
+        )
+    elif not _connect_wifi(radio, ssid, password, hint, connect_attempts):
+        _log("warm_start_matrix scenario={} phase=fail step=wifi".format(name))
+        return False
+
+    pool = _build_socket_pool(radio)
+    if pool is None:
+        _log(
+            "warm_start_matrix scenario={} phase=fail "
+            "step=socketpool".format(name)
+        )
+        return False
+
+    ok = True
+    _resolve(pool, broker, port, label="{}_broker_hostname".format(name))
+    if broker_ip:
+        _resolve(pool, broker_ip, port, label="{}_broker_ip".format(name))
+    if ntp_first:
+        if not _sync_ntp(pool, time_config, ntp_server, ntp_ip):
+            ok = False
+            _log("warm_start_matrix scenario={} ntp phase=warning".format(name))
+    else:
+        _log("warm_start_matrix scenario={} ntp phase=skipped".format(name))
+
+    if not _tcp_probe(
+        pool,
+        broker_target,
+        port,
+        label="{}_tcp".format(name),
+    ):
+        ok = False
+    if not _mqtt_raw_connect_probe(
+        pool,
+        broker_target,
+        port,
+        device_id,
+        label="{}_raw_mqtt".format(name),
+    ):
+        ok = False
+    if not _mqtt_warm_firmware_connect_probe(
+        pool,
+        runtime_config,
+        broker_target,
+        port,
+        cycle=name,
+    ):
+        ok = False
+    if not _mqtt_connect_direct_probe(
+        pool,
+        runtime_config,
+        broker_target,
+        port,
+        wrap_before_connect=False,
+        optional_kwargs=False,
+    ):
+        ok = False
+
+    _collect()
+    _log_memory("{}_after".format(name))
+    _log_radio_state(radio, "{}_after".format(name))
+    _log(
+        "warm_start_matrix scenario={} phase=done result={}".format(
+            name,
+            "pass" if ok else "fail",
+        )
+    )
+    return ok
+
+
+def _mqtt_warm_diagnostics(
+    pool,
+    runtime_config,
+    broker_target,
+    port,
+    base_topic,
+    device_id,
+    *,
+    rounds,
+    timeout_s,
+    poll_interval_s,
+    radio=None,
+):
+    """Run connect-only probes while preserving current warm-start state."""
+    repeat_count = max(1, int(rounds or 1))
+    passed = 0
+    failed = 0
+    _log(
+        (
+            "mqtt warm_diag phase=start broker={} port={} rounds={} "
+            "round_timeout_s={} note=use_scans0_reset0_ntp0_for_warm_state"
+        ).format(
+            broker_target,
+            port,
+            repeat_count,
+            timeout_s,
+        )
+    )
+    for index in range(1, repeat_count + 1):
+        cycle_ok = True
+        _collect()
+        _log_memory("warm_diag_{}_before".format(index))
+        if radio is not None:
+            _log_radio_state(radio, "warm_diag_{}_before".format(index))
+        _log("mqtt warm_diag cycle={} phase=start".format(index))
+
+        if not _tcp_probe(
+            pool,
+            broker_target,
+            port,
+            label="warm_diag_{}_tcp".format(index),
+        ):
+            cycle_ok = False
+        if not _mqtt_raw_connect_probe(
+            pool,
+            broker_target,
+            port,
+            device_id,
+            label="warm_diag_{}_raw_mqtt".format(index),
+        ):
+            cycle_ok = False
+        if not _mqtt_warm_firmware_connect_probe(
+            pool,
+            runtime_config,
+            broker_target,
+            port,
+            cycle=index,
+        ):
+            cycle_ok = False
+        if not _mqtt_connect_direct_probe(
+            pool,
+            runtime_config,
+            broker_target,
+            port,
+            wrap_before_connect=False,
+            optional_kwargs=False,
+        ):
+            cycle_ok = False
+        if not _mqtt_connect_direct_probe(
+            pool,
+            runtime_config,
+            broker_target,
+            port,
+            wrap_before_connect=False,
+            optional_kwargs=True,
+        ):
+            cycle_ok = False
+        if not _mqtt_warm_firmware_publish_probe(
+            pool,
+            runtime_config,
+            broker_target,
+            port,
+            base_topic,
+            device_id,
+            cycle=index,
+        ):
+            cycle_ok = False
+
+        _collect()
+        _log_memory("warm_diag_{}_after".format(index))
+        if radio is not None:
+            _log_radio_state(radio, "warm_diag_{}_after".format(index))
+        if cycle_ok:
+            passed += 1
+        else:
+            failed += 1
+        _log(
+            "mqtt warm_diag cycle={} phase=done result={}".format(
+                index,
+                "pass" if cycle_ok else "fail",
+            )
+        )
+        _sleep(poll_interval_s)
+    _log("mqtt warm_diag phase=summary passed={} failed={}".format(
+        passed,
+        failed,
+    ))
+    return failed == 0
+
+
+def _mqtt_warm_firmware_publish_probe(
+    pool,
+    runtime_config,
+    broker_target,
+    port,
+    base_topic,
+    device_id,
+    *,
+    cycle,
+):
+    """Publish one broker-visible platform-test message in warm diagnostics."""
+    try:
+        from cpynodus_ii.core.mqtt import MQTTTransport
+        from cpynodus_ii.core.mqtt_client import (
+            build_mqtt_client_adapter,
+            close_mqtt_client,
+            connect_mqtt_client,
+            sync_transport_to_client,
+        )
+    except Exception as exc:
+        _log(
+            "mqtt warm_diag cycle={} publish phase=error "
+            "error=import_failed:{}".format(
+                cycle,
+                exc,
+            )
+        )
+        return False
+
+    transport = MQTTTransport(broker_target, port)
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=pool,
+        ssl_context=None,
+        modules={"wrap_socket_pool_before_connect": False},
+    )
+    _log(
+        (
+            "mqtt warm_diag cycle={} publish_adapter phase={} broker={} "
+            "targets={} wrapped=0 compat={} callback={} errors={}"
+        ).format(
+            cycle,
+            adapter.phase,
+            adapter.broker or "none",
+            _join_values(adapter.broker_targets) or "none",
+            1 if getattr(adapter, "socket_compat_enabled", False) else 0,
+            "flex" if getattr(adapter, "flexible_callback_enabled", False) else "fixed",
+            _join_errors(adapter.errors),
+        )
+    )
+    if adapter.phase != "ready":
+        return False
+
+    topic = "{}/{}/platform_test/warm_diagnostics".format(
+        base_topic,
+        device_id,
+    )
+    payload = "platform_test:warm_diagnostics:{}:{}:{:.3f}".format(
+        device_id,
+        cycle,
+        _monotonic(),
+    )
+    try:
+        transport.mark_connect_requested()
+        started = _monotonic()
+        connect_result = connect_mqtt_client(adapter, transport, preflight=True)
+        adapter = connect_result.adapter
+        _log(
+            (
+                "mqtt warm_diag cycle={} publish_connect phase={} broker={} "
+                "elapsed_s={:.1f} connected={} errors={}"
+            ).format(
+                cycle,
+                connect_result.phase,
+                adapter.active_broker or adapter.broker or "none",
+                _monotonic() - started,
+                1 if getattr(transport, "connected", False) else 0,
+                _join_errors(connect_result.errors),
+            )
+        )
+        if connect_result.phase != "connected":
+            return False
+
+        _log(
+            (
+                "mqtt warm_diag cycle={} publish phase=start topic={} "
+                "payload={}"
+            ).format(
+                cycle,
+                topic,
+                payload,
+            )
+        )
+        started = _monotonic()
+        transport.publish(topic, payload, retain=False)
+        sync_result = sync_transport_to_client(adapter, transport)
+        adapter = sync_result.adapter
+        _log(
+            (
+                "mqtt warm_diag cycle={} publish phase={} elapsed_s={:.1f} "
+                "published={} errors={}"
+            ).format(
+                cycle,
+                sync_result.phase,
+                _monotonic() - started,
+                sync_result.published_count,
+                _join_errors(sync_result.errors),
+            )
+        )
+        return sync_result.phase == "synced" and not sync_result.errors
+    except Exception as exc:
+        _log(
+            "mqtt warm_diag cycle={} publish phase=exception type={} "
+            "error={}".format(
+                cycle,
+                type(exc).__name__,
+                exc,
+            )
+        )
+    finally:
+        close_result = close_mqtt_client(adapter, transport)
+        _log(
+            "mqtt warm_diag cycle={} publish_disconnect phase={} errors={}".format(
+                cycle,
+                close_result.phase,
+                _join_errors(close_result.errors),
+            )
+        )
+    return False
+
+
+def _mqtt_warm_firmware_connect_probe(
+    pool,
+    runtime_config,
+    broker_target,
+    port,
+    *,
+    cycle,
+):
+    try:
+        from cpynodus_ii.core.mqtt import MQTTTransport
+        from cpynodus_ii.core.mqtt_client import (
+            build_mqtt_client_adapter,
+            close_mqtt_client,
+            connect_mqtt_client,
+            preflight_mqtt_broker_connect,
+            preflight_mqtt_broker_tcp,
+        )
+    except Exception as exc:
+        _log(
+            "mqtt warm_diag cycle={} firmware phase=error "
+            "error=import_failed:{}".format(
+                cycle,
+                exc,
+            )
+        )
+        return False
+
+    transport = MQTTTransport(broker_target, port)
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=pool,
+        ssl_context=None,
+        modules={"wrap_socket_pool_before_connect": False},
+    )
+    _log(
+        (
+            "mqtt warm_diag cycle={} firmware_adapter phase={} broker={} "
+            "targets={} wrapped=0 compat={} callback={} errors={}"
+        ).format(
+            cycle,
+            adapter.phase,
+            adapter.broker or "none",
+            _join_values(adapter.broker_targets) or "none",
+            1 if getattr(adapter, "socket_compat_enabled", False) else 0,
+            "flex" if getattr(adapter, "flexible_callback_enabled", False) else "fixed",
+            _join_errors(adapter.errors),
+        )
+    )
+    if adapter.phase != "ready":
+        return False
+
+    ok = True
+    _log_client_state(
+        adapter.client,
+        "mqtt warm_diag cycle={} firmware_client phase=built".format(cycle),
+    )
+    try:
+        started = _monotonic()
+        tcp_error, tcp_target = preflight_mqtt_broker_tcp(adapter)
+        _log(
+            (
+                "mqtt warm_diag cycle={} firmware_preflight phase={} "
+                "broker={} target={} port={} elapsed_s={:.1f} errors={}"
+            ).format(
+                cycle,
+                "tcp_error" if tcp_error else "tcp_ok",
+                adapter.active_broker or adapter.broker or "none",
+                tcp_target or "none",
+                adapter.port,
+                _monotonic() - started,
+                tcp_error or "none",
+            )
+        )
+        if tcp_error:
+            ok = False
+
+        started = _monotonic()
+        probe_error, probe_target, probe_client_id, connack = (
+            preflight_mqtt_broker_connect(adapter)
+        )
+        _log(
+            (
+                "mqtt warm_diag cycle={} firmware_connect_probe phase={} "
+                "broker={} target={} port={} elapsed_s={:.1f} client_id={} "
+                "connack={} errors={}"
+            ).format(
+                cycle,
+                "connack_error" if probe_error else "connack_ok",
+                adapter.active_broker or adapter.broker or "none",
+                probe_target or "none",
+                adapter.port,
+                _monotonic() - started,
+                probe_client_id or "none",
+                connack,
+                probe_error or "none",
+            )
+        )
+        if probe_error:
+            ok = False
+
+        transport.mark_connect_requested()
+        started = _monotonic()
+        connect_result = connect_mqtt_client(adapter, transport, preflight=True)
+        adapter = connect_result.adapter
+        _log(
+            (
+                "mqtt warm_diag cycle={} firmware_connect phase={} broker={} "
+                "elapsed_s={:.1f} connected={} errors={}"
+            ).format(
+                cycle,
+                connect_result.phase,
+                adapter.active_broker or adapter.broker or "none",
+                _monotonic() - started,
+                1 if getattr(transport, "connected", False) else 0,
+                _join_errors(connect_result.errors),
+            )
+        )
+        _log_client_state(
+            adapter.client,
+            "mqtt warm_diag cycle={} firmware_client phase=after_connect".format(
+                cycle
+            ),
+        )
+        if connect_result.phase != "connected":
+            ok = False
+    except Exception as exc:
+        ok = False
+        _log(
+            "mqtt warm_diag cycle={} firmware phase=exception type={} "
+            "error={}".format(
+                cycle,
+                type(exc).__name__,
+                exc,
+            )
+        )
+    finally:
+        close_result = close_mqtt_client(adapter, transport)
+        _log(
+            "mqtt warm_diag cycle={} firmware_disconnect phase={} errors={}".format(
+                cycle,
+                close_result.phase,
+                _join_errors(close_result.errors),
+            )
+        )
+        _log_client_state(
+            adapter.client,
+            "mqtt warm_diag cycle={} firmware_client phase=closed".format(cycle),
+        )
+    return ok
+
+
+def _mqtt_raw_connect_probe(pool, broker_target, port, device_id, label="raw_mqtt"):
     sock = None
     started = _monotonic()
+    mode_name = label or "raw_mqtt"
     _log(
-        "mqtt mode=raw_mqtt connect phase=start broker={} port={}".format(
+        "mqtt mode={} connect phase=start broker={} port={}".format(
+            mode_name,
             broker_target,
             port,
         )
@@ -873,7 +1529,8 @@ def _mqtt_raw_connect_probe(pool, broker_target, port, device_id):
             settimeout(3)
         sock.connect((broker_target, int(port or 1883)))
         _log(
-            "mqtt mode=raw_mqtt tcp phase=connected elapsed_s={:.1f}".format(
+            "mqtt mode={} tcp phase=connected elapsed_s={:.1f}".format(
+                mode_name,
                 _monotonic() - started
             )
         )
@@ -885,36 +1542,43 @@ def _mqtt_raw_connect_probe(pool, broker_target, port, device_id):
             raise RuntimeError("socket_send_unavailable")
         sent = send(packet)
         _log(
-            "mqtt mode=raw_mqtt connect_packet phase=sent bytes={} sent={}".format(
+            "mqtt mode={} connect_packet phase=sent bytes={} sent={}".format(
+                mode_name,
                 len(packet),
                 sent,
             )
         )
         received = _socket_recv_exact(sock, 4)
         _log(
-            "mqtt mode=raw_mqtt connack phase=received bytes={} hex={}".format(
+            "mqtt mode={} connack phase=received bytes={} hex={}".format(
+                mode_name,
                 len(received),
                 _bytes_hex(received),
             )
         )
         if len(received) < 4:
-            _log("mqtt mode=raw_mqtt connack phase=error reason=short_read")
+            _log("mqtt mode={} connack phase=error reason=short_read".format(
+                mode_name
+            ))
             return False
         if received[0] == 0x20 and received[1] == 0x02 and received[3] == 0x00:
             _log(
-                "mqtt mode=raw_mqtt connack phase=ok elapsed_s={:.1f}".format(
+                "mqtt mode={} connack phase=ok elapsed_s={:.1f}".format(
+                    mode_name,
                     _monotonic() - started
                 )
             )
             return True
         _log(
-            "mqtt mode=raw_mqtt connack phase=error reason=unexpected hex={}".format(
+            "mqtt mode={} connack phase=error reason=unexpected hex={}".format(
+                mode_name,
                 _bytes_hex(received)
             )
         )
     except Exception as exc:
         _log(
-            "mqtt mode=raw_mqtt phase=error elapsed_s={:.1f} type={} error={}".format(
+            "mqtt mode={} phase=error elapsed_s={:.1f} type={} error={}".format(
+                mode_name,
                 _monotonic() - started,
                 type(exc).__name__,
                 exc,

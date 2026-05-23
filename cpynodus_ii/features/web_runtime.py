@@ -119,6 +119,29 @@ class WebRuntimeController:
             self.errors = ("web_poll_failed", str(exc))
         return self
 
+    def stop(self):
+        """Stop the backing HTTP server if the implementation supports it."""
+        server = self.server
+        if server is None:
+            self.phase = "stopped"
+            return False
+        stopped = False
+        for method_name in ("stop", "deinit", "close"):
+            method = getattr(server, method_name, None)
+            if not callable(method):
+                continue
+            try:
+                method()
+                stopped = True
+                break
+            except Exception as exc:
+                self.phase = "error"
+                self.errors = ("web_server_stop_failed", str(exc))
+                return False
+        self.server = None
+        self.phase = "stopped"
+        return stopped
+
     @property
     def route_paths(self):
         return self._route_paths

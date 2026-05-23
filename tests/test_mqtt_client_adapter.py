@@ -27,7 +27,7 @@ def _run_direct_tests():
         test_build_mqtt_client_adapter_drops_optional_connect_kwargs_when_unsupported,
         test_build_mqtt_client_adapter_sets_runtime_client_id,
         test_connect_sync_poll_and_disconnect_flow,
-        test_sync_transport_to_client_skips_last_publish_diagnostics,
+        test_sync_transport_to_client_records_last_publish_diagnostics,
         test_sync_transport_to_client_publishes_qos0_packet_on_socket,
         test_sync_transport_to_client_subscribes_qos0_packet_on_socket,
         test_poll_mqtt_client_receives_qos0_publish_on_socket_without_loop,
@@ -65,7 +65,7 @@ def _run_direct_tests():
         test_poll_mqtt_client_adapts_connected_minimqtt_socket_send_without_nbytes,
         test_poll_mqtt_client_labels_minimqtt_wrapped_socket_typeerror,
         test_poll_mqtt_client_labels_wrapped_socket_typeerror_client_state,
-        test_poll_mqtt_client_omits_last_publish_diagnostics_on_wrapped_socket_error,
+        test_poll_mqtt_client_includes_last_publish_diagnostics_on_wrapped_socket_error,
         test_poll_mqtt_client_includes_last_loop_diagnostics_on_wrapped_socket_error,
         test_poll_mqtt_client_marks_disconnected_when_client_reports_disconnected,
     )
@@ -794,7 +794,7 @@ def test_connect_sync_poll_and_disconnect_flow():
     )
 
 
-def test_sync_transport_to_client_skips_last_publish_diagnostics():
+def test_sync_transport_to_client_records_last_publish_diagnostics():
     runtime_config = _runtime_config()
     transport = MQTTTransport("broker.local", 1883)
     transport.mark_connect_requested()
@@ -813,8 +813,10 @@ def test_sync_transport_to_client_skips_last_publish_diagnostics():
     assert sync_result.phase == "synced"
     assert sync_result.published_count == 1
     assert transport.last_success_at >= 0.0
-    assert transport.last_publish_topic == ""
-    assert transport.publish_diagnostic() == ""
+    assert transport.last_publish_topic == "nodus/aqi-x943fm/data"
+    assert transport.last_publish_bytes == len('{"schema":"nodus-sensor/v1"}')
+    assert transport.last_publish_retain == 0
+    assert "last_pub_topic=nodus/aqi-x943fm/data" in transport.publish_diagnostic()
 
 
 def test_sync_transport_to_client_publishes_qos0_packet_on_socket():
@@ -1238,6 +1240,35 @@ def test_preflight_mqtt_broker_connect_reads_connack_and_disconnects():
     assert b"user" in packet
     assert b"secret" in packet
     assert packet[-2:] == b"\xe0\x00"
+
+
+def test_preflight_mqtt_broker_connect_accepts_probe_client_id_override():
+    socket_pool = _ConnectProbeSocketPool()
+    runtime_config = RuntimeConfig(
+        active_profile="sensorius",
+        mqtt=MQTTConfig(
+            broker="ha.local",
+            broker_ip="10.0.0.4",
+            port=1883,
+        ),
+    )
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=socket_pool,
+        modules={"mqtt_cls": _FakeMQTTClient},
+    )
+
+    error, _target, client_id, connack = preflight_mqtt_broker_connect(
+        adapter,
+        client_id="warmup-aqi-wfcp7p",
+    )
+
+    assert error == ""
+    assert client_id == "warmup-aqi-wfcp7p"
+    assert connack == 0
+    packet = bytes(socket_pool.socket_obj.sent)
+    assert b"warmup-aqi-wfcp7p" in packet
+    assert b"cpynodus-probe" not in packet
 
 
 def test_preflight_mqtt_broker_connect_reports_connack_refusal():
@@ -1786,7 +1817,7 @@ def test_poll_mqtt_client_labels_wrapped_socket_typeerror_client_state():
     )
 
 
-def test_poll_mqtt_client_omits_last_publish_diagnostics_on_wrapped_socket_error():
+def test_poll_mqtt_client_includes_last_publish_diagnostics_on_wrapped_socket_error():
     runtime_config = _runtime_config()
     transport = MQTTTransport("broker.local", 1883)
     transport.mark_connect_requested()
@@ -1807,8 +1838,8 @@ def test_poll_mqtt_client_omits_last_publish_diagnostics_on_wrapped_socket_error
     poll_result = poll_mqtt_client(connect_result.adapter, transport)
 
     assert poll_result.phase == "error"
-    assert "last_pub_topic=nodus/aqi-x943fm/data" not in poll_result.errors[0]
-    assert "last_pub_sock=wrapped" not in poll_result.errors[0]
+    assert "last_pub_topic=nodus/aqi-x943fm/data" in poll_result.errors[0]
+    assert "last_pub_sock=wrapped" in poll_result.errors[0]
 
 
 def test_poll_mqtt_client_includes_last_loop_diagnostics_on_wrapped_socket_error():

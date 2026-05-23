@@ -60,6 +60,7 @@ class _FakeServer:
         self.started = None
         self.routes = {}
         self.poll_count = 0
+        self.stop_count = 0
 
     def start(self, host, port):
         self.started = (host, port)
@@ -73,6 +74,9 @@ class _FakeServer:
 
     def poll(self):
         self.poll_count += 1
+
+    def stop(self):
+        self.stop_count += 1
 
 
 class _FakeServerModule:
@@ -126,6 +130,26 @@ def test_web_runtime_controller_registers_and_polls_routes():
     assert ("/setup", ("GET",)) in controller.server.routes
     assert ("/config", ("POST",)) in controller.server.routes
     assert controller.server.poll_count == 1
+
+
+def test_web_runtime_controller_stops_server():
+    runtime_config = _runtime_config()
+    stack = build_network_stack(
+        runtime_config, wifi_radio=_FakeRadio(), connection_manager_module=_FakeConnMgr
+    )
+
+    controller = WebRuntimeController(
+        runtime_config,
+        stack,
+        version="v0.26.112.15",
+        server_module=_FakeServerModule,
+    ).start()
+    server = controller.server
+
+    assert controller.stop() is True
+    assert server.stop_count == 1
+    assert controller.server is None
+    assert controller.phase == "stopped"
 
 
 def test_web_runtime_controller_config_route_updates_runtime_config():

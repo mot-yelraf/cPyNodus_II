@@ -92,8 +92,8 @@ try:
 except Exception as exc:
     _warn("NVM update failed: {err}".format(err=exc))
 
-# Clear the app-level reboot marker only on true power events. Runtime recovery
-# can use this byte to avoid repeated reset loops across warm restarts.
+# Clear app-level reboot markers only on true power events. Runtime recovery can
+# use these bytes to avoid repeated reset loops across warm restarts.
 try:
     reset_reason = getattr(getattr(microcontroller, "cpu", None), "reset_reason", None)
     reset_text = "" if reset_reason is None else str(reset_reason).strip().lower()
@@ -104,6 +104,8 @@ try:
     ):
         if len(microcontroller.nvm) > 1 and microcontroller.nvm[1] != 0:
             microcontroller.nvm[1] = 0
+        if len(microcontroller.nvm) > 2 and microcontroller.nvm[2] != 0:
+            microcontroller.nvm[2] = 0
 except Exception as exc:
     _warn("cold-boot bounce marker reset failed: {err}".format(err=exc))
 

@@ -36,8 +36,8 @@ Options:
   --target VALUE      Required. Destination path or host:path.
   --mode VALUE        `auto` (default), `drive`, or `staging`.
   --content VALUE     `full` (default) or `runtime`.
-                      `runtime` syncs boot/code, package files, root `*.def`,
-                      and `lib/` when present.
+                      `runtime` syncs boot/code, package files, root
+                      `*.def`, and `lib/` when present.
   --dry-run           Show what would be copied, do not write anything.
   --force             Skip CIRCUITPY path safety guard.
   --delete            Delete files on destination not present in source set.
@@ -260,7 +260,10 @@ run_runtime_sync() {
   local root_def_files=()
   local f
 
-  for f in "$ROOT_DIR/boot.py" "$ROOT_DIR/code.py" "$ROOT_DIR/dataclasses.py"; do
+  for f in \
+    "$ROOT_DIR/boot.py" \
+    "$ROOT_DIR/code.py" \
+    "$ROOT_DIR/dataclasses.py"; do
     if [[ -f "$f" ]]; then
       root_runtime_files+=("$f")
     fi

@@ -1,9 +1,9 @@
 """Run the temporary HTTP-only OTA startup path.
 
 OTA mode is entered after normal runtime receives a `/fwupdate` MQTT prepare
-command and soft-reboots. It reconnects Wi-Fi, starts only the small OTA HTTP
-server, leaves MQTT and feature services stopped, and returns to the prior
-profile after a successful commit and reboot.
+command and reboots. It reconnects Wi-Fi, starts only the small OTA HTTP server,
+leaves MQTT and feature services stopped, and returns to the prior profile
+after a successful commit and reboot.
 """
 
 import asyncio

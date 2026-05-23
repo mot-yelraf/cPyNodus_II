@@ -114,7 +114,7 @@ def test_steady_state_resubscribes_and_republishes_on_connect_generation_change(
     )
 
     assert result.startup_publish_phase == "published"
-    assert result.startup_published_count == 6
+    assert result.startup_published_count == 7
     assert result.subscribed_topics == (
         "nodus/aqi-x943fm/config/set",
         "nodus/aqi-x943fm/calibration/set",
@@ -122,15 +122,16 @@ def test_steady_state_resubscribes_and_republishes_on_connect_generation_change(
         "nodus/S1-x943fm/config/set",
     )
     assert result.state.connection_generation == 1
+    assert result.state.switch_meta_generation == 1
     assert result.state.last_sensor_publish_at == 10.0
     assert result.state.last_availability_publish_at == 10.0
     assert transport.subscriptions == list(result.subscribed_topics)
-    assert "nodus/aqi-x943fm/meta/switch" not in [
+    assert "nodus/aqi-x943fm/meta/switch" in [
         message.topic for message in transport.published_messages
     ]
 
 
-def test_steady_state_publishes_switch_meta_after_startup_queues_drain_once():
+def test_steady_state_does_not_duplicate_switch_meta_after_startup_queues_drain():
     transport = MQTTTransport("broker.local", 1883)
     transport.mark_connect_requested()
     transport.mark_connected()
@@ -158,11 +159,8 @@ def test_steady_state_publishes_switch_meta_after_startup_queues_drain_once():
         now_monotonic=11.0,
     )
 
-    assert [message.topic for message in transport.published_messages] == [
-        "nodus/aqi-x943fm/meta/switch"
-    ]
+    assert transport.published_messages == []
     assert second.state.switch_meta_generation == transport.connection_generation
-    transport.published_messages.clear()
 
     run_steady_state_iteration(
         transport,

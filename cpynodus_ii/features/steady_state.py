@@ -20,7 +20,6 @@ from cpynodus_ii.features.publish_cycle import (
     publish_switch_meta_cycle,
 )
 from cpynodus_ii.features.sensor_service import read_sensor_snapshot
-from cpynodus_ii.features.web_services import load_onboarding_state
 
 
 @dataclass(frozen=True)
@@ -106,6 +105,8 @@ def run_steady_state_iteration(
 
             switch_snapshot = snapshot_switch_states(switch_service)
         if settings_root is not None:
+            from cpynodus_ii.features.web_services import load_onboarding_state
+
             onboarding_state = load_onboarding_state(settings_root)
         subscribed_topics = subscribe_runtime_topics(transport, runtime_config)
         startup_result = publish_startup_cycle(
@@ -130,9 +131,12 @@ def run_steady_state_iteration(
             runtime_config.sensor.present or runtime_config.switch.present
         ):
             last_availability_publish_at = float(now_monotonic)
+        switch_meta_generation = state.switch_meta_generation
+        if startup_result.phase == "published" and runtime_config.switch.present:
+            switch_meta_generation = transport.connection_generation
         working_state = SteadyState(
             connection_generation=transport.connection_generation,
-            switch_meta_generation=state.switch_meta_generation,
+            switch_meta_generation=switch_meta_generation,
             sensor_interval_s=state.sensor_interval_s,
             availability_interval_s=state.availability_interval_s,
             last_sensor_publish_at=last_sensor_publish_at,

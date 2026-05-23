@@ -19,7 +19,6 @@ else:
     import sys
     import time
 
-    from cpynodus_ii.app import main
     from cpynodus_ii.core.autoreload import disable_auto_reload
     from cpynodus_ii.core.reboot_log import append_reboot_traceback
 
@@ -48,6 +47,8 @@ else:
         return "{}s".format(elapsed)
 
     disable_auto_reload()
+
+    from cpynodus_ii.app import main
 
     try:
         asyncio.run(main())
