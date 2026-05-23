@@ -791,3 +791,23 @@ profiles:
 - The manual `primer.py` and `startup_test.py` warm-start harnesses were
   removed from the app side after this policy change. They are no longer
   expected deployment or REPL tools.
+
+## 2026-05-22 Accepted Merge Position
+
+The accepted warm-start strategy for `v0.26.142.9` is to avoid soft reload as an
+app recovery path for MQTT profiles. Runtime recovery, web restart callbacks
+when available, `fwupdate_prepare`, and OTA applied-pending-boot callbacks
+promote to `microcontroller.reset()` under MQTT profiles. REPL `Ctrl-D` remains
+a manual CircuitPython path.
+
+Broker-visible validation is accepted for the merge redo goal:
+
+- `aqi-wfcp7p` produced `/data` at the configured cadence.
+- `aqi-wfcp7p` produced `/status/heartbeat` and `/availability` at the status
+  cadence.
+- Switch-capable behavior was validated through `S1-wfcp7p` config
+  `set` / `ack` / `result`, switch `event`, switch `state`, and
+  `aqi-wfcp7p/meta/patch`.
+
+This closes the earlier investigation item that treated app warm-start soft
+reload as a candidate recovery mechanism.

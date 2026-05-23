@@ -782,183 +782,41 @@ Important framing:
       platform_test currently gets after app teardown plus a plain Wi-Fi/socket
       reconnect, while keeping the hard reset as a later fallback.
 
-### Current Status
+### Current Accepted Status
 
-- Cold-start broker contract is passing on `co2-frank` through `v0.26.140.11`.
-- Auto-reload interruption during runtime is no longer reproduced in the latest
-  run; reload prompts now report `Auto-reload is off`.
-- Strong teardown with `cycle_radio=1` can allow a following manual/cold start
-  to reconnect MQTT and publish broker-visible startup/data messages.
-- Auto-reload-triggered reload and REPL `Ctrl-D` reload are not equivalent in
-  the observed logs, even though both may print `soft reboot`.
-- Manual soft reboot can still fail at MQTT connect with
-  `mqtt_connect_failed:10.0.0.248:('Connect failure', None)`.
-- Firmware-triggered recovery soft reboot can loop because the next boot starts
-  with no MQTT success in the current runtime, repeats plain connect failures,
-  and reaches the same soft-reboot threshold again.
-- `v0.26.140.12` broke the soft-reboot loop, but left the device in passive
-  MQTT recovery indefinitely.
-- `v0.26.140.13` should attempt active recovery for plain startup MQTT connect
-  failures by cycling station networking and rebuilding socket/MQTT artifacts.
-- First `v0.26.140.13` device run confirms the active station reset occurs, but
-  MQTT can still remain failed until a later power-cycle cold start.
-- `v0.26.140.14` targets the latest platform-test poll failure by bypassing
-  MiniMQTT `loop()` for raw socket receive in the unwrapped firmware adapter.
-- `v0.26.140.15` fixes the cold app regression from `v0.26.140.14` by treating
-  idle socket `ETIMEDOUT` as no data instead of disconnecting MQTT.
-- `v0.26.140.15` has now passed a normal cold app run on `co2-frank`: broker
-  identity/data were stable for roughly twelve minutes with no MQTT reconnect
-  churn and no retained `/meta` repetition.
-- `v0.26.140.16` does not change the successful cold app behavior; it adds
-  source-specific diagnostics for the remaining platform-test poll failure.
-- `v0.26.140.17` targets the now-identified `raw_stage=publish_decode` failure
-  by reducing raw PUBLISH decode call depth.
-- `v0.26.140.17` confirms the app path remains healthy, but the standalone
-  firmware adapter poll still exhausts pystack earlier, at
-  `raw_stage=remaining_length`.
-- `v0.26.140.18` targets that `raw_stage=remaining_length` failure by flattening
-  raw fixed-header, remaining-length, and payload reads in the raw poll path.
-- Latest `v0.26.140.18` hardware run confirms normal app MQTT/data behavior
-  after the I2C hardware correction, and moves the remaining platform-test
-  failure to `raw_stage=transport_receive`.
-- `v0.26.140.19` targets `raw_stage=transport_receive` by making received MQTT
-  message records lightweight and slotted.
-- `v0.26.140.19` now passes the standalone firmware-mode platform test; remaining
-  warm failure is specific to the app startup/connect path.
-- `v0.26.140.20` targets that app-specific warm failure by resetting station
-  state before app startup connect and preferring fresh direct socketpool
-  artifacts.
-- `v0.26.140.20` confirms station reset is active but not sufficient; app MQTT
-  connect can still fail while the platform test passes immediately afterward.
-- `v0.26.140.21` adds direct app diagnostics for the remaining split: socket
-  artifact source and same-pool TCP preflight immediately before MiniMQTT
-  connect.
-- `v0.26.140.21` confirms app TCP preflight is OK even when MiniMQTT connect
-  fails, moving the next investigation to raw MQTT CONNECT/CONNACK vs MiniMQTT
-  connect behavior in the app startup context.
-- `v0.26.140.22` adds that raw MQTT CONNECT/CONNACK probe immediately before
-  MiniMQTT connect.
-- `v0.26.140.22` confirms raw app MQTT CONNECT also times out waiting for
-  CONNACK in failed starts, while `platform_test.py` can still receive CONNACK
-  immediately afterward.
-- `v0.26.140.23` makes app startup closer to the passing platform-test sequence:
-  preconnect scan, reset settle, and no NTP socket until MQTT is connected.
-- `v0.26.140.23` confirms those startup-order changes are not sufficient; failed
-  runs still open TCP but time out waiting for CONNACK, and in-app station reset
-  recovery does not reliably clear the condition.
-- `v0.26.140.24` bounds that condition with one guarded hard reset per
-  unresolved failure episode after the persistent MQTT connect failure window
-  exceeds `180s`; MQTT success clears the guard for future independent
-  failures.
-- `v0.26.140.25` prevents the post-hard-reset Wi-Fi retry path from hanging in
-  a second scan when preconnect scan already found the SSID/channel/BSSID.
-- `v0.26.140.25` hardware PoC confirms the bounded hard reset clears the
-  persistent warm-start CONNACK-timeout state and restores broker-visible
-  identity/data. It also confirms the `skipped_hint` Wi-Fi retry path works
-  after the hard reset.
-- `v0.26.140.26` makes that hard reset pattern-specific and lowers the
-  persistent-pattern window to `60s`.
-- Older fleet logs, including `co2-ykdvea` and `co2-frank`, show a separate but
-  possibly related recovery chain: wrapped MiniMQTT socket arity failure,
-  subscription timeout on some devices, MQTT rebuild, and transient
-  `mqtt_connect_failed` before recovery succeeds.
-- Latest platform-test evidence shows two distinct firmware adapter failures,
-  neither explained by broker reachability:
-  - `raw_mqtt`: pass
-  - `direct_plain`: pass
-  - `direct`: pass
-  - older `firmware`: connect pass, subscribe failed with `pystack exhausted`
-  - latest cold/no-app `firmware`: connect, subscribe, and publish pass; poll
-    fails with `pystack exhausted`
-  - `firmware_direct_loop`: connect pass, subscribe fails with `pystack
-    exhausted`
-  - `direct_wrapped`: publish pass, poll fails with `pystack exhausted`
-  - `firmware_wrapped`: connect fails with `pystack exhausted`
-- Recovery-policy verification is now to deploy `v0.26.140.26` and confirm that
-  a persistent warm-start CONNECT/CONNACK timeout logs a guarded hard reset
-  after roughly `60s`.
-- Before changing recovery escalation again, run the platform warm diagnostics
-  in the warm-failed state to identify whether raw MQTT, direct MiniMQTT, and
-  the firmware adapter diverge at connect.
-- Broker topic captures only see published/subscribed topic traffic. They do not
-  show bare MQTT CONNECT packets from `connect_matrix` or `warm_diagnostics`.
-- `v0.26.141.2` should make the next warm-failed app capture sufficient to
-  distinguish raw-probe classification, MiniMQTT cleanup state, and hard-reset
-  countdown state without needing platform_test to run first.
-- `v0.26.141.3` should attempt in-app recovery after the first full classified
-  `tcp_ok -> connack timeout -> MiniMQTT connect failed` sequence by cycling
-  station networking and rebuilding socket artifacts before the next app connect
-  attempt.
+- Current firmware version for this redo branch is `v0.26.142.9`.
+- Broker-visible hardware validation for the protected MQTT contract has been
+  accepted on 2026-05-22.
+- Sensor-device validation on `aqi-wfcp7p` showed `/data` continuing at roughly
+  the configured cadence and `/status/heartbeat` plus `/availability` at the
+  status cadence from `20:29:56-0600` through `20:38:59-0600`.
+- Switch-capable validation has been accepted. The broker capture showed
+  `S1-wfcp7p` config `set` / `ack` / `result`, switch `event`, switch `state`,
+  and the parent `aqi-wfcp7p/meta/patch` for `SWITCH_1_LAST_STATE`.
+- The warm-start policy is accepted: runtime recovery and app-owned restarts for
+  MQTT profiles should use `microcontroller.reset()` instead of treating
+  `supervisor.reload()` as a recovery path. Manual REPL `Ctrl-D` remains a
+  manual CircuitPython path, not an app recovery mechanism.
+- Automatic `primer.py` / `startup_test.py` production startup hooks are not part
+  of the accepted merge path. Those tools remain investigation apparatus only.
 
-### Next Verification Checklist
+### Final Merge Checklist
 
-1. Deploy current firmware and verify boot reports `v0.26.140.26`.
-2. Confirm the previous unexpected `Code stopped by auto-reload` does not occur
-   during normal running after deploy/start.
-3. Confirm startup logs include `network socket_artifacts source=...`.
-4. Confirm startup logs include `network scan phase=preconnect ...`.
-5. If the first Wi-Fi join raises `Unknown failure 1`, confirm retry logs
-   `network scan attempt=1 ... result=skipped_hint` rather than hanging in a
-   second scan.
-6. Confirm startup logs defer NTP with
-   `ntp phase=deferred reason=mqtt_startup_connect until=mqtt_connected`.
-7. Confirm each app MQTT connect attempt logs `mqtt preflight phase=...`.
-8. Confirm each app MQTT connect attempt logs `mqtt connect_probe phase=...`.
-9. Confirm each app MQTT connect attempt logs `mqtt connect_context ...` and
-   `mqtt connect_decision ...`.
-10. If app MQTT connect fails, confirm it also logs `mqtt connect_cleanup ...`.
-11. If app MQTT connect fails, compare:
-   - `phase=tcp_error`: app socket pool/radio state is still bad before
-     MiniMQTT.
-   - `phase=tcp_ok`: broker TCP reachability works and the failure is in
-     MiniMQTT CONNECT/CONNACK handling or state.
-   - `connect_probe phase=connack_ok`: raw MQTT CONNECT succeeds and MiniMQTT
-     connect is the remaining failing path.
-   - `connect_probe phase=connack_error`: broker rejects or fails raw MQTT
-     CONNECT too; inspect the CONNACK code/error.
-12. If the `tcp_ok -> connack_error Errno 116 -> mqtt_connect_failed` pattern
-    occurs, expect the next recovery pass to log:
-   - `recovery mqtt action=station_reset reason=connack_timeout ...`
-   - `recovery mqtt action=rebuild ... station_reset=1`
-13. After that station reset/rebuild, expect the next app connect attempt to
-    either:
-   - publish broker-visible `/meta`, heartbeat, availability, and `/data`; or
-   - continue the classified failure window.
-14. If the same pattern
-    continues failing for `>60s`, expect:
-   - `recovery action=hard_reboot reason=mqtt_repeated_connect_failures ... marker=set`
-   - `runtime action=reset reason=recovery:mqtt_repeated_connect_failures`
-   - the current `screen` session to disconnect.
-15. After reconnecting to serial, if MQTT succeeds, expect:
-   - `recovery action=clear_hard_reset_marker reason=mqtt_connected`
-   - normal `/meta`, heartbeat, availability, and `/data`.
-16. If MQTT still fails after the hard reset, expect the next `>60s` window to
-    log `action=hard_reboot_suppressed ... marker=nvm` instead of repeatedly
-    resetting.
-17. Confirm shutdown logs still show `cycle_radio=1`.
-18. Confirm the next warm boot publishes broker-visible:
-   - `/meta`
-   - `/status/heartbeat` online
-   - `/availability`
-   - `/data`
-19. Run `platform_test.run(mqtt_mode="matrix", mqtt_rounds=3)` and compare:
-   - firmware subscribe/publish should remain broker-visible;
-   - firmware poll should avoid both previous raw poll failures:
-     `raw_stage=publish_decode` and `raw_stage=remaining_length`;
-   - app poll should not log `mqtt_poll_failed:[Errno 116] ETIMEDOUT` as an
-     error;
-   - if firmware still fails in poll, capture exact line, topic, and socket
-     capability summary; `v0.26.140.16` should report `source=...` in the poll
-     error.
-   - compare wrapped versus unwrapped modes separately.
-20. In a warm-failed MQTT connect state, stop firmware with `Ctrl-C`, stay in the
-   REPL, and first run the startup-parameter matrix:
-   `import gc; gc.collect(); import platform_test; platform_test.run(mqtt_mode="warm_start_matrix")`.
-21. Then run the non-intrusive warm diagnostic to confirm post-matrix MQTT state:
-   `import gc; gc.collect(); import platform_test; platform_test.run(mqtt_mode="warm_diagnostics", scans=0, reset_station=False, sync_ntp=False, mqtt_rounds=3)`.
-22. For the cold/no-app baseline, rename `code.py` to `nocode.py`, power-cycle,
-   then run from REPL:
-   `import gc; gc.collect(); import platform_test; platform_test.run(mqtt_mode="warm_diagnostics", scans=0, reset_station=False, sync_ntp=False, mqtt_rounds=3)`.
+1. Resolve the merge conflicts against current `origin/trunk`.
+2. Run `git diff --check origin/trunk...HEAD`; it must report no whitespace
+   errors.
+3. Run `pytest tests`; all host-side tests must pass.
+4. After conflict resolution, deploy the merged result and perform a final
+   broker-visible smoke check:
+   - sensor retained `/meta`;
+   - switch-capable retained `/meta` and `/meta/switch`;
+   - `/data` at the configured sensor cadence;
+   - `/status/heartbeat` and `/availability` at the configured status cadence;
+   - broker-visible identity/status/data after any recovery reset.
+5. Confirm app-owned MQTT-profile restarts still log and perform hard reset
+   rather than a soft reload.
+6. Preserve the versioning rule: bump `cpynodus_ii/__init__.py` only once for
+   runtime changes in the final merged branch, not for this docs-only cleanup.
 
 ## Merge Rules
 
