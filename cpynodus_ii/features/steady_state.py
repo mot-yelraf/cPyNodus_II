@@ -23,6 +23,9 @@ from cpynodus_ii.features.publish_cycle import (
 from cpynodus_ii.features.sensor_service import read_sensor_snapshot
 
 
+SWITCH_ONLY_AVAILABILITY_INTERVAL_S = 45.0
+
+
 @dataclass(frozen=True)
 class SteadyState:
     """Track loop-local state across steady-state iterations."""
@@ -278,7 +281,10 @@ def run_steady_state_iteration(
             or (
                 float(now_monotonic) - float(working_state.last_availability_publish_at)
             )
-            >= float(working_state.availability_interval_s)
+            >= _effective_availability_interval_s(
+                updated_runtime_config,
+                working_state,
+            )
         )
     )
     if should_refresh_availability:
@@ -329,6 +335,15 @@ def run_steady_state_iteration(
         ),
         errors=tuple(errors),
     )
+
+
+def _effective_availability_interval_s(runtime_config, state):
+    if runtime_config.switch.present and not runtime_config.sensor.present:
+        return min(
+            float(state.availability_interval_s),
+            SWITCH_ONLY_AVAILABILITY_INTERVAL_S,
+        )
+    return float(state.availability_interval_s)
 
 
 def _skipped_publish_result(error):

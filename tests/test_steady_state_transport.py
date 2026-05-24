@@ -78,6 +78,11 @@ def _runtime_config():
     )
 
 
+def _switch_only_runtime_config():
+    config = _runtime_config()
+    return RuntimeConfig(switch=config.switch)
+
+
 def test_transport_tracks_connection_generations():
     transport = MQTTTransport("broker.local", 1883)
 
@@ -340,6 +345,85 @@ def test_steady_state_refreshes_availability_on_interval():
     assert third.availability_refresh_phase == "published"
     assert third.availability_refresh_published_count == 3
     assert third.state.last_availability_publish_at == 26.0
+
+
+def test_switch_only_steady_state_refreshes_availability_before_idle_gap():
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connect_requested()
+    transport.mark_connected()
+    runtime_config = _switch_only_runtime_config()
+
+    first = run_steady_state_iteration(
+        transport,
+        runtime_config,
+        _switch_service(),
+        None,
+        state=SteadyState(availability_interval_s=120.0),
+        version="0.1.0",
+        now_monotonic=10.0,
+    )
+    transport.subscriptions.clear()
+    transport.published_messages.clear()
+
+    second = run_steady_state_iteration(
+        transport,
+        runtime_config,
+        _switch_service(),
+        None,
+        state=first.state,
+        version="0.1.0",
+        now_monotonic=54.0,
+    )
+    assert second.availability_refresh_phase == "skipped"
+    assert transport.published_messages == []
+
+    third = run_steady_state_iteration(
+        transport,
+        runtime_config,
+        _switch_service(),
+        None,
+        state=second.state,
+        version="0.1.0",
+        now_monotonic=55.0,
+    )
+    assert third.availability_refresh_phase == "published"
+    assert third.availability_refresh_published_count == 2
+    assert third.state.last_availability_publish_at == 55.0
+    assert [message.topic for message in transport.published_messages] == [
+        "nodus/switch-x943fm/status/heartbeat",
+        "nodus/S1-x943fm/availability",
+    ]
+
+
+def test_sensor_steady_state_keeps_configured_availability_interval():
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connect_requested()
+    transport.mark_connected()
+    runtime_config = _runtime_config()
+
+    first = run_steady_state_iteration(
+        transport,
+        runtime_config,
+        _switch_service(),
+        _sensor_service(),
+        state=SteadyState(sensor_interval_s=300.0, availability_interval_s=120.0),
+        version="0.1.0",
+        now_monotonic=10.0,
+    )
+    transport.subscriptions.clear()
+    transport.published_messages.clear()
+
+    second = run_steady_state_iteration(
+        transport,
+        runtime_config,
+        _switch_service(),
+        _sensor_service(),
+        state=first.state,
+        version="0.1.0",
+        now_monotonic=55.0,
+    )
+    assert second.availability_refresh_phase == "skipped"
+    assert transport.published_messages == []
 
 
 def test_steady_state_bounds_handled_message_ids():
