@@ -28,10 +28,10 @@ Pin numbers (physical) for Nodus wiring. Use the section that matches your build
 
 ## Soil Sensor (Waveshare Pico-2CH-RS485 HAT)
 
-- 1 (GP0) TX_CH0: (UART transmit)
-- 2 (GP1) RX_CH0: (UART receive)
-- 6 (GP4) TX_CH1: (UART transmit)
-- 7 (GP5) RX_CH1: (UART receive)
+- 1 (GP0) CH1 UART TX
+- 2 (GP1) CH1 UART RX
+- 6 (GP4) CH2 UART TX
+- 7 (GP5) CH2 UART RX
 - 13 (GND): GND for S2 EN
 - 14 (GP10): S2 ENABLE
 - 22 (GP17): Factory reset input, hold LOW at boot for 5s to force `ACTIVE_PROFILE = "nodusweb"` and reboot
@@ -43,4 +43,5 @@ Pin numbers (physical) for Nodus wiring. Use the section that matches your build
 - 39 VCC: VSYS (Power input)
 
 
-All other pins: Unused (see the Pico2 W default pinout for GP/GND/Power)
+All other pins: Unused by the default Nodus mappings. See the Pico2 W default
+pinout for GP/GND/Power details.

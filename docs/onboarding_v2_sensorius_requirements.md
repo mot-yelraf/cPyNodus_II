@@ -118,7 +118,7 @@ Sensorius must treat non-200 or malformed response as `INIT_FAILED` and stop pro
   "hostname": "aqi-x943fm",
   "serial": "x943fm",
   "type": "pico2w",
-  "version": "v0.26.055.0",
+  "version": "v0.26.xxx.x",
   "capabilities": {
     "sensor": true,
     "switch": true
@@ -214,8 +214,12 @@ Duplicate replay behavior (idempotent):
 Current `cPyNodus_II` status:
 
 - `onboard_token` is persisted from `/itaot-init`
-- `config/set` is rejected when the persisted token is present and the request token does not match
+- `config/set` is rejected with `onboard_token_invalid` when the persisted
+  token is present and the request token is missing or does not match
 - the persisted token is cleared after a successful `config/result.applied == true`
+- no on-device TTL is currently enforced
+- after the state file is cleared, later `config/set` messages are treated as
+  ordinary runtime config writes rather than token replay attempts
 
 ### Standard Error Values (Recommended)
 Use stable short error strings to keep UI and recovery behavior predictable:
@@ -241,10 +245,10 @@ Password fields in `meta` must be `obf1:` obfuscated, not plaintext.
 Sensorius should treat `meta` as eventual (it may be deferred briefly on low memory) and should not block onboarding success on immediate meta arrival.
 
 `nodus/<device_id>/meta/switch` (`schema = "nodus-meta-switch/v1"`) is the
-retained detailed switch control map. Nodus publishes it after MQTT startup
-subscriptions are healthy. It includes `switch_device_id`, `location`,
+retained detailed switch control map. Nodus publishes it in the startup
+identity publish batch. It includes `switch_device_id`, `location`,
 `channel_count`, and `channels[*]` entries with `channel_id`, `state`,
-`event_topic`, `state_topic`, `set_topic`, `result_topic`, and
+`event_topic`, `state_topic`, `set_topic`, `ack_topic`, `result_topic`, and
 `availability_topic`.
 
 Sensorius should remain backward compatible by first parsing legacy
@@ -275,6 +279,12 @@ Transition requirements:
 3. Bound to onboarding session and expected device identity where possible.
 4. Replay must be rejected.
 5. Token invalidated after successful config apply.
+
+Current Nodus note: the firmware persists the bootstrap token in
+`onboarding_state.json`, validates `config/set` against it when present, and
+deletes the state file after a successful apply. It does not currently enforce
+an on-device TTL, so Sensorius should enforce token expiry in its onboarding
+state machine.
 
 ## Device Identity Model Requirements
 1. Primary identity should be stable (`device_id`/serial/hostname), not IP.

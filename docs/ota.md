@@ -338,14 +338,12 @@ Nodus currently uses a single-slot workspace plus two-phase apply:
 Only the most recent backup is retained. The next accepted `/ota/begin` clears
 the previous backup before staging the new package.
 
-Rollback triggers:
+Current rollback triggers:
 
 - manifest rejected;
 - upload interrupted;
 - SHA-256 or size mismatch;
-- apply step fails;
-- first boot after apply fails before the runtime reaches a defined healthy
-  checkpoint.
+- apply step fails.
 
 Rollback behavior:
 
@@ -357,7 +355,9 @@ Rollback behavior:
   Sensorius metadata.
 
 Current implementation restores backups if the apply step itself fails. A
-post-reboot health-check rollback is still planned.
+post-reboot health-check rollback, where the first normal boot must reach a
+defined healthy checkpoint before the update is considered fully safe, is still
+planned.
 
 The first healthy checkpoint can be conservative: Wi-Fi joined and the prior
 profile startup plan reached the point where it would normally start its
@@ -382,7 +382,8 @@ Sensorius should orchestrate only one physical Nodus host at a time:
 10. Mark the update complete in Sensorius.
 
 If HTTP cannot be reached after OTA mode starts, Sensorius should time out and
-let Nodus return to the prior profile automatically.
+surface the failure. Current OTA mode waits indefinitely for an HTTP client
+once entered; automatic return to the prior profile is still an open decision.
 
 ## Security Model
 
@@ -465,10 +466,10 @@ Hardware tests:
 - capture CLI timing summary and serial timing for file verify and commit
   verify/apply phases.
 
-## Current Characterization
+## Historical Characterization
 
-On `co2-ph244` running `v0.26.124.10`, a 4-file, 36,439-byte package using
-1024-byte chunks completed successfully:
+On `co2-ph244` running `v0.26.124.10`, an earlier 4-file, 36,439-byte package
+using 1024-byte chunks completed successfully:
 
 ```text
 Transfer start: 13:32:43

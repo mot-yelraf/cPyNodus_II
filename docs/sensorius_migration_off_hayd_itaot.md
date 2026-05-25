@@ -17,7 +17,10 @@ Sensorius should subscribe to:
 1. `nodus/+/status/heartbeat`
 2. `nodus/+/availability`
 3. `nodus/+/data`
-4. Onboarding/config topics while onboarding is active:
+4. Retained startup metadata:
+   - `nodus/+/meta`
+   - `nodus/+/meta/switch`
+5. Onboarding/config topics while onboarding is active:
    - `nodus/+/onboard/hello`
    - `nodus/+/config/ack`
    - `nodus/+/config/result`

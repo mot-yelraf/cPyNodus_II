@@ -1,8 +1,8 @@
-# cPyNodus
+# cPyNodus_II
 
-The cPyNodus project is a CircuitPython project for the “Nodus” family of Pico2 W devices. Nodus devices support sensor-only, switch-only, and combined sensor+switch configurations, and is designed to be provisioned in the field via a lightweight AP onboarding flow or via Sensorius. After Nodus is properly provisioned and rebooted, Nodus will use a discovery protocol to automatically publish/subscribe to either Sensorius or Home Assistant MQTT broker.
+`cPyNodus_II` is CircuitPython firmware for the Nodus family of Raspberry Pi Pico2 W devices. Nodus devices support sensor-only, switch-only, and combined sensor+switch configurations. They can be provisioned through AP bootstrap, the local `nodusweb` UI/API, or the Sensorius Add Device flow. After provisioning, MQTT-enabled profiles publish telemetry and subscribe to control/config topics through a Sensorius, WeeWX, or Home Assistant MQTT broker.
 
-Sensorius Automatio Instrumentorum (or Sensorius AI) or just "Sensorius" (see my saiSensorius project) is the companion system that monitors and manages deployed Nodus devices. Sensorius and Nodus were developed together and are designed to be used as a pair, but Nodus can be configured to integrate directly with Home Assistant using Home Assistant's MQTT integration. Sensorius is a modular, Python-based system for managing environmental sensors and controlling relays via MQTT. Sensorius was focussed on providing environmental monitoring and control for greenhouse/hoop-house environments. It features a real-time web dashboard, automated onboarding for new devices, and robust data logging and visualization. Sensorius can be set up on Raspberry Pi (with directly connected sensors), macOS, Windows 10/11, and Linux using Nodus sensors and switches. Sensorius can also be integrated in to Home Assistant to have it's sensors and switches publish/subscribe to Home Assistant.
+Sensorius Automatio Instrumentorum, or Sensorius, is the companion system that monitors and manages deployed Nodus devices. Nodus can also publish Home Assistant MQTT discovery/config topics directly when `ACTIVE_PROFILE = "homeassistant"`.
 
 ## Who this is for
 
@@ -10,19 +10,21 @@ Sensorius Automatio Instrumentorum (or Sensorius AI) or just "Sensorius" (see my
 - Contributors who want a small, readable CircuitPython codebase.
 - Anyone building Pico2 W sensor or relay nodes.
 - Project Status: Pre-1.0. Interfaces and internal architecture may change.
-- Security Note: Wi-Fi credentials are obfuscated, not encrypted. Do not deploy in security-sensitive environments. See SECURITY.md.
+- Security Note: Wi-Fi and MQTT passwords are obfuscated on write, not encrypted. Do not deploy in security-sensitive environments.
 
 ## Key features
 Nodus is a headless IoT node with the following core responsibilities:
 
 - Bring up Wi‑Fi in normal mode when valid credentials exist.
 - Fall back to AP mode when credentials are missing or invalid.
-- Provide a minimal web UI for initial provisioning.
-- Support MQTT publishing and control (Sensorius or Home Assistant).
-- Auto‑detect supported sensors and switches at boot.
+- Provide AP bootstrap routes and a minimal `nodusweb` local UI/API.
+- Support MQTT publishing, config, calibration, log retrieval, switch control, and OTA prepare.
+- Publish Sensorius metadata and optional Home Assistant MQTT discovery.
+- Auto-detect supported sensors and factory-enabled switches on first boot.
 - Maintain sensor data collection and publish loops.
-- Provide recovery hooks (network restart, soft restart, hard reboot).
-- Constrained-memory friendly web server and routes
+- Provide recovery hooks for network, MQTT, sensor, and AP idle failures.
+- Maintain bounded reboot and recovery logs when the filesystem is writable.
+- Constrained-memory friendly web server and routes.
 - Over-the-air update support using MQTT prepare plus chunked HTTP transfer.
   See [OTA](./ota.md).
 
@@ -84,12 +86,12 @@ See `docs/pinout.md` for the Nodus wiring pinout.
 
 1. Install CircuitPython on the Pico2 W.
 2. Copy this repo to the device filesystem (CIRCUITPY).
-3. `docs/pinout.md` should be used as guidance to connect sensors, switches, RW enable, etc 
+3. Use `docs/pinout.md` as guidance to connect sensors, switches, the RW enable pin, and factory reset input.
 4. Reboot the device and allow about a minute for it to self-configure. On a
    clean deploy, Nodus creates `settings.toml` and the detected live sensor and
    switch TOML files from the root `*.def` templates.
-5. Edit the relavent files for your Nodus:
-   - `settings.toml` (configure the wifi credentials)
+5. Edit the relevant files for your Nodus:
+   - `settings.toml` (configure Wi-Fi, profile, MQTT, Home Assistant, and time)
    - `sensor_i2c.toml`
    - `sensor_soil.toml`
    - `switch.toml` if the device includes switches
@@ -98,49 +100,39 @@ See `docs/pinout.md` for the Nodus wiring pinout.
 
 Use `scripts/deploy_nodus.sh` to copy firmware files to a `CIRCUITPY` drive.
 
-To stage a `.mpy`-based release tree for memory testing, use
-`scripts/build_mpy_release.sh`. It writes a deployable tree under
-`build/mpy_release/` by default, keeping `code.py` and `boot.py` as source and
-compiling the other root modules plus `sensor_modules/*.py` to `.mpy`.
-
 Examples:
 
 - Direct local mount:
   - `scripts/deploy_nodus.sh --target /Volumes/CIRCUITPY`
 - Raspberry Pi host with a connected Nodus (direct to drive):
   - `scripts/deploy_nodus.sh --target pi@raspberrypi:/media/pi/CIRCUITPY`
-- Raspberry Pi staging folder (manual flash later):
-  - `scripts/deploy_nodus.sh --target pi@raspberrypi:/home/pi/cPyNodus-release --mode staging`
+- Raspberry Pi staging folder:
+  - `scripts/deploy_nodus.sh --target pi@raspberrypi:/home/pi/cPyNodus_II-release --mode staging`
 - Preview without writing:
   - `scripts/deploy_nodus.sh --target pi@raspberrypi:/media/pi/CIRCUITPY --dry-run`
-- Sync only root Python files (`/*.py`):
-  - `scripts/deploy_nodus.sh --target /Volumes/CIRCUITPY --content root-py`
-- Sync Nodus runtime files only (root `/*.py`, root `/*.def`, plus `sensor_modules/*.py`):
-  - `scripts/deploy_nodus.sh --target /Volumes/CIRCUITPY --content nodus`
-- Build a staged `.mpy` release tree:
-  - `scripts/build_mpy_release.sh --clean`
+- Sync runtime files only:
+  - `scripts/deploy_nodus.sh --target /Volumes/CIRCUITPY --content runtime`
 
 Notes:
 
 - The script excludes development files (`tests/`, `docs/`, `.git/`, caches, etc.).
-- `--content` options are `full` (default), `root-py` (only root `/*.py` files), or `nodus` (root `/*.py`, root `/*.def`, plus `sensor_modules/*.py`).
-- `scripts/build_mpy_release.sh` copies `lib/` and root `*.def` files unchanged.
-- Use an `mpy-cross` build that matches CircuitPython `9.2.8` when building `.mpy` files for device testing.
+- `--content` options are `full` (default) or `runtime`.
+- `runtime` syncs `boot.py`, `code.py`, `dataclasses.py`, root `*.def` templates, `cpynodus_ii/`, and `lib/` when present.
 - On macOS, deploy sets `COPYFILE_DISABLE=1` and `COPY_EXTENDED_ATTRIBUTES_DISABLE=1` to prevent `._*` sidecar files on CIRCUITPY.
 - In `drive` mode, the target path must contain `CIRCUITPY` (override with `--force`).
 - `--mode` options are `auto` (default), `drive`, or `staging`.
 - Use `--delete` if you want files removed from target when no longer present in this repo.
-- `--delete` is not supported with `--content root-py` or `--content nodus`.
+- `--delete` is supported only with `--content full`.
 - Use `--prune-deprecated` to remove only the target paths listed in `scripts/deprecated_target_files.txt`.
 - Deploy removes target `_reboot.log` and `_recovery.log` by default so old postmortem records do not survive firmware updates; use `--keep-reboot-log` to preserve them.
 
 ## Boot Flow
 
 1. `boot.py` configures USB/FS access based on a guard pin.
-2. `code.py` initializes settings, sensor, and switch controllers.
+2. `code.py` disables runtime autoreload, loads `cpynodus_ii.app`, and records fatal tracebacks when possible.
 3. Network logic chooses AP mode or normal mode:
    - **AP mode**: starts an AP SSID named `Nodus_Setup` password is `password` (default channel `6`, configurable with `Network.AP_CHANNEL`).
-   After connecting to the `Nodus_Setup` SSID, browse to `http://192.168.4.1:8000/setup` for the local setup UI. The setup UI exposes pane-based configuration for network, sensor, switch, MQTT, and time settings, and includes manual switch override buttons when switch channels are present.
+   After connecting to the AP, use `POST /itaot-init` for Sensorius bootstrap or browse to `http://192.168.4.1:8000/setup` for the lightweight local setup page.
    - **Normal mode**: connects to Wi‑Fi, configures mDNS, and starts profile-specific runtime services.
 4. The runtime starts its asynchronous sensor, MQTT, recovery, and memory-management loops.
 
@@ -152,7 +144,7 @@ AP mode is used when:
 - SSID equals `Nodus_Setup`, or
 - Wi‑Fi connection fails.
 
-AP mode exposes a local setup web UI for provisioning and configuration. Once settings are saved, a reboot is triggered to re-enter normal mode.
+AP mode exposes `/itaot-init`, `/itaot-meta`, `/setup`, `/config`, `/current-data`, `/set-switch-state`, and `/restart` when enough memory is available. Sensorius provisioning uses `/itaot-init`; manual JSON posts to `/config` can persist supported settings and then `/restart` can reboot into normal mode.
 
 ## Web UI Memory Guards
 
@@ -171,7 +163,7 @@ In normal mode the device:
 - Connects to Wi‑Fi and configures socket pool and mDNS.
 - Starts sensor data collection loop.
 - Publishes sensor metrics on a fixed interval.
-- Serves a lightweight status page and JSON endpoints (unless HA mode disables the web server).
+- Serves lightweight status/setup routes only when `ACTIVE_PROFILE = "nodusweb"`.
 
 ## Profiles
 
@@ -179,8 +171,8 @@ In normal mode the device:
   - MQTT startup is skipped.
   - Periodic NTP sync is started after normal network bring-up.
   - The device can run without an MQTT broker.
-  - In AP mode, the Nodus web UI can be used to provision Wi-Fi and select/update the runtime profile.
-  - In normal mode, the Nodus web UI can still be used to manage configuration directly without Sensorius.
+  - In AP mode, bootstrap routes and the local setup route are available.
+  - In normal mode, the local web UI/API can manage supported live and restart-required settings directly without Sensorius.
 - `sensorius` is the networked profile used by Sensorius for Nodus onboarding, management, monitoring and automation implementation.
   - Periodic NTP sync is started after normal network bring-up.
   - MQTT is started and switch control topics are subscribed when enabled.
@@ -199,9 +191,9 @@ In normal mode the device:
   - Provision the device in `nodusweb`/AP mode first, then reboot into `homeassistant`.
   - Once the device is operating in `homeassistant`, changes are currently expected through `settings.toml` edits or by returning the device to provisioning mode.
 
-## Sensor Auto‑Detect
+## Sensor Auto-Detect
 
-`cPySensorFactory.detect_device()` probes I2C and UART interfaces at boot to detect supported sensor types and configure the appropriate driver and settings.
+`Settings.bootstrap_factory_defaults()` probes I2C buses and the RS485 soil channels on a clean factory deploy. It creates only the detected live sensor TOML file and seeds display defaults, serial numbers, sensor IDs, switch channel IDs, and hostname. On later boots, existing TOML files are treated as the source of truth.
 
 ## Boot-Time Factory Reset
 
@@ -318,41 +310,46 @@ Nodus currently supports these sensor device types: `aht`, `apvpd_aht`, `apvpd`,
 - `Estimated PPFD` (`µmol/m²/s`)
 - `Visible Light Intensity` (`mol/m²/day`)
 
-## It is strongly suggested to use HaliSense soil sensors for capatibility (known register layout)
+## Soil Sensor Metrics
+
+HaliSense-compatible RS485 soil sensors are the best-tested soil devices because their register layout matches the default Nodus register map. Nodus reads the configured register map and omits metrics whose register read fails.
+
+When one soil channel is active, Nodus publishes unprefixed metric names. When both RS485 channels are active, Nodus prefixes each metric with the channel name, for example `CH1 Soil Moisture` and `CH2 Soil pH`.
+
 ### `soil` (RS485 Modbus 2-in-1)
 
-- `Soil-Moisture` (`%`)
-- `SSI` (`%`)
-- `Soil-Temp` (`°C`)
-- `Soil-Temp_F` (`°F`)
-- `SMD` (`%`)
+- `Soil Moisture` (`%`)
+- `Soil Temp_C` (`°C`)
+- `Soil Temp_F` (`°F`)
+- `Soil Moisture Deficit` (`%`)
+- `Soil Stress Index` (`%`)
 
 ### `soil` (RS485 Modbus 4-in-1)
 
-- `Soil-Moisture` (`%`)
-- `SSI` (`%`)
-- `Soil-Temp` (`°C`)
-- `Soil-Temp_F` (`°F`)
-- `Soil-pH` (`pH`)
-- `Soil-EC` (`mS/cm`)
-- `SMD` (`%`)
+- `Soil Moisture` (`%`)
+- `Soil Temp_C` (`°C`)
+- `Soil Temp_F` (`°F`)
+- `Soil pH` (`pH`)
+- `Soil EC` (`mS/cm`)
+- `Soil Moisture Deficit` (`%`)
+- `Soil Stress Index` (`%`)
 
 ### `soil` (RS485 Modbus 7-in-1)
 
-- `Soil-Moisture` (`%`)
-- `SSI` (`%`)
-- `Soil-Temp` (`°C`)
-- `Soil-Temp_F` (`°F`)
-- `Soil-pH` (`pH`)
-- `Soil-EC` (`mS/cm`)
-- `SMD` (`%`)
-- `Soil-N` (`mg/kg`)
-- `Soil-P` (`mg/kg`)
-- `Soil-K` (`mg/kg`)
+- `Soil Moisture` (`%`)
+- `Soil Temp_C` (`°C`)
+- `Soil Temp_F` (`°F`)
+- `Soil pH` (`pH`)
+- `Soil EC` (`mS/cm`)
+- `Soil Nitrogen` (`mg/kg`)
+- `Soil Phosphorus` (`mg/kg`)
+- `Soil Potassium` (`mg/kg`)
+- `Soil Moisture Deficit` (`%`)
+- `Soil Stress Index` (`%`)
 
-## Soil Moisture Deficit (`SMD`)
+## Soil Moisture Deficit
 
-`SMD` is a Nodus-derived dryness metric that expresses how much water the soil is currently missing relative to the configured wet and dry thresholds.
+`Soil Moisture Deficit` is a Nodus-derived dryness metric that expresses how much water the soil is currently missing relative to the configured wet and dry thresholds.
 
 It is a measure of current water shortfall, not the soil's inherent ability to retain water.
 
@@ -361,12 +358,12 @@ It is a measure of current water shortfall, not the soil's inherent ability to r
 - values between `0%` and `100%` show where the current moisture sits within that wet-to-dry operating band
 - higher values mean drier soil and greater watering need
 
-This makes `SMD` easier to alert on than raw volumetric moisture alone, because the same percentage scale can be tuned for different media, sensor placements, or crop targets.
+This makes `Soil Moisture Deficit` easier to alert on than raw volumetric moisture alone, because the same percentage scale can be tuned for different media, sensor placements, or crop targets.
 
-Nodus calculates `SMD` from the corrected soil moisture value using the thresholds in `sensor_soil.toml`:
+Nodus calculates `Soil Moisture Deficit` from the corrected soil moisture value using the thresholds in `sensor_soil.toml`:
 
 ```text
-SMD = 100 * ((wet_threshold - corrected_soil_moisture) / (wet_threshold - dry_threshold))
+Soil Moisture Deficit = 100 * ((wet_threshold - corrected_soil_moisture) / (wet_threshold - dry_threshold))
 ```
 
 The result is clamped to the range `0-100%`.
@@ -378,23 +375,23 @@ Default thresholds:
 
 Using the defaults:
 
-- `38%` soil moisture or higher reports `SMD = 0%`
-- `18%` soil moisture or lower reports `SMD = 100%`
-- `28%` soil moisture reports `SMD = 50%`
+- `38%` soil moisture or higher reports `Soil Moisture Deficit = 0%`
+- `18%` soil moisture or lower reports `Soil Moisture Deficit = 100%`
+- `28%` soil moisture reports `Soil Moisture Deficit = 50%`
 
-If the wet threshold is not greater than the dry threshold, `SMD` is not reported.
+If the wet threshold is not greater than the dry threshold, `Soil Moisture Deficit` is not reported.
 
-## Soil Stress Index (`SSI`)
+## Soil Stress Index
 
-`SSI` is a Nodus-derived soil concern metric that combines moisture deficit (`SMD`) with root-zone temperature stress into a single normalized percentage.
+`Soil Stress Index` is a Nodus-derived soil concern metric that combines `Soil Moisture Deficit` with root-zone temperature stress into a single normalized percentage.
 
 - `0%` means low combined stress
 - `100%` means high combined stress
 - higher values mean the soil is drier, thermally less favorable, or both
 
-By default, `SSI` is a weighted blend of:
+By default, `Soil Stress Index` is a weighted blend of:
 
-- `70%` `SMD`
+- `70%` `Soil Moisture Deficit`
 - `30%` soil temperature stress
 
 The temperature component uses these default bands:
@@ -416,20 +413,20 @@ That means:
 - `>=30°C` contributes `100%` temperature stress
 - values between those points scale linearly
 
-Nodus calculates `SSI` as:
+Nodus calculates `Soil Stress Index` as:
 
 ```text
 soil_temp_stress = temperature-based stress from 0 to 100
-SSI = ((SMD * moisture_weight) + (soil_temp_stress * temp_weight)) / (moisture_weight + temp_weight)
+Soil Stress Index = ((Soil Moisture Deficit * moisture_weight) + (soil_temp_stress * temp_weight)) / (moisture_weight + temp_weight)
 ```
 
 With the default weights and temperature bands:
 
-- `SMD = 50%` and `Soil-Temp = 21°C` reports `SSI = 35%`
-- `SMD = 50%` and `Soil-Temp = 27°C` reports `SSI = 50%`
-- `SMD = 80%` and `Soil-Temp = 31°C` reports `SSI = 86%`
+- `Soil Moisture Deficit = 50%` and `Soil Temp_C = 21°C` reports `Soil Stress Index = 35%`
+- `Soil Moisture Deficit = 50%` and `Soil Temp_C = 27°C` reports `Soil Stress Index = 50%`
+- `Soil Moisture Deficit = 80%` and `Soil Temp_C = 31°C` reports `Soil Stress Index = 86%`
 
-If the temperature band configuration is invalid, `SSI` is not reported.
+If the temperature band configuration is invalid, `Soil Stress Index` is not reported.
 
 ## DewVPD Risk Metric
 
@@ -542,20 +539,22 @@ Nodus supports up to two switch channels. The default/detected Pico2 W mappings 
 - On later normal boots, Nodus expects `switch.toml` to already exist for switch-enabled devices.
 - If only one switch is installed, only that channel is enabled/populated in `switch.toml`.
 
-Automations are implemented in Sensorius. Sensorius publishes the desired switch state to each channel's MQTT `/config/set` topic, Nodus applies the change locally, and Nodus publishes the resulting state change back over MQTT (`/event` plus retained `/state`).
+Automations are implemented in Sensorius or Home Assistant. Commands are published to each channel's MQTT `config/set` topic. Nodus applies the change locally, publishes channel `config/ack` and `config/result`, emits a JSON `event`, updates retained `state`, and persists `SWITCH_#_LAST_STATE` when the filesystem is writable.
 
 ## Recovery & Resilience
 
 - **Wi-Fi outage policy**: when station Wi‑Fi drops, Nodus pauses MQTT reconnect attempts and spends up to 15 minutes retrying SSID reassociation before soft rebooting.
 - **MQTT outage policy**: when Wi‑Fi is still up but MQTT is unhealthy, Nodus retries broker recovery for up to 3 minutes, including bounded socket-pool/MQTT rebuild attempts, before soft rebooting.
 - **AP recovery policy**: if startup cannot join the configured station network, Nodus falls back into AP recovery mode and soft reboots again after 10 minutes of idle AP uptime.
-- **Soft restart policy**: bounded soft restart remains the preferred recovery path for network failures on Pico2 W.
+- **Restart policy**: `nodusweb` can use soft reload for ordinary runtime restarts; MQTT profiles and persistent recovery faults use hard reset paths when needed to clear the Pico2 W radio/socket state.
 - **Recovery diagnostics**: when the filesystem is writable, formal recovery phase changes and recovery actions are appended to `/_recovery.log` with timestamp, firmware version, and device ID headers. The file is capped at 10 KB for USB-powered postmortems.
 
 ## Web Server
 
 - Lightweight `adafruit_httpserver` based server.
 - AP mode routes are intentionally minimal to reduce memory pressure.
+- Normal-mode routes are exposed only in `nodusweb`.
+- Route set: `/`, `/current-data`, `/setup`, `/config`, `/set-switch-state`, and `/restart` when enabled; `/itaot-init` and `/itaot-meta` are AP-bootstrap routes.
 
 ## Known Constraints / Notes
 
@@ -567,8 +566,9 @@ Automations are implemented in Sensorius. Sensorius publishes the desired switch
 
 - MQTT broker can be Sensorius or Home Assistant.
 - TLS is enabled when configured or when broker port is 8883.
-- Home Assistant discovery is supported with configurable prefixes and base topics.
-- Switch control is handled via `/set` topics; events and state are published to `/event` and `/state`.
+- Home Assistant discovery is published under `[HomeAssistant].DISCOVERY_PREFIX` when `ACTIVE_PROFILE = "homeassistant"`.
+- Shared MQTT topics use `[MQTT].BASE_TOPIC`, defaulting to `nodus`.
+- Switch control is handled via channel `config/set` topics; events and state are published to `/event` and `/state`.
 - MQTT connects to broker IP literals only. Startup uses configured
   `MQTT.BROKER_IP` directly and skips runtime DNS when it is present. If
   `BROKER_IP` is absent and the filesystem is writable, startup resolves the
@@ -579,40 +579,18 @@ Automations are implemented in Sensorius. Sensorius publishes the desired switch
   - this policy exists because these networked MQTT-only profiles are intended to run without the normal local web UI path
   - AP/nodusweb mode remains the supported provisioning path before switching into either profile
 
-## Directory Layout
+## Project Layout
 
-- `code.py`: application entry point
-- `boot.py`: boot mode guard logic
-- `lib/`: CircuitPython libraries
-- `sensor_modules/`: sensor driver implementations
-- `sd/`: optional SD assets or logs
-
-## Project layout
-
-- `code.py`: application entry point
-- `boot.py`: boot mode guard logic
-- `cPyPicoNet.py`: Wi-Fi, socket pool, mDNS, and NTP handling
-- `cPySettings.py`: TOML-based configuration manager
-- `cPySensor.py` / `cPySensorFactory.py`: sensor controller and driver selection
-- `cPySwitch.py`: switch controller and MQTT command handling
-- MQTT transport and startup path:
-  - `cPyMQTTClient.py`: broker connect/reconnect lifecycle, publish loop, health checks, and the minimal safe post-connect command path
-  - `cPyMQTTSwitchHandler.py`: lightweight switch-only topic subscription, payload parsing, and deferred switch state apply used on the normal post-connect path
-- MQTT lightweight runtime command path:
-  - `cPyMQTTCommandHandler.py`: tiny runtime command wrapper that routes exact-topic device commands without pulling heavier control-plane code onto the callback path
-  - `cPyMQTTConfigHandler.py`: lightweight device `config/set` apply path that persists accepted settings and emits `.../meta/patch`
-  - `cPyMQTTCalibrationHandler.py`: lightweight calibration `apply`/`status` command parser, ack/result transport, and routing to narrower calibration workers
-- MQTT deferred runtime/control-plane helpers:
-  - `cPyMQTTMetaHandler.py`: deferred retained runtime metadata publish scheduling and helper flow
-- MQTT calibration apply workers:
-  - `cPyMQTTCalibrationApplyCommon.py`: shared persistence, reload, and live-verification helpers used by calibration apply workers
-  - `cPyMQTTCalibrationDeviceHandler.py`: deferred device-level calibration write, reload, and verification worker
-  - `cPyMQTTCalibrationSystemHandler.py`: deferred system-level calibration write, reload, and verification worker
-  - `cPyMQTTCalibrationSoilHandler.py`: deferred soil-session calibration worker and summary helpers
-- MQTT shared support:
-  - `cPyMQTTCommandTransport.py`: shared publish, reconnect-recovery, and handshake transport helpers for runtime MQTT commands
-  - `cPyMQTTPayloads.py`: compact outbound payload builders for sensor publishes and retained runtime metadata
-- `cPyWebServer.py`, `cPyWebRoutes.py`, `cPyOnboardRoutes.py`: HTTP server and routes
+- `boot.py`: GP14 filesystem/USB guard and startup-mode setup
+- `code.py`: CircuitPython entrypoint and fatal traceback/reload wrapper
+- `cpynodus_ii/app.py`: main async runtime orchestration, recovery, startup, and steady state
+- `cpynodus_ii/core/`: settings, config models, network, MQTT client adapter, NTP, recovery, reboot logs
+- `cpynodus_ii/features/`: sensor/switch services, publish cycles, command intake, web handlers, log transfer, derived metrics
+- `cpynodus_ii/hardware/`: CircuitPython hardware adapters for I2C, UART/RS485, and switch GPIO
+- `cpynodus_ii/ota/`: MQTT prepare state and temporary HTTP-only OTA mode
+- `lib/`: CircuitPython `.mpy` libraries and package dependencies
+- `scripts/`: deploy, OTA package/push, and MQTT log retrieval tools
+- `tests/`: host-side pytest characterization and unit coverage
 
 ## Documentation
 
@@ -622,11 +600,12 @@ Automations are implemented in Sensorius. Sensorius publishes the desired switch
 - `docs/mqtt.md`: topics and Home Assistant notes
 - `docs/pinout.md`: Nodus Pico2 W pin mapping
 - `docs/extending.md`: adding sensors or switches
+- `docs/debug-notes/`: dated investigation logs retained as archival context,
+  not the current runtime contract
 
 ## Development Notes
 
 - Use the guard pin (`GP14`) to control whether the filesystem is R/W for the app.
-- `DEBUG_MODULES` in `cPyUtils.py` controls module‑level debug output.
 - Keep web routes small; heavy handlers can destabilize startup on constrained devices.
 - Add Device flow uses `POST /itaot-init`, then MQTT onboarding topics (`nodus/<device_id>/onboard/hello`, `config/set`, `config/ack`, `config/result`) as the authoritative configuration path.
 - Nodus TOML files are the source of truth for accepted config. Sensorius should use retained `nodus/<device_id>/meta` as the compact startup/reconnect snapshot, retained `nodus/<device_id>/meta/switch` as the switch control-topic map when switch channels are present, then consume `nodus/<device_id>/meta/patch` for accepted steady-state config deltas.
@@ -641,11 +620,3 @@ Automations are implemented in Sensorius. Sensorius publishes the desired switch
 - Temporary Wi-Fi loss suppresses MQTT publishes until Wi-Fi and MQTT both recover.
 - Extended Wi-Fi loss eventually soft reboots into AP recovery mode.
 - Extended AP recovery uptime soft reboots again after 10 minutes.
-
-## Contributing
-
-See `CONTRIBUTING.md` for development workflow, code style, and PR guidance.
-
-## License
-
-MIT. See `LICENSE`.

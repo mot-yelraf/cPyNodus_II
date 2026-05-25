@@ -4,7 +4,7 @@ Configuration is stored as TOML files at the project root. Defaults are provided
 
 ## Files
 
-- `settings.toml`: network, profile, time, Home Assistant
+- `settings.toml`: network, profile, MQTT, Home Assistant, and time
 - `sensor_i2c.toml`: I2C sensors
 - `sensor_soil.toml`: UART/Modbus soil sensor, including optional CH1/CH2 RS485 soil channels
 - `switch.toml`: switch/relay configuration
@@ -112,6 +112,21 @@ is absent, and cannot persist it.
 The same settings rewrite obfuscates any plaintext passwords that were manually
 entered in `settings.toml`.
 
+## Home Assistant section
+
+Home Assistant integration is configured in `[HomeAssistant]` and is active
+only when `ACTIVE_PROFILE = "homeassistant"`.
+
+Current runtime behavior:
+
+- `DISCOVERY_PREFIX` controls the Home Assistant discovery topic prefix.
+- `PUBLISH_DISCOVERY_RETAIN` controls whether discovery config messages are
+  retained.
+- Sensor and switch state topics still use the shared `[MQTT].BASE_TOPIC`.
+- `BASE_TOPIC`, `PUBLISH_STATE_RETAIN`, and `PUBLISH_LEGACY_SENSOR_TOPIC` are
+  loaded and persisted for compatibility, but the current publish helpers do
+  not use them to change topic layout or state retain behavior.
+
 ## Host MQTT Log Retrieval Tool
 
 The host-side `scripts/nodus_getlogs.py` tool can request bounded Nodus runtime
@@ -128,13 +143,24 @@ transition, and reboot reason.
 
 ## Local setup UI
 
-The built-in `/setup` web UI provides pane-based editing for:
+The built-in `/setup` web UI is intentionally small. The rendered page exposes:
 
-- `Network`: SSID, password, hostname, HTTP port, `AP_SSID`, `AP_PASSWORD`, and optional `AP_CHANNEL`
-- `Sensor`: shared location, display metrics, and current `[Calibration.Device]` fields
+- `Network`: SSID, hostname, and `AP_CHANNEL` as restart-required edits
+- `Sensor`: shared location and display metrics/styles as live-safe edits
 - `Switch`: switch labels and manual on/off override buttons
-- `MQTT`: active profile and shared broker connection settings
-- `Time`: `TZ`, `TZ_OFFSET`, `TZ_NAME`, optional `NTP_SERVER`, and optional `NTP_SERVER_IP`
+
+The JSON `/config` route accepts a broader supported update set than the
+rendered page:
+
+- live-safe: `Sensor.LOCATION`, switch labels, display metrics/styles,
+  `[Calibration.System]`, `[Calibration.Device]`, `Time.*`, and switch last
+  state
+- restart-required: `Network.SSID`, `Network.PASSWORD`, `Network.HOSTNAME`,
+  `Network.HTTPPORT`, `Network.AP_CHANNEL`, `[MQTT]`, `[Profile]`, and
+  `[HomeAssistant]`
+
+`AP_SSID` and `AP_PASSWORD` are read from `[Network]` for AP mode but are not
+currently accepted by the web config classifier.
 
 Calibration offsets in `[Calibration.System]` and `[Calibration.Device]` are additive corrections.
 For example, a `CO2_OFFSET = -400.0` reduces the live measured `CO2` value by `400 ppm` before publish.
@@ -147,19 +173,6 @@ Corner case:
 - Devices for MQTT-enabled profiles should be provisioned through AP/nodusweb mode before being switched into the target profile.
 
 Manual switch overrides use the live runtime switch controller and also persist the resulting `SWITCH_#_LAST_STATE`, so the next boot starts from the last successfully applied manual state.
-
-Implementation direction for `cPyNodus_II`:
-
-- In `nodusweb`, web-driven operational edits should apply live when safe:
-  - shared location
-  - switch labels
-  - display metrics/styles
-  - calibration offsets
-  - manual switch override
-- Startup-topology edits should persist but remain restart-required:
-  - Wi-Fi credentials
-  - hostname
-  - MQTT/profile changes
 
 ## Time settings
 
@@ -211,17 +224,17 @@ values.
 
 ## Soil deficit thresholds
 
-`sensor_soil.toml` includes a `[SoilDeficit]` section that controls how `SMD` is calculated:
+`sensor_soil.toml` includes a `[SoilDeficit]` section that controls how `Soil Moisture Deficit` is calculated:
 
 - `SPD_WET_THRESHOLD_PCT`
 - `SPD_DRY_THRESHOLD_PCT`
 
-`SMD` is a normalized dryness percentage derived from corrected `Soil-Moisture`, not an independent raw sensor register.
+`Soil Moisture Deficit` is a normalized dryness percentage derived from corrected `Soil Moisture`, not an independent raw sensor register.
 
 It represents the current soil water shortfall within the configured wet-to-dry operating band, not the soil's inherent water-holding capacity.
 
 ```text
-SMD = 100 * ((wet_threshold - corrected_soil_moisture) / (wet_threshold - dry_threshold))
+Soil Moisture Deficit = 100 * ((wet_threshold - corrected_soil_moisture) / (wet_threshold - dry_threshold))
 ```
 
 Behavior:
@@ -231,7 +244,7 @@ Behavior:
 - values in between are scaled linearly
 - higher values indicate drier soil and greater irrigation need
 - the output is clamped to `0-100%`
-- if `SPD_WET_THRESHOLD_PCT <= SPD_DRY_THRESHOLD_PCT`, `SMD` is not reported
+- if `SPD_WET_THRESHOLD_PCT <= SPD_DRY_THRESHOLD_PCT`, `Soil Moisture Deficit` is not reported
 
 Defaults in `sensor_soil.toml.def`:
 
@@ -240,7 +253,7 @@ Defaults in `sensor_soil.toml.def`:
 
 ## Soil stress settings
 
-`sensor_soil.toml` also includes a `[SoilStress]` section that controls how `SSI` is calculated:
+`sensor_soil.toml` also includes a `[SoilStress]` section that controls how `Soil Stress Index` is calculated:
 
 - `SSI_TEMP_LOW_CRIT_C`
 - `SSI_TEMP_LOW_OK_C`
@@ -249,10 +262,10 @@ Defaults in `sensor_soil.toml.def`:
 - `SSI_MOISTURE_WEIGHT_PCT`
 - `SSI_TEMP_WEIGHT_PCT`
 
-`SSI` is a normalized soil concern percentage derived from:
+`Soil Stress Index` is a normalized soil concern percentage derived from:
 
-- `SMD`
-- corrected `Soil-Temp`
+- `Soil Moisture Deficit`
+- corrected `Soil Temp_C`
 
 Default temperature bands:
 
@@ -277,10 +290,10 @@ Formula:
 
 ```text
 soil_temp_stress = temperature-based stress from 0 to 100
-SSI = ((SMD * moisture_weight) + (soil_temp_stress * temp_weight)) / (moisture_weight + temp_weight)
+Soil Stress Index = ((Soil Moisture Deficit * moisture_weight) + (soil_temp_stress * temp_weight)) / (moisture_weight + temp_weight)
 ```
 
-If the temperature band is invalid or the total weight is zero, `SSI` is not reported.
+If the temperature band is invalid or the total weight is zero, `Soil Stress Index` is not reported.
 
 ## Tips
 

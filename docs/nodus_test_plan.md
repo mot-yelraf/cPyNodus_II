@@ -2,9 +2,10 @@
 
 ## Purpose
 
-Use this plan to verify end-to-end Nodus behavior across seven physical devices
-running firmware builds `v0.26.113.10` through `v0.26.113.16`, with emphasis on
-the remaining Sensorius `Add Device` onboarding path.
+Use this plan to verify end-to-end Nodus behavior across physical devices
+running the current firmware build, with emphasis on Sensorius `Add Device`,
+steady-state MQTT, switch control, calibration, log transfer, OTA readiness,
+and recovery behavior.
 
 This is a manual system-validation plan. It complements host-side `pytest`
 coverage and is intended to capture device, broker, and Sensorius integration
@@ -22,7 +23,7 @@ Validate:
 - runtime `config/set`
 - runtime `calibration/set`
 - reconnect and restart behavior
-- mixed-version field behavior across `113.10` to `113.16`
+- version-specific field behavior when validating a mixed firmware fleet
 
 Out of scope:
 
@@ -44,13 +45,9 @@ Use one row per physical Nodus.
 
 | Device | Firmware | Mode | Sensor Present | Switch Present | Serial Log | Result |
 | --- | --- | --- | --- | --- | --- | --- |
-| Nodus-1 | `v0.26.113.xx` | sensor / switch / combo | yes/no | yes/no | path | pass/fail |
-| Nodus-2 | `v0.26.113.xx` | sensor / switch / combo | yes/no | yes/no | path | pass/fail |
-| Nodus-3 | `v0.26.113.xx` | sensor / switch / combo | yes/no | yes/no | path | pass/fail |
-| Nodus-4 | `v0.26.113.xx` | sensor / switch / combo | yes/no | yes/no | path | pass/fail |
-| Nodus-5 | `v0.26.113.xx` | sensor / switch / combo | yes/no | yes/no | path | pass/fail |
-| Nodus-6 | `v0.26.113.xx` | sensor / switch / combo | yes/no | yes/no | path | pass/fail |
-| Nodus-7 | `v0.26.113.xx` | sensor / switch / combo | yes/no | yes/no | path | pass/fail |
+| Nodus-1 | current | sensor / switch / combo | yes/no | yes/no | path | pass/fail |
+| Nodus-2 | current | sensor / switch / combo | yes/no | yes/no | path | pass/fail |
+| Nodus-3 | current | sensor / switch / combo | yes/no | yes/no | path | pass/fail |
 
 ## Evidence To Capture
 
@@ -68,7 +65,8 @@ For each test case, record:
 Recommended capture set:
 
 - Sensorius UI screenshot for `Add Device`
-- broker trace for `onboard/hello`, `config/ack`, `config/result`, `meta`
+- broker trace for `onboard/hello`, `config/ack`, `config/result`, `meta`,
+  and `meta/switch` when switch channels are present
 - serial log around reboot, Wi-Fi join, MQTT connect, and first publish
 - retained `meta` payload after onboarding completes
 
@@ -98,7 +96,7 @@ The validation pass is complete when all of the following are true:
 5. `config/set` and `calibration/set` each succeed at least once on every
    applicable device.
 6. At least one reconnect / restart scenario passes on every applicable device.
-7. Any version-specific deviations across `113.10` to `113.16` are documented.
+7. Any version-specific deviations in a mixed fleet are documented.
 
 ## Test Cases
 
@@ -115,7 +113,7 @@ Steps:
 
 Pass criteria:
 
-- All seven devices have an inventory row.
+- All planned devices have an inventory row.
 - Each device has a confirmed firmware version and role.
 
 ### TC-02: AP Bootstrap Sanity
@@ -143,7 +141,7 @@ Note:
 
 Goal: validate the full production onboarding path that still remains open.
 
-Run this on all seven devices.
+Run this on all planned devices.
 
 Steps:
 
@@ -157,7 +155,9 @@ Steps:
 6. Observe `nodus/<device_id>/config/ack`.
 7. Observe `nodus/<device_id>/config/result`.
 8. Observe retained `nodus/<device_id>/meta`.
-9. Confirm Sensorius marks the device onboarded and online.
+9. For switch-capable devices, observe retained
+   `nodus/<device_id>/meta/switch`.
+10. Confirm Sensorius marks the device onboarded and online.
 
 Pass criteria:
 
@@ -166,6 +166,7 @@ Pass criteria:
 - `config/ack.accepted == true`.
 - `config/result.applied == true`.
 - retained `meta` is present after onboarding success.
+- retained `meta/switch` is present when switch channels are enabled.
 - Sensorius shows the device online without requiring a manual retry.
 
 Failure clues to record:
@@ -189,7 +190,9 @@ Steps:
 3. Verify `capabilities`.
 4. Verify `status.heartbeat_topic`.
 5. Verify sensor and switch sections match the physical device role.
-6. For switch devices, verify per-channel topics are present.
+6. For switch devices, verify `switch.meta_topic` is present in retained
+   `meta`, then read retained `meta/switch` and verify the per-channel topic
+   map.
 
 Pass criteria:
 
@@ -335,6 +338,47 @@ If a publish stall appears:
 2. Compare against the failure mode documented in [docs/mqtt.md](./mqtt.md).
 3. Do not mark the device validated until the issue is explained or cleared.
 
+### TC-12: MQTT Log Retrieval
+
+Goal: verify bounded runtime log transfer over MQTT.
+
+Run on at least one representative MQTT-enabled device with writable logs.
+
+Steps:
+
+1. Request `_reboot.log` through `nodus/<device_id>/logs/get`.
+2. Observe `logs/ack`, one or more `logs/chunk` messages when the file has
+   content, and final `logs/result`.
+3. Repeat for `_recovery.log`.
+4. Optionally run `scripts/nodus_getlogs.py --device-id <device-id> --all`
+   from the host.
+
+Pass criteria:
+
+- Requests for `_reboot.log` and `_recovery.log` are accepted when present.
+- Chunks include offset, next offset, sequence, base64 data, and checksum.
+- Final result reports completion and checksum.
+
+### TC-13: OTA Prepare Smoke Test
+
+Goal: verify OTA prepare enters temporary HTTP-only mode without transferring a
+full package.
+
+Run only on devices where the app filesystem is writable.
+
+Steps:
+
+1. Publish a valid `prepare` command to `nodus/<device_id>/fwupdate`.
+2. Observe `fwupdate/ack` and `fwupdate/result` with `prepared = true`.
+3. Confirm the device reboots into OTA mode and exposes `/ota/status`.
+4. Abort or allow the device to return according to the test procedure.
+
+Pass criteria:
+
+- Prepare is rejected with `read_only_filesystem` when the filesystem is not
+  writable.
+- Prepare succeeds when writable and HTTP OTA status becomes reachable.
+
 ## Recommended Run Order
 
 Use this order per device:
@@ -348,7 +392,8 @@ Use this order per device:
 7. `TC-08` calibration if applicable
 8. `TC-09` reconnect and recovery
 
-Run `TC-10` and `TC-11` on a smaller representative subset if time is limited.
+Run `TC-10`, `TC-11`, `TC-12`, and `TC-13` on a smaller representative subset
+if time is limited.
 
 ## Result Summary Template
 
@@ -372,6 +417,8 @@ TC-08:
 TC-09:
 TC-10:
 TC-11:
+TC-12:
+TC-13:
 
 Overall result:
 Notes:
@@ -381,7 +428,7 @@ Notes:
 
 For a release decision, require:
 
-- all seven devices passing `TC-03`
+- all planned devices passing `TC-03`
 - all applicable devices passing `TC-05`, `TC-06`, `TC-07`, `TC-08`, `TC-09`
 - no unresolved version-specific onboarding failure
 - no unexplained retained-`meta` mismatch

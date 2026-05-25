@@ -57,24 +57,32 @@ Do **not** add new persistent keys to Nodus `settings.toml` for onboarding state
 `device_id` is authoritative identity.
 
 ## Runtime State Placement on Nodus
-Because `settings.toml` is unchanged, onboarding runtime state should be held in one of these:
-1. In-memory state only (preferred when flow window is short and reboot timing is deterministic).
-2. Ephemeral file (for example `onboarding_state.json`) with TTL, removed after success or expiry.
+Because `settings.toml` is unchanged, onboarding runtime state is stored outside
+the normal TOML schema.
 
-Allowed runtime state fields:
-- `onboard_token` (or secure hash)
+Current `cPyNodus_II` behavior:
+
+- writes `onboarding_state.json` after accepted `/itaot-init`
+- stores `schema`, `onboard_token`, `hostname`, `base_topic`,
+  `active_profile`, and `created_at`
+- deletes the file after a successful MQTT config apply
+
+Potential future state fields, if tighter on-device replay handling is added:
+
 - `token_expires_at`
 - `session_started_at`
-- `last_message_id` (for idempotency guard)
+- `last_message_id`
 - `pending_config_version`
 
-Do not merge these into persistent config schema.
+Do not merge onboarding protocol state into persistent config schema.
 
 ## Token Rules
-1. Token TTL target: 5-10 minutes.
-2. Token is single-use.
-3. Replay is rejected.
-4. Token invalidated after successful config apply.
+1. Nodus stores the bootstrap token in `onboarding_state.json`, outside
+   `settings.toml`.
+2. When the state file is present, `config/set` must include the same token.
+3. Nodus clears the state file after `config/result.applied == true`.
+4. Nodus does not currently enforce an on-device TTL; Sensorius should enforce
+   a short onboarding-session TTL and avoid replaying consumed tokens.
 
 ## `onboard/hello` Payload
 ```json
@@ -84,7 +92,7 @@ Do not merge these into persistent config schema.
   "hostname": "aqi-x943fm",
   "serial": "x943fm",
   "type": "pico2w",
-  "version": "v0.26.053.0",
+  "version": "v0.26.xxx.x",
   "capabilities": {
     "sensor": true,
     "switch": true
@@ -100,7 +108,7 @@ Do not merge these into persistent config schema.
 4. Publish `config/result` after apply attempt.
 
 ## Failure Behavior
-1. Invalid/expired token: reject onboarding/config flow and publish negative `config/result` when applicable.
+1. Token mismatch: reject onboarding/config flow and publish negative `config/result` when applicable.
 2. Schema invalid: reject with explicit error.
 3. Apply failure: publish `config/result` with `applied=false` and `error` string.
 
@@ -118,4 +126,5 @@ Do not merge these into persistent config schema.
 2. Device publishes hello on canonical V2 topic after reboot.
 3. `config/ack` and `config/result` follow `message_id` correlation.
 4. Duplicate `config/set` with same `message_id` is idempotent.
-5. Expired/replayed token is rejected.
+5. Token mismatch is rejected, and successful config apply clears the token
+   state outside `settings.toml`.

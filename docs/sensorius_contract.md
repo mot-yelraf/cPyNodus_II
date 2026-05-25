@@ -57,6 +57,10 @@ Bootstrap rules:
 - Keep onboarding protocol state out of normal TOML config schema.
 - If `mqtt.active_profile` is omitted and `mqtt.broker_host` is present,
   infer `ACTIVE_PROFILE = "sensorius"`.
+- Current firmware stores the bootstrap token in `onboarding_state.json`,
+  validates `config/set` against it when present, and deletes the file after a
+  successful config apply. On-device TTL enforcement is not currently
+  implemented.
 
 ## MQTT Topics
 
@@ -103,6 +107,13 @@ Bootstrap rules:
 - `nodus/<device_id>/calibration/result`
 - `nodus/<device_id>/meta/patch`
 
+### Log Transfer
+
+- `nodus/<device_id>/logs/get`
+- `nodus/<device_id>/logs/ack`
+- `nodus/<device_id>/logs/chunk`
+- `nodus/<device_id>/logs/result`
+
 ### Firmware Update
 
 - `nodus/<device_id>/fwupdate`
@@ -130,7 +141,7 @@ Canonical `onboard/hello` payload:
   "hostname": "co2-ykdvea",
   "serial": "ykdvea",
   "type": "pico2w",
-  "version": "v0.26.111.15",
+  "version": "v0.26.xxx.x",
   "capabilities": {
     "sensor": true,
     "switch": true
@@ -167,18 +178,26 @@ Canonical heartbeat payload:
 }
 ```
 
-Canonical switch state payload:
+Canonical switch event payload:
 
 ```json
 {
-  "schema": "nodus-switch-state/v1",
+  "schema": "nodus-switch-event/v1",
   "device_id": "switch-ykdvea",
   "channel_id": "S1-ykdvea",
   "label": "Fan",
   "state": "ON",
+  "message_id": "cfg-123",
   "timestamp": 946709424
 }
 ```
+
+Retained switch `state` topic implementation note:
+
+- Startup refresh currently publishes a JSON `nodus-switch-state/v1` snapshot.
+- Accepted runtime switch commands publish raw retained `ON` or `OFF`.
+- Consumers should tolerate both shapes on `nodus/<channel_id>/state` and use
+  `event` plus `config/result` for correlated command handling.
 
 ## Retained `meta`
 
@@ -230,9 +249,8 @@ persisted TOML password fields. They are not plaintext.
 ## Retained `meta/switch`
 
 Retained `nodus/<device_id>/meta/switch` is the authoritative switch channel
-topic map for Sensorius control. Nodus queues it with the retained startup
-identity publish batch, before runtime command subscriptions are allowed to
-block progress. Sensorius should merge it with the latest retained `meta` for
+topic map for Sensorius control. Nodus publishes it with the retained startup
+identity batch. Sensorius should merge it with the latest retained `meta` for
 switch control materialization.
 
 Canonical topic:
@@ -404,8 +422,10 @@ Implemented behavior:
 - Nodus publishes channel-scoped `config/ack` after a valid switch command is
   accepted for handling.
 - Nodus applies the switch state, publishes channel-scoped `config/result`,
-  publishes `event`, publishes retained `state`, and publishes a non-retained
-  device `meta/patch` with `source = "switch_set"`.
+  publishes a JSON `event`, publishes retained `state`, and publishes a
+  non-retained device `meta/patch` with `source = "switch_set"`.
+- Runtime command handling currently writes retained `state` as raw `ON` or
+  `OFF`; startup refresh may write a JSON state snapshot.
 - If the filesystem is writable, Nodus persists the channel
   `SWITCH_<n>_LAST_STATE` update into `switch.toml`. If persistence fails, the
   command may still be applied locally and the command result carries

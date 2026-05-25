@@ -1,7 +1,21 @@
 # cPyNodus_II Project Handoff
 
 This document captures the working direction and decisions established while
-bootstrapping `cPyNodus_II`.
+bootstrapping `cPyNodus_II`. It is historical context, not the current feature
+inventory; use `docs/README.md`, `docs/configuration.md`,
+`docs/sensorius_contract.md`, and `docs/ota.md` for the current runtime
+contract.
+
+## Current status
+
+The original scaffold has grown into a functional firmware runtime:
+
+- `cpynodus_ii/` is the active package layout.
+- Factory bootstrap, profile planning, Wi-Fi/AP startup, web routes, MQTT
+  startup/reconnect, sensor and switch services, runtime config, calibration,
+  log transfer, recovery logs, and OTA prepare/HTTP transfer are implemented.
+- Host-side pytest covers the major behavior contracts; hardware soak testing
+  remains the required validation layer for RF, memory, and MQTT stability.
 
 ## Project intent
 
@@ -70,7 +84,9 @@ These rules should guide future VS Code Codex sessions working in
 - Any MQTT hot-path change should include a memory/allocation review and an
   on-device soak plan.
 
-## Planned implementation slices
+## Original planned implementation slices
+
+These were the initial work slices and are retained for project history:
 
 1. Boot, settings, profile selection, and startup planning
 2. Wi-Fi and MQTT connect/reconnect lifecycle
@@ -81,7 +97,7 @@ These rules should guide future VS Code Codex sessions working in
 7. Calibration flows
 8. AP/onboarding and local web flows
 
-## Current scaffold state
+## Original scaffold state
 
 The following scaffold decisions are already in place:
 
@@ -178,18 +194,19 @@ Coverage goals should include:
   - low-memory protective behavior
 - on-device soak coverage under repeated switch toggling plus sensor publish
 
-## Recommended next steps
+## Current recommended next steps
 
-1. Replace scaffold settings with TOML-backed settings loading.
-2. Write characterization tests for existing `cPyNodus` profile and settings
-   behavior.
-3. Characterize current switch MQTT contract and publish sequence from the
-   existing system.
-4. Implement slice 1 and slice 2 before adding any calibration or web behavior.
-5. Keep the first real on-device validation focused on:
-   - boot behavior in ROFS/RWFS modes
-   - sensor-only publish stability
-   - switch-only command stability
+1. Keep host-side characterization tests current as MQTT, web, calibration,
+   and OTA contracts change.
+2. Continue on-device soak testing for repeated switch toggles, sensor publish
+   cadence, MQTT reconnect, and Wi-Fi recovery.
+3. Harden remaining OTA recovery behavior, especially post-update boot-health
+   rollback and operator timeout handling in OTA mode.
+4. Validate Home Assistant discovery and switch state handling against a live
+   Home Assistant broker after any public topic or payload change.
+5. Treat `docs/README.md`, `docs/configuration.md`,
+   `docs/sensorius_contract.md`, and `docs/ota.md` as the current operator
+   contract; keep this handoff file as historical design context.
 
 ## Operator notes for future sessions
 

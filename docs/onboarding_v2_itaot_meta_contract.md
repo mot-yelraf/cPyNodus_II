@@ -24,7 +24,7 @@ Example:
 ```json
 {
   "schema": "itaot-meta/v1",
-  "version": "v0.26.053.0",
+  "version": "v0.26.xxx.x",
   "origin": "nodus",
   "device_id": "aqi-x943fm",
   "network": {
@@ -47,7 +47,7 @@ Example:
     "serial": "x943fm",
     "location": "Greenhouse",
     "active_sensor_file": "sensor_i2c.toml",
-    "display_metrics": ["CO2", "Temperature"],
+    "display_metrics": ["Air Quality", "Temperature"],
     "calibration": {
       "calibrated": true,
       "status": "Calibrated"
@@ -71,7 +71,7 @@ Example:
   "location_group": {
     "id": "x943fm",
     "members": ["aqi-x943fm", "S1-x943fm"],
-    "label": "SENSOR - aqi-x943fm SWITCH - S1-x943fm"
+    "label": "aqi-x943fm S1-x943fm"
   }
 }
 ```

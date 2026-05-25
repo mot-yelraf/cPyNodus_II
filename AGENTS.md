@@ -2,26 +2,103 @@
 
 Guidance for AI coding agents working in this repository.
 
-## Project Overview
+## Project Snapshot
 
 - Project: `cPyNodus_II`
 - Target platform: Raspberry Pi Pico2 W only
 - Runtime: CircuitPython `9.2.8`
-- Purpose: firmware for Nodus sensor/switch devices with AP onboarding, lightweight web UI, MQTT integration for Sensorius and Home Assistant, and constrained-memory operation
+- Purpose: firmware for Nodus sensor/switch devices with AP onboarding,
+  lightweight local web UI, MQTT integration for Sensorius/WeeWX/Home
+  Assistant, calibration, log retrieval, OTA prepare/HTTP transfer, and
+  constrained-memory recovery behavior.
 
-This is not a general CPython application. Prefer CircuitPython-compatible APIs and patterns throughout.
+This is not a general CPython application. Prefer CircuitPython-compatible APIs
+and patterns throughout, and assume Pico2 W heap pressure is a primary design
+constraint.
 
+## Start Here
+
+Before changing behavior, read the current local contract:
+
+- `docs/README.md`: operator-level feature overview
+- `docs/architecture.md`: startup, network, recovery, and runtime structure
+- `docs/configuration.md`: TOML files, profile behavior, setup UI/API
+- `docs/sensorius_contract.md`: canonical Sensorius MQTT contract
+- `docs/mqtt.md`: short topic-family overview and MQTT notes
+- `docs/ota.md`: current OTA prepare and HTTP transfer behavior
+- `docs/extending.md`: adding sensors or switches
+
+`docs/debug-notes/` contains dated investigation notes. Treat them as archival
+context, not as the current runtime contract.
+
+## Current Repository Shape
+
+- `boot.py`: GP14 filesystem/USB guard, ROFS/RWFS setup
+- `code.py`: CircuitPython entrypoint and fatal traceback wrapper
+- `cpynodus_ii/app.py`: main async runtime orchestration, startup, recovery,
+  MQTT lifecycle, and steady state
+- `cpynodus_ii/core/`: settings, config models, network stack, MQTT adapter,
+  NTP, recovery, reboot/recovery logs
+- `cpynodus_ii/features/`: sensor/switch services, publish cycles, command
+  intake, web handlers, web config, log transfer, derived metrics
+- `cpynodus_ii/hardware/`: CircuitPython hardware adapters for I2C, UART/RS485,
+  and switch GPIO
+- `cpynodus_ii/ota/`: private OTA state and temporary HTTP-only OTA runtime
+- `lib/`: CircuitPython libraries copied to device
+- `scripts/`: deploy, OTA package/push, MQTT log retrieval and analysis tools
+- `tests/`: host-side pytest coverage
+- `testApparatus/`: hardware/integration support routines
 
 ## Working Constraints
 
 - Keep code lean. Memory is tight on Pico2 W.
-- Avoid heavy allocations in hot paths.
+- Avoid heavy allocations in hot paths and long-lived background state.
 - Prefer simple, explicit code over extra abstraction.
 - Use CircuitPython and `adafruit_*` APIs where appropriate.
-- Avoid CPython-only modules or patterns, circuitpython is not cpython.
+- Avoid CPython-only modules, reflection-heavy patterns, threads, subprocesses,
+  and filesystem assumptions that do not hold on CircuitPython.
 - Avoid large inline HTML or JSON blobs.
 - Add short docstrings to public functions and classes.
-- Do not use concatenated multiline f-strings; use a single f-string or `.format(...)`.
+- Do not use concatenated multiline f-strings; use a single f-string or
+  `.format(...)`.
+- Preserve constrained-memory behavior unless there is a strong measured reason
+  to change it.
+- Treat web UI, MQTT reconnect logic, network startup, recovery, OTA, and config
+  persistence as stability-sensitive areas.
+- Do not silently change public config keys, MQTT topics, retained payload
+  shapes, recovery semantics, or switch persistence behavior.
+
+Feature code should not own socket lifecycle. Network ownership belongs in
+`cpynodus_ii/core/network.py`, with MQTT socket/client behavior kept behind the
+MQTT adapter and app-level recovery flow.
+
+## Network and Recovery Rules
+
+The current network startup path is important. Do not reorder it casually:
+
+1. Load settings and perform factory/profile reset work.
+2. Handle soft-reload cleanup markers and warm-start radio cleanup.
+3. Check private OTA state before normal profile startup.
+4. Build the `NetworkStack`.
+5. Fall back to AP recovery before feature services start if station join fails.
+6. Refresh/persist `MQTT.BROKER_IP` when needed and writable.
+7. Build MQTT from the current socket pool/SSL context.
+8. Run MQTT preflight/probe logic before MiniMQTT owns the socket.
+9. Start sensor, switch, web, NTP, and MQTT loops from the resolved plan.
+
+Soft reboot means `supervisor.reload()`. It is the fast recovery path for
+app-level MQTT/socket issues when cleanup can close MQTT, stop services, tear
+down station networking, set the warm-start cleanup marker, and rebuild cleanly
+on the next run.
+
+Hard reset means `microcontroller.reset()`. It is used when the Pico2 W
+radio/socket state may outlive a Python reload, including AP idle timeout,
+Wi-Fi recovery timeout, Wi-Fi after-ready failure, MQTT recovery timeout,
+repeated MQTT connect failures, MQTT memory allocation failures, and repeated
+sensor-not-found errors.
+
+Any change to startup or recovery should include focused tests and a clear
+hardware validation note when behavior touches RF, sockets, or reboot depth.
 
 ## Configuration and Docs
 
@@ -34,50 +111,82 @@ Default config templates:
 
 When changing config schema or adding settings:
 
-- Update the relevant `*.toml.def` template
-- Update `docs/configuration.md`
-- Keep runtime behavior and docs aligned
+- Update the relevant `*.toml.def` template.
+- Update `docs/configuration.md`.
+- Update MQTT/Sensorius docs if the key is externally visible.
+- Keep runtime behavior, templates, and docs aligned.
 
-When adding features:
+When adding a sensor:
 
-- New sensor:
-  - add any needed config keys to `sensor_i2c.toml.def`
-  - document in `docs/extending.md`
-- New switch:
-  - implement control/state in `cPySwitch.py`
-  - update MQTT topics and discovery payloads
-  - document in `docs/extending.md`
+- Add any needed config keys to `sensor_i2c.toml.def` or
+  `sensor_soil.toml.def`.
+- Update config loading in `cpynodus_ii/core/settings.py` and config models in
+  `cpynodus_ii/core/config.py` when needed.
+- Implement startup/read behavior in `cpynodus_ii/features/sensor_service.py`
+  and hardware binding in `cpynodus_ii/hardware/sensor_adapter.py` when needed.
+- Keep metric names stable and document them in `docs/README.md`,
+  `docs/configuration.md`, and `docs/extending.md`.
+- Add focused host tests.
+
+When adding or changing switches:
+
+- Keep `switch.toml` as the normal-runtime switch gate.
+- Add any needed config keys to `switch.toml.def`.
+- Implement control/state behavior in `cpynodus_ii/features/switch_service.py`
+  and GPIO binding in `cpynodus_ii/hardware/switch_adapter.py`.
+- Update MQTT payload/discovery behavior only deliberately, with
+  `docs/sensorius_contract.md`, `docs/mqtt.md`, and tests updated.
+- Do not break existing channel `config/set`, `config/ack`, `config/result`,
+  `event`, `state`, or availability topics without an explicit migration plan.
 
 ## Testing and Verification
 
-Host-side verification uses `pytest`. It does not execute on-device CircuitPython firmware.
+Host-side verification uses `pytest`. It does not execute on-device
+CircuitPython firmware.
 
 For changes, run applicable tests before claiming verification:
 
 - General host-side verification: `pytest tests`
-- Targeted checks for touched areas, for example:
-  - `pytest tests/test_mqtt_client.py`
-  - `pytest tests/test_web_routes.py`
-- If hardware integration behavior changes, also run relevant routines under `testApparatus/`
+- Config/settings:
+  `pytest tests/test_runtime_config.py tests/test_settings_bootstrap.py tests/test_persistence.py`
+- MQTT/command behavior:
+  `pytest tests/test_mqtt_client_adapter.py tests/test_command_intake.py tests/test_publish_cycle.py`
+- Web routes/config:
+  `pytest tests/test_web_routes.py tests/test_web_config.py tests/test_web_runtime.py tests/test_web_services.py`
+- Network/recovery:
+  `pytest tests/test_network_stack.py tests/test_recovery_policy.py tests/test_app_startup.py`
+- OTA:
+  `pytest tests/test_ota_state.py tests/test_ota_http.py tests/test_ota_package.py tests/test_ota_runtime.py`
+- Docs-only edits: at minimum run `git diff --check`.
+
+If hardware integration behavior changes, also run or document the relevant
+manual routines under `testApparatus/`.
 
 Manual behaviors worth validating when relevant:
 
-- Missing SSID falls back to AP mode
-- Saving onboarding settings triggers reboot and Wi-Fi join
-- Sensor data publishes at the configured interval
-- Switch commands are honored and persisted
-- `switch.toml` remains the normal-runtime switch gate
-- Network loss triggers restart and recovery
+- Missing SSID falls back to AP mode.
+- Saving onboarding settings triggers reboot and Wi-Fi join.
+- Sensor data publishes at the configured interval.
+- Switch commands are honored and persisted.
+- `switch.toml` remains the normal-runtime switch gate.
+- Temporary network loss triggers recovery without corrupting config.
+- Persistent Wi-Fi/MQTT faults escalate through the intended soft or hard
+  reboot path.
+- OTA prepare enters temporary HTTP-only mode only when the app filesystem is
+  writable.
 
-If you report verification, state exactly which test routines ran and whether they passed.
+If you report verification, state exactly which test routines ran and whether
+they passed.
 
 ## Tooling
 
-- Primary lint config lives in `pyproject.toml`
+- Primary lint config lives in `pyproject.toml`.
 - Ruff settings:
   - line length `88`
   - target version `py38`
   - enabled rules `E`, `F`, `I`
+- Prefer `rg` for code and docs searches.
+- Use existing local patterns before adding abstractions.
 
 ## Versioning Rule
 
@@ -111,8 +220,11 @@ Example:
 
 ## Practical Agent Defaults
 
-- Read existing patterns before refactoring.
-- Preserve constrained-memory behavior unless there is a strong reason to change it.
+- Start with `git status --short` and avoid overwriting user changes.
+- Read existing code and tests before refactoring.
 - Prefer targeted edits over broad rewrites.
-- Treat web UI, MQTT reconnect logic, and config persistence as stability-sensitive areas.
-- Do not silently change public config keys, MQTT topics, or recovery semantics.
+- Keep docs, tests, templates, and runtime behavior in sync.
+- For docs-only work, do not bump the firmware version.
+- For runtime work, add or update focused tests in the touched area.
+- Keep final reports concrete: files changed, tests run, tests passed/failed,
+  and any hardware validation still needed.

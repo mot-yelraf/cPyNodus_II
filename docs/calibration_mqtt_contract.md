@@ -126,19 +126,22 @@ Accepted payload shape B:
 }
 ```
 
-Section mapping currently implemented by Nodus:
+Section mapping accepted by the parser:
 
 - `calibration.system.*` -> `Calibration.System.*`
 - `calibration.device.*` -> `Calibration.Device.*`
-- `calibration.soil.*` -> `Calibration.Soil.*`
-- `calibration.apvpd.*` -> `Calibration.*`
+- `calibration.soil.*` -> `Calibration.Soil.*` for persistence/patching
+- `calibration.apvpd.*` -> `Calibration.*` for persistence/patching
 
 Behavior:
 
-- writes are applied to the active sensor file
-- Nodus attempts hot reload via `sensor.reload_calibration_from_settings(settings)`
-- if hot reload is unavailable/fails, Nodus falls back to `sensor.try_reinit()`
-- `offsets[].key` also accepts the short aliases exposed in calibration status, including `soil_ph_offset`
+- writes are applied to the active sensor TOML file when the filesystem is writable
+- additive runtime offsets in `Calibration.System` and `Calibration.Device`
+  update the in-memory `RuntimeConfig` used by subsequent reads
+- driver setup calibration such as `ALTITUDE_METERS` is applied at driver
+  startup and therefore requires restart/reinitialization to affect the driver
+- `offsets[].key` also accepts the short alias `soil_ph_offset`, which maps to
+  `Calibration.Device.SOIL_PH_CAL_VAL`
 
 ## Action: Status
 
@@ -178,17 +181,20 @@ Example:
 
 Behavior:
 
-- Nodus marks calibration status as in progress for the soil session
-- Nodus publishes a sample payload to the normal sensor data topic on each sample
-- Nodus also publishes the same sample payload to `event/calibration_sample`
+- Nodus marks calibration status as active for the soil session
+- Nodus publishes the normal full sensor data payload to `nodus/<sensor_id>/data`
+  on each sample
+- Nodus publishes a compact sample event to `event/calibration_sample`
 - Nodus emits lightweight progress notifications on `event/calibration_progress`
-- when sampling completes, Nodus computes the average raw pH and writes the resulting `soil_ph_offset` automatically
+- when sampling completes, Nodus computes the average sampled pH and writes the
+  resulting `SOIL_PH_CAL_VAL` offset automatically
 
 Contract note:
 
 - `event/calibration_sample` is the authoritative ingestion path for soil calibration samples
-- the mirrored publish on the normal sensor data topic is a compatibility side effect and should not be used by Sensorius as the discriminator for a calibration session
-- Sensorius should not assume the normal sensor topic has a calibration-specific schema marker in this implementation
+- the mirrored publish on the normal sensor topic is a normal
+  `nodus-sensor-data/v1` payload and should not be used by Sensorius as the
+  discriminator for a calibration session
 - Sensorius may still use manual `action = "apply"` writes for `soil_ph_offset` when the operator enters an offset directly
 
 Limits:
@@ -272,11 +278,11 @@ Successful soil pH session start example:
   "sample_count": 12,
   "reference_ph": 7.0,
   "status": {
-    "status": "in_progress",
+    "schema": "nodus-calibration-status/v1",
+    "status": "active",
     "calibrated": false,
     "sensor_id": "soil-x943fm",
     "timestamp": 1773380000,
-    "soil_ph_offset": 0.0,
     "soil_calibration_active": true,
     "soil_calibration_message_id": "soil-ph-20260313-1",
     "soil_calibration_reference_ph": 7.0,
@@ -363,34 +369,24 @@ Example:
 
 ```json
 {
+  "schema": "nodus-calibration-sample/v1",
+  "sensor_id": "soil-x943fm",
   "message_id": "soil-ph-20260313-1",
   "sample_index": 3,
   "sample_count": 12,
   "reference_ph": 7.0,
-  "timestamp": 1773380020,
-  "status": "ok",
-  "metrics": ["Soil-pH", "Soil-Temp"],
-  "display_metrics": ["Soil-pH", "Soil-Temp"],
-  "values": {
-    "Soil-pH": 6.8,
-    "Soil-Temp": 21.2
-  },
-  "units": {
-    "Soil-pH": "pH",
-    "Soil-Temp": "C"
-  },
-  "soil_ph_offset": 0.0,
-  "corrected_ph": 6.8,
-  "raw_ph": 6.8
+  "soil_ph": 6.8,
+  "timestamp": 1773380020
 }
 ```
 
 Notes:
 
-- the same payload is also published to the normal sensor data topic during the sampling session
-- this payload does not currently include an explicit event discriminator field such as `event = "calibration_sample"`
+- a normal sensor data payload is also published to the normal sensor data topic during the sampling session
+- the sample event includes `schema = "nodus-calibration-sample/v1"`
 - Sensorius should therefore treat the topic `nodus/<sensor_id>/event/calibration_sample` as the session discriminator and treat the mirrored normal-topic publish as non-authoritative
-- `raw_ph` is derived from `corrected_ph - soil_ph_offset` when the active soil offset is available
+- the current sample event carries the sampled `soil_ph` value; it does not
+  include a full `values` map or raw/corrected pH split
 
 ## Runtime Status Event
 
@@ -404,7 +400,8 @@ Example:
 
 ```json
 {
-  "status": "in_progress",
+  "schema": "nodus-calibration-status/v1",
+  "status": "idle",
   "calibrated": false,
   "sensor_id": "aqi-x943fm",
   "timestamp": 1772956800,
@@ -417,12 +414,14 @@ Observed status values from current implementation:
 
 - `unavailable`
 - `idle`
-- `in_progress`
+- `active`
 - normalized sensor state values such as `calibrated` or `not_calibrated`
 
 Notes:
 
-- fields like `temp_offset`, `rh_offset`, `device_temp_offset`, `device_rh_offset`, `system_temp_offset`, and `system_rh_offset` are present only when the active sensor exposes them
+- current MQTT status responses are compact; accepted calibration writes are
+  mirrored through `meta/patch` rather than by embedding every offset in the
+  status event
 
 ## Progress Event
 
@@ -436,12 +435,13 @@ Example:
 
 ```json
 {
-  "message_id": "soil-ph-20260313-1",
-  "status": "in_progress",
+  "schema": "nodus-calibration-progress/v1",
   "sensor_id": "soil-x943fm",
-  "timestamp": 1773380020,
+  "message_id": "soil-ph-20260313-1",
   "sample_index": 3,
-  "sample_count": 12
+  "sample_count": 12,
+  "remaining": 9,
+  "timestamp": 1773380020
 }
 ```
 
@@ -465,33 +465,22 @@ Success example:
 
 ```json
 {
-  "status": "success",
+  "schema": "nodus-calibration-event-result/v1",
   "sensor_id": "soil-x943fm",
-  "timestamp": 1773380120,
-  "calibrated": true,
-  "soil_ph_offset": 0.42,
-  "computed_soil_ph_offset": 0.42,
+  "message_id": "soil-ph-20260313-1",
   "reference_ph": 7.0,
-  "sample_count": 12
-}
-```
-
-Failure example:
-
-```json
-{
-  "status": "failed",
-  "sensor_id": "soil-x943fm",
-  "timestamp": 1773380120,
-  "calibrated": false,
-  "soil_ph_offset": 0.0,
-  "error": "soil_calibration_not_running"
+  "sample_count": 12,
+  "samples_collected": 12,
+  "average_soil_ph": 6.58,
+  "computed_soil_ph_offset": 0.42,
+  "timestamp": 1773380120
 }
 ```
 
 Notes:
 
-- this event is published retained by the soil session completion flow
+- this event is published retained by the soil session completion flow after a
+  successful session
 - Sensorius can use it for final UI state even if it missed intermediate progress
 - manual offset-apply commands do not mirror this full payload on `calibration/result`; those command responses use the compact envelope described below
 
@@ -512,7 +501,8 @@ For soil pH session flow:
 2. Wait for `calibration/ack`.
 3. Consume `event/calibration_sample` for each sample in the session.
 4. Optionally ignore mirrored sample payloads on the normal sensor topic, since they are not explicitly tagged as calibration traffic.
-5. When `sample_index == sample_count`, wait for the completion `calibration/result`.
+5. When `sample_index == sample_count`, wait for the completion
+   `calibration/result`.
 6. Confirm the returned `computed_soil_ph_offset` and refresh retained `event/calibration_status`.
 7. Use manual `action = "apply"` only when the operator wants to enter an offset directly rather than run the automated session.
 

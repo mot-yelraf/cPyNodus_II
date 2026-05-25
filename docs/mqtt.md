@@ -23,6 +23,9 @@ wins.
   identity publish batch when switch channels are present.
 - Nodus publishes non-retained `nodus/<device_id>/meta/patch` after accepted
   runtime changes.
+- Nodus publishes retained heartbeat and availability online/offline payloads.
+- In `homeassistant`, Nodus also publishes retained Home Assistant discovery
+  messages under `[HomeAssistant].DISCOVERY_PREFIX`.
 - `/set` commands should normally be published non-retained. When a `/set`
   command is intentionally published retained by Sensorius, Sensorius owns
   clearing it with an empty retained publish to the same topic after successful
@@ -58,6 +61,10 @@ wins.
 - `nodus/<channel_id>/config/set`
 - `nodus/<channel_id>/config/ack`
 - `nodus/<channel_id>/config/result`
+- `homeassistant/sensor/<device>/<object>/config` when
+  `ACTIVE_PROFILE=homeassistant`
+- `homeassistant/switch/<device>/<object>/config` when
+  `ACTIVE_PROFILE=homeassistant`
 
 ## Deprecated Doc Shapes
 
@@ -91,6 +98,10 @@ current contract:
 - Switch config uses channel-scoped `config/set`, `config/ack`,
   `config/result`, retained `state`, and `meta/patch`. Nodus does not clear
   switch `config/set`; Sensorius owns any retained command cleanup.
+- Switch `event` payloads are JSON. Retained switch `state` is currently
+  startup-refreshed as a JSON state snapshot and command-refreshed as raw
+  `ON`/`OFF`; consumers should tolerate both and use `event`/`config/result`
+  for correlated command handling.
 - Calibration uses `calibration/set`, `calibration/ack`,
   `calibration/result`, and `meta/patch`. Nodus does not clear
   `calibration/set`; Sensorius owns any retained command cleanup.
