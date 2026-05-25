@@ -12,6 +12,8 @@ RADIO_CYCLE_SETTLE_S = 3.0
 RADIO_ENABLE_TOGGLE_SETTLE_S = 0.5
 STATION_RESET_SETTLE_S = 0.5
 STATION_CONNECT_TIMEOUT_S = 6.0
+STATION_CONNECTIVITY_TCP_TIMEOUT_S = 1.0
+STATION_CONNECTIVITY_DNS_HOST = "us.pool.ntp.org"
 
 
 def _network_log(message, *, start_monotonic=None):
@@ -63,6 +65,19 @@ class NetworkStack:
     socket_artifact_source: str = ""
     wifi_radio: object | None = None
     connection_manager_module: object | None = None
+    errors: tuple = ()
+
+
+@dataclass(frozen=True)
+class StationConnectivityResult:
+    """Describe a non-destructive station connectivity verification."""
+
+    ok: bool
+    station_ready: bool
+    reset_needed: bool
+    status: str
+    probe: str = ""
+    target: str = ""
     errors: tuple = ()
 
 
@@ -230,6 +245,46 @@ def build_network_stack(
     )
 
 
+def refresh_network_socket_artifacts(network_stack):
+    """Rebuild socket artifacts without resetting or reconnecting station Wi-Fi."""
+    wifi_radio = getattr(network_stack, "wifi_radio", None)
+    if wifi_radio is None:
+        return network_stack
+    connection_manager_module = _resolve_connection_manager(
+        getattr(network_stack, "connection_manager_module", None)
+    )
+    if connection_manager_module is None:
+        return NetworkStack(
+            phase="unavailable",
+            mode=getattr(network_stack, "mode", "station"),
+            ssid=getattr(network_stack, "ssid", ""),
+            hostname=getattr(network_stack, "hostname", ""),
+            ip_address=_station_ip_address(wifi_radio)
+            or getattr(network_stack, "ip_address", ""),
+            wifi_radio=wifi_radio,
+            connection_manager_module=None,
+            errors=("connection_manager_unavailable",),
+        )
+    socket_pool, ssl_context, socket_artifact_source = _build_socket_artifacts(
+        wifi_radio,
+        connection_manager_module,
+    )
+    return NetworkStack(
+        phase=getattr(network_stack, "phase", "ready"),
+        mode=getattr(network_stack, "mode", "station"),
+        ssid=getattr(network_stack, "ssid", ""),
+        hostname=getattr(network_stack, "hostname", ""),
+        ip_address=_station_ip_address(wifi_radio)
+        or getattr(network_stack, "ip_address", ""),
+        socket_pool=socket_pool,
+        ssl_context=ssl_context,
+        socket_artifact_source=socket_artifact_source,
+        wifi_radio=wifi_radio,
+        connection_manager_module=connection_manager_module,
+        errors=(),
+    )
+
+
 def reconnect_network_stack(
     runtime_config,
     network_stack,
@@ -280,7 +335,7 @@ def reconnect_network_stack(
         max_attempts=max_attempts,
         retry_delay_s=retry_delay_s,
         log_start_monotonic=log_start_monotonic,
-        reset_before_connect=not reset_station,
+        reset_before_connect=False,
         station_reset_settle_s=station_reset_settle_s,
         station_connect_timeout_s=station_connect_timeout_s,
     )
@@ -349,6 +404,55 @@ def network_link_is_ready(network_stack):
     if wifi_radio is None:
         return bool(getattr(network_stack, "ip_address", ""))
     return bool(_current_ip_address(wifi_radio))
+
+
+def verify_station_connectivity(
+    runtime_config,
+    network_stack,
+    *,
+    host="",
+    port=0,
+    probe="",
+    timeout_s=STATION_CONNECTIVITY_TCP_TIMEOUT_S,
+):
+    """Verify station connectivity without resetting Wi-Fi."""
+    station_error = _station_connectivity_local_error(runtime_config, network_stack)
+    if station_error is not None:
+        return station_error
+
+    target, target_port, probe_kind = _station_connectivity_probe_target(
+        runtime_config,
+        host=host,
+        port=port,
+        probe=probe,
+    )
+    if not probe_kind:
+        return StationConnectivityResult(
+            ok=True,
+            station_ready=True,
+            reset_needed=False,
+            status="station_ready",
+            probe="local",
+            target=_station_connectivity_ip(network_stack),
+        )
+    if probe_kind == "dns":
+        return _verify_station_dns_probe(network_stack, target, target_port)
+    if probe_kind == "tcp":
+        return _verify_station_tcp_probe(
+            network_stack,
+            target,
+            target_port,
+            timeout_s=timeout_s,
+        )
+    return StationConnectivityResult(
+        ok=False,
+        station_ready=True,
+        reset_needed=False,
+        status="probe_unknown",
+        probe=str(probe_kind or ""),
+        target=target,
+        errors=("probe_unknown:{}".format(probe_kind),),
+    )
 
 
 def network_error_signature(network_stack, *, had_ready_link=False):
@@ -426,25 +530,6 @@ def _looks_scan_miss(exc):
     return "no network with that ssid" in text
 
 
-def _scan_miss_password_suffix(runtime_config, exc):
-    if not _looks_scan_miss(exc):
-        return ""
-    return " {}".format(_wifi_password_debug_token(runtime_config))
-
-
-def _scan_miss_password_tokens(runtime_config, exc):
-    if not _looks_scan_miss(exc):
-        return ()
-    return (_wifi_password_debug_token(runtime_config),)
-
-
-def _wifi_password_debug_token(runtime_config):
-    password = getattr(getattr(runtime_config, "network", None), "password", "")
-    if password is None:
-        password = ""
-    return "password={}".format(password)
-
-
 def _looks_station_join_failure(exc):
     text = str(exc or "").strip().lower()
     return (
@@ -453,6 +538,297 @@ def _looks_station_join_failure(exc):
         or "ehostunreach" in text
         or "einprogress" in text
     )
+
+
+def _looks_like_ip_literal(value):
+    text = str(value or "").strip()
+    if not text:
+        return False
+    parts = text.split(".")
+    if len(parts) == 4:
+        try:
+            return all(0 <= int(part) <= 255 for part in parts)
+        except ValueError:
+            return False
+    return ":" in text
+
+
+def _station_connectivity_local_error(runtime_config, network_stack):
+    wifi_radio = getattr(network_stack, "wifi_radio", None)
+    if wifi_radio is None:
+        if getattr(network_stack, "phase", "") != "ready":
+            return _station_connectivity_result(
+                False,
+                "network_not_ready",
+                "local",
+                errors=(
+                    "network_phase={}".format(getattr(network_stack, "phase", "")),
+                ),
+            )
+        if not str(getattr(network_stack, "ip_address", "") or "").strip():
+            return _station_connectivity_result(
+                False,
+                "station_no_ip",
+                "local",
+                errors=("station_ip_missing",),
+            )
+        return None
+
+    connected = _safe_radio_attr(wifi_radio, "connected")
+    if connected is False:
+        return _station_connectivity_result(
+            False,
+            "radio_disconnected",
+            "local",
+            errors=("connected=False",),
+        )
+    expected_ssid = str(
+        getattr(getattr(runtime_config, "network", None), "ssid", "") or ""
+    ).strip()
+    actual_ssid = _current_station_ssid(wifi_radio)
+    if expected_ssid and actual_ssid and actual_ssid != expected_ssid:
+        return _station_connectivity_result(
+            False,
+            "station_wrong_ssid",
+            "local",
+            errors=(
+                "actual_ssid={}".format(actual_ssid),
+                "expected_ssid={}".format(expected_ssid),
+            ),
+        )
+    station_ip = _station_ip_address(wifi_radio)
+    if not station_ip:
+        return _station_connectivity_result(
+            False,
+            "station_no_ip",
+            "local",
+            errors=("station_ip_missing",),
+        )
+    if _station_ip_is_ap_subnet(station_ip, runtime_config):
+        return _station_connectivity_result(
+            False,
+            "station_ap_subnet",
+            "local",
+            target=station_ip,
+            errors=("station_ip={}".format(station_ip),),
+        )
+    return None
+
+
+def _station_connectivity_result(
+    ok,
+    status,
+    probe,
+    *,
+    target="",
+    errors=(),
+    reset_needed=True,
+):
+    return StationConnectivityResult(
+        ok=bool(ok),
+        station_ready=bool(ok),
+        reset_needed=bool(reset_needed),
+        status=str(status or ""),
+        probe=str(probe or ""),
+        target=str(target or ""),
+        errors=tuple(errors or ()),
+    )
+
+
+def _station_connectivity_ip(network_stack):
+    wifi_radio = getattr(network_stack, "wifi_radio", None)
+    if wifi_radio is not None:
+        return _station_ip_address(wifi_radio)
+    return str(getattr(network_stack, "ip_address", "") or "")
+
+
+def _station_connectivity_probe_target(runtime_config, *, host="", port=0, probe=""):
+    target = str(host or "").strip()
+    target_port = int(port or 0)
+    probe_kind = str(probe or "").strip().lower()
+    if probe_kind == "none":
+        return "", 0, ""
+    if target:
+        if not target_port:
+            target_port = 80
+        return target, target_port, probe_kind or "tcp"
+
+    if bool(getattr(runtime_config, "mqtt_enabled", False)):
+        mqtt_config = getattr(runtime_config, "mqtt", None)
+        target = str(getattr(mqtt_config, "preferred_host", "") or "").strip()
+        target_port = int(getattr(mqtt_config, "port", 1883) or 1883)
+        if target:
+            return target, target_port, probe_kind or "tcp"
+
+    if bool(getattr(runtime_config, "ntp_enabled", False)):
+        time_config = getattr(runtime_config, "time", None)
+        target = str(getattr(time_config, "ntp_server", "") or "").strip()
+        target = (
+            str(getattr(time_config, "ntp_server_ip", "") or "").strip()
+            or target
+            or STATION_CONNECTIVITY_DNS_HOST
+        )
+        if target and not _looks_like_ip_literal(target):
+            return target, int(target_port or 123), probe_kind or "dns"
+    return "", 0, ""
+
+
+def _verify_station_dns_probe(network_stack, host, port):
+    socket_pool = getattr(network_stack, "socket_pool", None)
+    if socket_pool is None:
+        return _station_dependency_result(
+            False,
+            "dns_socket_pool_unavailable",
+            "dns",
+            target=host,
+            errors=("socket_pool_unavailable",),
+        )
+    getaddrinfo = getattr(socket_pool, "getaddrinfo", None)
+    if not callable(getaddrinfo):
+        return _station_dependency_result(
+            False,
+            "dns_unavailable",
+            "dns",
+            target=host,
+            errors=("getaddrinfo_unavailable",),
+        )
+    try:
+        resolved = getaddrinfo(host, int(port or 0))
+    except Exception as exc:
+        return _station_dependency_result(
+            False,
+            "dns_failed",
+            "dns",
+            target=host,
+            errors=("dns_failed:{}:{}:{}".format(host, type(exc).__name__, exc),),
+        )
+    resolved_ip = _ip_from_getaddrinfo_result(resolved)
+    if not resolved_ip:
+        return _station_dependency_result(
+            False,
+            "dns_empty",
+            "dns",
+            target=host,
+            errors=("dns_empty:{}".format(host),),
+        )
+    return _station_dependency_result(
+        True,
+        "dns_ok",
+        "dns",
+        target=resolved_ip,
+    )
+
+
+def _verify_station_tcp_probe(network_stack, host, port, *, timeout_s):
+    socket_pool = getattr(network_stack, "socket_pool", None)
+    if socket_pool is None:
+        return _station_dependency_result(
+            False,
+            "tcp_socket_pool_unavailable",
+            "tcp",
+            target=host,
+            errors=("socket_pool_unavailable",),
+        )
+    target = str(host or "").strip()
+    if not _looks_like_ip_literal(target):
+        dns_result = _verify_station_dns_probe(network_stack, target, port)
+        if not dns_result.ok:
+            return StationConnectivityResult(
+                ok=False,
+                station_ready=True,
+                reset_needed=False,
+                status=dns_result.status,
+                probe=dns_result.probe,
+                target=dns_result.target,
+                errors=dns_result.errors,
+            )
+        target = dns_result.target
+
+    socket_factory = getattr(socket_pool, "socket", None)
+    if not callable(socket_factory):
+        return _station_dependency_result(
+            False,
+            "tcp_socket_unavailable",
+            "tcp",
+            target=target,
+            errors=("socket_unavailable",),
+        )
+    sock = None
+    try:
+        sock = socket_factory()
+        settimeout = getattr(sock, "settimeout", None)
+        if callable(settimeout):
+            settimeout(float(timeout_s or STATION_CONNECTIVITY_TCP_TIMEOUT_S))
+        sock.connect((target, int(port or 80)))
+        return _station_dependency_result(
+            True,
+            "tcp_ok",
+            "tcp",
+            target=target,
+        )
+    except Exception as exc:
+        error = "tcp_failed:{}:{}:{}".format(target, type(exc).__name__, exc)
+        return _station_dependency_result(
+            False,
+            "tcp_failed",
+            "tcp",
+            target=target,
+            errors=(error,),
+            reset_needed=_tcp_error_needs_station_reset(exc),
+        )
+    finally:
+        if sock is not None:
+            close = getattr(sock, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
+
+
+def _station_dependency_result(
+    ok,
+    status,
+    probe,
+    *,
+    target="",
+    errors=(),
+    reset_needed=False,
+):
+    return StationConnectivityResult(
+        ok=bool(ok),
+        station_ready=True,
+        reset_needed=bool(reset_needed),
+        status=str(status or ""),
+        probe=str(probe or ""),
+        target=str(target or ""),
+        errors=tuple(errors or ()),
+    )
+
+
+def _tcp_error_needs_station_reset(exc):
+    text = str(exc or "").strip().lower()
+    return (
+        "errno 118" in text
+        or "[errno 118]" in text
+        or "ehostunreach" in text
+        or "enetdown" in text
+        or "enetunreach" in text
+        or "network is down" in text
+        or "no route" in text
+    )
+
+
+def _ip_from_getaddrinfo_result(resolved):
+    try:
+        first = resolved[0]
+    except Exception:
+        return ""
+    try:
+        sockaddr = first[-1]
+        return str(sockaddr[0] or "")
+    except Exception:
+        return ""
 
 
 def _resolve_wifi_radio(wifi_radio):
@@ -670,29 +1046,25 @@ def _connect_station(
                 scan_hint = None
                 station_reset_done = False
                 if _looks_station_join_failure(exc):
-                    if station_hint is not None:
-                        scan_status = "skipped_hint"
-                        scan_count = 0
-                        scan_hint = station_hint
-                    else:
-                        station_reset_done = _reset_station_mode(wifi_radio)
-                        if station_reset_done:
-                            try:
-                                time.sleep(
-                                    max(
-                                        0.0,
-                                        float(station_reset_settle_s or 0.0),
-                                    )
+                    station_hint = None
+                    station_reset_done = _reset_station_mode(wifi_radio)
+                    if station_reset_done:
+                        try:
+                            time.sleep(
+                                max(
+                                    0.0,
+                                    float(station_reset_settle_s or 0.0),
                                 )
-                            except Exception:
-                                pass
-                        scan_status, scan_count, scan_hint = _scan_for_station_ssid(
-                            wifi_radio,
-                            runtime_config.network.ssid,
-                            log_start_monotonic=log_start_monotonic,
-                        )
-                        if scan_hint is not None:
-                            station_hint = scan_hint
+                            )
+                        except Exception:
+                            pass
+                    scan_status, scan_count, scan_hint = _scan_for_station_ssid(
+                        wifi_radio,
+                        runtime_config.network.ssid,
+                        log_start_monotonic=log_start_monotonic,
+                    )
+                    if scan_hint is not None:
+                        station_hint = scan_hint
                     last_scan_status = scan_status
                     last_scan_count = scan_count
                     _network_log(
@@ -710,10 +1082,9 @@ def _connect_station(
                         start_monotonic=log_start_monotonic,
                     )
                 _network_log(
-                    "network connect retry attempt={} error={}{}".format(
+                    "network connect retry attempt={} error={}".format(
                         attempt,
                         str(exc),
-                        _scan_miss_password_suffix(runtime_config, exc),
                     ),
                     start_monotonic=log_start_monotonic,
                 )
@@ -727,10 +1098,9 @@ def _connect_station(
                 except Exception:
                     pass
     _network_log(
-        "network connect error attempts={} error={}{}".format(
+        "network connect error attempts={} error={}".format(
             attempts,
             str(last_exc or ""),
-            _scan_miss_password_suffix(runtime_config, last_exc),
         ),
         start_monotonic=log_start_monotonic,
     )
@@ -744,7 +1114,6 @@ def _connect_station(
             "attempts={}".format(attempts),
         )
         + _network_diagnostic_tokens(wifi_radio)
-        + _scan_miss_password_tokens(runtime_config, last_exc)
         + _scan_diagnostic_tokens(last_scan_status, last_scan_count),
     }
 

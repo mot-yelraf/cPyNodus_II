@@ -21,12 +21,15 @@ from cpynodus_ii.core.mqtt_client import (
 )
 from cpynodus_ii.core.network import (
     NetworkStack,
+    StationConnectivityResult,
     build_network_stack,
     network_error_signature,
     network_link_is_ready,
     reconnect_network_stack,
+    refresh_network_socket_artifacts,
     refresh_network_stack,
     teardown_network_stack,
+    verify_station_connectivity,
 )
 from cpynodus_ii.core.ntp import NTPResult, NTPState, maybe_sync_ntp
 from cpynodus_ii.core.recovery import (
@@ -45,6 +48,7 @@ __all__ = [
     "RecoveryDecision",
     "RecoveryPolicy",
     "RecoveryState",
+    "StationConnectivityResult",
     "advance_recovery_state",
     "build_mqtt_client_adapter",
     "build_network_stack",
@@ -60,7 +64,9 @@ __all__ = [
     "preflight_mqtt_broker_tcp",
     "raw_mqtt_connect_enabled",
     "reconnect_network_stack",
+    "refresh_network_socket_artifacts",
     "refresh_network_stack",
     "sync_transport_to_client",
     "teardown_network_stack",
+    "verify_station_connectivity",
 ]

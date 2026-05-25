@@ -6,9 +6,11 @@ from cpynodus_ii.core import (
     network_error_signature,
     network_link_is_ready,
     reconnect_network_stack,
+    refresh_network_socket_artifacts,
     teardown_network_stack,
+    verify_station_connectivity,
 )
-from cpynodus_ii.core.config import NetworkConfig, RuntimeConfig
+from cpynodus_ii.core.config import MQTTConfig, NetworkConfig, RuntimeConfig, TimeConfig
 
 
 class _FakeRadio:
@@ -101,6 +103,42 @@ class _FakeConnMgr:
     @staticmethod
     def get_radio_ssl_context(radio):
         return {"kind": "ssl", "radio": radio}
+
+
+class _FakeSocket:
+    def __init__(self, failure=None):
+        self.failure = failure
+        self.timeout = None
+        self.connected_to = None
+        self.closed = False
+
+    def settimeout(self, timeout):
+        self.timeout = timeout
+
+    def connect(self, address):
+        self.connected_to = address
+        if self.failure is not None:
+            raise self.failure
+
+    def close(self):
+        self.closed = True
+
+
+class _FakeSocketPool:
+    def __init__(self, *, resolved_ip="10.0.0.248", socket_failure=None):
+        self.resolved_ip = resolved_ip
+        self.socket_failure = socket_failure
+        self.dns_queries = []
+        self.sockets = []
+
+    def getaddrinfo(self, host, port):
+        self.dns_queries.append((host, port))
+        return [(None, None, None, None, (self.resolved_ip, port))]
+
+    def socket(self):
+        sock = _FakeSocket(self.socket_failure)
+        self.sockets.append(sock)
+        return sock
 
 
 class _FlakyRadio:
@@ -350,6 +388,193 @@ def test_build_network_stack_prefers_direct_socket_artifacts(monkeypatch):
     assert stack.socket_artifact_source == "direct"
 
 
+def test_verify_station_connectivity_accepts_local_station_without_probe():
+    radio = _FakeRadio()
+    runtime_config = RuntimeConfig(
+        active_profile="offline",
+        network=NetworkConfig(ssid="PeaceHill", password="secretpass"),
+    )
+    stack = network_module.NetworkStack(
+        phase="ready",
+        mode="station",
+        ssid="PeaceHill",
+        hostname="aqi-x943fm",
+        ip_address="192.168.1.44",
+        wifi_radio=radio,
+    )
+
+    result = verify_station_connectivity(runtime_config, stack, probe="none")
+
+    assert result.ok is True
+    assert result.station_ready is True
+    assert result.reset_needed is False
+    assert result.status == "station_ready"
+    assert result.probe == "local"
+
+
+def test_verify_station_connectivity_marks_wrong_ssid_for_reset():
+    radio = _FakeRadio()
+    radio.ap_info = _FakeAPInfo("NeighborWiFi")
+    runtime_config = RuntimeConfig(
+        active_profile="offline",
+        network=NetworkConfig(ssid="PeaceHill", password="secretpass"),
+    )
+    stack = network_module.NetworkStack(
+        phase="ready",
+        mode="station",
+        ssid="PeaceHill",
+        hostname="aqi-x943fm",
+        ip_address="192.168.1.44",
+        wifi_radio=radio,
+    )
+
+    result = verify_station_connectivity(runtime_config, stack, probe="none")
+
+    assert result.ok is False
+    assert result.station_ready is False
+    assert result.reset_needed is True
+    assert result.status == "station_wrong_ssid"
+    assert "actual_ssid=NeighborWiFi" in result.errors
+
+
+def test_verify_station_connectivity_runs_mqtt_tcp_probe():
+    radio = _FakeRadio()
+    socket_pool = _FakeSocketPool()
+    runtime_config = RuntimeConfig(
+        active_profile="sensorius",
+        network=NetworkConfig(ssid="PeaceHill", password="secretpass"),
+        mqtt=MQTTConfig(broker_ip="10.0.0.248", port=1883),
+    )
+    stack = network_module.NetworkStack(
+        phase="ready",
+        mode="station",
+        ssid="PeaceHill",
+        hostname="aqi-x943fm",
+        ip_address="192.168.1.44",
+        socket_pool=socket_pool,
+        wifi_radio=radio,
+    )
+
+    result = verify_station_connectivity(runtime_config, stack)
+
+    assert result.ok is True
+    assert result.status == "tcp_ok"
+    assert result.reset_needed is False
+    assert result.target == "10.0.0.248"
+    assert socket_pool.sockets[0].connected_to == ("10.0.0.248", 1883)
+    assert socket_pool.sockets[0].closed is True
+
+
+def test_verify_station_connectivity_uses_dns_for_non_mqtt_ntp_profile():
+    radio = _FakeRadio()
+    socket_pool = _FakeSocketPool(resolved_ip="10.0.0.53")
+    runtime_config = RuntimeConfig(
+        active_profile="nodusweb",
+        network=NetworkConfig(ssid="PeaceHill", password="secretpass"),
+        time=TimeConfig(ntp_server="time.local"),
+    )
+    stack = network_module.NetworkStack(
+        phase="ready",
+        mode="station",
+        ssid="PeaceHill",
+        hostname="aqi-x943fm",
+        ip_address="192.168.1.44",
+        socket_pool=socket_pool,
+        wifi_radio=radio,
+    )
+
+    result = verify_station_connectivity(runtime_config, stack)
+
+    assert result.ok is True
+    assert result.status == "dns_ok"
+    assert result.probe == "dns"
+    assert result.target == "10.0.0.53"
+    assert socket_pool.dns_queries == [("time.local", 123)]
+    assert socket_pool.sockets == []
+
+
+def test_verify_station_connectivity_does_not_reset_for_socket_progress():
+    radio = _FakeRadio()
+    socket_pool = _FakeSocketPool(socket_failure=OSError(119, "EINPROGRESS"))
+    runtime_config = RuntimeConfig(
+        active_profile="sensorius",
+        network=NetworkConfig(ssid="PeaceHill", password="secretpass"),
+        mqtt=MQTTConfig(broker_ip="10.0.0.248", port=1883),
+    )
+    stack = network_module.NetworkStack(
+        phase="ready",
+        mode="station",
+        ssid="PeaceHill",
+        hostname="aqi-x943fm",
+        ip_address="192.168.1.44",
+        socket_pool=socket_pool,
+        wifi_radio=radio,
+    )
+
+    result = verify_station_connectivity(runtime_config, stack)
+
+    assert result.ok is False
+    assert result.station_ready is True
+    assert result.reset_needed is False
+    assert result.status == "tcp_failed"
+    assert "EINPROGRESS" in result.errors[0]
+
+
+def test_verify_station_connectivity_requests_reset_for_unreachable_network():
+    radio = _FakeRadio()
+    socket_pool = _FakeSocketPool(socket_failure=OSError(118, "EHOSTUNREACH"))
+    runtime_config = RuntimeConfig(
+        active_profile="sensorius",
+        network=NetworkConfig(ssid="PeaceHill", password="secretpass"),
+        mqtt=MQTTConfig(broker_ip="10.0.0.248", port=1883),
+    )
+    stack = network_module.NetworkStack(
+        phase="ready",
+        mode="station",
+        ssid="PeaceHill",
+        hostname="aqi-x943fm",
+        ip_address="192.168.1.44",
+        socket_pool=socket_pool,
+        wifi_radio=radio,
+    )
+
+    result = verify_station_connectivity(runtime_config, stack)
+
+    assert result.ok is False
+    assert result.station_ready is True
+    assert result.reset_needed is True
+    assert result.status == "tcp_failed"
+    assert "EHOSTUNREACH" in result.errors[0]
+
+
+def test_refresh_network_socket_artifacts_leaves_station_connected():
+    radio = _StaleAPStationRadio()
+    radio.ap_info = _FakeAPInfo("PeaceHill")
+    radio.ipv4_address = "10.0.0.219"
+    stack = network_module.NetworkStack(
+        phase="ready",
+        mode="station",
+        ssid="PeaceHill",
+        hostname="co2-ykdvea",
+        ip_address="10.0.0.219",
+        socket_pool={"old": "pool"},
+        ssl_context={"old": "ssl"},
+        socket_artifact_source="old",
+        wifi_radio=radio,
+        connection_manager_module=_FakeConnMgr,
+    )
+
+    refreshed = refresh_network_socket_artifacts(stack)
+
+    assert refreshed.phase == "ready"
+    assert refreshed.ip_address == "10.0.0.219"
+    assert refreshed.socket_pool is not stack.socket_pool
+    assert refreshed.socket_artifact_source == "connection_manager"
+    assert radio.disconnect_calls == 0
+    assert radio.stop_station_calls == 0
+    assert radio.connect_calls == []
+
+
 def test_build_network_stack_can_scan_before_startup_station_reset(monkeypatch):
     sleeps = []
     monkeypatch.setattr(
@@ -497,10 +722,10 @@ def test_network_error_signature_marks_station_scan_miss_after_ready(capsys):
         network_error_signature(stack, had_ready_link=True)
         == "station_scan_miss_after_ready"
     )
-    assert "password=secretpass" in stack.errors
+    assert "password=secretpass" not in stack.errors
     assert (
         "network connect error attempts=1 "
-        "error=No network with that ssid password=secretpass"
+        "error=No network with that ssid"
     ) in capsys.readouterr().out
 
 
@@ -588,7 +813,7 @@ def test_build_network_stack_scans_after_scan_miss_before_retry(monkeypatch, cap
     assert sleeps == [2.0]
     assert (
         "network connect retry attempt=1 "
-        "error=No network with that ssid password=secretpass"
+        "error=No network with that ssid"
     ) in capsys.readouterr().out
 
 
@@ -645,7 +870,7 @@ def test_station_scan_stops_after_target_ssid_is_found(capsys):
     assert "network scan phase=end ssid=PeaceHill result=found count=1" in output
 
 
-def test_build_network_stack_reuses_preconnect_hint_after_join_failure(
+def test_build_network_stack_discards_preconnect_hint_after_join_failure(
     monkeypatch,
     capsys,
 ):
@@ -683,12 +908,12 @@ def test_build_network_stack_reuses_preconnect_hint_after_join_failure(
         {"timeout": network_module.STATION_CONNECT_TIMEOUT_S},
         {"channel": 6, "timeout": network_module.STATION_CONNECT_TIMEOUT_S},
     ]
-    assert radio.scan_calls == 1
-    assert radio.stop_scan_calls == 1
+    assert radio.scan_calls == 2
+    assert radio.stop_scan_calls == 2
     assert sleeps == [2.0]
-    assert "network scan attempt=1 ssid=PeaceHill result=skipped_hint" in (
-        capsys.readouterr().out
-    )
+    output = capsys.readouterr().out
+    assert "network scan attempt=1 ssid=PeaceHill result=found" in output
+    assert "result=skipped_hint" not in output
 
 
 def test_reconnect_network_stack_can_cycle_radio_before_retry(monkeypatch):
@@ -999,6 +1224,49 @@ def test_reconnect_network_stack_preserves_socket_artifacts_until_rebuild_reques
     assert preserved.socket_artifact_source == stack.socket_artifact_source
     assert rebuilt.socket_pool is not stack.socket_pool
     assert rebuilt.socket_artifact_source == "connection_manager"
+
+
+def test_reconnect_network_stack_does_not_reset_station_by_default():
+    radio = _StaleAPStationRadio()
+    radio.ap_info = _FakeAPInfo("PeaceHill")
+    radio.ipv4_address = "10.0.0.219"
+    runtime_config = RuntimeConfig(
+        active_profile="sensorius",
+        network=NetworkConfig(
+            ssid="PeaceHill",
+            password="secretpass",
+            hostname="co2-ykdvea",
+        ),
+    )
+    stack = network_module.NetworkStack(
+        phase="error",
+        mode="station",
+        ssid="PeaceHill",
+        hostname="co2-ykdvea",
+        socket_pool={"old": "pool"},
+        ssl_context={"old": "ssl"},
+        socket_artifact_source="old",
+        wifi_radio=radio,
+        connection_manager_module=_FakeConnMgr,
+        errors=("network_connect_failed",),
+    )
+
+    reconnect = reconnect_network_stack(
+        runtime_config,
+        stack,
+        max_attempts=1,
+        retry_delay_s=0.0,
+        rebuild_socket_artifacts=False,
+        reset_station=False,
+    )
+
+    assert network_link_is_ready(reconnect) is True
+    assert radio.disconnect_calls == 0
+    assert radio.stop_station_calls == 0
+    assert radio.start_station_calls == 0
+    assert radio.stop_ap_calls == 1
+    assert radio.connect_calls == [("PeaceHill", "secretpass")]
+    assert reconnect.socket_pool is stack.socket_pool
 
 
 def test_reconnect_network_stack_can_force_station_reset_before_retry():

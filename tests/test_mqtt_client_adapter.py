@@ -55,6 +55,7 @@ def _run_direct_tests():
         test_sync_transport_to_client_marks_transport_disconnected_on_publish_oserror,
         test_sync_transport_to_client_subscribes_before_low_priority_publish,
         test_sync_transport_to_client_publishes_priority_status_before_subscribe,
+        test_sync_transport_to_client_defers_subscribe_until_clean_poll,
         test_sync_transport_to_client_disconnects_after_slow_publish,
         test_sync_transport_to_client_disconnects_on_subscribe_failure,
         test_poll_mqtt_client_marks_transport_disconnected_on_oserror,
@@ -1613,6 +1614,60 @@ def test_sync_transport_to_client_publishes_priority_status_before_subscribe():
         "nodus/aqi-x943fm/data"
     ]
     assert transport.subscriptions == ["nodus/S1-x943fm/config/set"]
+
+
+def test_sync_transport_to_client_defers_subscribe_until_clean_poll():
+    runtime_config = _runtime_config()
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connect_requested()
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=object(),
+        modules={"mqtt_cls": _FakeMQTTClient},
+    )
+
+    connect_result = connect_mqtt_client(adapter, transport)
+    transport.publish("nodus/aqi-x943fm/data", {"schema": "nodus-sensor/v1"})
+    transport.publish(
+        "nodus/aqi-x943fm/status/heartbeat",
+        {"online": True},
+        retain=True,
+    )
+    transport.subscribe("nodus/S1-x943fm/config/set")
+
+    sync_result = sync_transport_to_client(
+        connect_result.adapter,
+        transport,
+        require_clean_poll_before_subscribe=True,
+    )
+    assert sync_result.phase == "synced"
+    assert sync_result.operation == "publish"
+    assert sync_result.topic == "nodus/aqi-x943fm/status/heartbeat"
+
+    sync_result = sync_transport_to_client(
+        sync_result.adapter,
+        transport,
+        require_clean_poll_before_subscribe=True,
+    )
+    assert sync_result.phase == "deferred"
+    assert sync_result.operation == "subscribe"
+    assert sync_result.pending_count == 1
+    assert sync_result.adapter.client.subscribed == []
+    assert transport.subscriptions == ["nodus/S1-x943fm/config/set"]
+
+    poll_result = poll_mqtt_client(sync_result.adapter, transport)
+    assert poll_result.phase == "polled"
+
+    sync_result = sync_transport_to_client(
+        poll_result.adapter,
+        transport,
+        require_clean_poll_before_subscribe=True,
+    )
+    assert sync_result.phase == "synced"
+    assert sync_result.subscribed_count == 1
+    assert sync_result.operation == "subscribe"
+    assert sync_result.adapter.client.subscribed == ["nodus/S1-x943fm/config/set"]
+    assert transport.published_messages[0].topic == "nodus/aqi-x943fm/data"
 
 
 def test_sync_transport_to_client_disconnects_after_slow_publish():

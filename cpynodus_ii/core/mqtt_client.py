@@ -446,7 +446,13 @@ def _mqtt_connected_adapter(adapter, resolved_ip):
     )
 
 
-def sync_transport_to_client(adapter, transport, *, slow_operation_ms=None):
+def sync_transport_to_client(
+    adapter,
+    transport,
+    *,
+    slow_operation_ms=None,
+    require_clean_poll_before_subscribe=False,
+):
     """Flush newly queued subscriptions and publishes to the bound client."""
     if adapter.phase != "ready" or adapter.client is None or not transport.connected:
         return MQTTClientSyncResult(
@@ -470,6 +476,20 @@ def sync_transport_to_client(adapter, transport, *, slow_operation_ms=None):
         publish_index = _next_startup_priority_publish_index(adapter, transport)
 
     if publish_index is None:
+        if (
+            require_clean_poll_before_subscribe
+            and pending_subscription_count
+            and not _subscription_clean_poll_ready(transport)
+        ):
+            return MQTTClientSyncResult(
+                phase="deferred",
+                adapter=adapter,
+                published_count=0,
+                subscribed_count=0,
+                errors=(),
+                operation="subscribe",
+                pending_count=pending_subscription_count,
+            )
         return _sync_subscriptions_to_client(
             adapter,
             transport,
@@ -749,6 +769,24 @@ def _sync_subscriptions_to_client(
         pending_count=pending_subscription_count,
         elapsed_ms=elapsed_ms,
     )
+
+
+def _subscription_clean_poll_ready(transport):
+    last_loop_at = _transport_float_attr(transport, "last_loop_at", -1.0)
+    if last_loop_at < 0.0:
+        return False
+    required_at = max(
+        _transport_float_attr(transport, "last_connected_at", -1.0),
+        _transport_float_attr(transport, "last_publish_at", -1.0),
+    )
+    return last_loop_at >= required_at
+
+
+def _transport_float_attr(transport, attr_name, default):
+    try:
+        return float(getattr(transport, attr_name, default))
+    except Exception:
+        return float(default)
 
 
 def _subscribe_mqtt_qos0(client, topic):
