@@ -856,6 +856,14 @@ class Settings:
         try:
             for filename, file_updates in grouped_updates.items():
                 path = _join_path(root_path, filename)
+                patched_updates = cls._try_patch_toml_scalar_file(
+                    path,
+                    filename,
+                    file_updates,
+                )
+                if patched_updates is not None:
+                    applied_updates.extend(patched_updates)
+                    continue
                 document = cls._read_toml_file(path)
                 for update in file_updates:
                     if cls._apply_update_to_document(document, update):
@@ -1269,6 +1277,127 @@ class Settings:
             current = current.setdefault(part, {})
         current[key] = update.get("value")
         return True
+
+    @classmethod
+    def _try_patch_toml_scalar_file(cls, path, filename, updates):
+        if _path_size(path) <= 0:
+            return None
+        base_filename = str(filename or "").split("/")[-1]
+        if base_filename == cls.SETTINGS_FILE:
+            for update in updates:
+                section = str(update.get("section", "") or "").strip()
+                key = str(update.get("key", "") or "").strip().upper()
+                if (section == "Network" and key in {"PASSWORD", "AP_PASSWORD"}) or (
+                    section == "MQTT" and key == "PASSWORD"
+                ):
+                    return None
+
+        formatted_by_target = {}
+        seen = set()
+        for update in updates:
+            section = str(update.get("section", "") or "").strip()
+            key = str(update.get("key", "") or "").strip()
+            if not (section and key):
+                return None
+            target = (section, key)
+            if target in seen:
+                return None
+            seen.add(target)
+            value = update.get("value")
+            if isinstance(value, bool):
+                formatted_value = "true" if value else "false"
+            elif isinstance(value, int) and not isinstance(value, bool):
+                formatted_value = str(value)
+            elif isinstance(value, float):
+                formatted_value = repr(float(value))
+                if "." not in formatted_value and "e" not in formatted_value.lower():
+                    formatted_value += ".0"
+            else:
+                text = str(value or "")
+                formatted_value = '"{}"'.format(
+                    text.replace("\\", "\\\\").replace('"', '\\"')
+                )
+            formatted_by_target[target] = formatted_value
+        if not formatted_by_target:
+            return ()
+
+        with open(path, "r", encoding="utf-8") as handle:
+            text = handle.read()
+        lines = str(text or "").splitlines()
+        trailing_newline = str(text or "").endswith("\n")
+
+        current_section = ""
+        found = set()
+        for index, raw_line in enumerate(lines):
+            in_string = False
+            escaped = False
+            comment_at = -1
+            for char_index, char in enumerate(str(raw_line or "")):
+                if char == '"' and not escaped:
+                    in_string = not in_string
+                if char == "#" and not in_string:
+                    comment_at = char_index
+                    break
+                escaped = (char == "\\") and not escaped
+                if char != "\\":
+                    escaped = False
+            if comment_at >= 0:
+                body = raw_line[:comment_at]
+                comment = raw_line[comment_at:]
+            else:
+                body = raw_line
+                comment = ""
+            stripped = body.strip()
+            if not stripped:
+                continue
+            if stripped.startswith("[") and stripped.endswith("]"):
+                current_section = stripped[1:-1].strip()
+                continue
+            if "=" not in body:
+                continue
+            key = body.split("=", 1)[0].strip()
+            target = (current_section, key)
+            if target not in formatted_by_target:
+                continue
+            equals_at = body.find("=")
+            if equals_at < 0:
+                return None
+            prefix = body[: equals_at + 1]
+            value_area = body[equals_at + 1 :]
+            leading = ""
+            for char in value_area:
+                if char not in (" ", "\t"):
+                    break
+                leading += char
+            if not leading:
+                leading = " "
+            trailing = ""
+            if comment:
+                trailing_index = len(body)
+                while (
+                    trailing_index > equals_at + 1
+                    and body[trailing_index - 1] in (" ", "\t")
+                ):
+                    trailing_index -= 1
+                trailing = body[trailing_index:]
+                if not trailing:
+                    trailing = " "
+            lines[index] = "{}{}{}{}{}".format(
+                prefix,
+                leading,
+                formatted_by_target[target],
+                trailing,
+                comment,
+            )
+            found.add(target)
+
+        if len(found) != len(formatted_by_target):
+            return None
+        patched = "\n".join(lines)
+        if trailing_newline:
+            patched += "\n"
+        cls._replace_toml_file(path, patched)
+        return tuple(updates)
 
     @classmethod
     def _dump_toml(cls, document):

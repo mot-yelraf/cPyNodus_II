@@ -41,11 +41,19 @@ The repository is no longer just a scaffold. Current implemented slices include:
 
 Validated on a Raspberry Pi Pico 2 W running CircuitPython `9.2.8`:
 
-- switch-only `sensorius` profile boot
+- switch-only `sensorius` profile boot and runtime
+- combined sensor + switch `sensorius` profile boot and runtime
 - Wi-Fi join from root `settings.toml`
 - MQTT connect to Sensorius broker by hostname
 - switch command handling on `nodus/<channel_id>/config/set`
 - relay toggle on-device from Sensorius commands
+- sensor telemetry publish on `nodus/<sensor_id>/data`
+- ordinary device `config/set` persistence, `config/result`, `meta/patch`, and
+  live runtime update
+- `calibration/set` persistence, `calibration/result`, `meta/patch`, and live
+  runtime offset update for supported calibration fields
+- root filesystem TOML read/write diagnostics through the same app persistence
+  path used for config and calibration writes
 - publish sequence for switch commands:
   - `nodus/<channel_id>/config/ack`
   - retained `nodus/<channel_id>/state`
@@ -60,21 +68,21 @@ Current on-device diagnostics include:
 - network SSID, hostname, and IPv4 at startup
 - switch channel IDs and labels at startup
 - timestamped MQTT command logs for applied switch commands
+- timestamped MQTT command logs for applied config and calibration commands
 - periodic health lines with network state, broker, `free_mem`, and `mem_alloc`
 
 ## Still incomplete
 
 The following areas are still in progress:
 
-- sensor-backed on-device validation
-- combined sensor + switch runtime validation
-- AP onboarding and local web flows
-- full reconnect/recovery hardening under adverse network conditions
-- broader long-duration soak coverage beyond the current switch-only case
+- OTA prepare, temporary HTTP transfer mode, and post-update recovery validation
+- Sensorius `Add Device` onboarding regression validation
+- AP onboarding and local web flow validation for the current firmware slice
+- longer recovery and reconnect soak runs under adverse network conditions
 
 ## Next steps
 
-- continue the switch-only overnight soak
-- validate one sensor-backed device on hardware
-- validate combined sensor + switch behavior
+- run an OTA prepare and HTTP transfer smoke test on a writable device
+- rerun the production Sensorius `Add Device` flow end to end
+- continue long-duration sensor + switch and switch-only soaks
 - tighten reconnect and recovery behavior only if soak logs show a real issue

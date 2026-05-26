@@ -1074,6 +1074,57 @@ def _should_fast_reboot_mqtt_connect_failures(
     )
 
 
+def _mqtt_repeated_failure_reboot_gate_tripped(
+    failure_count,
+    first_failure_at,
+    now_monotonic,
+    *,
+    timeout_s=MQTT_REPEATED_CONNECT_FAILURE_REBOOT_S,
+    min_count=MQTT_REPEATED_CONNECT_FAILURE_MIN_COUNT,
+):
+    """Return True when repeated MQTT failures reached reboot budget."""
+    try:
+        count = int(failure_count or 0)
+        first = float(first_failure_at)
+    except Exception:
+        count = 0
+        first = -1.0
+    if first < 0.0:
+        return False
+    if count >= int(min_count or 0):
+        return True
+    return _mqtt_repeated_failure_budget_exhausted(
+        first,
+        now_monotonic,
+        timeout_s=timeout_s,
+    ) or _should_fast_reboot_mqtt_connect_failures(
+        count,
+        first,
+        now_monotonic,
+        timeout_s=timeout_s,
+        min_count=min_count,
+    )
+
+
+def _should_stage_mqtt_station_reset_before_reboot(
+    failure_count,
+    first_failure_at,
+    now_monotonic,
+    last_station_reset_at,
+):
+    """Return True when repeated MQTT failures should try station reset first."""
+    try:
+        if float(last_station_reset_at) >= 0.0:
+            return False
+    except Exception:
+        pass
+    return _mqtt_repeated_failure_reboot_gate_tripped(
+        failure_count,
+        first_failure_at,
+        now_monotonic,
+    )
+
+
 def _mqtt_client_init_memory_failed(errors):
     """Return True when MQTT client construction failed from heap pressure."""
     text = " ".join(str(error or "") for error in tuple(errors or ())).lower()
@@ -2190,21 +2241,10 @@ def _maybe_reboot_for_mqtt_failure_budget(
     switch_service=None,
 ):
     """Escalate repeated MQTT preconnect failures by count or elapsed budget."""
-    try:
-        failure_window_valid = float(first_failure_at) >= 0.0
-    except Exception:
-        failure_window_valid = False
-    if not (
-        (
-            failure_window_valid
-            and int(failure_count or 0) >= int(MQTT_REPEATED_CONNECT_FAILURE_MIN_COUNT)
-        )
-        or _mqtt_repeated_failure_budget_exhausted(first_failure_at, now_monotonic)
-        or _should_fast_reboot_mqtt_connect_failures(
-            failure_count,
-            first_failure_at,
-            now_monotonic,
-        )
+    if not _mqtt_repeated_failure_reboot_gate_tripped(
+        failure_count,
+        first_failure_at,
+        now_monotonic,
     ):
         return "none"
 
@@ -2257,6 +2297,72 @@ def _maybe_reboot_for_mqtt_failure_budget(
         switch_service=switch_service,
     )
     return "reboot"
+
+
+def _stage_mqtt_station_reset_before_reboot(
+    runtime_config,
+    network_stack,
+    mqtt_adapter,
+    transport,
+    *,
+    failure_count,
+    first_failure_at,
+    now_monotonic,
+    start_monotonic,
+):
+    """Force a station/socket rebuild before repeated MQTT failures reboot."""
+    previous_reason = str(getattr(transport, "last_disconnect_reason", "") or "")
+    close_result = close_mqtt_client(mqtt_adapter, transport)
+    if previous_reason:
+        transport.mark_disconnected(reason=previous_reason)
+    if close_result.errors:
+        _print_log(
+            "recovery",
+            "mqtt close errors={}".format(",".join(close_result.errors)),
+            start_monotonic=start_monotonic,
+        )
+    _collect_garbage()
+    _print_log(
+        "recovery",
+        (
+            "mqtt action=station_reset reason=mqtt_repeated_connect_failures "
+            "count={} elapsed_s={} stage=pre_reboot"
+        ).format(
+            int(failure_count or 0),
+            _mqtt_repeated_failure_elapsed_s(first_failure_at, now_monotonic),
+        ),
+        start_monotonic=start_monotonic,
+    )
+    network_stack = reconnect_network_stack(
+        runtime_config,
+        network_stack,
+        max_attempts=_recovery_reconnect_attempts(True),
+        retry_delay_s=_recovery_reconnect_delay_s(True),
+        rebuild_socket_artifacts=True,
+        reset_station=True,
+        cycle_radio=True,
+        force_station_reset=True,
+        log_start_monotonic=start_monotonic,
+    )
+    mqtt_adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=network_stack.socket_pool,
+        ssl_context=network_stack.ssl_context,
+    )
+    if _mqtt_client_init_memory_failed(mqtt_adapter.errors):
+        _collect_garbage()
+    _print_log(
+        "recovery",
+        (
+            "mqtt action=rebuild broker={} socket_pool={} "
+            "station_reset=1 reason=mqtt_repeated_connect_failures"
+        ).format(
+            mqtt_adapter.active_broker or mqtt_adapter.broker or "none",
+            "ready" if network_stack.socket_pool is not None else "none",
+        ),
+        start_monotonic=start_monotonic,
+    )
+    return network_stack, mqtt_adapter
 
 
 def _should_log_command_result(result):
@@ -3091,6 +3197,22 @@ async def main(*, startup_plan_override=None):
                                 ),
                                 start_monotonic=start_monotonic,
                             )
+                        elif mqtt_station_reset:
+                            last_mqtt_station_reset_at = float(now_monotonic)
+                            _print_log(
+                                "recovery",
+                                (
+                                    "mqtt action=station_reset "
+                                    "reason={} elapsed_s={:.0f}"
+                                ).format(
+                                    station_reset_reason,
+                                    _mqtt_recovery_elapsed_s(
+                                        recovery_state,
+                                        now_monotonic,
+                                    ),
+                                ),
+                                start_monotonic=start_monotonic,
+                            )
                         if (
                             mqtt_station_reset
                             or getattr(network_stack, "socket_pool", None) is None
@@ -3484,6 +3606,33 @@ async def main(*, startup_plan_override=None):
                 )
                 budget_checked_at = time.monotonic()
                 if repeated_mqtt_connect_failure_count > 0:
+                    if _should_stage_mqtt_station_reset_before_reboot(
+                        repeated_mqtt_connect_failure_count,
+                        repeated_mqtt_connect_failure_started_at,
+                        budget_checked_at,
+                        last_mqtt_station_reset_at,
+                    ):
+                        network_stack, mqtt_adapter = (
+                            _stage_mqtt_station_reset_before_reboot(
+                                runtime_config,
+                                network_stack,
+                                mqtt_adapter,
+                                transport,
+                                failure_count=repeated_mqtt_connect_failure_count,
+                                first_failure_at=(
+                                    repeated_mqtt_connect_failure_started_at
+                                ),
+                                now_monotonic=budget_checked_at,
+                                start_monotonic=start_monotonic,
+                            )
+                        )
+                        repeated_mqtt_connect_failure_count = 0
+                        repeated_mqtt_connect_failure_started_at = -1.0
+                        mqtt_connack_timeout_recovery_pending = False
+                        last_mqtt_station_reset_at = float(budget_checked_at)
+                        last_mqtt_connect_attempt_at = -1.0
+                        await asyncio.sleep(0.05)
+                        continue
                     reboot_action = _maybe_reboot_for_mqtt_failure_budget(
                         failure_count=repeated_mqtt_connect_failure_count,
                         first_failure_at=repeated_mqtt_connect_failure_started_at,
@@ -3843,6 +3992,7 @@ async def main(*, startup_plan_override=None):
                     )
                     socket_progress_station_reset = bool(station_verify.reset_needed)
                     if socket_progress_station_reset:
+                        last_mqtt_station_reset_at = float(time.monotonic())
                         _print_log(
                             "recovery",
                             (
@@ -4375,6 +4525,37 @@ async def main(*, startup_plan_override=None):
                             repeated_mqtt_connect_failure_started_at,
                             connect_finished_at,
                         ):
+                            if _should_stage_mqtt_station_reset_before_reboot(
+                                repeated_mqtt_connect_failure_count,
+                                repeated_mqtt_connect_failure_started_at,
+                                connect_finished_at,
+                                last_mqtt_station_reset_at,
+                            ):
+                                network_stack, mqtt_adapter = (
+                                    _stage_mqtt_station_reset_before_reboot(
+                                        runtime_config,
+                                        network_stack,
+                                        mqtt_adapter,
+                                        transport,
+                                        failure_count=(
+                                            repeated_mqtt_connect_failure_count
+                                        ),
+                                        first_failure_at=(
+                                            repeated_mqtt_connect_failure_started_at
+                                        ),
+                                        now_monotonic=connect_finished_at,
+                                        start_monotonic=start_monotonic,
+                                    )
+                                )
+                                repeated_mqtt_connect_failure_count = 0
+                                repeated_mqtt_connect_failure_started_at = -1.0
+                                mqtt_connack_timeout_recovery_pending = False
+                                last_mqtt_station_reset_at = float(
+                                    connect_finished_at
+                                )
+                                last_mqtt_connect_attempt_at = -1.0
+                                await asyncio.sleep(0.05)
+                                continue
                             reboot_reason = "mqtt_repeated_connect_failures"
                             if _recovery_hard_reset_marker_should_suppress(
                                 reboot_reason,

@@ -21,6 +21,7 @@ from cpynodus_ii.app import (
     _mqtt_preconnect_probe,
     _mqtt_repeated_failure_budget_exhausted,
     _mqtt_repeated_failure_elapsed_s,
+    _mqtt_repeated_failure_reboot_gate_tripped,
     _ota_state_path,
     _recovery_reconnect_attempts,
     _recovery_reconnect_delay_s,
@@ -42,6 +43,7 @@ from cpynodus_ii.app import (
     _should_rebuild_mqtt_adapter_for_recovery,
     _should_reset_mqtt_station_for_plain_connect_failure,
     _should_reset_wifi_station_before_ready,
+    _should_stage_mqtt_station_reset_before_reboot,
     _should_verify_mqtt_before_rebuild,
     _startup_ap_fallback_reason,
     _startup_conditioning_enabled_for_current_run,
@@ -819,6 +821,32 @@ def test_mqtt_failure_marker_defers_fast_reset_but_allows_budget(monkeypatch):
         == "reboot"
     )
     assert calls[0][0][:2] == ("mqtt_repeated_connect_failures", "hard")
+
+
+def test_repeated_mqtt_failures_stage_station_reset_before_reboot():
+    assert _mqtt_repeated_failure_reboot_gate_tripped(2, 100.0, 112.0) is False
+    assert _mqtt_repeated_failure_reboot_gate_tripped(3, 100.0, 112.0) is True
+    assert _mqtt_repeated_failure_reboot_gate_tripped(1, 100.0, 160.0) is True
+    assert _mqtt_repeated_failure_reboot_gate_tripped(3, -1.0, 112.0) is False
+
+    assert (
+        _should_stage_mqtt_station_reset_before_reboot(
+            3,
+            100.0,
+            112.0,
+            -1.0,
+        )
+        is True
+    )
+    assert (
+        _should_stage_mqtt_station_reset_before_reboot(
+            3,
+            100.0,
+            112.0,
+            105.0,
+        )
+        is False
+    )
 
 
 def test_mqtt_memory_init_failure_window_and_reboot_gate():

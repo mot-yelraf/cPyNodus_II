@@ -61,23 +61,29 @@ def test_calibration_message_persists_active_sensor_toml_without_runtime_reload(
                 "calibration persistence should not reload runtime config"
             )
 
+        def _fail_on_dump(cls, path, document):
+            raise AssertionError("calibration update should not dump full TOML")
+
         monkeypatch.setattr(Settings, "from_directory", classmethod(_fail_on_reload))
+        monkeypatch.setattr(Settings, "_dump_toml_for_path", classmethod(_fail_on_dump))
         result = process_calibration_message(
             transport,
             runtime_config,
             topic="nodus/aqi-x943fm/calibration/set",
-            payload_text='{"message_id":"cal-1","action":"apply","payload":{"offsets":[{"key":"Calibration.Device.TEMP_OFFSET","value":1.5},{"key":"Calibration.Device.ALTITUDE_METERS","value":1609.3}]}}',
+            payload_text='{"message_id":"cal-1","action":"apply","payload":{"offsets":[{"key":"Calibration.System.RH_OFFSET","value":-0.5},{"key":"Calibration.Device.TEMP_OFFSET","value":1.5},{"key":"Calibration.Device.ALTITUDE_METERS","value":1609.3}]}}',
             settings_root=tmpdir_path,
         )
         sensor_doc = Settings._read_toml_file(tmpdir_path / Settings.SENSOR_I2C_FILE)
 
     assert result.phase == "published"
     assert result.persistence_mode == "persisted"
+    assert result.runtime_config.sensor.calibration_system.rh_offset == -0.5
     assert result.runtime_config.sensor.calibration_device.temp_offset == 1.5
     assert result.runtime_config.sensor.calibration_device.altitude_meters == 1609.3
+    assert sensor_doc["Calibration"]["System"]["RH_OFFSET"] == -0.5
     assert sensor_doc["Calibration"]["Device"]["TEMP_OFFSET"] == 1.5
     assert sensor_doc["Calibration"]["Device"]["ALTITUDE_METERS"] == 1609.3
-    assert transport.published_messages[-1].payload["updates"][0]["value"] == 1.5
+    assert transport.published_messages[-1].payload["updates"][0]["value"] == -0.5
 
 
 def test_soil_ph_calibration_persists_without_recursive_toml_dump(monkeypatch):
@@ -104,7 +110,11 @@ def test_soil_ph_calibration_persists_without_recursive_toml_dump(monkeypatch):
                 "calibration persistence should not reload runtime config"
             )
 
+        def _fail_on_dump(cls, path, document):
+            raise AssertionError("soil calibration update should not dump full TOML")
+
         monkeypatch.setattr(Settings, "from_directory", classmethod(_fail_on_reload))
+        monkeypatch.setattr(Settings, "_dump_toml_for_path", classmethod(_fail_on_dump))
         result = process_calibration_message(
             transport,
             runtime_config,
@@ -248,6 +258,9 @@ def test_device_config_message_persists_sensor_location_without_runtime_reload(
             )
 
         runtime_config = Settings.from_directory(tmpdir_path).runtime_config()
+        original_text = (tmpdir_path / Settings.SENSOR_I2C_FILE).read_text(
+            encoding="utf-8"
+        )
         transport = MQTTTransport("broker.local", 1883)
 
         def _fail_on_reload(cls, root):
@@ -255,7 +268,11 @@ def test_device_config_message_persists_sensor_location_without_runtime_reload(
                 "generic config persistence should not reload runtime config"
             )
 
+        def _fail_on_dump(cls, path, document):
+            raise AssertionError("scalar location update should not dump full TOML")
+
         monkeypatch.setattr(Settings, "from_directory", classmethod(_fail_on_reload))
+        monkeypatch.setattr(Settings, "_dump_toml_for_path", classmethod(_fail_on_dump))
         result = process_device_config_message(
             transport,
             runtime_config,
@@ -264,11 +281,15 @@ def test_device_config_message_persists_sensor_location_without_runtime_reload(
             settings_root=tmpdir_path,
         )
         sensor_doc = Settings._read_toml_file(tmpdir_path / Settings.SENSOR_I2C_FILE)
+        backup_text = (
+            tmpdir_path / "{}.bak".format(Settings.SENSOR_I2C_FILE)
+        ).read_text(encoding="utf-8")
 
     assert result.phase == "published"
     assert result.persistence_mode == "persisted"
     assert result.runtime_config.sensor.location == "DeskTest"
     assert sensor_doc["Sensor"]["LOCATION"] == "DeskTest"
+    assert backup_text == original_text
 
 
 def test_device_config_message_persists_display_metrics_with_backup(monkeypatch):
