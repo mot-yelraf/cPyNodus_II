@@ -12,51 +12,25 @@ import time
 from dataclasses import replace
 
 from cpynodus_ii import __version__
-from cpynodus_ii.core import (
-    NTPState,
-    RecoveryPolicy,
-    RecoveryState,
-    advance_recovery_state,
-    build_mqtt_client_adapter,
+from cpynodus_ii.core.network import (
     build_network_stack,
-    close_mqtt_client,
-    connect_mqtt_client,
-    disconnect_mqtt_client,
-    maybe_sync_ntp,
     network_error_signature,
     network_link_is_ready,
-    poll_mqtt_client,
-    preflight_mqtt_broker_connect,
-    preflight_mqtt_broker_tcp,
-    raw_mqtt_connect_enabled,
     reconnect_network_stack,
     refresh_network_socket_artifacts,
     refresh_network_stack,
-    sync_transport_to_client,
     teardown_network_stack,
     verify_station_connectivity,
 )
-from cpynodus_ii.core.mqtt import MQTTTransport
-from cpynodus_ii.core.ntp import DEFAULT_NTP_SERVER
+from cpynodus_ii.core.ntp import DEFAULT_NTP_SERVER, NTPState, maybe_sync_ntp
 from cpynodus_ii.core.plan import StartupPlan
 from cpynodus_ii.core.reboot_log import append_reboot_reason_traceback
+from cpynodus_ii.core.recovery import (
+    RecoveryPolicy,
+    RecoveryState,
+    advance_recovery_state,
+)
 from cpynodus_ii.core.settings import Settings
-from cpynodus_ii.features.command_intake import subscribe_switch_runtime_topics
-from cpynodus_ii.features.sensor import plan_sensor_initialization
-from cpynodus_ii.features.sensor_runtime import build_sensor_runtime
-from cpynodus_ii.features.sensor_service import (
-    read_sensor_snapshot,
-    start_sensor_service,
-    stop_sensor_service,
-)
-from cpynodus_ii.features.steady_state import SteadyState, run_steady_state_iteration
-from cpynodus_ii.features.switch import plan_switch_initialization
-from cpynodus_ii.features.switch_runtime import build_switch_runtime
-from cpynodus_ii.features.switch_service import (
-    start_switch_service,
-    stop_switch_service,
-)
-from cpynodus_ii.hardware import bind_sensor_hardware, bind_switch_hardware
 from cpynodus_ii.ota.state import FwUpdateState, load_ota_state, save_ota_state
 
 MQTT_REBUILD_VERIFY_WINDOW_S = 90.0
@@ -114,6 +88,213 @@ SOFT_RELOAD_CLEANUP_NVM_INDEX = 2
 SOFT_RELOAD_CLEANUP_MARKER = 31
 
 _SOFT_RELOAD_PREPARED = False
+
+
+class _InactiveMQTTAdapter:
+    def __init__(self, runtime_config):
+        mqtt_config = getattr(runtime_config, "mqtt", None)
+        self.phase = "inactive"
+        self.broker = str(getattr(mqtt_config, "broker", "") or "")
+        self.active_broker = ""
+        self.port = int(getattr(mqtt_config, "port", 1883) or 1883)
+        self.errors = ()
+        self.broker_targets = ()
+        self.published_index = 0
+        self.subscription_index = 0
+
+
+class _InactiveMQTTTransport:
+    connected = False
+    connection_generation = 0
+    published_messages = ()
+    subscriptions = ()
+    received_messages = ()
+    last_disconnect_reason = ""
+    last_success_at = -1.0
+
+    def mark_disconnected(self, reason=""):
+        self.last_disconnect_reason = str(reason or "")
+
+    def mark_connect_requested(self):
+        return None
+
+    def drain_received(self):
+        return ()
+
+
+class _InactiveRuntimeIteration:
+    def __init__(self, state, runtime_config):
+        self.state = state
+        self.runtime_config = runtime_config
+        self.subscribed_topics = ()
+        self.command_results = ()
+        self.errors = ()
+        self.sensor_publish_phase = "skipped"
+        self.sensor_published_count = 0
+
+
+class _InactiveSensorSnapshot:
+    def __init__(self):
+        self.phase = "inactive"
+        self.sensor_id = ""
+        self.device = ""
+        self.metrics = {}
+        self.errors = ()
+
+
+def _build_mqtt_transport(runtime_config):
+    from cpynodus_ii.core.mqtt import MQTTTransport
+
+    return MQTTTransport(
+        runtime_config.mqtt.preferred_host,
+        runtime_config.mqtt.port,
+    )
+
+
+def build_mqtt_client_adapter(*args, **kwargs):
+    """Build an MQTT adapter after the active profile requires MQTT."""
+    from cpynodus_ii.core.mqtt_client import build_mqtt_client_adapter as build
+
+    return build(*args, **kwargs)
+
+
+def close_mqtt_client(*args, **kwargs):
+    """Close MQTT resources after MQTT support has been imported."""
+    from cpynodus_ii.core.mqtt_client import close_mqtt_client as close
+
+    return close(*args, **kwargs)
+
+
+def connect_mqtt_client(*args, **kwargs):
+    """Connect MQTT after MQTT support has been imported."""
+    from cpynodus_ii.core.mqtt_client import connect_mqtt_client as connect
+
+    return connect(*args, **kwargs)
+
+
+def disconnect_mqtt_client(*args, **kwargs):
+    """Disconnect MQTT after MQTT support has been imported."""
+    from cpynodus_ii.core.mqtt_client import disconnect_mqtt_client as disconnect
+
+    return disconnect(*args, **kwargs)
+
+
+def poll_mqtt_client(*args, **kwargs):
+    """Poll MQTT after MQTT support has been imported."""
+    from cpynodus_ii.core.mqtt_client import poll_mqtt_client as poll
+
+    return poll(*args, **kwargs)
+
+
+def preflight_mqtt_broker_connect(*args, **kwargs):
+    """Probe MQTT connect readiness after MQTT support has been imported."""
+    from cpynodus_ii.core.mqtt_client import (
+        preflight_mqtt_broker_connect as preflight_connect,
+    )
+
+    return preflight_connect(*args, **kwargs)
+
+
+def preflight_mqtt_broker_tcp(*args, **kwargs):
+    """Probe MQTT TCP readiness after MQTT support has been imported."""
+    from cpynodus_ii.core.mqtt_client import preflight_mqtt_broker_tcp as preflight_tcp
+
+    return preflight_tcp(*args, **kwargs)
+
+
+def raw_mqtt_connect_enabled(*args, **kwargs):
+    """Return raw MQTT connect enablement after MQTT support is imported."""
+    from cpynodus_ii.core.mqtt_client import raw_mqtt_connect_enabled as enabled
+
+    return enabled(*args, **kwargs)
+
+
+def sync_transport_to_client(*args, **kwargs):
+    """Synchronize queued MQTT work after MQTT support has been imported."""
+    from cpynodus_ii.core.mqtt_client import sync_transport_to_client as sync
+
+    return sync(*args, **kwargs)
+
+
+def _build_switch_stack(runtime_config):
+    if not getattr(getattr(runtime_config, "switch", None), "present", False):
+        return None, None, None, None
+
+    from cpynodus_ii.features.switch import plan_switch_initialization
+    from cpynodus_ii.features.switch_runtime import build_switch_runtime
+    from cpynodus_ii.features.switch_service import start_switch_service
+    from cpynodus_ii.hardware.switch_adapter import bind_switch_hardware
+
+    switch_init = plan_switch_initialization(runtime_config)
+    switch_runtime = build_switch_runtime(switch_init)
+    switch_adapter = bind_switch_hardware(switch_runtime)
+    switch_service = start_switch_service(switch_runtime, switch_adapter)
+    return switch_init, switch_runtime, switch_adapter, switch_service
+
+
+def _stop_switch_service_for_shutdown(switch_service):
+    from cpynodus_ii.features.switch_service import stop_switch_service
+
+    stop_switch_service(switch_service)
+
+
+def _subscribe_switch_runtime_topics(transport, runtime_config):
+    from cpynodus_ii.features.command_intake import subscribe_switch_runtime_topics
+
+    return subscribe_switch_runtime_topics(transport, runtime_config)
+
+
+def _inactive_steady_state_iteration(state, runtime_config):
+    return _InactiveRuntimeIteration(state, runtime_config)
+
+
+def bind_sensor_hardware(*args, **kwargs):
+    """Bind sensor hardware after the active hardware plan requires it."""
+    from cpynodus_ii.hardware.sensor_adapter import bind_sensor_hardware as bind
+
+    return bind(*args, **kwargs)
+
+
+def start_sensor_service(*args, **kwargs):
+    """Start sensor service after the active hardware plan requires it."""
+    from cpynodus_ii.features.sensor_service import start_sensor_service as start
+
+    return start(*args, **kwargs)
+
+
+def stop_sensor_service(*args, **kwargs):
+    """Stop sensor service after sensor support has been imported."""
+    from cpynodus_ii.features.sensor_service import stop_sensor_service as stop
+
+    return stop(*args, **kwargs)
+
+
+def read_sensor_snapshot(*args, **kwargs):
+    """Read a sensor snapshot after sensor support has been imported."""
+    from cpynodus_ii.features.sensor_service import read_sensor_snapshot as read
+
+    return read(*args, **kwargs)
+
+
+def _build_sensor_stack(runtime_config):
+    if not getattr(getattr(runtime_config, "sensor", None), "present", False):
+        return None, None, None, _InactiveSensorSnapshot(), None
+
+    from cpynodus_ii.features.sensor import plan_sensor_initialization
+    from cpynodus_ii.features.sensor_runtime import build_sensor_runtime
+
+    sensor_init = plan_sensor_initialization(runtime_config)
+    sensor_runtime = build_sensor_runtime(sensor_init, runtime_config)
+    sensor_adapter = bind_sensor_hardware(sensor_runtime, runtime_config)
+    sensor_service = start_sensor_service(
+        sensor_runtime, sensor_adapter, runtime_config
+    )
+    sensor_snapshot = read_sensor_snapshot(sensor_service, runtime_config)
+    return sensor_init, sensor_runtime, sensor_adapter, sensor_snapshot, sensor_service
+
+
+def _stop_sensor_service_for_shutdown(sensor_service):
+    stop_sensor_service(sensor_service)
 
 
 def _path_exists(path):
@@ -2086,7 +2267,7 @@ def _stop_feature_services_for_shutdown(
     stopped_switch = False
     if sensor_service is not None:
         try:
-            stop_sensor_service(sensor_service)
+            _stop_sensor_service_for_shutdown(sensor_service)
             stopped_sensor = True
         except Exception as exc:
             _print_log(
@@ -2096,7 +2277,7 @@ def _stop_feature_services_for_shutdown(
             )
     if switch_service is not None:
         try:
-            stop_switch_service(switch_service)
+            _stop_switch_service_for_shutdown(switch_service)
             stopped_switch = True
         except Exception as exc:
             _print_log(
@@ -2147,7 +2328,12 @@ def _prepare_soft_recovery_reboot(
         start_monotonic=start_monotonic,
         log_prefix="recovery",
     )
-    if mqtt_adapter is not None and transport is not None:
+    if (
+        runtime_config is not None
+        and bool(getattr(runtime_config, "mqtt_enabled", False))
+        and mqtt_adapter is not None
+        and transport is not None
+    ):
         try:
             if (
                 bool(getattr(transport, "connected", False))
@@ -2558,34 +2744,37 @@ async def main(*, startup_plan_override=None):
                 ),
                 start_monotonic=start_monotonic,
             )
-    transport = MQTTTransport(
-        runtime_config.mqtt.preferred_host,
-        runtime_config.mqtt.port,
+    if plan.mqtt_enabled:
+        from cpynodus_ii.features.steady_state import (
+            SteadyState,
+            run_steady_state_iteration,
+        )
+
+        transport = _build_mqtt_transport(runtime_config)
+        mqtt_adapter = build_mqtt_client_adapter(
+            runtime_config,
+            socket_pool=network_stack.socket_pool,
+            ssl_context=network_stack.ssl_context,
+        )
+        mqtt_adapter = _condition_startup_mqtt_socket(
+            runtime_config,
+            network_stack,
+            mqtt_adapter,
+            start_monotonic=start_monotonic,
+            soft_reload_cleanup_requested=soft_reload_cleanup_requested,
+        )
+        steady_state = SteadyState()
+    else:
+        transport = _InactiveMQTTTransport()
+        mqtt_adapter = _InactiveMQTTAdapter(runtime_config)
+        run_steady_state_iteration = None
+        steady_state = None
+    _sensor_init, sensor_runtime, sensor_adapter, sensor_snapshot, sensor_service = (
+        _build_sensor_stack(runtime_config)
     )
-    mqtt_adapter = build_mqtt_client_adapter(
-        runtime_config,
-        socket_pool=network_stack.socket_pool,
-        ssl_context=network_stack.ssl_context,
+    switch_init, switch_runtime, switch_adapter, switch_service = _build_switch_stack(
+        runtime_config
     )
-    mqtt_adapter = _condition_startup_mqtt_socket(
-        runtime_config,
-        network_stack,
-        mqtt_adapter,
-        start_monotonic=start_monotonic,
-        soft_reload_cleanup_requested=soft_reload_cleanup_requested,
-    )
-    sensor_init = plan_sensor_initialization(runtime_config)
-    switch_init = plan_switch_initialization(runtime_config)
-    sensor_runtime = build_sensor_runtime(sensor_init, runtime_config)
-    switch_runtime = build_switch_runtime(switch_init)
-    sensor_adapter = bind_sensor_hardware(sensor_runtime, runtime_config)
-    switch_adapter = bind_switch_hardware(switch_runtime)
-    sensor_service = start_sensor_service(
-        sensor_runtime, sensor_adapter, runtime_config
-    )
-    switch_service = start_switch_service(switch_runtime, switch_adapter)
-    sensor_snapshot = read_sensor_snapshot(sensor_service, runtime_config)
-    steady_state = SteadyState()
     ntp_state = NTPState()
     ntp_startup_defer_logged = False
     recovery_policy = RecoveryPolicy()
@@ -2676,10 +2865,10 @@ async def main(*, startup_plan_override=None):
             plan.sensor_family or "none",
             plan.sensor_interface or "none",
             plan.active_sensor_file or "none",
-            sensor_runtime.phase,
+            getattr(sensor_runtime, "phase", "inactive"),
             _sensor_target_addr(sensor_runtime),
-            sensor_adapter.phase,
-            sensor_service.phase,
+            getattr(sensor_adapter, "phase", "inactive"),
+            getattr(sensor_service, "phase", "inactive"),
             len((sensor_snapshot.metrics or {})),
             _sensor_error_text(
                 sensor_runtime,
@@ -2697,10 +2886,10 @@ async def main(*, startup_plan_override=None):
             "service={} mqtt={} web={} ntp={}"
         ).format(
             plan.switch_enabled,
-            switch_init.channel_count,
-            switch_runtime.phase,
-            switch_adapter.phase,
-            switch_service.phase,
+            int(getattr(switch_init, "channel_count", 0) or 0),
+            getattr(switch_runtime, "phase", "inactive"),
+            getattr(switch_adapter, "phase", "inactive"),
+            getattr(switch_service, "phase", "inactive"),
             plan.mqtt_enabled,
             plan.web_enabled,
             plan.ntp_enabled,
@@ -4663,20 +4852,26 @@ async def main(*, startup_plan_override=None):
                     else:
                         repeated_mqtt_connect_failure_count = 0
                         repeated_mqtt_connect_failure_started_at = -1.0
-            iteration = run_steady_state_iteration(
-                transport,
-                runtime_config,
-                switch_service,
-                sensor_service,
-                state=steady_state,
-                version=__version__,
-                now_monotonic=now_monotonic,
-                active_broker=mqtt_adapter.active_broker,
-                settings_root=writable_settings_root,
-                subscribe_switch_topics=False,
-                publish_switch_startup=False,
-                include_switch_meta_channels=False,
-            )
+            if plan.mqtt_enabled:
+                iteration = run_steady_state_iteration(
+                    transport,
+                    runtime_config,
+                    switch_service,
+                    sensor_service,
+                    state=steady_state,
+                    version=__version__,
+                    now_monotonic=now_monotonic,
+                    active_broker=mqtt_adapter.active_broker,
+                    settings_root=writable_settings_root,
+                    subscribe_switch_topics=False,
+                    publish_switch_startup=False,
+                    include_switch_meta_channels=False,
+                )
+            else:
+                iteration = _inactive_steady_state_iteration(
+                    steady_state,
+                    runtime_config,
+                )
             steady_state = iteration.state
             runtime_config = iteration.runtime_config
             sensor_issue = _sensor_issue_text(iteration.errors)
@@ -4977,7 +5172,7 @@ async def main(*, startup_plan_override=None):
                         and not getattr(transport, "published_messages", ())
                         and not getattr(transport, "subscriptions", ())
                     ):
-                        switch_topics = subscribe_switch_runtime_topics(
+                        switch_topics = _subscribe_switch_runtime_topics(
                             transport,
                             runtime_config,
                         )
@@ -5045,7 +5240,7 @@ async def main(*, startup_plan_override=None):
                 web_runtime,
                 start_monotonic=start_monotonic,
             )
-            if transport.connected:
+            if plan.mqtt_enabled and transport.connected:
                 try:
                     disconnect_result = disconnect_mqtt_client(
                         mqtt_adapter,
@@ -5073,7 +5268,7 @@ async def main(*, startup_plan_override=None):
                         "disconnect phase=error errors={}".format(str(exc)),
                         start_monotonic=start_monotonic,
                     )
-            else:
+            elif plan.mqtt_enabled:
                 try:
                     close_result = close_mqtt_client(mqtt_adapter, transport)
                     if close_result.errors:

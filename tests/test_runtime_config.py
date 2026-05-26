@@ -243,6 +243,9 @@ def test_settings_from_directory_loads_dual_soil_modbus_channels():
     assert channels[1].uart_rx == "GP5"
     assert channels[1].baud == 4800
     assert channels[1].address == 3
+    assert runtime_config.sensor.soil_npk.n_target == 20.0
+    assert runtime_config.sensor.soil_npk.p_target == 30.0
+    assert runtime_config.sensor.soil_npk.k_target == 70.0
 
 
 def test_runtime_config_keeps_minimal_defaults_for_missing_sections():

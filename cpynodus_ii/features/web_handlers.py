@@ -6,8 +6,6 @@ easy to test.
 """
 
 from cpynodus_ii.core.settings import Settings
-from cpynodus_ii.features.sensor_service import read_sensor_snapshot
-from cpynodus_ii.features.switch_service import snapshot_switch_states
 from cpynodus_ii.features.web_config import (
     apply_web_config_updates,
     apply_web_switch_override,
@@ -26,9 +24,13 @@ def build_status_payload(
     """Build the operational status payload for `/` and `/current-data`."""
     sensor_snapshot = None
     if sensor_service is not None:
+        from cpynodus_ii.features.sensor_service import read_sensor_snapshot
+
         sensor_snapshot = read_sensor_snapshot(sensor_service, runtime_config)
     switch_snapshot = {}
     if switch_service is not None:
+        from cpynodus_ii.features.switch_service import snapshot_switch_states
+
         switch_snapshot = snapshot_switch_states(switch_service)
 
     display_metrics = []

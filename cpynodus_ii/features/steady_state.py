@@ -20,8 +20,6 @@ from cpynodus_ii.features.publish_cycle import (
     publish_startup_cycle,
     publish_switch_meta_cycle,
 )
-from cpynodus_ii.features.sensor_service import read_sensor_snapshot
-
 
 SWITCH_ONLY_AVAILABILITY_INTERVAL_S = 45.0
 
@@ -108,13 +106,15 @@ def run_steady_state_iteration(
         sensor_snapshot = None
         onboarding_state = {}
         if sensor_service is not None:
+            from cpynodus_ii.features.sensor_service import read_sensor_snapshot
+
             sensor_snapshot = read_sensor_snapshot(sensor_service, runtime_config)
         if switch_service is not None:
             from cpynodus_ii.features.switch_service import snapshot_switch_states
 
             switch_snapshot = snapshot_switch_states(switch_service)
         if settings_root is not None:
-            from cpynodus_ii.features.web_services import load_onboarding_state
+            from cpynodus_ii.features.onboarding_state import load_onboarding_state
 
             onboarding_state = load_onboarding_state(settings_root)
         if subscribe_switch_topics:
@@ -245,6 +245,8 @@ def run_steady_state_iteration(
         )
     )
     if should_poll_sensor:
+        from cpynodus_ii.features.sensor_service import read_sensor_snapshot
+
         sensor_snapshot = read_sensor_snapshot(sensor_service, runtime_config)
         sensor_result = publish_sensor_cycle(transport, runtime_config, sensor_snapshot)
         errors.extend(sensor_result.errors)

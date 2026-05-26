@@ -316,11 +316,11 @@ Soil Fertility Index = 100 * ((0.5 * min_score) + (0.5 * avg_score))
 
 The lowest nutrient score is weighted with the average nutrient score so one deficient nutrient lowers the final index. The output is rounded and clamped to `0-100%`.
 
-Defaults in `sensor_soil.toml.def`:
+Defaults in `sensor_soil.toml.def` are in `mg/kg`, matching the 7-in-1 sensor's reported nutrient metrics. They are sensor-scale defaults based on healthy living-soil readings, not lab sufficiency thresholds:
 
-- `N_TARGET = 120.0`
-- `P_TARGET = 80.0`
-- `K_TARGET = 150.0`
+- `N_TARGET = 20.0`
+- `P_TARGET = 30.0`
+- `K_TARGET = 70.0`
 
 `Soil Fertility Index` is only reported when the active soil channel has `SOIL_VARIANT = "soil_7in1"`. If any N/P/K value is missing or any target is `0` or lower, `Soil Fertility Index` is not reported.
 

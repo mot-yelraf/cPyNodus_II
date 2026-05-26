@@ -7,8 +7,6 @@ including switch overrides and settings writes that may require a reboot.
 from dataclasses import dataclass
 
 from cpynodus_ii.core.settings import Settings
-from cpynodus_ii.features.command_intake import apply_runtime_config_update
-from cpynodus_ii.features.switch_service import apply_switch_state
 
 
 @dataclass(frozen=True)
@@ -168,6 +166,10 @@ def apply_web_config_updates(runtime_config, updates, *, settings_root=None):
             ignored_updates.append(_decision_payload(decision))
             continue
         if decision.applies_live:
+            from cpynodus_ii.features.runtime_config_update import (
+                apply_runtime_config_update,
+            )
+
             updated_runtime = apply_runtime_config_update(
                 current,
                 decision.section,
@@ -207,6 +209,9 @@ def apply_web_switch_override(
     runtime_config, switch_service, *, channel_id=None, channel_key=None, state
 ):
     """Apply a live switch override and reflect it into runtime config."""
+    from cpynodus_ii.features.runtime_config_update import apply_runtime_config_update
+    from cpynodus_ii.features.switch_service import apply_switch_state
+
     apply_result = apply_switch_state(
         switch_service,
         channel_id=channel_id,

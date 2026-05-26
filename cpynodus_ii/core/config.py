@@ -166,9 +166,9 @@ class SoilStressConfig:
 class SoilNPKConfig:
     """Normalized NPK target values for soil fertility scoring."""
 
-    n_target: float = 120.0
-    p_target: float = 80.0
-    k_target: float = 150.0
+    n_target: float = 20.0
+    p_target: float = 30.0
+    k_target: float = 70.0
 
     def __post_init__(self):
         _raw_setattr(self, "n_target", float(self.n_target or 0.0))

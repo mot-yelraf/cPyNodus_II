@@ -84,9 +84,11 @@ Target values should be configurable because optimal nutrient ranges vary by:
 Example configuration:
 
 [NPK]
-N_TARGET = 120
-P_TARGET = 80
-K_TARGET = 150
+N_TARGET = 20
+P_TARGET = 30
+K_TARGET = 70
+
+The targets use the same `mg/kg` units reported by the 7-in-1 soil sensor.
 
 Important Limitations
 

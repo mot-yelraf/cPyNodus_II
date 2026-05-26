@@ -8,8 +8,12 @@ command handling testable outside the main loop.
 import json
 from dataclasses import dataclass, replace
 
-from cpynodus_ii.core.config import RuntimeConfig, SoilNPKConfig
+from cpynodus_ii.core.config import RuntimeConfig
 from cpynodus_ii.core.settings import Settings
+from cpynodus_ii.features.onboarding_state import (
+    clear_onboarding_state,
+    load_onboarding_state,
+)
 from cpynodus_ii.features.payloads import (
     build_calibration_ack_payload,
     build_calibration_result_payload,
@@ -20,14 +24,7 @@ from cpynodus_ii.features.payloads import (
     build_sensor_data_payload,
     mqtt_topic,
 )
-from cpynodus_ii.features.publish_cycle import PublishCycleResult, publish_switch_result
-from cpynodus_ii.features.sensor_service import read_sensor_snapshot
-from cpynodus_ii.features.switch_service import apply_switch_state
-from cpynodus_ii.features.web_services import (
-    clear_onboarding_state,
-    load_onboarding_state,
-)
-from cpynodus_ii.ota.state import FwUpdateState, save_ota_state
+from cpynodus_ii.features.runtime_config_update import apply_runtime_config_updates
 
 
 @dataclass(frozen=True)
@@ -337,6 +334,8 @@ def process_fwupdate_message(
         )
 
     try:
+        from cpynodus_ii.ota.state import FwUpdateState, save_ota_state
+
         save_ota_state(
             FwUpdateState(
                 prior_profile=runtime_config.active_profile,
@@ -433,6 +432,8 @@ def process_soil_calibration_session(
             runtime_config=runtime_config,
             message_id=session.message_id,
         )
+
+    from cpynodus_ii.features.sensor_service import read_sensor_snapshot
 
     snapshot = read_sensor_snapshot(sensor_service, runtime_config)
     ph_value = (
@@ -649,6 +650,9 @@ def process_switch_command_message(
         build_config_ack_payload(command.message_id, accepted=True, duplicate=False),
         retain=False,
     )
+    from cpynodus_ii.features.publish_cycle import publish_switch_result
+    from cpynodus_ii.features.switch_service import apply_switch_state
+
     apply_result = apply_switch_state(
         switch_service,
         channel_id=command.channel_id,
@@ -1276,277 +1280,9 @@ def parse_fwupdate_command(payload_text):
     )
 
 
-def apply_runtime_config_updates(runtime_config, updates, *, settings_root=None):
-    """Apply supported runtime updates and return the new config plus applied writes."""
-    if settings_root is not None:
-        persisted_runtime_config, persisted_updates, persistence_errors = (
-            Settings.apply_updates_to_directory(
-                settings_root,
-                runtime_config,
-                updates,
-                reload_runtime=False,
-            )
-        )
-        current = runtime_config
-        for update in persisted_updates:
-            section = str(update.get("section", "") or "").strip()
-            key = str(update.get("key", "") or "").strip()
-            value = update.get("value")
-            updated = apply_runtime_config_update(current, section, key, value)
-            if updated is None:
-                continue
-            current = updated
-        return current, tuple(persisted_updates), tuple(persistence_errors)
-    current = runtime_config
-    applied_updates = []
-    for update in updates:
-        section = str(update.get("section", "") or "").strip()
-        key = str(update.get("key", "") or "").strip()
-        value = update.get("value")
-        updated = apply_runtime_config_update(current, section, key, value)
-        if updated is None:
-            continue
-        current = updated
-        applied_updates.append(
-            {
-                "section": section,
-                "key": key,
-                "value": value,
-            }
-        )
-    return current, tuple(applied_updates), ()
-
-
-def apply_runtime_config_update(runtime_config, section, key, value):
-    key_upper = key.upper()
-    if section == "Network" and key_upper == "HOSTNAME":
-        return replace(
-            runtime_config,
-            network=replace(runtime_config.network, hostname=str(value or "").strip()),
-        )
-    if section == "Network" and key_upper == "AP_CHANNEL":
-        return replace(
-            runtime_config,
-            network=replace(runtime_config.network, ap_channel=int(value or 6)),
-        )
-    if section == "Network" and key_upper == "HTTPPORT":
-        return replace(
-            runtime_config,
-            network=replace(runtime_config.network, http_port=int(value or 8000)),
-        )
-    if section == "MQTT" and key_upper == "BROKER":
-        return replace(
-            runtime_config,
-            mqtt=replace(runtime_config.mqtt, broker=str(value or "").strip()),
-        )
-    if section == "MQTT" and key_upper == "BROKER_IP":
-        return replace(
-            runtime_config,
-            mqtt=replace(runtime_config.mqtt, broker_ip=str(value or "").strip()),
-        )
-    if section == "MQTT" and key_upper == "PORT":
-        return replace(
-            runtime_config,
-            mqtt=replace(runtime_config.mqtt, port=int(value or 1883)),
-        )
-    if section == "MQTT" and key_upper == "BASE_TOPIC":
-        return replace(
-            runtime_config,
-            mqtt=replace(runtime_config.mqtt, base_topic=str(value or "").strip()),
-        )
-    if section == "HomeAssistant" and key_upper == "DISCOVERY_PREFIX":
-        return replace(
-            runtime_config,
-            homeassistant=replace(
-                runtime_config.homeassistant,
-                discovery_prefix=str(value or "").strip(),
-            ),
-        )
-    if section == "HomeAssistant" and key_upper == "BASE_TOPIC":
-        return replace(
-            runtime_config,
-            homeassistant=replace(
-                runtime_config.homeassistant,
-                base_topic=str(value or "").strip(),
-            ),
-        )
-    if section == "Time" and key_upper == "TZ":
-        return replace(
-            runtime_config,
-            time=replace(runtime_config.time, tz=str(value or "").strip()),
-        )
-    if section == "Time" and key_upper == "TZ_OFFSET":
-        return replace(
-            runtime_config,
-            time=replace(runtime_config.time, tz_offset=int(value or 0)),
-        )
-    if section == "Time" and key_upper == "TZ_NAME":
-        return replace(
-            runtime_config,
-            time=replace(runtime_config.time, tz_name=str(value or "").strip()),
-        )
-    if section == "Time" and key_upper == "NTP_SERVER":
-        return replace(
-            runtime_config,
-            time=replace(runtime_config.time, ntp_server=str(value or "").strip()),
-        )
-    if section == "Time" and key_upper == "NTP_SERVER_IP":
-        return replace(
-            runtime_config,
-            time=replace(runtime_config.time, ntp_server_ip=str(value or "").strip()),
-        )
-    if section == "Profile" and key_upper == "ACTIVE_PROFILE":
-        return replace(runtime_config, active_profile=str(value or "").strip())
-    if section == "Sensor" and key_upper == "LOCATION":
-        return replace(
-            runtime_config,
-            sensor=replace(runtime_config.sensor, location=str(value or "").strip()),
-        )
-    if section == "Sensor" and key_upper == "SENSOR_ID":
-        return replace(
-            runtime_config,
-            sensor=replace(runtime_config.sensor, sensor_id=str(value or "").strip()),
-        )
-    if section == "Sensor" and key_upper == "SERIAL_NUM":
-        return replace(
-            runtime_config,
-            sensor=replace(
-                runtime_config.sensor, serial_number=str(value or "").strip()
-            ),
-        )
-    if section == "Switch" and key_upper == "SWITCH_LOCATION":
-        return replace(
-            runtime_config,
-            switch=replace(runtime_config.switch, location=str(value or "").strip()),
-        )
-    channel_index = _switch_channel_index_from_key(key_upper)
-    if section == "Switch" and channel_index:
-        return _replace_switch_channel(runtime_config, channel_index, key_upper, value)
-    display_index = _display_metric_index(key_upper)
-    if section == "Display" and display_index:
-        metrics = list(runtime_config.sensor.display.metrics)
-        metrics[display_index - 1] = str(value or "").strip()
-        return replace(
-            runtime_config,
-            sensor=replace(
-                runtime_config.sensor,
-                display=replace(runtime_config.sensor.display, metrics=tuple(metrics)),
-            ),
-        )
-    if section == "Display.Style" and display_index:
-        styles = list(runtime_config.sensor.display.styles)
-        styles[display_index - 1] = str(value or "").strip()
-        return replace(
-            runtime_config,
-            sensor=replace(
-                runtime_config.sensor,
-                display=replace(runtime_config.sensor.display, styles=tuple(styles)),
-            ),
-        )
-    npk_attr = _npk_attr_name(section, key_upper)
-    if npk_attr:
-        if runtime_config.sensor.device != "soil":
-            return None
-        soil_npk = runtime_config.sensor.soil_npk or SoilNPKConfig()
-        return replace(
-            runtime_config,
-            sensor=replace(
-                runtime_config.sensor,
-                soil_npk=replace(soil_npk, **{npk_attr: float(value or 0.0)}),
-            ),
-        )
-    calibration_attr = _calibration_attr_name(section, key_upper)
-    if calibration_attr and section == "Calibration.System":
-        calibration = replace(
-            runtime_config.sensor.calibration_system,
-            **{calibration_attr: float(value or 0.0)},
-        )
-        return replace(
-            runtime_config,
-            sensor=replace(runtime_config.sensor, calibration_system=calibration),
-        )
-    if calibration_attr and section == "Calibration.Device":
-        calibration = replace(
-            runtime_config.sensor.calibration_device,
-            **{calibration_attr: float(value or 0.0)},
-        )
-        return replace(
-            runtime_config,
-            sensor=replace(runtime_config.sensor, calibration_device=calibration),
-        )
-    return None
-
-
-def _npk_attr_name(section, key_upper):
-    if section != "NPK":
-        return ""
-    mapping = {
-        "N_TARGET": "n_target",
-        "P_TARGET": "p_target",
-        "K_TARGET": "k_target",
-    }
-    return mapping.get(key_upper, "")
-
-
-def _calibration_attr_name(section, key_upper):
-    if section not in {"Calibration.System", "Calibration.Device"}:
-        return ""
-    mapping = {
-        "TEMP_OFFSET": "temp_offset",
-        "RH_OFFSET": "rh_offset",
-        "CO2_OFFSET": "co2_offset",
-        "AQI_OFFSET": "aqi_offset",
-        "GAS_OFFSET": "gas_offset",
-        "LUX_OFFSET": "lux_offset",
-        "PPFD_OFFSET": "ppfd_offset",
-        "SOIL_TEMP_CAL_VAL": "soil_temp_cal_val",
-        "SOIL_TEMP_MOIST_VAL": "soil_temp_moist_val",
-        "SOIL_PH_CAL_VAL": "soil_ph_cal_val",
-        "SOIL_EC_CAL_VAL": "soil_ec_cal_val",
-        "ALTITUDE_METERS": "altitude_meters",
-    }
-    return mapping.get(key_upper, "")
-
-
-def _switch_channel_index_from_key(key_upper):
-    if key_upper.startswith("SWITCH_1_"):
-        return 1
-    if key_upper.startswith("SWITCH_2_"):
-        return 2
-    return 0
-
-
-def _replace_switch_channel(runtime_config, channel_index, key_upper, value):
-    channels = list(runtime_config.switch.channels)
-    position = channel_index - 1
-    if position >= len(channels):
-        return None
-    channel = channels[position]
-    if key_upper.endswith("_LABEL"):
-        channels[position] = replace(channel, label=str(value or "").strip())
-    elif key_upper.endswith("_LAST_STATE"):
-        channels[position] = replace(channel, last_state=bool(value))
-    else:
-        return None
-    return replace(
-        runtime_config,
-        switch=replace(runtime_config.switch, channels=tuple(channels)),
-    )
-
-
-def _display_metric_index(key_upper):
-    if not key_upper.startswith("METRIC_"):
-        return 0
-    try:
-        index = int(key_upper.split("_", 1)[1])
-    except Exception:
-        return 0
-    if 1 <= index <= 6:
-        return index
-    return 0
-
-
 def _publish_switch_meta_patch(transport, runtime_config, apply_result, *, message_id):
+    from cpynodus_ii.features.publish_cycle import PublishCycleResult
+
     if apply_result.phase != "ready":
         return PublishCycleResult(
             phase="skipped",

@@ -61,7 +61,7 @@ def test_classify_web_update_marks_operational_changes_as_live():
         {"section": "Display", "key": "METRIC_1", "value": "CO2"}
     )
     npk_decision = classify_web_update(
-        {"section": "NPK", "key": "N_TARGET", "value": 120.0}
+        {"section": "NPK", "key": "N_TARGET", "value": 20.0}
     )
 
     assert decision.accepted is True

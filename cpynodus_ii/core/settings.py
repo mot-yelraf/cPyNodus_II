@@ -9,7 +9,7 @@ import os
 import random
 import time
 
-from cpynodus_ii.core import toml_compat
+import cpynodus_ii.core.toml_compat as toml_compat
 from cpynodus_ii.core.config import (
     DetectedSensor,
     DisplayConfig,
@@ -1070,9 +1070,9 @@ class Settings:
                     ),
                 ),
                 soil_npk=SoilNPKConfig(
-                    n_target=float(soil_npk_doc.get("N_TARGET", 120.0)),
-                    p_target=float(soil_npk_doc.get("P_TARGET", 80.0)),
-                    k_target=float(soil_npk_doc.get("K_TARGET", 150.0)),
+                    n_target=float(soil_npk_doc.get("N_TARGET", 20.0)),
+                    p_target=float(soil_npk_doc.get("P_TARGET", 30.0)),
+                    k_target=float(soil_npk_doc.get("K_TARGET", 70.0)),
                 ),
                 display=DisplayConfig(
                     metrics=tuple(

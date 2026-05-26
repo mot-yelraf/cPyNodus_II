@@ -5,13 +5,11 @@ and lightweight service decisions used during AP provisioning and normal web
 configuration flows.
 """
 
-import json
-import os
 import time
 
 from cpynodus_ii.core.settings import Settings
+from cpynodus_ii.features import onboarding_state as _onboarding_state
 
-ONBOARDING_STATE_FILE = "onboarding_state.json"
 ITAOT_META_SCHEMA = "itaot-meta/v1"
 
 _DISPLAY_METRICS_BY_DEVICE = {
@@ -26,15 +24,6 @@ _DISPLAY_METRICS_BY_DEVICE = {
 
 def _clean_str(value):
     return str(value or "").strip()
-
-
-def _join_path(root, name):
-    root_text = str(root or ".")
-    if not root_text or root_text == ".":
-        return str(name or "")
-    if root_text.endswith("/"):
-        return "{}{}".format(root_text, name)
-    return "{}/{}".format(root_text, name)
 
 
 def _coerce_port(value):
@@ -57,6 +46,21 @@ def _bool_capabilities(runtime_config):
 def bootstrap_routes_enabled(runtime_config):
     """Return whether the bootstrap route pair should be exposed."""
     return bool(getattr(runtime_config, "ap_mode", False))
+
+
+def load_onboarding_state(root="."):
+    """Load any persisted onboarding runtime state."""
+    return _onboarding_state.load_onboarding_state(root)
+
+
+def save_onboarding_state(root, state):
+    """Persist onboarding runtime state outside TOML config files."""
+    return _onboarding_state.save_onboarding_state(root, state)
+
+
+def clear_onboarding_state(root="."):
+    """Delete any persisted onboarding runtime state."""
+    return _onboarding_state.clear_onboarding_state(root)
 
 
 def normalize_itaot_init_payload(payload):
@@ -168,38 +172,6 @@ def build_itaot_init_updates(normalized_payload):
             {"section": "MQTT", "key": "PASSWORD", "value": mqtt_doc.get("password")}
         )
     return tuple(updates)
-
-
-def load_onboarding_state(root="."):
-    """Load any persisted onboarding runtime state."""
-    path = _join_path(root, ONBOARDING_STATE_FILE)
-    try:
-        with open(path, "r", encoding="utf-8") as handle:
-            state = json.load(handle)
-    except OSError:
-        return {}
-    except Exception:
-        return {}
-    return state if isinstance(state, dict) else {}
-
-
-def save_onboarding_state(root, state):
-    """Persist onboarding runtime state outside TOML config files."""
-    path = _join_path(root, ONBOARDING_STATE_FILE)
-    payload = dict(state or {})
-    with open(path, "w", encoding="utf-8") as handle:
-        json.dump(payload, handle, separators=(",", ":"))
-    return path
-
-
-def clear_onboarding_state(root="."):
-    """Delete any persisted onboarding runtime state."""
-    path = _join_path(root, ONBOARDING_STATE_FILE)
-    try:
-        os.remove(path)
-    except OSError:
-        return False
-    return True
 
 
 class ItaotInitResult:
