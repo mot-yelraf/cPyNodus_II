@@ -92,6 +92,41 @@ def _soil_runtime_config():
     )
 
 
+def _sensor_switch_runtime_config():
+    return RuntimeConfig(
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            active_config_file="sensor_i2c.toml",
+            device="co2",
+            sensor_id="co2-ykdvea",
+            serial_number="ykdvea",
+            location="OfficeTest",
+        ),
+        switch=SwitchConfig(
+            present=True,
+            device_id="switch-ykdvea",
+            channel_count=2,
+            channels=(
+                SwitchChannelConfig(
+                    key="SWITCH_1",
+                    channel_id="S1-ykdvea",
+                    label="Fan",
+                    enable_pin="GP5",
+                    control_pin="GP28",
+                ),
+                SwitchChannelConfig(
+                    key="SWITCH_2",
+                    channel_id="S2-ykdvea",
+                    label="Humidifier",
+                    enable_pin="GP6",
+                    control_pin="GP27",
+                ),
+            ),
+        ),
+    )
+
+
 def _switch_service():
     class _Handle:
         def __init__(self, value=False):
@@ -116,6 +151,37 @@ def _switch_service():
                 channel_id="S2-x943fm",
                 phase="ready",
                 control_handle=_Handle(True),
+                enable_handle=_Handle(True),
+                errors=(),
+            ),
+        ),
+    )
+
+
+def _sensor_switch_service():
+    class _Handle:
+        def __init__(self, value=False):
+            self.value = value
+
+    return SimpleNamespace(
+        phase="ready",
+        device_id="switch-ykdvea",
+        channel_count=2,
+        errors=(),
+        channels=(
+            SimpleNamespace(
+                key="SWITCH_1",
+                channel_id="S1-ykdvea",
+                phase="ready",
+                control_handle=_Handle(True),
+                enable_handle=_Handle(True),
+                errors=(),
+            ),
+            SimpleNamespace(
+                key="SWITCH_2",
+                channel_id="S2-ykdvea",
+                phase="ready",
+                control_handle=_Handle(False),
                 enable_handle=_Handle(True),
                 errors=(),
             ),
@@ -420,6 +486,50 @@ def test_process_inbound_messages_drains_queue_and_ignores_non_command_topics():
     assert len(results) == 1
     assert results[0].phase == "published"
     assert transport.received_messages == []
+
+
+def test_sensor_switch_command_publishes_state_with_pending_availability():
+    transport = MQTTTransport("broker.local", 1883)
+    runtime_config = _sensor_switch_runtime_config()
+    switch_service = _sensor_switch_service()
+    transport.publish(
+        "nodus/co2-ykdvea/availability",
+        {"schema": "nodus-availability/v1", "status": "online"},
+        retain=True,
+    )
+    transport.publish(
+        "nodus/S1-ykdvea/availability",
+        {"schema": "nodus-availability/v1", "status": "online"},
+        retain=True,
+    )
+    transport.publish(
+        "nodus/S2-ykdvea/availability",
+        {"schema": "nodus-availability/v1", "status": "online"},
+        retain=True,
+    )
+    transport.receive(
+        "nodus/S2-ykdvea/config/set",
+        '{"message_id":"cfg-1","payload":{"updates":[{"section":"Switch","key":"SWITCH_2_LAST_STATE","value":true,"name":"switch.toml"}]},"restart":false}',
+    )
+
+    results = process_inbound_messages(transport, runtime_config, switch_service)
+
+    assert len(results) == 1
+    assert results[0].phase == "published"
+    assert results[0].published_count == 5
+    assert switch_service.channels[1].control_handle.value is True
+    assert [message.topic for message in transport.published_messages] == [
+        "nodus/co2-ykdvea/availability",
+        "nodus/S1-ykdvea/availability",
+        "nodus/S2-ykdvea/availability",
+        "nodus/S2-ykdvea/config/ack",
+        "nodus/S2-ykdvea/config/result",
+        "nodus/S2-ykdvea/event",
+        "nodus/S2-ykdvea/state",
+        "nodus/co2-ykdvea/meta/patch",
+    ]
+    assert transport.published_messages[6].payload == "ON"
+    assert transport.published_messages[6].retain is True
 
 
 def test_process_device_config_message_rejects_onboarding_token_mismatch():

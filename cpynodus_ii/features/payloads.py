@@ -8,6 +8,7 @@ runtime.
 from time import time
 
 from cpynodus_ii.core.obfuscation import encode_password
+from cpynodus_ii.features.topics import mqtt_base_topic, mqtt_topic  # noqa: F401
 
 
 def _slugify(value):
@@ -63,22 +64,6 @@ def _ha_device_block(runtime_config):
 
 def _ha_state_base_topic(runtime_config, entity_id):
     return mqtt_topic(runtime_config, entity_id)
-
-
-def mqtt_base_topic(runtime_config):
-    """Return the normalized MQTT topic prefix for the active runtime."""
-    topic = str(getattr(runtime_config.mqtt, "base_topic", "") or "").strip()
-    return topic or "nodus"
-
-
-def mqtt_topic(runtime_config, *parts):
-    """Build one MQTT topic under the active runtime base topic."""
-    members = [
-        str(part or "").strip("/") for part in parts if str(part or "").strip("/")
-    ]
-    if not members:
-        return mqtt_base_topic(runtime_config)
-    return "{}/{}".format(mqtt_base_topic(runtime_config), "/".join(members))
 
 
 def build_sensor_data_payload(runtime_config, sensor_snapshot):

@@ -6,7 +6,7 @@ import os
 from dataclasses import dataclass, replace
 from time import time
 
-from cpynodus_ii.features.payloads import mqtt_topic
+from cpynodus_ii.features.topics import mqtt_topic
 
 LOG_TRANSFER_SCHEMA = "nodus-log-transfer/v1"
 DEFAULT_LOG_CHUNK_SIZE = 512
@@ -418,7 +418,7 @@ def _result(
     message_id="",
     duplicate=False,
 ):
-    from cpynodus_ii.features.command_intake import CommandResult
+    from cpynodus_ii.features.command_models import CommandResult
 
     return CommandResult(
         phase=phase,
