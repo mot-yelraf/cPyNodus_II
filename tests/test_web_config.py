@@ -60,10 +60,16 @@ def test_classify_web_update_marks_operational_changes_as_live():
     decision = classify_web_update(
         {"section": "Display", "key": "METRIC_1", "value": "CO2"}
     )
+    npk_decision = classify_web_update(
+        {"section": "NPK", "key": "N_TARGET", "value": 120.0}
+    )
 
     assert decision.accepted is True
     assert decision.applies_live is True
     assert decision.requires_restart is False
+    assert npk_decision.accepted is True
+    assert npk_decision.applies_live is True
+    assert npk_decision.requires_restart is False
 
 
 def test_classify_web_update_marks_network_changes_as_restart_required():

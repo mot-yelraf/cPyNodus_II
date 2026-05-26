@@ -346,6 +346,7 @@ When one soil channel is active, Nodus publishes unprefixed metric names. When b
 - `Soil Potassium` (`mg/kg`)
 - `Soil Moisture Deficit` (`%`)
 - `Soil Stress Index` (`%`)
+- `Soil Fertility Index` (`%`)
 
 ## Soil Moisture Deficit
 
@@ -427,6 +428,29 @@ With the default weights and temperature bands:
 - `Soil Moisture Deficit = 80%` and `Soil Temp_C = 31°C` reports `Soil Stress Index = 86%`
 
 If the temperature band configuration is invalid, `Soil Stress Index` is not reported.
+
+## Soil Fertility Index
+
+`Soil Fertility Index` is a Nodus-derived NPK score for 7-in-1 soil sensors. It combines the reported `Soil Nitrogen`, `Soil Phosphorus`, and `Soil Potassium` values into a single `0-100%` macronutrient sufficiency indicator.
+
+It is a convenience metric for visualization, automation, and trend monitoring. It is not a laboratory-grade soil fertility analysis, and it does not account for pH, EC, organic matter, moisture, microbial activity, micronutrients, soil structure, or temperature.
+
+Nodus normalizes each nutrient against the `[NPK]` targets in `sensor_soil.toml`:
+
+```text
+n_score = clamp(Soil Nitrogen / N_TARGET, 0.0, 1.0)
+p_score = clamp(Soil Phosphorus / P_TARGET, 0.0, 1.0)
+k_score = clamp(Soil Potassium / K_TARGET, 0.0, 1.0)
+Soil Fertility Index = 100 * ((0.5 * min_score) + (0.5 * avg_score))
+```
+
+The result is rounded and clamped to `0-100%`. `Soil Fertility Index` is only reported when the active soil channel has `SOIL_VARIANT = "soil_7in1"`. If any N/P/K value is missing or any target is `0` or lower, `Soil Fertility Index` is not reported.
+
+Default targets:
+
+- `N_TARGET = 120.0`
+- `P_TARGET = 80.0`
+- `K_TARGET = 150.0`
 
 ## DewVPD Risk Metric
 

@@ -168,6 +168,8 @@ def test_settings_from_directory_prefers_soil_sensor_file_when_soil_config_is_ac
                 "TEMPERATURE_SCALE = 30.0\nEC_SCALE = 2.0\n"
                 "PH_SCALE = 40.0\nN_SCALE = 5.0\nP_SCALE = 6.0\n"
                 "K_SCALE = 7.0\n"
+                "[NPK]\nN_TARGET = 100.0\nP_TARGET = 55.0\n"
+                "K_TARGET = 130.0\n"
             ),
             encoding="utf-8",
         )
@@ -205,6 +207,10 @@ def test_settings_from_directory_prefers_soil_sensor_file_when_soil_config_is_ac
     assert runtime_config.sensor.soil_stress is not None
     assert runtime_config.sensor.soil_stress.temp_low_crit_c == 15.0
     assert runtime_config.sensor.soil_stress.moisture_weight_pct == 70.0
+    assert runtime_config.sensor.soil_npk is not None
+    assert runtime_config.sensor.soil_npk.n_target == 100.0
+    assert runtime_config.sensor.soil_npk.p_target == 55.0
+    assert runtime_config.sensor.soil_npk.k_target == 130.0
 
 
 def test_settings_from_directory_loads_dual_soil_modbus_channels():

@@ -12,6 +12,7 @@ from cpynodus_ii.core.config import (
     SensorCalibration,
     SoilModbusChannelConfig,
     SoilModbusConfig,
+    SoilNPKConfig,
     SwitchChannelConfig,
     SwitchConfig,
 )
@@ -671,7 +672,13 @@ def test_sensor_service_reads_soil_snapshot_from_wrapped_uart_transport():
             active_config_file="sensor_soil.toml",
             device="soil",
             sensor_id="soil-bd1234",
-            modbus=SoilModbusConfig(uart_tx="GP4", uart_rx="GP5", baud=4800, address=1),
+            modbus=SoilModbusConfig(
+                uart_tx="GP4",
+                uart_rx="GP5",
+                baud=4800,
+                address=1,
+                variant="soil_7in1",
+            ),
             soil_registers=SimpleNamespace(
                 temperature=1, moisture=0, ec=2, ph=3, n=4, p=5, k=6
             ),
@@ -679,6 +686,7 @@ def test_sensor_service_reads_soil_snapshot_from_wrapped_uart_transport():
                 temperature=10.0, moisture=10.0, ec=1.0, ph=10.0, n=1.0, p=1.0, k=1.0
             ),
             soil_thresholds=SimpleNamespace(wet_pct=68.0, dry_pct=18.0),
+            soil_npk=SoilNPKConfig(n_target=11.0, p_target=88.0, k_target=33.0),
             soil_stress=SimpleNamespace(
                 temp_low_crit_c=15.0,
                 temp_low_ok_c=18.0,
@@ -710,6 +718,7 @@ def test_sensor_service_reads_soil_snapshot_from_wrapped_uart_transport():
     assert snapshot.metrics["Soil Moisture"] == 43.0
     assert snapshot.metrics["Soil pH"] == 6.8
     assert snapshot.metrics["Soil Nitrogen"] == 11.0
+    assert snapshot.metrics["Soil Fertility Index"] == 50.0
 
 
 def test_sensor_service_reads_dual_soil_snapshots_with_channel_prefixes():
@@ -738,6 +747,7 @@ def test_sensor_service_reads_dual_soil_snapshots_with_channel_prefixes():
                         uart_rx="GP1",
                         baud=9600,
                         address=1,
+                        variant="soil_7in1",
                     ),
                     SoilModbusChannelConfig(
                         name="CH2",
@@ -745,6 +755,7 @@ def test_sensor_service_reads_dual_soil_snapshots_with_channel_prefixes():
                         uart_rx="GP5",
                         baud=4800,
                         address=3,
+                        variant="soil_7in1",
                     ),
                 )
             ),
@@ -767,6 +778,7 @@ def test_sensor_service_reads_dual_soil_snapshots_with_channel_prefixes():
                 k=1.0,
             ),
             soil_thresholds=SimpleNamespace(wet_pct=38.0, dry_pct=18.0),
+            soil_npk=SoilNPKConfig(n_target=12.0, p_target=23.0, k_target=34.0),
             soil_stress=SimpleNamespace(
                 temp_low_crit_c=15.0,
                 temp_low_ok_c=18.0,
@@ -813,6 +825,62 @@ def test_sensor_service_reads_dual_soil_snapshots_with_channel_prefixes():
     assert snapshot.metrics["CH2 Soil pH"] == 7.1
     assert snapshot.metrics["CH1 Soil Moisture Deficit"] == 0.0
     assert snapshot.metrics["CH2 Soil Moisture Deficit"] == 65.0
+    assert snapshot.metrics["CH1 Soil Fertility Index"] == 93.0
+    assert snapshot.metrics["CH2 Soil Fertility Index"] == 100.0
+
+
+def test_sensor_service_omits_soil_fertility_index_for_non_7in1_variant():
+    class _FakeSoilTransport:
+        def __init__(self):
+            self.values = {0: 215, 1: 430, 2: 55, 3: 68, 4: 11, 5: 22, 6: 33}
+
+        def read_registers(self, start, count):
+            return self.values.get(start)
+
+        def deinit(self):
+            pass
+
+    runtime_config = RuntimeConfig(
+        sensor=DetectedSensor(
+            family="soil",
+            interface="modbus_rs485",
+            active_config_file="sensor_soil.toml",
+            device="soil",
+            sensor_id="soil-1",
+            modbus=SoilModbusConfig(
+                uart_tx="GP4",
+                uart_rx="GP5",
+                baud=4800,
+                address=3,
+                variant="soil_4in1",
+            ),
+            soil_registers=SimpleNamespace(
+                temperature=0, moisture=1, ec=2, ph=3, n=4, p=5, k=6
+            ),
+            soil_scales=SimpleNamespace(
+                temperature=10.0, moisture=10.0, ec=1.0, ph=10.0, n=1.0, p=1.0, k=1.0
+            ),
+            soil_thresholds=SimpleNamespace(wet_pct=38.0, dry_pct=18.0),
+            soil_npk=SoilNPKConfig(n_target=11.0, p_target=22.0, k_target=33.0),
+        )
+    )
+    sensor_service = start_sensor_service(
+        build_sensor_runtime(
+            plan_sensor_initialization(runtime_config), runtime_config
+        ),
+        SimpleNamespace(
+            phase="bound",
+            transport=_FakeSoilTransport(),
+            errors=(),
+            interface="modbus_rs485",
+        ),
+        runtime_config,
+    )
+
+    snapshot = read_sensor_snapshot(sensor_service, runtime_config)
+
+    assert snapshot.phase == "ready"
+    assert "Soil Fertility Index" not in snapshot.metrics
 
 
 def test_sensor_service_reads_legacy_soil_snapshot():

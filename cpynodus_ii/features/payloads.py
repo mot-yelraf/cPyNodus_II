@@ -419,6 +419,7 @@ def build_homeassistant_discovery_plan(
         "Soil Moisture": "%",
         "Soil Moisture Deficit": "%",
         "Soil Stress Index": "%",
+        "Soil Fertility Index": "%",
     }
     used_object_ids = set()
     if runtime_config.sensor.present:

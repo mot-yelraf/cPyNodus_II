@@ -1,0 +1,147 @@
+The following description is written for implementation and documentation purposes within Sensorius/Nodus.
+
+⸻
+
+NPK Fertility Index (Derived Metric)
+
+The NPK Fertility Index is a derived metric calculated from the soil sensor’s reported Nitrogen (N), Phosphorus (P), and Potassium (K) values. The purpose of this metric is to provide a simplified indication of overall macronutrient sufficiency and nutrient balance for visualization, automation, and trend monitoring within Sensorius.
+
+This metric is intended as a convenience indicator and should not be interpreted as a laboratory-grade soil fertility analysis.
+
+Purpose
+
+The NPK Fertility Index provides:
+
+* A single normalized value representing major nutrient availability
+* A quick visual indication of nutrient balance
+* Simplified dashboard and graph presentation
+* A triggerable automation metric
+* Long-term trend monitoring of nutrient depletion or replenishment
+
+The metric emphasizes the agronomic principle that plant growth is limited by the most deficient major nutrient.
+
+Metric Range
+
+0 – 100
+
+Suggested Interpretation
+
+Range	Meaning
+0–25	Very Low
+26–50	Low / Marginal
+51–75	Moderate
+76–100	Good Nutrient Balance
+
+Calculation Method
+
+Each nutrient value is normalized against a configurable target value:
+
+n_score = clamp(N / N_target, 0.0, 1.0)
+p_score = clamp(P / P_target, 0.0, 1.0)
+k_score = clamp(K / K_target, 0.0, 1.0)
+
+A combined fertility score is then derived using both:
+
+* the lowest nutrient score (limiting factor)
+* the average nutrient score (overall nutrient abundance)
+
+Suggested implementation:
+
+min_score = min(n_score, p_score, k_score)
+avg_score = (n_score + p_score + k_score) / 3.0
+fertility_index = round(
+    100 * ((0.5 * min_score) + (0.5 * avg_score))
+)
+
+The resulting value is constrained to:
+
+0 <= fertility_index <= 100
+
+Why This Formula Is Used
+
+Using only the average nutrient level can hide severe deficiencies in one nutrient.
+
+Example:
+
+Nitrogen:   High
+Phosphorus: Very Low
+Potassium:  High
+
+A simple average would incorrectly suggest acceptable fertility.
+
+By weighting the minimum nutrient score, the derived metric better reflects real plant limitations while still accounting for overall nutrient availability.
+
+Configurable Target Values
+
+Target values should be configurable because optimal nutrient ranges vary by:
+
+* crop species
+* growth stage
+* soil type
+* cultivation method
+* container vs field growing
+
+Example configuration:
+
+[NPK]
+N_TARGET = 120
+P_TARGET = 80
+K_TARGET = 150
+
+Important Limitations
+
+The NPK Fertility Index only represents major macronutrients.
+
+True soil fertility also depends on:
+
+* pH
+* electrical conductivity (EC)
+* organic matter
+* moisture content
+* microbial activity
+* micronutrients
+* soil structure
+* temperature
+
+The metric should therefore be presented as:
+
+NPK Fertility Index
+
+or
+
+NPK Balance Index
+
+rather than simply “Soil Fertility”.
+
+Suggested UI Behavior
+
+Recommended dashboard presentation:
+
+* radial gauge
+* 0–100 scale
+* color-coded ranges:
+    * red: low
+    * yellow: moderate
+    * green: good
+
+Additional optional displays:
+
+* individual N/P/K values
+* limiting nutrient indicator
+* trend graph
+* nutrient imbalance warning
+
+Automation Possibilities
+
+The derived metric may be used for:
+
+* fertilizer reminders
+* nutrient depletion alerts
+* irrigation/fertigation coordination
+* crop-stage nutrient monitoring
+* historical nutrient trend analysis
+
+Example trigger:
+
+If NPK Fertility Index < 40
+    generate nutrient deficiency warning

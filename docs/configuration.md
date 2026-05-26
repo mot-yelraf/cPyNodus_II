@@ -153,8 +153,8 @@ The JSON `/config` route accepts a broader supported update set than the
 rendered page:
 
 - live-safe: `Sensor.LOCATION`, switch labels, display metrics/styles,
-  `[Calibration.System]`, `[Calibration.Device]`, `Time.*`, and switch last
-  state
+  `[Calibration.System]`, `[Calibration.Device]`, `[NPK]`, `Time.*`, and
+  switch last state
 - restart-required: `Network.SSID`, `Network.PASSWORD`, `Network.HOSTNAME`,
   `Network.HTTPPORT`, `Network.AP_CHANNEL`, `[MQTT]`, `[Profile]`, and
   `[HomeAssistant]`
@@ -294,6 +294,35 @@ Soil Stress Index = ((Soil Moisture Deficit * moisture_weight) + (soil_temp_stre
 ```
 
 If the temperature band is invalid or the total weight is zero, `Soil Stress Index` is not reported.
+
+## Soil NPK targets
+
+`sensor_soil.toml` includes an `[NPK]` section that controls how `Soil Fertility Index` is calculated:
+
+- `N_TARGET`
+- `P_TARGET`
+- `K_TARGET`
+
+`Soil Fertility Index` is a normalized `0-100%` NPK sufficiency score for 7-in-1 soil sensors. It is derived from reported `Soil Nitrogen`, `Soil Phosphorus`, and `Soil Potassium`.
+
+Formula:
+
+```text
+n_score = clamp(Soil Nitrogen / N_TARGET, 0.0, 1.0)
+p_score = clamp(Soil Phosphorus / P_TARGET, 0.0, 1.0)
+k_score = clamp(Soil Potassium / K_TARGET, 0.0, 1.0)
+Soil Fertility Index = 100 * ((0.5 * min_score) + (0.5 * avg_score))
+```
+
+The lowest nutrient score is weighted with the average nutrient score so one deficient nutrient lowers the final index. The output is rounded and clamped to `0-100%`.
+
+Defaults in `sensor_soil.toml.def`:
+
+- `N_TARGET = 120.0`
+- `P_TARGET = 80.0`
+- `K_TARGET = 150.0`
+
+`Soil Fertility Index` is only reported when the active soil channel has `SOIL_VARIANT = "soil_7in1"`. If any N/P/K value is missing or any target is `0` or lower, `Soil Fertility Index` is not reported.
 
 ## Tips
 

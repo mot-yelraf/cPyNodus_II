@@ -59,6 +59,8 @@ def classify_web_update(update):
         return WebConfigDecision(section, key, value, True, True, False)
     if section in {"Display", "Display.Style"} and _display_metric_index(key_upper):
         return WebConfigDecision(section, key, value, True, True, False)
+    if section == "NPK" and key_upper in {"N_TARGET", "P_TARGET", "K_TARGET"}:
+        return WebConfigDecision(section, key, value, True, True, False)
     if section in {
         "Calibration.System",
         "Calibration.Device",

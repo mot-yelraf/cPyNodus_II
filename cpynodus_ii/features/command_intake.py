@@ -8,7 +8,7 @@ command handling testable outside the main loop.
 import json
 from dataclasses import dataclass, replace
 
-from cpynodus_ii.core.config import RuntimeConfig
+from cpynodus_ii.core.config import RuntimeConfig, SoilNPKConfig
 from cpynodus_ii.core.settings import Settings
 from cpynodus_ii.features.payloads import (
     build_calibration_ack_payload,
@@ -1443,6 +1443,18 @@ def apply_runtime_config_update(runtime_config, section, key, value):
                 display=replace(runtime_config.sensor.display, styles=tuple(styles)),
             ),
         )
+    npk_attr = _npk_attr_name(section, key_upper)
+    if npk_attr:
+        if runtime_config.sensor.device != "soil":
+            return None
+        soil_npk = runtime_config.sensor.soil_npk or SoilNPKConfig()
+        return replace(
+            runtime_config,
+            sensor=replace(
+                runtime_config.sensor,
+                soil_npk=replace(soil_npk, **{npk_attr: float(value or 0.0)}),
+            ),
+        )
     calibration_attr = _calibration_attr_name(section, key_upper)
     if calibration_attr and section == "Calibration.System":
         calibration = replace(
@@ -1463,6 +1475,17 @@ def apply_runtime_config_update(runtime_config, section, key, value):
             sensor=replace(runtime_config.sensor, calibration_device=calibration),
         )
     return None
+
+
+def _npk_attr_name(section, key_upper):
+    if section != "NPK":
+        return ""
+    mapping = {
+        "N_TARGET": "n_target",
+        "P_TARGET": "p_target",
+        "K_TARGET": "k_target",
+    }
+    return mapping.get(key_upper, "")
 
 
 def _calibration_attr_name(section, key_upper):

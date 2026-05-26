@@ -41,6 +41,7 @@ from cpynodus_ii.app import (
     _should_reboot_mqtt_memory_failures,
     _should_reboot_sensor_not_found,
     _should_rebuild_mqtt_adapter_for_recovery,
+    _should_keep_mqtt_station_reset_after_verify,
     _should_reset_mqtt_station_for_plain_connect_failure,
     _should_reset_wifi_station_before_ready,
     _should_stage_mqtt_station_reset_before_reboot,
@@ -846,6 +847,44 @@ def test_repeated_mqtt_failures_stage_station_reset_before_reboot():
             105.0,
         )
         is False
+    )
+
+
+def test_mqtt_socket_poison_keeps_station_reset_after_tcp_ok():
+    tcp_ok = SimpleNamespace(reset_needed=False, station_ready=True, status="tcp_ok")
+    tcp_failed = SimpleNamespace(
+        reset_needed=True,
+        station_ready=True,
+        status="tcp_failed",
+    )
+
+    assert (
+        _should_keep_mqtt_station_reset_after_verify(
+            "mqtt_poll_failed:[Errno 9] EBADF",
+            tcp_ok,
+        )
+        is True
+    )
+    assert (
+        _should_keep_mqtt_station_reset_after_verify(
+            "mqtt_poll_failed:bad file descriptor",
+            tcp_ok,
+        )
+        is True
+    )
+    assert (
+        _should_keep_mqtt_station_reset_after_verify(
+            "mqtt_publish_failed:nodus/device/availability:[Errno 5]",
+            tcp_ok,
+        )
+        is False
+    )
+    assert (
+        _should_keep_mqtt_station_reset_after_verify(
+            "mqtt_publish_failed:nodus/device/availability:[Errno 5]",
+            tcp_failed,
+        )
+        is True
     )
 
 

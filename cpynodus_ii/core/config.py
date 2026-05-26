@@ -163,6 +163,20 @@ class SoilStressConfig:
 
 
 @dataclass
+class SoilNPKConfig:
+    """Normalized NPK target values for soil fertility scoring."""
+
+    n_target: float = 120.0
+    p_target: float = 80.0
+    k_target: float = 150.0
+
+    def __post_init__(self):
+        _raw_setattr(self, "n_target", float(self.n_target or 0.0))
+        _raw_setattr(self, "p_target", float(self.p_target or 0.0))
+        _raw_setattr(self, "k_target", float(self.k_target or 0.0))
+
+
+@dataclass
 class SensorCalibration:
     """Normalized calibration values for sensor metrics and device setup."""
 
@@ -337,6 +351,7 @@ class DetectedSensor:
     soil_scales: SoilScaleMap | None = None
     soil_thresholds: SoilThresholdConfig | None = None
     soil_stress: SoilStressConfig | None = None
+    soil_npk: SoilNPKConfig | None = None
     calibration_system: SensorCalibration = field(default_factory=SensorCalibration)
     calibration_device: SensorCalibration = field(default_factory=SensorCalibration)
     display: DisplayConfig = field(default_factory=DisplayConfig)

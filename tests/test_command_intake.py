@@ -10,6 +10,7 @@ from cpynodus_ii.core.config import (
     RuntimeConfig,
     SensorCalibration,
     SoilModbusConfig,
+    SoilNPKConfig,
     SoilRegisterMap,
     SoilScaleMap,
     SoilStressConfig,
@@ -83,6 +84,7 @@ def _soil_runtime_config():
             soil_scales=SoilScaleMap(),
             soil_thresholds=SoilThresholdConfig(),
             soil_stress=SoilStressConfig(),
+            soil_npk=SoilNPKConfig(),
             calibration_system=SensorCalibration(),
             calibration_device=SensorCalibration(soil_ph_cal_val=0.0),
         ),
@@ -621,6 +623,21 @@ def test_process_device_config_message_applies_runtime_update_and_publishes_patc
     assert transport.published_messages[0].topic == "nodus/switch-x943fm/config/ack"
     assert transport.published_messages[1].topic == "nodus/switch-x943fm/config/result"
     assert transport.published_messages[2].topic == "nodus/switch-x943fm/meta/patch"
+
+
+def test_process_device_config_message_applies_soil_npk_target_update():
+    transport = MQTTTransport("broker.local", 1883)
+
+    result = process_device_config_message(
+        transport,
+        _soil_runtime_config(),
+        topic="nodus/soil-abc123/config/set",
+        payload_text='{"message_id":"cfg-npk","payload":{"updates":[{"section":"NPK","key":"P_TARGET","value":90.0}]}}',
+    )
+
+    assert result.phase == "published"
+    assert result.runtime_config.sensor.soil_npk.p_target == 90.0
+    assert transport.published_messages[2].payload["updates"][0]["section"] == "NPK"
 
 
 def test_process_device_config_message_replays_duplicate_message_id_idempotently():

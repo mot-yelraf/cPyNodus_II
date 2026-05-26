@@ -161,6 +161,31 @@ def calculate_dewvpd_risk(
     return 100.0 * (weight * dew_risk + (1.0 - weight) * vpd_risk)
 
 
+def calculate_npk_fertility_index(n_value, p_value, k_value, targets):
+    """Return a 0-100 NPK fertility score from N/P/K readings and targets."""
+    if n_value is None or p_value is None or k_value is None or targets is None:
+        return None
+    try:
+        n_target = float(getattr(targets, "n_target", 0.0) or 0.0)
+        p_target = float(getattr(targets, "p_target", 0.0) or 0.0)
+        k_target = float(getattr(targets, "k_target", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return None
+    if n_target <= 0.0 or p_target <= 0.0 or k_target <= 0.0:
+        return None
+
+    n_score = _nutrient_score(n_value, n_target)
+    p_score = _nutrient_score(p_value, p_target)
+    k_score = _nutrient_score(k_value, k_target)
+    if n_score is None or p_score is None or k_score is None:
+        return None
+
+    min_score = min(n_score, p_score, k_score)
+    avg_score = (n_score + p_score + k_score) / 3.0
+    index = 100.0 * ((0.5 * min_score) + (0.5 * avg_score))
+    return round(min(max(index, 0.0), 100.0), 0)
+
+
 def estimate_aqi(gas_ohms, rh_percent=None):
     poor_threshold = 5100
     great_threshold = 995100
@@ -249,7 +274,13 @@ def _add_prefixed_temp_humidity_derivatives(
 
 def _soil_metric_prefixes(metrics):
     prefixes = []
-    suffixes = (" Soil Temp_C", " Soil Moisture")
+    suffixes = (
+        " Soil Temp_C",
+        " Soil Moisture",
+        " Soil Nitrogen",
+        " Soil Phosphorus",
+        " Soil Potassium",
+    )
     for key in tuple(metrics.keys()):
         text = str(key or "")
         for suffix in suffixes:
@@ -299,6 +330,36 @@ def _add_soil_derivatives(metrics, runtime_config, prefix=""):
                 1,
             )
 
+    fertility = calculate_npk_fertility_index(
+        metrics.get("{}Soil Nitrogen".format(label_prefix)),
+        metrics.get("{}Soil Phosphorus".format(label_prefix)),
+        metrics.get("{}Soil Potassium".format(label_prefix)),
+        getattr(soil, "soil_npk", None)
+        if _soil_supports_npk(runtime_config, prefix=prefix)
+        else None,
+    )
+    if fertility is not None:
+        metrics["{}Soil Fertility Index".format(label_prefix)] = fertility
+
+
+def _soil_supports_npk(runtime_config, *, prefix=""):
+    soil = runtime_config.sensor
+    modbus = getattr(soil, "modbus", None)
+    channels = tuple(getattr(modbus, "channels", ()) or ())
+    prefix = str(prefix or "").strip().upper()
+    if prefix:
+        for channel in channels:
+            if str(getattr(channel, "name", "") or "").strip().upper() == prefix:
+                return _soil_variant_is_7in1(getattr(channel, "variant", ""))
+        return False
+    if len(channels) == 1:
+        return _soil_variant_is_7in1(getattr(channels[0], "variant", ""))
+    return _soil_variant_is_7in1(getattr(modbus, "variant", ""))
+
+
+def _soil_variant_is_7in1(variant):
+    return str(variant or "").strip().lower() == "soil_7in1"
+
 
 def _soil_temp_stress_pct(temp_c, stress):
     if temp_c is None or stress is None:
@@ -317,3 +378,10 @@ def _soil_temp_stress_pct(temp_c, stress):
     if temp_c < low_ok:
         return min(max(100.0 * ((low_ok - temp_c) / (low_ok - low_crit)), 0.0), 100.0)
     return min(max(100.0 * ((temp_c - high_ok) / (high_crit - high_ok)), 0.0), 100.0)
+
+
+def _nutrient_score(value, target):
+    try:
+        return min(max(float(value) / float(target), 0.0), 1.0)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None

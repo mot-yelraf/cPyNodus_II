@@ -21,6 +21,7 @@ from cpynodus_ii.core.config import (
     SensorCalibration,
     SoilModbusChannelConfig,
     SoilModbusConfig,
+    SoilNPKConfig,
     SoilRegisterMap,
     SoilScaleMap,
     SoilStressConfig,
@@ -988,6 +989,7 @@ class Settings:
         soil_scale_doc = sensor_soil_doc.get("SoilSensorScales", {})
         soil_deficit_doc = sensor_soil_doc.get("SoilDeficit", {})
         soil_stress_doc = sensor_soil_doc.get("SoilStress", {})
+        soil_npk_doc = sensor_soil_doc.get("NPK", {})
         soil_display_doc = sensor_soil_doc.get("Display", {})
         soil_display_style_doc = sensor_soil_doc.get("Display.Style", {})
         if not soil_display_style_doc and isinstance(soil_display_doc, dict):
@@ -1066,6 +1068,11 @@ class Settings:
                     temp_weight_pct=float(
                         soil_stress_doc.get("SSI_TEMP_WEIGHT_PCT", 30.0)
                     ),
+                ),
+                soil_npk=SoilNPKConfig(
+                    n_target=float(soil_npk_doc.get("N_TARGET", 120.0)),
+                    p_target=float(soil_npk_doc.get("P_TARGET", 80.0)),
+                    k_target=float(soil_npk_doc.get("K_TARGET", 150.0)),
                 ),
                 display=DisplayConfig(
                     metrics=tuple(
@@ -1244,6 +1251,12 @@ class Settings:
     @classmethod
     def _target_file_for_update(cls, runtime_config, update):
         section = str(update.get("section", "") or "").strip()
+        if section == "NPK":
+            if runtime_config.sensor.device == "soil":
+                if runtime_config.sensor.active_config_file:
+                    return runtime_config.sensor.active_config_file
+                return cls.SENSOR_SOIL_FILE
+            return ""
         if section in {"Network", "Profile", "MQTT", "HomeAssistant", "Time"}:
             return cls.SETTINGS_FILE
         if section == "Switch":

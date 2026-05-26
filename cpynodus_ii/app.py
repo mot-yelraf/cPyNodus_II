@@ -1528,6 +1528,26 @@ def _mqtt_disconnect_reason_requires_rebuild(reason):
     return any(text.startswith(prefix) for prefix in hard_prefixes)
 
 
+def _mqtt_disconnect_reason_indicates_socket_poison(reason):
+    """Return True when MQTT failure suggests stale lower-level socket state."""
+    text = str(reason or "").strip().lower()
+    if not text:
+        return False
+    return (
+        "ebadf" in text
+        or "[errno 9]" in text
+        or "bad file descriptor" in text
+        or "socket not managed" in text
+    )
+
+
+def _should_keep_mqtt_station_reset_after_verify(mqtt_disconnect_reason, result):
+    """Return True when MQTT recovery should still reset station after verify."""
+    if bool(getattr(result, "reset_needed", False)):
+        return True
+    return _mqtt_disconnect_reason_indicates_socket_poison(mqtt_disconnect_reason)
+
+
 def _is_mqtt_subscription_failure(sync_result):
     """Return True when MQTT sync failed while subscribing."""
     if getattr(sync_result, "phase", "") != "error":
@@ -3135,7 +3155,10 @@ async def main(*, startup_plan_override=None):
                                 reason=station_reset_reason,
                                 start_monotonic=start_monotonic,
                             )
-                            if not station_verify.reset_needed:
+                            if not _should_keep_mqtt_station_reset_after_verify(
+                                mqtt_disconnect_reason,
+                                station_verify,
+                            ):
                                 mqtt_station_reset = False
                                 mqtt_socket_refresh = bool(station_verify.station_ready)
                                 if connack_timeout_station_reset:
@@ -3148,6 +3171,23 @@ async def main(*, startup_plan_override=None):
                                     (
                                         "mqtt action=skip_station_reset "
                                         "reason={} status={}"
+                                    ).format(
+                                        station_reset_reason,
+                                        station_verify.status or "unknown",
+                                    ),
+                                    start_monotonic=start_monotonic,
+                                )
+                            elif (
+                                not station_verify.reset_needed
+                                and _mqtt_disconnect_reason_indicates_socket_poison(
+                                    mqtt_disconnect_reason
+                                )
+                            ):
+                                _print_log(
+                                    "recovery",
+                                    (
+                                        "mqtt action=force_station_reset "
+                                        "reason={} status={} signal=socket_poison"
                                     ).format(
                                         station_reset_reason,
                                         station_verify.status or "unknown",

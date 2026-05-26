@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from cpynodus_ii.core.config import (
     DetectedSensor,
     DisplayConfig,
+    HomeAssistantConfig,
     MQTTConfig,
     NetworkConfig,
     RuntimeConfig,
@@ -19,6 +20,7 @@ from cpynodus_ii.features.payloads import (
     build_config_ack_payload,
     build_config_result_payload,
     build_device_heartbeat_payload,
+    build_homeassistant_discovery_plan,
     build_meta_patch_payload,
     build_runtime_meta_payload,
     build_sensor_availability_payload,
@@ -429,6 +431,31 @@ def test_availability_and_heartbeat_payloads_use_online_state():
     assert availability["status"] == "online"
     assert heartbeat["status"] == "offline"
     assert heartbeat["device_id"] == "aqi-x943fm"
+
+
+def test_homeassistant_discovery_uses_percent_for_soil_fertility_index():
+    runtime_config = RuntimeConfig(
+        active_profile="homeassistant",
+        network=NetworkConfig(hostname="soil-bd1234"),
+        homeassistant=HomeAssistantConfig(discovery_prefix="homeassistant"),
+        sensor=DetectedSensor(
+            family="soil",
+            interface="modbus_rs485",
+            device="soil",
+            sensor_id="soil-bd1234",
+        ),
+    )
+
+    messages = build_homeassistant_discovery_plan(
+        runtime_config,
+        sensor_snapshot=SimpleNamespace(
+            phase="ready",
+            metrics={"CH1 Soil Fertility Index": 93.0},
+        ),
+    )
+
+    payload = messages[0][1]
+    assert payload["unit_of_measurement"] == "%"
 
 
 def test_config_and_calibration_payload_helpers_use_compact_contracts():
