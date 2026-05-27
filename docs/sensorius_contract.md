@@ -379,6 +379,8 @@ Implemented behavior:
   `updated = 0`, and `duplicate = true`.
 - Accepted non-duplicate writes publish `config/result` and a non-retained
   `meta/patch` with `source = "config_set"`.
+- Switch-only devices accept `Sensor.LOCATION` as a device-location alias and
+  persist it as `Switch.SWITCH_LOCATION`.
 - Failed validation or rejected writes publish `config/result` with
   `applied = false` and an error string.
 - Empty payloads on `nodus/<device_id>/config/set` are ignored. This allows

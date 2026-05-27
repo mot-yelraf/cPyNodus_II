@@ -740,13 +740,37 @@ def process_device_config_message(
             duplicate=True,
         )
 
-    updated_runtime_config, applied_updates, persistence_errors = (
-        apply_runtime_config_updates(
-            runtime_config,
-            command.updates,
-            settings_root=settings_root,
+    try:
+        updated_runtime_config, applied_updates, persistence_errors = (
+            apply_runtime_config_updates(
+                runtime_config,
+                command.updates,
+                settings_root=settings_root,
+            )
         )
-    )
+    except RuntimeError as exc:
+        if "pystack exhausted" not in str(exc).lower():
+            raise
+        transport.publish(
+            result_topic,
+            build_config_result_payload(
+                command.message_id,
+                applied=False,
+                updated=0,
+                error="pystack_exhausted",
+            ),
+            retain=False,
+        )
+        return CommandResult(
+            phase="error",
+            topic=topic,
+            command_type="config",
+            published_count=2,
+            errors=("pystack_exhausted",),
+            runtime_config=runtime_config,
+            message_id=command.message_id,
+            persistence_mode="volatile",
+        )
     if not applied_updates:
         transport.publish(
             result_topic,
@@ -895,14 +919,38 @@ def process_calibration_message(
         applied_updates = tuple(command.updates)
         persistence_errors = ()
         if settings_root is not None:
-            _, applied_updates, persistence_errors = (
-                Settings.apply_updates_to_directory(
-                    settings_root,
-                    runtime_config,
-                    command.updates,
-                    reload_runtime=False,
+            try:
+                _, applied_updates, persistence_errors = (
+                    Settings.apply_updates_to_directory(
+                        settings_root,
+                        runtime_config,
+                        command.updates,
+                        reload_runtime=False,
+                    )
                 )
-            )
+            except RuntimeError as exc:
+                if "pystack exhausted" not in str(exc).lower():
+                    raise
+                transport.publish(
+                    result_topic,
+                    build_calibration_result_payload(
+                        command.message_id,
+                        applied=False,
+                        updated=0,
+                        error="pystack_exhausted",
+                    ),
+                    retain=False,
+                )
+                return CommandResult(
+                    phase="error",
+                    topic=topic,
+                    command_type="calibration",
+                    published_count=published_count + 1,
+                    errors=("pystack_exhausted",),
+                    runtime_config=runtime_config,
+                    message_id=command.message_id,
+                    persistence_mode="volatile",
+                )
         if applied_updates:
             updated_runtime_config, _, _ = apply_runtime_config_updates(
                 runtime_config,

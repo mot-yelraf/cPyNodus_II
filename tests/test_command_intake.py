@@ -19,6 +19,7 @@ from cpynodus_ii.core.config import (
     SwitchConfig,
 )
 from cpynodus_ii.core.mqtt import MQTTTransport
+from cpynodus_ii.core.settings import Settings
 from cpynodus_ii.features.command_intake import (
     parse_calibration_command,
     parse_device_config_command,
@@ -550,6 +551,76 @@ def test_process_device_config_message_rejects_onboarding_token_mismatch():
     assert transport.published_messages[1].payload["error"] == "onboard_token_invalid"
 
 
+def test_process_inbound_messages_fast_switch_location_persists():
+    transport = MQTTTransport("broker.local", 1883)
+    with TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        (root / "switch.toml").write_text(
+            '[Switch]\nSWITCH_LOCATION = "TestSwitch"\n',
+            encoding="utf-8",
+        )
+        transport.receive(
+            "nodus/switch-x943fm/config/set",
+            '{"message_id":"cfg-loc","payload":{"updates":[{"section":"Switch","key":"SWITCH_LOCATION","value":"Switch#1","name":"switch.toml"}]},"restart":false}',
+        )
+
+        results = process_inbound_messages(
+            transport,
+            _runtime_config(),
+            _switch_service(),
+            settings_root=tmpdir,
+        )
+        switch_text = (root / "switch.toml").read_text(encoding="utf-8")
+
+    assert len(results) == 1
+    assert results[0].phase == "published"
+    assert results[0].command_type == "config"
+    assert results[0].published_count == 3
+    assert results[0].runtime_config.switch.location == "Switch#1"
+    assert 'SWITCH_LOCATION = "Switch#1"' in switch_text
+    assert transport.published_messages[0].topic == "nodus/switch-x943fm/config/ack"
+    assert transport.published_messages[1].payload["applied"] is True
+    assert transport.published_messages[1].payload["updated"] == 1
+    assert transport.published_messages[2].topic == "nodus/switch-x943fm/meta/patch"
+    assert transport.published_messages[2].payload["updates"] == [
+        {
+            "section": "Switch",
+            "key": "SWITCH_LOCATION",
+            "value": "Switch#1",
+        },
+    ]
+
+
+def test_process_inbound_messages_fast_switch_location_validates_onboarding_token():
+    transport = MQTTTransport("broker.local", 1883)
+    with TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        (root / "switch.toml").write_text(
+            '[Switch]\nSWITCH_LOCATION = "TestSwitch"\n',
+            encoding="utf-8",
+        )
+        save_onboarding_state(tmpdir, {"onboard_token": "expected"})
+        transport.receive(
+            "nodus/switch-x943fm/config/set",
+            '{"message_id":"cfg-loc","onboard_token":"wrong","payload":{"updates":[{"section":"Switch","key":"SWITCH_LOCATION","value":"Switch#1"}]}}',
+        )
+
+        results = process_inbound_messages(
+            transport,
+            _runtime_config(),
+            _switch_service(),
+            settings_root=tmpdir,
+        )
+        switch_text = (root / "switch.toml").read_text(encoding="utf-8")
+
+    assert len(results) == 1
+    assert results[0].phase == "error"
+    assert results[0].errors == ("onboard_token_invalid",)
+    assert 'SWITCH_LOCATION = "TestSwitch"' in switch_text
+    assert transport.published_messages[0].payload["accepted"] is False
+    assert transport.published_messages[1].payload["error"] == "onboard_token_invalid"
+
+
 def test_process_device_config_message_clears_onboarding_state_after_success():
     transport = MQTTTransport("broker.local", 1883)
     with TemporaryDirectory() as tmpdir:
@@ -827,6 +898,47 @@ def test_process_calibration_message_updates_runtime_altitude():
 
     assert result.phase == "published"
     assert result.runtime_config.sensor.calibration_device.altitude_meters == 1609.3
+
+
+def test_process_inbound_messages_fast_calibration_apply_persists_offsets():
+    docs_root = Path(__file__).resolve().parents[1] / "docs" / "sensor+switch"
+    transport = MQTTTransport("broker.local", 1883)
+    with TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        for name in ("settings.toml", "switch.toml", "sensor_i2c.toml"):
+            (root / name).write_text((docs_root / name).read_text(), encoding="utf-8")
+        runtime_config = _sensor_switch_runtime_config()
+        transport.receive(
+            "nodus/co2-ykdvea/calibration/set",
+            (
+                '{"message_id":"cal-1","action":"apply","payload":{"offsets":['
+                '{"key":"Calibration.Device.TEMP_OFFSET","value":-2.5},'
+                '{"key":"Calibration.Device.ALTITUDE_METERS","value":1783.0}'
+                "]}}"
+            ),
+        )
+
+        results = process_inbound_messages(
+            transport,
+            runtime_config,
+            _sensor_switch_service(),
+            settings_root=tmpdir,
+        )
+        sensor_doc = Settings._read_toml_file(root / Settings.SENSOR_I2C_FILE)
+
+    assert len(results) == 1
+    assert results[0].phase == "published"
+    assert results[0].command_type == "calibration"
+    assert results[0].published_count == 3
+    assert results[0].runtime_config.sensor.calibration_device.temp_offset == -2.5
+    assert results[0].runtime_config.sensor.calibration_device.altitude_meters == 1783.0
+    assert sensor_doc["Calibration"]["Device"]["TEMP_OFFSET"] == -2.5
+    assert sensor_doc["Calibration"]["Device"]["ALTITUDE_METERS"] == 1783.0
+    assert transport.published_messages[0].topic == "nodus/co2-ykdvea/calibration/ack"
+    assert transport.published_messages[1].payload["applied"] is True
+    assert transport.published_messages[1].payload["updated"] == 2
+    assert transport.published_messages[2].topic == "nodus/co2-ykdvea/meta/patch"
+    assert transport.published_messages[2].payload["source"] == "calibration_set"
 
 
 def test_process_inbound_messages_handles_device_topics_before_switch_topics():

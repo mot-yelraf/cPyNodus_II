@@ -42,6 +42,76 @@ def test_device_config_message_persists_settings_toml_and_reloads_runtime_config
     ]
 
 
+def test_switch_only_sensor_location_update_persists_switch_location():
+    docs_root = Path(__file__).resolve().parents[1] / "docs" / "switch_only"
+    with TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        for name in ("settings.toml", "switch.toml"):
+            (tmpdir_path / name).write_text(
+                (docs_root / name).read_text(), encoding="utf-8"
+            )
+
+        runtime_config = Settings.from_directory(tmpdir_path).runtime_config()
+        transport = MQTTTransport("broker.local", 1883)
+        result = process_device_config_message(
+            transport,
+            runtime_config,
+            topic="nodus/switch-w9umh8/config/set",
+            payload_text='{"message_id":"cfg-loc","payload":{"updates":[{"section":"Sensor","key":"LOCATION","value":"OfficeDesk","name":"sensor_i2c.toml"}]}}',
+            settings_root=tmpdir_path,
+        )
+        switch_doc = Settings._read_toml_file(tmpdir_path / Settings.SWITCH_FILE)
+        reloaded = Settings.from_directory(tmpdir_path).runtime_config()
+        sensor_file_exists = (tmpdir_path / Settings.SENSOR_I2C_FILE).exists()
+
+    assert result.phase == "published"
+    assert result.runtime_config.sensor.location == ""
+    assert result.runtime_config.switch.location == "OfficeDesk"
+    assert reloaded.switch.location == "OfficeDesk"
+    assert switch_doc["Switch"]["SWITCH_LOCATION"] == "OfficeDesk"
+    assert not sensor_file_exists
+    assert transport.published_messages[2].payload["updates"] == [
+        {
+            "section": "Switch",
+            "key": "SWITCH_LOCATION",
+            "value": "OfficeDesk",
+        },
+    ]
+
+
+def test_device_config_message_reports_pystack_persistence_failure(monkeypatch):
+    docs_root = Path(__file__).resolve().parents[1] / "docs" / "switch_only"
+    with TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        for name in ("settings.toml", "switch.toml"):
+            (tmpdir_path / name).write_text(
+                (docs_root / name).read_text(), encoding="utf-8"
+            )
+
+        runtime_config = Settings.from_directory(tmpdir_path).runtime_config()
+        transport = MQTTTransport("broker.local", 1883)
+
+        def _raise_pystack(cls, root, runtime_config, updates, *, reload_runtime=True):
+            raise RuntimeError("pystack exhausted")
+
+        monkeypatch.setattr(
+            Settings, "apply_updates_to_directory", classmethod(_raise_pystack)
+        )
+        result = process_device_config_message(
+            transport,
+            runtime_config,
+            topic="nodus/switch-w9umh8/config/set",
+            payload_text='{"message_id":"cfg-1","payload":{"updates":[{"section":"Switch","key":"SWITCH_LOCATION","value":"OfficeDesk"}]}}',
+            settings_root=tmpdir_path,
+        )
+
+    assert result.phase == "error"
+    assert result.errors == ("pystack_exhausted",)
+    assert result.published_count == 2
+    assert transport.published_messages[0].payload["accepted"] is True
+    assert transport.published_messages[1].payload["error"] == "pystack_exhausted"
+
+
 def test_calibration_message_persists_active_sensor_toml_without_runtime_reload(
     monkeypatch,
 ):
@@ -84,6 +154,39 @@ def test_calibration_message_persists_active_sensor_toml_without_runtime_reload(
     assert sensor_doc["Calibration"]["Device"]["TEMP_OFFSET"] == 1.5
     assert sensor_doc["Calibration"]["Device"]["ALTITUDE_METERS"] == 1609.3
     assert transport.published_messages[-1].payload["updates"][0]["value"] == -0.5
+
+
+def test_calibration_message_reports_pystack_persistence_failure(monkeypatch):
+    docs_root = Path(__file__).resolve().parents[1] / "docs" / "sensor+switch"
+    with TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        for name in ("settings.toml", "switch.toml", "sensor_i2c.toml"):
+            (tmpdir_path / name).write_text(
+                (docs_root / name).read_text(), encoding="utf-8"
+            )
+
+        runtime_config = Settings.from_directory(tmpdir_path).runtime_config()
+        transport = MQTTTransport("broker.local", 1883)
+
+        def _raise_pystack(cls, root, runtime_config, updates, *, reload_runtime=True):
+            raise RuntimeError("pystack exhausted")
+
+        monkeypatch.setattr(
+            Settings, "apply_updates_to_directory", classmethod(_raise_pystack)
+        )
+        result = process_calibration_message(
+            transport,
+            runtime_config,
+            topic="nodus/aqi-x943fm/calibration/set",
+            payload_text='{"message_id":"cal-1","action":"apply","payload":{"offsets":[{"key":"Calibration.Device.TEMP_OFFSET","value":1.5}]}}',
+            settings_root=tmpdir_path,
+        )
+
+    assert result.phase == "error"
+    assert result.errors == ("pystack_exhausted",)
+    assert result.published_count == 2
+    assert transport.published_messages[0].payload["accepted"] is True
+    assert transport.published_messages[1].payload["error"] == "pystack_exhausted"
 
 
 def test_soil_ph_calibration_persists_without_recursive_toml_dump(monkeypatch):

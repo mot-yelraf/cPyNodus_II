@@ -8,6 +8,27 @@ from cpynodus_ii.core.settings import Settings
 
 def apply_runtime_config_updates(runtime_config, updates, *, settings_root=None):
     """Apply supported runtime updates and return the new config plus writes."""
+    normalized_updates = []
+    for update in updates:
+        section = str(update.get("section", "") or "").strip()
+        key = str(update.get("key", "") or "").strip()
+        if (
+            section == "Sensor"
+            and key.upper() == "LOCATION"
+            and not runtime_config.sensor.present
+            and runtime_config.switch.present
+        ):
+            normalized_updates.append(
+                {
+                    "section": "Switch",
+                    "key": "SWITCH_LOCATION",
+                    "value": update.get("value"),
+                }
+            )
+            continue
+        normalized_updates.append(update)
+    updates = tuple(normalized_updates)
+
     if settings_root is not None:
         persisted_runtime_config, persisted_updates, persistence_errors = (
             Settings.apply_updates_to_directory(
@@ -130,6 +151,14 @@ def apply_runtime_config_update(runtime_config, section, key, value):
     if section == "Profile" and key_upper == "ACTIVE_PROFILE":
         return replace(runtime_config, active_profile=str(value or "").strip())
     if section == "Sensor" and key_upper == "LOCATION":
+        if not runtime_config.sensor.present and runtime_config.switch.present:
+            return replace(
+                runtime_config,
+                switch=replace(
+                    runtime_config.switch,
+                    location=str(value or "").strip(),
+                ),
+            )
         return replace(
             runtime_config,
             sensor=replace(runtime_config.sensor, location=str(value or "").strip()),

@@ -152,9 +152,9 @@ The built-in `/setup` web UI is intentionally small. The rendered page exposes:
 The JSON `/config` route accepts a broader supported update set than the
 rendered page:
 
-- live-safe: `Sensor.LOCATION`, switch labels, display metrics/styles,
-  `[Calibration.System]`, `[Calibration.Device]`, `[NPK]`, `Time.*`, and
-  switch last state
+- live-safe: `Sensor.LOCATION`, `Switch.SWITCH_LOCATION`, switch labels,
+  display metrics/styles, `[Calibration.System]`, `[Calibration.Device]`,
+  `[NPK]`, `Time.*`, and switch last state
 - restart-required: `Network.SSID`, `Network.PASSWORD`, `Network.HOSTNAME`,
   `Network.HTTPPORT`, `Network.AP_CHANNEL`, `[MQTT]`, `[Profile]`, and
   `[HomeAssistant]`

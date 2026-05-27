@@ -99,15 +99,65 @@ def process_inbound_messages(
             )
             continue
 
+        fast_result = None
+        if _is_location_config_topic(message.topic, runtime_config):
+            fast_result = _process_location_config_message(
+                transport,
+                runtime_config,
+                topic=message.topic,
+                payload_text=message.payload_text,
+                handled_message_ids=handled_message_ids,
+                settings_root=settings_root,
+            )
+        if fast_result is not None:
+            if fast_result.runtime_config is not None:
+                runtime_config = fast_result.runtime_config
+            results.append(fast_result)
+            continue
+
+        fast_result = None
+        if _is_sensor_calibration_topic(message.topic, runtime_config):
+            fast_result = _process_calibration_apply_message(
+                transport,
+                runtime_config,
+                topic=message.topic,
+                payload_text=message.payload_text,
+                handled_message_ids=handled_message_ids,
+                settings_root=settings_root,
+            )
+        if fast_result is not None:
+            if fast_result.runtime_config is not None:
+                runtime_config = fast_result.runtime_config
+            results.append(fast_result)
+            continue
+
         _restore_received_messages(transport, messages[index:])
-        heavy_results = _process_heavy_inbound_messages(
-            transport,
-            runtime_config,
-            switch_service,
-            handled_message_ids=handled_message_ids,
-            settings_root=settings_root,
-            topic=message.topic,
-        )
+        try:
+            import gc
+
+            gc.collect()
+        except Exception:
+            pass
+        try:
+            heavy_results = _handlers().process_inbound_messages(
+                transport,
+                runtime_config,
+                switch_service,
+                handled_message_ids=handled_message_ids,
+                settings_root=settings_root,
+            )
+        except MemoryError:
+            _clear_received_messages(transport)
+            heavy_results = (
+                CommandResult(
+                    phase="error",
+                    topic=message.topic,
+                    command_type="command",
+                    published_count=0,
+                    errors=("command_handler_memory",),
+                    runtime_config=runtime_config,
+                ),
+            )
         return tuple(results) + tuple(heavy_results)
 
     return tuple(results)
@@ -355,43 +405,6 @@ def _handlers():
     return command_handlers
 
 
-def _process_heavy_inbound_messages(
-    transport,
-    runtime_config,
-    switch_service,
-    *,
-    handled_message_ids,
-    settings_root,
-    topic,
-):
-    try:
-        import gc
-
-        gc.collect()
-    except Exception:
-        pass
-    try:
-        return _handlers().process_inbound_messages(
-            transport,
-            runtime_config,
-            switch_service,
-            handled_message_ids=handled_message_ids,
-            settings_root=settings_root,
-        )
-    except MemoryError:
-        _clear_received_messages(transport)
-        return (
-            CommandResult(
-                phase="error",
-                topic=topic,
-                command_type="command",
-                published_count=0,
-                errors=("command_handler_memory",),
-                runtime_config=runtime_config,
-            ),
-        )
-
-
 def _device_id(runtime_config):
     return (
         runtime_config.sensor.sensor_id
@@ -419,6 +432,64 @@ def _clear_received_messages(transport):
         transport.received_messages = []
 
 
+def _process_location_config_message(
+    transport,
+    runtime_config,
+    *,
+    topic,
+    payload_text,
+    handled_message_ids=(),
+    settings_root=None,
+):
+    try:
+        import gc
+
+        gc.collect()
+    except Exception:
+        pass
+    from cpynodus_ii.features.switch_location_config import (
+        process_device_location_config_message,
+    )
+
+    return process_device_location_config_message(
+        transport,
+        runtime_config,
+        topic=topic,
+        payload_text=payload_text,
+        handled_message_ids=handled_message_ids,
+        settings_root=settings_root,
+    )
+
+
+def _process_calibration_apply_message(
+    transport,
+    runtime_config,
+    *,
+    topic,
+    payload_text,
+    handled_message_ids=(),
+    settings_root=None,
+):
+    try:
+        import gc
+
+        gc.collect()
+    except Exception:
+        pass
+    from cpynodus_ii.features.calibration_config import (
+        process_calibration_apply_message,
+    )
+
+    return process_calibration_apply_message(
+        transport,
+        runtime_config,
+        topic=topic,
+        payload_text=payload_text,
+        handled_message_ids=handled_message_ids,
+        settings_root=settings_root,
+    )
+
+
 def _is_switch_command_topic(topic, runtime_config):
     text = str(topic or "").strip()
     if not text.endswith("/config/set"):
@@ -427,6 +498,24 @@ def _is_switch_command_topic(topic, runtime_config):
         if text == mqtt_topic(runtime_config, channel.channel_id, "config", "set"):
             return True
     return False
+
+
+def _is_location_config_topic(topic, runtime_config):
+    device_id = _device_id(runtime_config)
+    return bool(
+        device_id
+        and (runtime_config.sensor.present or runtime_config.switch.present)
+        and topic == mqtt_topic(runtime_config, device_id, "config", "set")
+    )
+
+
+def _is_sensor_calibration_topic(topic, runtime_config):
+    device_id = _device_id(runtime_config)
+    return bool(
+        device_id
+        and runtime_config.sensor.present
+        and topic == mqtt_topic(runtime_config, device_id, "calibration", "set")
+    )
 
 
 def _apply_switch_state(switch_service, *, channel_id, state):
