@@ -1295,18 +1295,37 @@ class Settings:
     def _try_patch_toml_scalar_file(cls, path, filename, updates):
         if _path_size(path) <= 0:
             return None
-        base_filename = str(filename or "").split("/")[-1]
-        if base_filename == cls.SETTINGS_FILE:
-            for update in updates:
-                section = str(update.get("section", "") or "").strip()
-                key = str(update.get("key", "") or "").strip().upper()
-                if (section == "Network" and key in {"PASSWORD", "AP_PASSWORD"}) or (
-                    section == "MQTT" and key == "PASSWORD"
-                ):
-                    return None
+        if cls._scalar_patch_needs_full_write(filename, updates):
+            return None
 
-        formatted_by_target = {}
-        seen = set()
+        targets = cls._scalar_patch_targets(updates)
+        if targets is None:
+            return None
+        if not targets:
+            return ()
+
+        if not cls._patch_scalar_file_stream(path, targets):
+            return None
+        return tuple(updates)
+
+    @classmethod
+    def _scalar_patch_needs_full_write(cls, filename, updates):
+        base_filename = str(filename or "").split("/")[-1]
+        if base_filename != cls.SETTINGS_FILE:
+            return False
+        for update in updates:
+            section = str(update.get("section", "") or "").strip()
+            key = str(update.get("key", "") or "").strip().upper()
+            if (section == "Network" and key in {"PASSWORD", "AP_PASSWORD"}) or (
+                section == "MQTT" and key == "PASSWORD"
+            ):
+                return True
+        return False
+
+    @classmethod
+    def _scalar_patch_targets(cls, updates):
+        targets = []
+        seen = []
         for update in updates:
             section = str(update.get("section", "") or "").strip()
             key = str(update.get("key", "") or "").strip()
@@ -1315,102 +1334,118 @@ class Settings:
             target = (section, key)
             if target in seen:
                 return None
-            seen.add(target)
-            value = update.get("value")
-            if isinstance(value, bool):
-                formatted_value = "true" if value else "false"
-            elif isinstance(value, int) and not isinstance(value, bool):
-                formatted_value = str(value)
-            elif isinstance(value, float):
-                formatted_value = repr(float(value))
-                if "." not in formatted_value and "e" not in formatted_value.lower():
-                    formatted_value += ".0"
-            else:
-                text = str(value or "")
-                formatted_value = '"{}"'.format(
-                    text.replace("\\", "\\\\").replace('"', '\\"')
-                )
-            formatted_by_target[target] = formatted_value
-        if not formatted_by_target:
-            return ()
+            seen.append(target)
+            targets.append((section, key, cls._format_toml_scalar(update.get("value"))))
+        return tuple(targets)
 
-        with open(path, "r", encoding="utf-8") as handle:
-            text = handle.read()
-        lines = str(text or "").splitlines()
-        trailing_newline = str(text or "").endswith("\n")
+    @staticmethod
+    def _format_toml_scalar(value):
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if isinstance(value, int) and not isinstance(value, bool):
+            return str(value)
+        if isinstance(value, float):
+            text = repr(float(value))
+            if "." not in text and "e" not in text.lower():
+                text += ".0"
+            return text
+        text = str(value or "")
+        return '"{}"'.format(text.replace("\\", "\\\\").replace('"', '\\"'))
 
+    @classmethod
+    def _patch_scalar_file_stream(cls, path, targets):
+        path_text = str(path or "")
+        tmp_path = "{}.tmp".format(path_text)
+        backup_path = "{}.bak".format(path_text)
+        found = [False] * len(targets)
         current_section = ""
-        found = set()
-        for index, raw_line in enumerate(lines):
-            in_string = False
-            escaped = False
-            comment_at = -1
-            for char_index, char in enumerate(str(raw_line or "")):
-                if char == '"' and not escaped:
-                    in_string = not in_string
-                if char == "#" and not in_string:
-                    comment_at = char_index
-                    break
-                escaped = (char == "\\") and not escaped
-                if char != "\\":
-                    escaped = False
-            if comment_at >= 0:
-                body = raw_line[:comment_at]
-                comment = raw_line[comment_at:]
-            else:
-                body = raw_line
-                comment = ""
-            stripped = body.strip()
-            if not stripped:
-                continue
-            if stripped.startswith("[") and stripped.endswith("]"):
-                current_section = stripped[1:-1].strip()
-                continue
-            if "=" not in body:
-                continue
-            key = body.split("=", 1)[0].strip()
-            target = (current_section, key)
-            if target not in formatted_by_target:
-                continue
-            equals_at = body.find("=")
-            if equals_at < 0:
-                return None
-            prefix = body[: equals_at + 1]
-            value_area = body[equals_at + 1 :]
-            leading = ""
-            for char in value_area:
-                if char not in (" ", "\t"):
-                    break
-                leading += char
-            if not leading:
-                leading = " "
-            trailing = ""
-            if comment:
-                trailing_index = len(body)
-                while (
-                    trailing_index > equals_at + 1
-                    and body[trailing_index - 1] in (" ", "\t")
-                ):
-                    trailing_index -= 1
-                trailing = body[trailing_index:]
-                if not trailing:
-                    trailing = " "
-            lines[index] = "{}{}{}{}{}".format(
-                prefix,
-                leading,
-                formatted_by_target[target],
-                trailing,
-                comment,
-            )
-            found.add(target)
+        try:
+            with open(path_text, "r", encoding="utf-8") as source:
+                with open(tmp_path, "w", encoding="utf-8") as target:
+                    while True:
+                        raw_line = source.readline()
+                        if raw_line == "":
+                            break
+                        section = cls._section_from_toml_line(raw_line)
+                        if section is not None:
+                            current_section = section
+                            target.write(raw_line)
+                            continue
+                        key = cls._key_from_toml_line(raw_line)
+                        replacement = ""
+                        if key:
+                            replacement = cls._replacement_scalar_line(
+                                current_section,
+                                key,
+                                raw_line,
+                                targets,
+                                found,
+                            )
+                        target.write(replacement if replacement else raw_line)
+                    try:
+                        target.flush()
+                    except AttributeError:
+                        pass
+            if not cls._all_targets_found(found):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+                return False
+            if _path_size(tmp_path) <= 0:
+                raise OSError("toml_write_empty_tmp")
+            if _path_exists(backup_path):
+                os.remove(backup_path)
+            if _path_exists(path_text):
+                os.rename(path_text, backup_path)
+            os.rename(tmp_path, path_text)
+            return True
+        except OSError:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+            raise
 
-        if len(found) != len(formatted_by_target):
-            return None
-        patched = "\n".join(lines)
-        if trailing_newline:
-            patched += "\n"
-        cls._replace_toml_file(path, patched)
-        return tuple(updates)
+    @staticmethod
+    def _section_from_toml_line(raw_line):
+        body = str(raw_line or "").split("#", 1)[0].strip()
+        if body.startswith("[") and body.endswith("]"):
+            return body[1:-1].strip()
+        return None
+
+    @staticmethod
+    def _key_from_toml_line(raw_line):
+        body = str(raw_line or "").split("#", 1)[0]
+        if "=" not in body:
+            return ""
+        return body.split("=", 1)[0].strip()
+
+    @classmethod
+    def _replacement_scalar_line(cls, section, key, raw_line, targets, found):
+        for index, target in enumerate(targets):
+            if found[index]:
+                continue
+            if section == target[0] and key == target[1]:
+                found[index] = True
+                return "{} = {}{}".format(key, target[2], cls._line_ending(raw_line))
+        return ""
+
+    @staticmethod
+    def _line_ending(raw_line):
+        text = str(raw_line or "")
+        if text.endswith("\r\n"):
+            return "\r\n"
+        if text.endswith("\n"):
+            return "\n"
+        return ""
+
+    @staticmethod
+    def _all_targets_found(found):
+        for item in found:
+            if not item:
+                return False
+        return True
 
     @classmethod
     def _dump_toml(cls, document):

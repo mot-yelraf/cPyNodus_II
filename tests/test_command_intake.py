@@ -941,6 +941,58 @@ def test_process_inbound_messages_fast_calibration_apply_persists_offsets():
     assert transport.published_messages[2].payload["source"] == "calibration_set"
 
 
+def test_process_inbound_messages_fast_calibration_handles_aqi_offset_batch():
+    docs_root = Path(__file__).resolve().parents[1] / "docs" / "sensor+switch"
+    transport = MQTTTransport("broker.local", 1883)
+    with TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        for name in ("settings.toml", "switch.toml", "sensor_i2c.toml"):
+            (root / name).write_text((docs_root / name).read_text(), encoding="utf-8")
+        runtime_config = Settings.from_directory(root).runtime_config()
+        transport.receive(
+            "nodus/aqi-x943fm/calibration/set",
+            (
+                '{"message_id":"cal-aqi","action":"apply","payload":{"offsets":['
+                '{"key":"Calibration.System.TEMP_OFFSET","value":0.6},'
+                '{"key":"Calibration.System.RH_OFFSET","value":0.1},'
+                '{"key":"Calibration.Device.AQI_OFFSET","value":0.0},'
+                '{"key":"Calibration.Device.GAS_OFFSET","value":0.0},'
+                '{"key":"Calibration.System.ALTITUDE_METERS","value":1783.0}'
+                "]}}"
+            ),
+        )
+
+        results = process_inbound_messages(
+            transport,
+            runtime_config,
+            None,
+            settings_root=tmpdir,
+        )
+        sensor_doc = Settings._read_toml_file(root / Settings.SENSOR_I2C_FILE)
+
+    assert len(results) == 1
+    assert results[0].phase == "published"
+    assert results[0].published_count == 3
+    assert results[0].runtime_config.sensor.calibration_system.temp_offset == 0.6
+    assert results[0].runtime_config.sensor.calibration_system.rh_offset == 0.1
+    assert results[0].runtime_config.sensor.calibration_device.aqi_offset == 0.0
+    assert results[0].runtime_config.sensor.calibration_device.gas_offset == 0.0
+    assert results[0].runtime_config.sensor.calibration_device.altitude_meters == 1783.0
+    assert sensor_doc["Calibration"]["System"]["TEMP_OFFSET"] == 0.6
+    assert sensor_doc["Calibration"]["System"]["RH_OFFSET"] == 0.1
+    assert sensor_doc["Calibration"]["Device"]["AQI_OFFSET"] == 0.0
+    assert sensor_doc["Calibration"]["Device"]["GAS_OFFSET"] == 0.0
+    assert sensor_doc["Calibration"]["Device"]["ALTITUDE_METERS"] == 1783.0
+    assert transport.published_messages[0].topic == "nodus/aqi-x943fm/calibration/ack"
+    assert transport.published_messages[1].payload["applied"] is True
+    assert transport.published_messages[1].payload["updated"] == 5
+    assert transport.published_messages[2].payload["updates"][-1] == {
+        "section": "Calibration.Device",
+        "key": "ALTITUDE_METERS",
+        "value": 1783.0,
+    }
+
+
 def test_process_inbound_messages_handles_device_topics_before_switch_topics():
     transport = MQTTTransport("broker.local", 1883)
     transport.receive(

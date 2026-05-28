@@ -32,9 +32,9 @@ def process_calibration_apply_message(
     duplicate = bool(message_id and message_id in tuple(handled_message_ids or ()))
     ack_topic = mqtt_topic(runtime_config, device_id, "calibration", "ack")
     result_topic = mqtt_topic(runtime_config, device_id, "calibration", "result")
-    _publish_calibration_ack(transport, ack_topic, message_id)
 
     if duplicate:
+        _publish_calibration_ack(transport, ack_topic, message_id)
         _publish_calibration_result(
             transport,
             result_topic,
@@ -59,6 +59,7 @@ def process_calibration_apply_message(
         settings_root=settings_root,
     )
     if persistence_errors:
+        _publish_calibration_ack(transport, ack_topic, message_id)
         _publish_calibration_result(
             transport,
             result_topic,
@@ -78,7 +79,38 @@ def process_calibration_apply_message(
             persistence_mode="volatile",
         )
 
-    updated_runtime_config = _calibration_runtime_config(runtime_config, updates)
+    try:
+        updated_runtime_config = _calibration_runtime_config(runtime_config, updates)
+        meta_patch_payload = _build_meta_patch_payload(
+            updated_runtime_config,
+            source="calibration_set",
+            message_id=message_id,
+            updates=updates,
+        )
+    except RuntimeError as exc:
+        if "pystack exhausted" not in str(exc).lower():
+            raise
+        _publish_calibration_ack(transport, ack_topic, message_id)
+        _publish_calibration_result(
+            transport,
+            result_topic,
+            message_id,
+            applied=False,
+            updated=0,
+            error="pystack_exhausted",
+        )
+        return CommandResult(
+            phase="error",
+            topic=topic,
+            command_type="calibration",
+            published_count=2,
+            errors=("pystack_exhausted",),
+            runtime_config=runtime_config,
+            message_id=message_id,
+            persistence_mode="volatile",
+        )
+
+    _publish_calibration_ack(transport, ack_topic, message_id)
     _publish_calibration_result(
         transport,
         result_topic,
@@ -88,12 +120,7 @@ def process_calibration_apply_message(
     )
     transport.publish(
         mqtt_topic(updated_runtime_config, device_id, "meta", "patch"),
-        _build_meta_patch_payload(
-            updated_runtime_config,
-            source="calibration_set",
-            message_id=message_id,
-            updates=updates,
-        ),
+        meta_patch_payload,
         retain=False,
     )
     return CommandResult(
@@ -157,9 +184,14 @@ def _calibration_updates_from_body(body):
                 return None
             for key, value in values.items():
                 key = str(key or "").strip().upper()
-                if not _supported_calibration_key(section, key):
+                target_section = section
+                if target_section == "Calibration.System" and key == "ALTITUDE_METERS":
+                    target_section = "Calibration.Device"
+                if not _supported_calibration_key(target_section, key):
                     return None
-                updates.append({"section": section, "key": key, "value": value})
+                updates.append(
+                    {"section": target_section, "key": key, "value": value}
+                )
         return updates
     return None
 
@@ -188,48 +220,63 @@ def _persist_calibration_updates_fast(runtime_config, updates, *, settings_root=
 def _write_calibration_file(path, updates):
     import os
 
-    try:
-        with open(path, "r", encoding="utf-8") as handle:
-            text = handle.read()
-    except OSError as exc:
-        return (_persistence_error(exc),)
-
-    formatted_by_target = {}
-    for update in updates:
-        target = (update["section"], update["key"])
-        formatted_by_target[target] = _format_toml_scalar(update.get("value"))
-    lines = str(text or "").splitlines()
-    trailing_newline = str(text or "").endswith("\n")
-    current_section = ""
-    found = set()
-    for index, raw_line in enumerate(lines):
-        stripped = str(raw_line or "").strip()
-        if stripped.startswith("[") and stripped.endswith("]"):
-            current_section = stripped[1:-1].strip()
-            continue
-        if "=" not in raw_line:
-            continue
-        key = raw_line.split("=", 1)[0].strip()
-        target = (current_section, key)
-        if target not in formatted_by_target:
-            continue
-        lines[index] = "{} = {}".format(key, formatted_by_target[target])
-        found.add(target)
-    if len(found) != len(formatted_by_target):
+    targets = _calibration_patch_targets(updates)
+    if not targets:
         return ("calibration_key_missing",)
 
-    patched = "\n".join(lines)
-    if trailing_newline:
-        patched += "\n"
+    found = [False] * len(targets)
+    current_section = ""
+    seen_sections = []
     tmp_path = "{}.tmp".format(path)
     backup_path = "{}.bak".format(path)
     try:
-        with open(tmp_path, "w", encoding="utf-8") as handle:
-            handle.write(patched)
+        with open(path, "r", encoding="utf-8") as source:
+            with open(tmp_path, "w", encoding="utf-8") as target:
+                while True:
+                    raw_line = source.readline()
+                    if raw_line == "":
+                        break
+                    stripped = str(raw_line or "").strip()
+                    if stripped.startswith("[") and stripped.endswith("]"):
+                        _append_missing_targets_for_section(
+                            target,
+                            current_section,
+                            targets,
+                            found,
+                        )
+                        current_section = stripped[1:-1].strip()
+                        if current_section not in seen_sections:
+                            seen_sections.append(current_section)
+                        target.write(raw_line)
+                        continue
+                    key = _toml_line_key(raw_line)
+                    replacement = ""
+                    if key:
+                        replacement = _calibration_replacement_line(
+                            current_section,
+                            key,
+                            raw_line,
+                            targets,
+                            found,
+                        )
+                    target.write(replacement if replacement else raw_line)
+                _append_missing_targets_for_section(
+                    target,
+                    current_section,
+                    targets,
+                    found,
+                )
+                _append_missing_sections(target, targets, found, seen_sections)
+                try:
+                    target.flush()
+                except AttributeError:
+                    pass
+        if not _all_found(found):
             try:
-                handle.flush()
-            except AttributeError:
+                os.remove(tmp_path)
+            except OSError:
                 pass
+            return ("calibration_key_missing",)
         if _path_size(tmp_path) <= 0:
             return ("toml_write_empty_tmp",)
         if _path_exists(backup_path):
@@ -238,22 +285,129 @@ def _write_calibration_file(path, updates):
             os.rename(path, backup_path)
         os.rename(tmp_path, path)
     except OSError as exc:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
         return (_persistence_error(exc),)
     return ()
 
 
+def _calibration_patch_targets(updates):
+    targets = []
+    seen = []
+    for update in updates:
+        section = str(update.get("section", "") or "").strip()
+        key = str(update.get("key", "") or "").strip()
+        target = (section, key)
+        if target in seen:
+            continue
+        seen.append(target)
+        targets.append((section, key, _format_toml_scalar(update.get("value"))))
+    return tuple(targets)
+
+
+def _calibration_replacement_line(section, key, raw_line, targets, found):
+    for index, target in enumerate(targets):
+        if found[index]:
+            continue
+        if section == target[0] and key == target[1]:
+            found[index] = True
+            return "{} = {}{}".format(key, target[2], _line_ending(raw_line))
+    return ""
+
+
+def _append_missing_targets_for_section(handle, section, targets, found):
+    if not section:
+        return
+    for index, target in enumerate(targets):
+        if found[index] or section != target[0]:
+            continue
+        handle.write("{} = {}\n".format(target[1], target[2]))
+        found[index] = True
+
+
+def _append_missing_sections(handle, targets, found, seen_sections):
+    active_section = ""
+    for index, target in enumerate(targets):
+        if found[index] or target[0] in seen_sections:
+            continue
+        if target[0] != active_section:
+            handle.write("\n[{}]\n".format(target[0]))
+            active_section = target[0]
+        handle.write("{} = {}\n".format(target[1], target[2]))
+        found[index] = True
+
+
+def _toml_line_key(raw_line):
+    body = str(raw_line or "").split("#", 1)[0]
+    if "=" not in body:
+        return ""
+    return body.split("=", 1)[0].strip()
+
+
+def _line_ending(raw_line):
+    text = str(raw_line or "")
+    if text.endswith("\r\n"):
+        return "\r\n"
+    if text.endswith("\n"):
+        return "\n"
+    return ""
+
+
+def _all_found(found):
+    for item in found:
+        if not item:
+            return False
+    return True
+
+
 def _calibration_runtime_config(runtime_config, updates):
     for update in updates:
-        section = update["section"]
-        attr = _calibration_attr_name(section, update["key"])
-        if not attr:
+        section = str(update.get("section", "") or "").strip()
+        if section not in {"Calibration.System", "Calibration.Device"}:
             continue
-        value = float(update.get("value") or 0.0)
+        key = str(update.get("key", "") or "").strip().upper()
+        try:
+            value = float(update.get("value") or 0.0)
+        except (TypeError, ValueError):
+            value = 0.0
         if section == "Calibration.System":
-            setattr(runtime_config.sensor.calibration_system, attr, value)
-        elif section == "Calibration.Device":
-            setattr(runtime_config.sensor.calibration_device, attr, value)
+            _set_calibration_value(runtime_config.sensor.calibration_system, key, value)
+        else:
+            _set_calibration_value(runtime_config.sensor.calibration_device, key, value)
     return runtime_config
+
+
+def _set_calibration_value(calibration, key, value):
+    if key == "TEMP_OFFSET":
+        calibration.temp_offset = value
+    elif key == "RH_OFFSET":
+        calibration.rh_offset = value
+    elif key == "CO2_OFFSET":
+        calibration.co2_offset = value
+    elif key == "AQI_OFFSET":
+        calibration.aqi_offset = value
+    elif key == "GAS_OFFSET":
+        calibration.gas_offset = value
+    elif key == "LUX_OFFSET":
+        calibration.lux_offset = value
+    elif key == "PPFD_OFFSET":
+        calibration.ppfd_offset = value
+    elif key == "APVPD_TEMP_CAL_VAL":
+        calibration.apvpd_temp_cal_val = value
+    elif key == "APVPD_RH_CAL_VAL":
+        calibration.apvpd_rh_cal_val = value
+    elif key == "ALTITUDE_METERS":
+        calibration.altitude_meters = value
+    elif key == "SOIL_TEMP_CAL_VAL":
+        calibration.soil_temp_cal_val = value
+    elif key == "SOIL_TEMP_MOIST_VAL":
+        calibration.soil_temp_moist_val = value
+    elif key == "SOIL_PH_CAL_VAL":
+        calibration.soil_ph_cal_val = value
+    elif key == "SOIL_EC_CAL_VAL":
+        calibration.soil_ec_cal_val = value
 
 
 def _normalize_calibration_key(key):
@@ -262,7 +416,11 @@ def _normalize_calibration_key(key):
         return "Calibration.Device", "SOIL_PH_CAL_VAL"
     parts = text.split(".")
     if len(parts) >= 3:
-        return ".".join(parts[:-1]), parts[-1].upper()
+        section = ".".join(parts[:-1])
+        key = parts[-1].upper()
+        if section == "Calibration.System" and key == "ALTITUDE_METERS":
+            return "Calibration.Device", key
+        return section, key
     return "", ""
 
 
@@ -272,31 +430,22 @@ def _calibration_section_for_branch(branch):
         return "Calibration.System"
     if normalized == "device":
         return "Calibration.Device"
+    if normalized == "soil":
+        return "Calibration.Soil"
+    if normalized == "apvpd":
+        return "Calibration"
     return ""
 
 
 def _supported_calibration_key(section, key):
-    return bool(_calibration_attr_name(section, key))
-
-
-def _calibration_attr_name(section, key):
-    if section not in {"Calibration.System", "Calibration.Device"}:
-        return ""
-    mapping = {
-        "TEMP_OFFSET": "temp_offset",
-        "RH_OFFSET": "rh_offset",
-        "CO2_OFFSET": "co2_offset",
-        "AQI_OFFSET": "aqi_offset",
-        "GAS_OFFSET": "gas_offset",
-        "LUX_OFFSET": "lux_offset",
-        "PPFD_OFFSET": "ppfd_offset",
-        "SOIL_TEMP_CAL_VAL": "soil_temp_cal_val",
-        "SOIL_TEMP_MOIST_VAL": "soil_temp_moist_val",
-        "SOIL_PH_CAL_VAL": "soil_ph_cal_val",
-        "SOIL_EC_CAL_VAL": "soil_ec_cal_val",
-        "ALTITUDE_METERS": "altitude_meters",
-    }
-    return mapping.get(str(key or "").strip().upper(), "")
+    section = str(section or "").strip()
+    key = str(key or "").strip()
+    return bool(key and section in {
+        "Calibration.System",
+        "Calibration.Device",
+        "Calibration.Soil",
+        "Calibration",
+    })
 
 
 def _publish_calibration_ack(transport, topic, message_id, *, accepted=True):
