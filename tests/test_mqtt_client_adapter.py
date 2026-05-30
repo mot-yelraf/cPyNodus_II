@@ -49,8 +49,8 @@ def _run_direct_tests():
         test_preflight_mqtt_broker_tcp_reports_socket_connect_errors,
         test_preflight_mqtt_broker_connect_reads_connack_and_disconnects,
         test_preflight_mqtt_broker_connect_reports_connack_refusal,
-        test_connect_mqtt_client_adopts_raw_connack_socket,
-        test_connect_mqtt_client_reports_raw_connack_refusal,
+        test_connect_mqtt_client_uses_minimqtt_when_raw_socket_available,
+        test_connect_mqtt_client_ignores_raw_connack_refusal,
         test_poll_mqtt_client_uses_timeout_compatible_with_socket_timeout,
         test_sync_transport_to_client_marks_transport_disconnected_on_publish_oserror,
         test_sync_transport_to_client_subscribes_before_low_priority_publish,
@@ -59,6 +59,7 @@ def _run_direct_tests():
         test_sync_transport_to_client_disconnects_after_slow_publish,
         test_sync_transport_to_client_disconnects_on_subscribe_failure,
         test_poll_mqtt_client_marks_transport_disconnected_on_oserror,
+        test_sync_transport_to_client_can_subscribe_before_priority_status,
         test_close_mqtt_client_disconnects_without_shutdown_publish,
         test_close_mqtt_client_keeps_pending_publish_queue,
         test_close_mqtt_client_force_closes_socket_when_client_is_not_connected,
@@ -640,8 +641,10 @@ class _ConnectProbeSocket(_ProbeSocket):
 class _ConnectProbeSocketPool:
     def __init__(self, connack=b"\x20\x02\x00\x00"):
         self.socket_obj = _ConnectProbeSocket(connack)
+        self.socket_calls = 0
 
     def socket(self):
+        self.socket_calls += 1
         return self.socket_obj
 
 
@@ -1330,7 +1333,7 @@ def test_preflight_mqtt_broker_connect_reports_connack_refusal():
     assert socket_pool.socket_obj.closed is True
 
 
-def test_connect_mqtt_client_adopts_raw_connack_socket():
+def test_connect_mqtt_client_uses_minimqtt_when_raw_socket_available():
     socket_pool = _ConnectProbeSocketPool()
     runtime_config = RuntimeConfig(
         active_profile="sensorius",
@@ -1346,25 +1349,19 @@ def test_connect_mqtt_client_adopts_raw_connack_socket():
     adapter = build_mqtt_client_adapter(
         runtime_config,
         socket_pool=socket_pool,
-        modules={"mqtt_cls": _MiniMQTTConnectShouldNotRunClient},
+        modules={"mqtt_cls": _FakeMQTTClient},
     )
 
     connect_result = connect_mqtt_client(adapter, transport)
 
     assert connect_result.phase == "connected"
     assert transport.connected is True
-    assert adapter.client.connect_calls == 0
-    assert adapter.client._sock is socket_pool.socket_obj
-    assert adapter.client._is_connected is True
-    assert socket_pool.socket_obj.closed is False
-    packet = bytes(socket_pool.socket_obj.sent)
-    assert packet[0] == 0x10
-    assert b"\x00\x04MQTT" in packet
-    assert b"aqi-x943fm" in packet
-    assert packet[-2:] != b"\xe0\x00"
+    assert adapter.client.connected is True
+    assert socket_pool.socket_calls == 0
+    assert bytes(socket_pool.socket_obj.sent) == b""
 
 
-def test_connect_mqtt_client_reports_raw_connack_refusal():
+def test_connect_mqtt_client_ignores_raw_connack_refusal():
     socket_pool = _ConnectProbeSocketPool(b"\x20\x02\x00\x02")
     runtime_config = RuntimeConfig(
         active_profile="sensorius",
@@ -1379,18 +1376,15 @@ def test_connect_mqtt_client_reports_raw_connack_refusal():
     adapter = build_mqtt_client_adapter(
         runtime_config,
         socket_pool=socket_pool,
-        modules={"mqtt_cls": _MiniMQTTConnectShouldNotRunClient},
+        modules={"mqtt_cls": _FakeMQTTClient},
     )
 
     connect_result = connect_mqtt_client(adapter, transport)
 
-    assert connect_result.phase == "error"
-    assert transport.connected is False
-    assert socket_pool.socket_obj.closed is True
-    assert adapter.client.connect_calls == 0
-    assert connect_result.errors[0].startswith(
-        "mqtt_connect_failed:10.0.0.4:raw:OSError:mqtt_connack_code"
-    )
+    assert connect_result.phase == "connected"
+    assert transport.connected is True
+    assert adapter.client.connected is True
+    assert socket_pool.socket_calls == 0
 
 
 def test_poll_mqtt_client_uses_timeout_compatible_with_socket_timeout():
@@ -1614,6 +1608,41 @@ def test_sync_transport_to_client_publishes_priority_status_before_subscribe():
         "nodus/aqi-x943fm/data"
     ]
     assert transport.subscriptions == ["nodus/S1-x943fm/config/set"]
+
+
+def test_sync_transport_to_client_can_subscribe_before_priority_status():
+    runtime_config = _runtime_config()
+    runtime_config.mqtt.startup_subscribe_before_publish = True
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connect_requested()
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=object(),
+        modules={"mqtt_cls": _FakeMQTTClient},
+    )
+
+    connect_result = connect_mqtt_client(adapter, transport)
+    transport.publish("nodus/aqi-x943fm/data", {"schema": "nodus-sensor/v1"})
+    transport.publish(
+        "nodus/aqi-x943fm/status/heartbeat",
+        {"online": True},
+        retain=True,
+    )
+    transport.subscribe("nodus/S1-x943fm/config/set")
+
+    sync_result = sync_transport_to_client(connect_result.adapter, transport)
+
+    assert sync_result.phase == "synced"
+    assert sync_result.published_count == 0
+    assert sync_result.subscribed_count == 1
+    assert sync_result.operation == "subscribe"
+    assert sync_result.adapter.startup_subscribe_before_publish is True
+    assert sync_result.adapter.client.subscribed == ["nodus/S1-x943fm/config/set"]
+    assert [message.topic for message in transport.published_messages] == [
+        "nodus/aqi-x943fm/data",
+        "nodus/aqi-x943fm/status/heartbeat",
+    ]
+    assert transport.subscriptions == []
 
 
 def test_sync_transport_to_client_defers_subscribe_until_clean_poll():

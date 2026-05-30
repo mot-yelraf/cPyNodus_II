@@ -16,6 +16,19 @@ This is not a general CPython application. Prefer CircuitPython-compatible APIs
 and patterns throughout, and assume Pico2 W heap pressure is a primary design
 constraint.
 
+## Hard Rules
+
+- Do not write to `/Volumes/CIRCUITPY`. The operator owns all copying, editing,
+  and deployment on mounted CircuitPython device volumes.
+- Before changing startup, network, MQTT, recovery, OTA, config persistence, or
+  switch behavior, read the relevant Start Here docs and state which files were
+  reviewed.
+- For startup, network, MQTT, and recovery issues, default to investigation
+  first. Do not edit runtime code until the operator has approved a proposed
+  behavior change.
+- Serial logs alone are not proof of MQTT success. Broker-visible MQTT output
+  is required when validating MQTT behavior.
+
 ## Start Here
 
 Before changing behavior, read the current local contract:
@@ -30,6 +43,14 @@ Before changing behavior, read the current local contract:
 
 `docs/debug-notes/` contains dated investigation notes. Treat them as archival
 context, not as the current runtime contract.
+
+Before changing behavior, the agent must:
+
+1. Run `git status --short`.
+2. Read the listed contract docs relevant to the proposed change.
+3. Summarize the current contract in a few concrete bullets.
+4. State the proposed files and behavioral change.
+5. Wait for operator approval before editing stability-sensitive runtime code.
 
 ## Current Repository Shape
 
@@ -71,6 +92,20 @@ context, not as the current runtime contract.
 Feature code should not own socket lifecycle. Network ownership belongs in
 `cpynodus_ii/core/network.py`, with MQTT socket/client behavior kept behind the
 MQTT adapter and app-level recovery flow.
+
+## MQTT Startup and Recovery Investigation
+
+For MQTT startup/recovery failures:
+
+- Use `testApparatus/` first to isolate the mechanism.
+- Review `docs/debug-notes/` for prior failed paths before proposing runtime
+  changes.
+- Do not reintroduce primer, startup conditioning, MQTT startup reorder, or
+  soft-reload recovery behavior without explicit operator approval and
+  broker-visible validation.
+- Treat serial-side `published=1`, queued publish drain, or successful local
+  API return as insufficient unless the broker capture shows the expected
+  topic and payload.
 
 ## Network and Recovery Rules
 
@@ -224,6 +259,8 @@ Example:
 - Read existing code and tests before refactoring.
 - Prefer targeted edits over broad rewrites.
 - Keep docs, tests, templates, and runtime behavior in sync.
+- Do not write to `/Volumes/CIRCUITPY`; the user is responsible for copying,
+  editing, and deploying files on that mounted device volume.
 - For docs-only work, do not bump the firmware version.
 - For runtime work, add or update focused tests in the touched area.
 - Keep final reports concrete: files changed, tests run, tests passed/failed,

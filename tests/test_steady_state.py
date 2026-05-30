@@ -271,3 +271,41 @@ def test_steady_state_iteration_skips_ota_report_after_initial_connection(tmp_pa
     assert second.ota_status_phase == "skipped"
     assert second.ota_status_published_count == 0
     assert len(transport.published_messages) == published_after_first
+
+
+def test_steady_state_startup_snapshot_defers_bme280_data_publish():
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connect_requested()
+    transport.mark_connected()
+    runtime_config = RuntimeConfig(
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            device="avpd",
+            sensor_id="avpd-x943fm",
+        ),
+    )
+    sensor_service = SimpleNamespace(
+        phase="deferred",
+        driver_kind="adafruit_bme280",
+        driver=None,
+        errors=("sensor_driver_start_deferred",),
+    )
+
+    result = run_steady_state_iteration(
+        transport,
+        runtime_config,
+        SimpleNamespace(
+            phase="inactive", device_id="", channel_count=0, channels=(), errors=()
+        ),
+        sensor_service,
+        state=SteadyState(sensor_interval_s=60.0),
+        version="0.1.0",
+        now_monotonic=10.0,
+    )
+
+    assert result.startup_publish_phase == "published"
+    assert result.sensor_publish_phase == "skipped"
+    assert "nodus/avpd-x943fm/data" not in [
+        message.topic for message in transport.published_messages
+    ]

@@ -132,6 +132,11 @@ def test_apply_web_config_updates_persists_restart_fields_without_live_change():
             (
                 {"section": "Network", "key": "SSID", "value": "NewWiFi"},
                 {"section": "MQTT", "key": "BROKER", "value": "new-broker.local"},
+                {
+                    "section": "MQTT",
+                    "key": "STARTUP_SUBSCRIBE_BEFORE_PUBLISH",
+                    "value": True,
+                },
             ),
             settings_root=tmpdir_path,
         )
@@ -139,11 +144,12 @@ def test_apply_web_config_updates_persists_restart_fields_without_live_change():
 
     assert result.errors == ()
     assert result.live_updates == ()
-    assert len(result.restart_required_updates) == 2
+    assert len(result.restart_required_updates) == 3
     assert result.runtime_config.network.ssid == runtime_config.network.ssid
     assert result.runtime_config.mqtt.broker == runtime_config.mqtt.broker
     assert persisted.network.ssid == "NewWiFi"
     assert persisted.mqtt.broker == "new-broker.local"
+    assert persisted.mqtt.startup_subscribe_before_publish is True
 
 
 def test_apply_web_switch_override_updates_runtime_last_state():

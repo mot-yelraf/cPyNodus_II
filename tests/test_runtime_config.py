@@ -32,6 +32,7 @@ def test_runtime_config_normalizes_standalone_to_nodusweb():
     assert runtime_config.ntp_enabled is True
     assert runtime_config.network.ap_ssid == "Nodus_Setup"
     assert runtime_config.mqtt.base_topic == "nodus"
+    assert runtime_config.mqtt.startup_subscribe_before_publish is False
 
 
 def test_settings_from_directory_loads_switch_only_runtime_config():
@@ -211,6 +212,25 @@ def test_settings_from_directory_prefers_soil_sensor_file_when_soil_config_is_ac
     assert runtime_config.sensor.soil_npk.n_target == 100.0
     assert runtime_config.sensor.soil_npk.p_target == 55.0
     assert runtime_config.sensor.soil_npk.k_target == 130.0
+
+
+def test_settings_from_directory_loads_startup_subscribe_before_publish_flag():
+    with TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        (tmpdir_path / "settings.toml").write_text(
+            (
+                '[Profile]\nACTIVE_PROFILE = "sensorius"\n'
+                "[MQTT]\n"
+                'BROKER = "broker.local"\n'
+                'BROKER_IP = "10.0.0.9"\n'
+                "STARTUP_SUBSCRIBE_BEFORE_PUBLISH = true\n"
+            ),
+            encoding="utf-8",
+        )
+
+        runtime_config = Settings.from_directory(tmpdir_path).runtime_config()
+
+    assert runtime_config.mqtt.startup_subscribe_before_publish is True
 
 
 def test_settings_from_directory_loads_dual_soil_modbus_channels():

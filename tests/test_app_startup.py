@@ -22,6 +22,7 @@ from cpynodus_ii.app import (
     _mqtt_repeated_failure_budget_exhausted,
     _mqtt_repeated_failure_elapsed_s,
     _mqtt_repeated_failure_reboot_gate_tripped,
+    _mqtt_startup_queues_clear,
     _ota_state_path,
     _recovery_reconnect_attempts,
     _recovery_reconnect_delay_s,
@@ -30,6 +31,7 @@ from cpynodus_ii.app import (
     _resolve_startup_plan,
     _restart_sensor_stack,
     _runtime_device_id,
+    _sensor_driver_start_deferred,
     _sensor_errors_indicate_not_found,
     _should_enter_ota_mode,
     _should_fallback_to_ap,
@@ -578,7 +580,7 @@ def test_mqtt_preconnect_probe_retries_socket_progress_before_success(monkeypatc
     assert sleeps == [0.5, 0.5]
 
 
-def test_mqtt_preconnect_probe_skips_connack_probe_for_raw_connect(monkeypatch):
+def test_mqtt_preconnect_probe_checks_connack_before_minimqtt_connect(monkeypatch):
     tcp_calls = []
     connect_calls = []
     sleeps = []
@@ -613,9 +615,11 @@ def test_mqtt_preconnect_probe_skips_connack_probe_for_raw_connect(monkeypatch):
 
     assert result[0] == ""
     assert result[3] == ""
+    assert result[5] == "aqi-wfcp7p"
+    assert result[6] == 0
     assert len(tcp_calls) == 1
-    assert connect_calls == []
-    assert sleeps == []
+    assert len(connect_calls) == 1
+    assert sleeps == [5.0]
 
 
 def test_mqtt_preconnect_delay_adapts_after_connect_failures(monkeypatch):
@@ -964,6 +968,25 @@ def test_sensor_not_found_window_and_reboot_gate():
     )
     assert count == 0
     assert started_at == -1.0
+
+
+def test_deferred_sensor_driver_marker_and_mqtt_queue_gate():
+    assert (
+        _sensor_driver_start_deferred(
+            SimpleNamespace(errors=("sensor_driver_start_deferred",))
+        )
+        is True
+    )
+    assert _sensor_driver_start_deferred(SimpleNamespace(errors=())) is False
+    assert _mqtt_startup_queues_clear(
+        SimpleNamespace(published_messages=[], subscriptions=[])
+    ) is True
+    assert _mqtt_startup_queues_clear(
+        SimpleNamespace(published_messages=[object()], subscriptions=[])
+    ) is False
+    assert _mqtt_startup_queues_clear(
+        SimpleNamespace(published_messages=[], subscriptions=["topic"])
+    ) is False
 
 
 def test_restart_sensor_stack_stops_rebinds_and_reads_snapshot(monkeypatch):

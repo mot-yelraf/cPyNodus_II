@@ -100,6 +100,7 @@ The shared MQTT connection is configured in `[MQTT]`:
 - `BASE_TOPIC`
 - `USERNAME`
 - `PASSWORD`
+- `STARTUP_SUBSCRIBE_BEFORE_PUBLISH`
 
 `BROKER` is the canonical broker hostname from Sensorius. MQTT connections use
 IP literals only. During startup, Nodus uses a configured `BROKER_IP` directly
@@ -111,6 +112,13 @@ is absent, and cannot persist it.
 
 The same settings rewrite obfuscates any plaintext passwords that were manually
 entered in `settings.toml`.
+
+`STARTUP_SUBSCRIBE_BEFORE_PUBLISH` is an opt-in diagnostic compatibility flag
+for devices that can connect and publish retained startup MQTT topics but fail
+the first runtime command subscription immediately afterward. The default is
+`false`, preserving the normal publish-first startup order. When set to `true`,
+Nodus subscribes to device command topics before draining retained startup
+publishes.
 
 ## Home Assistant section
 

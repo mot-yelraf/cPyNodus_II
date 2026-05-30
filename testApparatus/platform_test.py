@@ -26,11 +26,39 @@ connect, run the warm-start matrix:
 
     import gc; gc.collect(); import platform_test
     platform_test.run(mqtt_mode="warm_start_matrix")
+
+To probe the app startup MQTT sequence without the full app recovery loop:
+
+    import gc; gc.collect(); import platform_test
+    platform_test.run(mqtt_mode="app_startup", mqtt_rounds=1)
+
+To isolate the first app-startup subscribe after retained publishes:
+
+    import gc; gc.collect(); import platform_test
+    platform_test.run(mqtt_mode="app_subscribe_probe", mqtt_rounds=1)
+
+To test subscribing before the retained startup publish batch:
+
+    import gc; gc.collect(); import platform_test
+    platform_test.run(mqtt_mode="app_subscribe_first", mqtt_rounds=1)
+
+To send a raw MQTT CONNECT using the production device id:
+
+    import gc; gc.collect(); import platform_test
+    platform_test.run(mqtt_mode="raw_device_id", mqtt_rounds=1)
+
+The app startup probes publish configured sensor/switch topic metadata but do
+not start sensor drivers or switch GPIO services.
 """
 
 import time
 
-PLATFORM_TEST_VERSION = "v0.26.141.2"
+PLATFORM_TEST_VERSION = "v0.26.149.10"
+APP_MQTT_PREFLIGHT_RETRIES = 3
+APP_MQTT_PREFLIGHT_RETRY_DELAY_S = 0.5
+APP_STARTUP_SKIP_CONNACK_PROBE = False
+APP_PRE_MINIMQTT_DELAY_S = 5.0
+_LOG_STARTED_AT = None
 
 
 def run(
@@ -49,7 +77,9 @@ def run(
     sync_ntp=True,
 ):
     """Run one platform smoke test and print detailed serial diagnostics."""
+    global _LOG_STARTED_AT
     started = _monotonic()
+    _LOG_STARTED_AT = started
     _log("platform phase=start version={}".format(PLATFORM_TEST_VERSION))
 
     runtime_config, errors = _load_runtime_config(settings_root)
@@ -161,10 +191,13 @@ def run(
         _log("socketpool phase=error errors=socketpool_unavailable")
         return False
 
-    _resolve(pool, broker, port, label="broker_hostname")
-    if broker_ip:
-        _resolve(pool, broker_ip, port, label="broker_ip")
-    _tcp_probe(pool, broker_target, port)
+    if _mode_uses_app_startup_flow(mode):
+        _log("broker_probe phase=skipped reason=app_startup_mode")
+    else:
+        _resolve(pool, broker, port, label="broker_hostname")
+        if broker_ip:
+            _resolve(pool, broker_ip, port, label="broker_ip")
+        _tcp_probe(pool, broker_target, port)
 
     if not sync_ntp:
         _log("ntp phase=skipped reason=disabled")
@@ -204,6 +237,22 @@ def _load_runtime_config(settings_root):
         return settings.runtime_config(), ()
     except Exception as exc:
         return None, ("settings_load_failed:{}".format(exc),)
+
+
+def _mode_uses_app_startup_flow(mode):
+    value = str(mode or "").strip().lower()
+    return value in (
+        "app_startup",
+        "startup_like",
+        "app_startup_wrapped",
+        "app_subscribe_probe",
+        "app_subscribe_raw",
+        "subscribe_path",
+        "app_subscribe_first",
+        "app_subscribe_first_raw",
+        "app_subscribe_minimqtt",
+        "app_subscribe_first_minimqtt",
+    )
 
 
 def _collect():
@@ -591,6 +640,80 @@ def _mqtt_platform_round_trip(
             device_id,
             wrap_before_connect=True,
         )
+    if mode in ("app_startup", "startup_like"):
+        return _mqtt_app_startup_sequence_probe(
+            pool,
+            runtime_config,
+            broker_target,
+            port,
+            base_topic,
+            device_id,
+            timeout_s=timeout_s,
+            poll_interval_s=poll_interval_s,
+            wrap_before_connect=False,
+        )
+    if mode in ("app_subscribe_probe", "app_subscribe_raw", "subscribe_path"):
+        return _mqtt_app_subscribe_flat_probe(
+            pool,
+            runtime_config,
+            broker_target,
+            port,
+            base_topic,
+            device_id,
+            timeout_s=timeout_s,
+            poll_interval_s=poll_interval_s,
+            subscribe_path="raw",
+        )
+    if mode in ("app_subscribe_first", "app_subscribe_first_raw"):
+        return _mqtt_app_subscribe_flat_probe(
+            pool,
+            runtime_config,
+            broker_target,
+            port,
+            base_topic,
+            device_id,
+            timeout_s=timeout_s,
+            poll_interval_s=poll_interval_s,
+            subscribe_path="raw",
+            subscribe_first=True,
+        )
+    if mode == "app_subscribe_minimqtt":
+        return _mqtt_app_subscribe_flat_probe(
+            pool,
+            runtime_config,
+            broker_target,
+            port,
+            base_topic,
+            device_id,
+            timeout_s=timeout_s,
+            poll_interval_s=poll_interval_s,
+            subscribe_path="minimqtt",
+        )
+    if mode == "app_subscribe_first_minimqtt":
+        return _mqtt_app_subscribe_flat_probe(
+            pool,
+            runtime_config,
+            broker_target,
+            port,
+            base_topic,
+            device_id,
+            timeout_s=timeout_s,
+            poll_interval_s=poll_interval_s,
+            subscribe_path="minimqtt",
+            subscribe_first=True,
+        )
+    if mode == "app_startup_wrapped":
+        return _mqtt_app_startup_sequence_probe(
+            pool,
+            runtime_config,
+            broker_target,
+            port,
+            base_topic,
+            device_id,
+            timeout_s=timeout_s,
+            poll_interval_s=poll_interval_s,
+            wrap_before_connect=True,
+        )
     if mode == "direct_retained":
         return _mqtt_retained_probe_direct(
             pool,
@@ -613,6 +736,15 @@ def _mqtt_platform_round_trip(
         )
     if mode == "raw_mqtt":
         return _mqtt_raw_connect_probe(pool, broker_target, port, device_id)
+    if mode == "raw_device_id":
+        return _mqtt_raw_connect_probe(
+            pool,
+            broker_target,
+            port,
+            device_id,
+            label="raw_device_id",
+            client_id=device_id or "platform-test",
+        )
     if mode == "firmware":
         return _mqtt_round_trip_firmware(
             pool,
@@ -1511,15 +1643,28 @@ def _mqtt_warm_firmware_connect_probe(
     return ok
 
 
-def _mqtt_raw_connect_probe(pool, broker_target, port, device_id, label="raw_mqtt"):
+def _mqtt_raw_connect_probe(
+    pool,
+    broker_target,
+    port,
+    device_id,
+    label="raw_mqtt",
+    client_id=None,
+):
     sock = None
     started = _monotonic()
     mode_name = label or "raw_mqtt"
+    probe_client_id = str(
+        client_id
+        if client_id is not None
+        else "platform-{}".format(device_id or "test")
+    )
     _log(
-        "mqtt mode={} connect phase=start broker={} port={}".format(
+        "mqtt mode={} connect phase=start broker={} port={} client_id={}".format(
             mode_name,
             broker_target,
             port,
+            probe_client_id,
         )
     )
     try:
@@ -1534,9 +1679,7 @@ def _mqtt_raw_connect_probe(pool, broker_target, port, device_id, label="raw_mqt
                 _monotonic() - started
             )
         )
-        packet = _mqtt_connect_packet(
-            "platform-{}".format(device_id or "test")
-        )
+        packet = _mqtt_connect_packet(probe_client_id)
         send = getattr(sock, "send", None)
         if not callable(send):
             raise RuntimeError("socket_send_unavailable")
@@ -2030,6 +2173,1057 @@ def _mqtt_retained_probe_firmware(
                 _join_errors(close_result.errors),
             )
         )
+
+
+def _mqtt_app_subscribe_flat_probe(
+    pool,
+    runtime_config,
+    broker_target,
+    port,
+    base_topic,
+    device_id,
+    *,
+    timeout_s,
+    poll_interval_s,
+    subscribe_path,
+    subscribe_first=False,
+):
+    del base_topic, poll_interval_s
+    try:
+        from cpynodus_ii.core.mqtt import MQTTTransport
+        from cpynodus_ii.core.mqtt_client import (
+            build_mqtt_client_adapter,
+            close_mqtt_client,
+            connect_mqtt_client,
+        )
+    except Exception as exc:
+        _log(
+            "mqtt mode=app_subscribe_flat phase=error error=import_failed:{}".format(
+                exc
+            )
+        )
+        return False
+
+    if subscribe_first:
+        mode_name = "app_subscribe_first_{}_flat".format(subscribe_path)
+    else:
+        mode_name = "app_subscribe_{}_flat".format(subscribe_path)
+    transport = MQTTTransport(broker_target, port)
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=pool,
+        ssl_context=None,
+        modules={"wrap_socket_pool_before_connect": False},
+    )
+    _log(
+        (
+            "mqtt mode={} adapter phase={} broker={} targets={} "
+            "wrapped=0 compat={} callback={} errors={}"
+        ).format(
+            mode_name,
+            adapter.phase,
+            adapter.broker or "none",
+            _join_values(adapter.broker_targets) or "none",
+            1 if getattr(adapter, "socket_compat_enabled", False) else 0,
+            "flex" if getattr(adapter, "flexible_callback_enabled", False) else "fixed",
+            _join_errors(adapter.errors),
+        )
+    )
+    if adapter.phase != "ready":
+        return False
+
+    try:
+        if not _app_startup_preconnect_probe(adapter, mode_name):
+            return False
+        transport.mark_connect_requested()
+        started = _monotonic()
+        connect_result = connect_mqtt_client(adapter, transport, preflight=True)
+        adapter = connect_result.adapter
+        _log(
+            "mqtt mode={} connect phase={} broker={} elapsed_s={:.1f} "
+            "errors={}".format(
+                mode_name,
+                connect_result.phase,
+                adapter.active_broker or adapter.broker or "none",
+                _monotonic() - started,
+                _join_errors(connect_result.errors),
+            )
+        )
+        if connect_result.phase != "connected":
+            return False
+
+        sensor_snapshot, switch_snapshot = _stub_app_startup_probe_snapshots(
+            runtime_config,
+            mode_name,
+        )
+        _collect()
+        _log_memory("app_subscribe_flat_before_queue")
+        try:
+            subscribed_topics, startup_topics = _queue_app_startup_transport_work(
+                transport,
+                runtime_config,
+                sensor_snapshot,
+                switch_snapshot,
+                active_broker=adapter.active_broker,
+            )
+        except Exception as exc:
+            _log_memory("app_subscribe_flat_queue_error")
+            _log(
+                "mqtt mode={} startup phase=error type={} error={}".format(
+                    mode_name,
+                    type(exc).__name__,
+                    exc,
+                )
+            )
+            return False
+        target_topic = _app_startup_config_topic(runtime_config, device_id)
+        _log(
+            (
+                "mqtt mode={} startup phase={} published={} subscribed_topics={} "
+                "target={} target_present={} {} errors=none"
+            ).format(
+                mode_name,
+                "published",
+                len(startup_topics),
+                _join_values(subscribed_topics) or "none",
+                target_topic or "none",
+                1 if target_topic in tuple(transport.subscriptions or ()) else 0,
+                _transport_queue_summary(transport),
+            )
+        )
+        if target_topic not in tuple(transport.subscriptions or ()):
+            _log(
+                "mqtt mode={} startup phase=error reason=target_not_queued "
+                "target={} {}".format(
+                    mode_name,
+                    target_topic or "none",
+                    _transport_queue_summary(transport),
+                )
+            )
+            return False
+        if subscribe_first:
+            return _flat_subscribe_then_retained(
+                adapter.client,
+                transport,
+                target_topic,
+                mode_name,
+                subscribe_path,
+                timeout_s,
+            )
+        return _flat_send_retained_then_subscribe(
+            adapter.client,
+            transport,
+            target_topic,
+            mode_name,
+            subscribe_path,
+            timeout_s,
+        )
+    finally:
+        close_result = close_mqtt_client(adapter, transport)
+        _log(
+            "mqtt mode={} disconnect phase={} errors={}".format(
+                mode_name,
+                close_result.phase,
+                _join_errors(close_result.errors),
+            )
+        )
+
+
+def _stub_app_startup_probe_snapshots(runtime_config, mode_name):
+    """Return config-only snapshots for MQTT startup topic probing."""
+    _collect()
+    _log_memory("app_subscribe_flat_before_stub")
+    sensor_snapshot = None
+    sensor_present = bool(
+        getattr(getattr(runtime_config, "sensor", None), "present", False)
+    )
+    if sensor_present:
+        sensor_snapshot = _inactive_app_startup_sensor_snapshot()
+    switch_channels = (
+        getattr(getattr(runtime_config, "switch", None), "channels", ()) or ()
+    )
+    switch_snapshot = {}
+    _log(
+        "mqtt mode={} sensor_snapshot phase={} metrics=0 errors=none".format(
+            mode_name,
+            "stubbed" if sensor_present else "absent",
+        )
+    )
+    _log(
+        "mqtt mode={} switch_snapshot phase=stubbed channels={} errors=none".format(
+            mode_name,
+            len(switch_channels),
+        )
+    )
+    return sensor_snapshot, switch_snapshot
+
+
+def _flat_send_retained_then_subscribe(
+    client,
+    transport,
+    target_topic,
+    mode_name,
+    subscribe_path,
+    timeout_s,
+):
+    del timeout_s
+    sock = getattr(client, "_sock", None)
+    if not _socket_has_raw_subscribe(sock):
+        _log(
+            "mqtt mode={} flat phase=error reason={} {}".format(
+                mode_name,
+                "socket_missing_raw_capability",
+                _mqtt_client_socket_summary(client),
+            )
+        )
+        return False
+
+    retained_sent = _flat_send_retained_publishes(
+        sock,
+        client,
+        transport,
+        mode_name,
+    )
+    if retained_sent < 0:
+        return False
+
+    _collect()
+    _log_memory("app_subscribe_flat_before_subscribe")
+    _log(
+        "mqtt mode={} subscribe_probe phase=start path={} retained_sent={} "
+        "target={} {}".format(
+            mode_name,
+            subscribe_path,
+            retained_sent,
+            target_topic,
+            _mqtt_client_socket_summary(client),
+        )
+    )
+    if subscribe_path == "minimqtt":
+        return _flat_minimqtt_subscribe(client, target_topic, mode_name)
+    return _flat_raw_subscribe(sock, client, target_topic, mode_name)
+
+
+def _flat_subscribe_then_retained(
+    client,
+    transport,
+    target_topic,
+    mode_name,
+    subscribe_path,
+    timeout_s,
+):
+    del timeout_s
+    sock = getattr(client, "_sock", None)
+    if not _socket_has_raw_subscribe(sock):
+        _log(
+            "mqtt mode={} flat phase=error reason={} {}".format(
+                mode_name,
+                "socket_missing_raw_capability",
+                _mqtt_client_socket_summary(client),
+            )
+        )
+        return False
+
+    retained_pending = _flat_retained_publish_count(transport)
+    _collect()
+    _log_memory("app_subscribe_flat_before_subscribe")
+    _log(
+        "mqtt mode={} subscribe_probe phase=start path={} retained_pending={} "
+        "target={} {}".format(
+            mode_name,
+            subscribe_path,
+            retained_pending,
+            target_topic,
+            _mqtt_client_socket_summary(client),
+        )
+    )
+    if subscribe_path == "minimqtt":
+        subscribed = _flat_minimqtt_subscribe(client, target_topic, mode_name)
+    else:
+        subscribed = _flat_raw_subscribe(sock, client, target_topic, mode_name)
+    if not subscribed:
+        return False
+
+    _collect()
+    _log_memory("app_subscribe_flat_after_subscribe")
+    retained_sent = _flat_send_retained_publishes(
+        sock,
+        client,
+        transport,
+        mode_name,
+    )
+    if retained_sent < 0:
+        return False
+    _log(
+        "mqtt mode={} subscribe_first phase=ok retained_sent={} target={}".format(
+            mode_name,
+            retained_sent,
+            target_topic,
+        )
+    )
+    return True
+
+
+def _flat_send_retained_publishes(sock, client, transport, mode_name):
+    _collect()
+    _log_memory("app_subscribe_flat_before_publish")
+    retained_sent = 0
+    try:
+        for message in tuple(getattr(transport, "published_messages", ()) or ()):
+            if not bool(getattr(message, "retain", False)):
+                continue
+            topic = str(getattr(message, "topic", "") or "")
+            payload = _flat_serialize_payload(getattr(message, "payload", {}))
+            packet = _flat_mqtt_qos0_publish_packet(topic, payload, True)
+            _log(
+                "mqtt mode={} flat_publish phase=start index={} topic={} "
+                "bytes={}".format(
+                    mode_name,
+                    retained_sent + 1,
+                    topic,
+                    len(packet),
+                )
+            )
+            _flat_socket_send_all(sock, packet)
+            retained_sent += 1
+            _log(
+                "mqtt mode={} flat_publish phase=sent index={} topic={}".format(
+                    mode_name,
+                    retained_sent,
+                    topic,
+                )
+            )
+    except Exception as exc:
+        _collect()
+        _log_memory("app_subscribe_flat_publish_error")
+        _log(
+            "mqtt mode={} flat_publish phase=error index={} type={} "
+            "error={} {}".format(
+                mode_name,
+                retained_sent + 1,
+                type(exc).__name__,
+                exc,
+                _mqtt_client_socket_summary(client),
+            )
+        )
+        return -1
+    return retained_sent
+
+
+def _flat_retained_publish_count(transport):
+    retained_count = 0
+    for message in tuple(getattr(transport, "published_messages", ()) or ()):
+        if bool(getattr(message, "retain", False)):
+            retained_count += 1
+    return retained_count
+
+
+def _flat_minimqtt_subscribe(client, target_topic, mode_name):
+    try:
+        started = _monotonic()
+        client.subscribe(target_topic)
+        elapsed_ms = int((_monotonic() - started) * 1000)
+        _log(
+            "mqtt mode={} subscribe_probe phase=ok path=minimqtt target={} "
+            "elapsed_ms={}".format(
+                mode_name,
+                target_topic,
+                elapsed_ms,
+            )
+        )
+        return True
+    except Exception as exc:
+        _collect()
+        _log_memory("app_subscribe_flat_minimqtt_error")
+        _log(
+            "mqtt mode={} subscribe_probe phase=error path=minimqtt target={} "
+            "type={} error={} {}".format(
+                mode_name,
+                target_topic,
+                type(exc).__name__,
+                exc,
+                _mqtt_client_socket_summary(client),
+            )
+        )
+        return False
+
+
+def _flat_raw_subscribe(sock, client, target_topic, mode_name):
+    try:
+        started = _monotonic()
+        packet_id = _flat_next_mqtt_packet_id(client)
+        packet = _flat_mqtt_qos0_subscribe_packet(target_topic, packet_id)
+        _log(
+            "mqtt mode={} subscribe_probe path=raw step=packet_ready "
+            "packet_id={} bytes={}".format(
+                mode_name,
+                packet_id,
+                len(packet),
+            )
+        )
+        _flat_socket_send_all(sock, packet)
+        _log(
+            "mqtt mode={} subscribe_probe path=raw step=packet_sent "
+            "packet_id={}".format(
+                mode_name,
+                packet_id,
+            )
+        )
+        suback = _flat_socket_recv_exact(sock, 5)
+        _flat_validate_suback(suback, packet_id)
+        elapsed_ms = int((_monotonic() - started) * 1000)
+        _log(
+            "mqtt mode={} subscribe_probe phase=ok path=raw target={} "
+            "packet_id={} elapsed_ms={}".format(
+                mode_name,
+                target_topic,
+                packet_id,
+                elapsed_ms,
+            )
+        )
+        return True
+    except Exception as exc:
+        _collect()
+        _log_memory("app_subscribe_flat_raw_error")
+        _log(
+            "mqtt mode={} subscribe_probe phase=error path=raw target={} "
+            "type={} error={} {}".format(
+                mode_name,
+                target_topic,
+                type(exc).__name__,
+                exc,
+                _mqtt_client_socket_summary(client),
+            )
+        )
+        return False
+
+
+def _flat_serialize_payload(payload):
+    if isinstance(payload, str):
+        return payload
+    import json
+
+    return json.dumps(dict(payload or {}), separators=(",", ":"))
+
+
+def _flat_mqtt_qos0_publish_packet(topic, payload, retain):
+    topic_bytes = _flat_mqtt_bytes(topic)
+    payload_bytes = _flat_mqtt_bytes(payload)
+    remaining = 2 + len(topic_bytes) + len(payload_bytes)
+    remaining_bytes = _flat_mqtt_remaining_length(remaining)
+    packet = bytearray(1 + len(remaining_bytes) + remaining)
+    packet[0] = 0x31 if retain else 0x30
+    offset = 1
+    for byte in remaining_bytes:
+        packet[offset] = byte
+        offset += 1
+    packet[offset] = (len(topic_bytes) >> 8) & 0xFF
+    packet[offset + 1] = len(topic_bytes) & 0xFF
+    offset += 2
+    packet[offset : offset + len(topic_bytes)] = topic_bytes
+    offset += len(topic_bytes)
+    packet[offset : offset + len(payload_bytes)] = payload_bytes
+    return packet
+
+
+def _flat_mqtt_qos0_subscribe_packet(topic, packet_id):
+    topic_bytes = _flat_mqtt_bytes(topic)
+    remaining = 2 + 2 + len(topic_bytes) + 1
+    remaining_bytes = _flat_mqtt_remaining_length(remaining)
+    packet = bytearray(1 + len(remaining_bytes) + remaining)
+    packet[0] = 0x82
+    offset = 1
+    for byte in remaining_bytes:
+        packet[offset] = byte
+        offset += 1
+    packet[offset] = (packet_id >> 8) & 0xFF
+    packet[offset + 1] = packet_id & 0xFF
+    offset += 2
+    packet[offset] = (len(topic_bytes) >> 8) & 0xFF
+    packet[offset + 1] = len(topic_bytes) & 0xFF
+    offset += 2
+    packet[offset : offset + len(topic_bytes)] = topic_bytes
+    offset += len(topic_bytes)
+    packet[offset] = 0
+    return packet
+
+
+def _flat_mqtt_bytes(value):
+    if isinstance(value, bytes):
+        return value
+    return str(value or "").encode("utf-8")
+
+
+def _flat_mqtt_remaining_length(value):
+    encoded = bytearray()
+    remaining = int(value or 0)
+    while True:
+        digit = remaining % 128
+        remaining = remaining // 128
+        if remaining > 0:
+            digit = digit | 0x80
+        encoded.append(digit)
+        if remaining <= 0:
+            break
+    return encoded
+
+
+def _flat_next_mqtt_packet_id(client):
+    try:
+        packet_id = int(getattr(client, "_cpynodus_flat_packet_id", 0)) + 1
+    except Exception:
+        packet_id = 1
+    if packet_id > 0xFFFF:
+        packet_id = 1
+    try:
+        setattr(client, "_cpynodus_flat_packet_id", packet_id)
+    except Exception:
+        pass
+    return packet_id
+
+
+def _flat_socket_send_all(sock, packet):
+    total = len(packet)
+    sent_total = 0
+    while sent_total < total:
+        chunk = packet[sent_total:]
+        try:
+            sent = sock.send(chunk)
+        except TypeError:
+            sent = sock.send(chunk, len(chunk))
+        if sent is None:
+            return
+        sent_total += int(sent or 0)
+        if sent <= 0:
+            raise OSError("mqtt_socket_send_zero")
+
+
+def _flat_socket_recv_exact(sock, nbytes):
+    data = bytearray()
+    remaining = int(nbytes or 0)
+    while remaining > 0:
+        recv = getattr(sock, "recv", None)
+        if callable(recv):
+            chunk = recv(remaining)
+        else:
+            buffer = bytearray(remaining)
+            recv_into = getattr(sock, "recv_into")
+            try:
+                count = recv_into(buffer, remaining)
+            except TypeError:
+                count = recv_into(buffer)
+            chunk = bytes(buffer[: int(count or 0)])
+        if not chunk:
+            raise OSError("mqtt_socket_recv_empty")
+        data.extend(chunk)
+        remaining -= len(chunk)
+    return data
+
+
+def _flat_validate_suback(packet, packet_id):
+    if len(packet) < 5:
+        raise OSError("mqtt_suback_short:{}".format(len(packet)))
+    if packet[0] != 0x90:
+        raise OSError("mqtt_suback_unexpected:{:02x}".format(packet[0]))
+    if packet[1] != 0x03:
+        raise OSError("mqtt_suback_remaining:{}".format(packet[1]))
+    received_id = (packet[2] << 8) | packet[3]
+    if received_id != packet_id:
+        raise OSError("mqtt_suback_packet_id:{}:{}".format(received_id, packet_id))
+    if packet[4] > 2:
+        raise OSError("mqtt_suback_failed:{}".format(packet[4]))
+
+
+def _mqtt_app_startup_sequence_probe(
+    pool,
+    runtime_config,
+    broker_target,
+    port,
+    base_topic,
+    device_id,
+    *,
+    timeout_s,
+    poll_interval_s,
+    wrap_before_connect,
+):
+    try:
+        from cpynodus_ii.core.mqtt import MQTTTransport
+        from cpynodus_ii.core.mqtt_client import (
+            build_mqtt_client_adapter,
+            close_mqtt_client,
+            connect_mqtt_client,
+        )
+    except Exception as exc:
+        _log("mqtt mode=app_startup phase=error error=import_failed:{}".format(exc))
+        return False
+
+    mode_name = "app_startup_wrapped" if wrap_before_connect else "app_startup"
+    transport = MQTTTransport(broker_target, port)
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=pool,
+        ssl_context=None,
+        modules={"wrap_socket_pool_before_connect": wrap_before_connect},
+    )
+    _log(
+        (
+            "mqtt mode={} adapter phase={} broker={} targets={} "
+            "wrapped={} compat={} callback={} errors={}"
+        ).format(
+            mode_name,
+            adapter.phase,
+            adapter.broker or "none",
+            _join_values(adapter.broker_targets) or "none",
+            1 if wrap_before_connect else 0,
+            1 if getattr(adapter, "socket_compat_enabled", False) else 0,
+            "flex" if getattr(adapter, "flexible_callback_enabled", False) else "fixed",
+            _join_errors(adapter.errors),
+        )
+    )
+    if adapter.phase != "ready":
+        return False
+
+    try:
+        if not _app_startup_preconnect_probe(adapter, mode_name):
+            return False
+        transport.mark_connect_requested()
+        started = _monotonic()
+        connect_result = connect_mqtt_client(adapter, transport, preflight=True)
+        adapter = connect_result.adapter
+        _log(
+            "mqtt mode={} connect phase={} broker={} elapsed_s={:.1f} "
+            "errors={}".format(
+                mode_name,
+                connect_result.phase,
+                adapter.active_broker or adapter.broker or "none",
+                _monotonic() - started,
+                _join_errors(connect_result.errors),
+            )
+        )
+        if connect_result.phase != "connected":
+            return False
+
+        sensor_snapshot, switch_snapshot = _stub_app_startup_probe_snapshots(
+            runtime_config,
+            mode_name,
+        )
+        _collect()
+        _log_memory("app_startup_before_queue")
+        try:
+            subscribed_topics, startup_topics = _queue_app_startup_transport_work(
+                transport,
+                runtime_config,
+                sensor_snapshot,
+                switch_snapshot,
+                active_broker=adapter.active_broker,
+            )
+        except Exception as exc:
+            _log_memory("app_startup_queue_error")
+            _log(
+                "mqtt mode={} startup phase=error type={} error={}".format(
+                    mode_name,
+                    type(exc).__name__,
+                    exc,
+                )
+            )
+            return False
+        target_topic = _app_startup_config_topic(runtime_config, device_id)
+        _log(
+            (
+                "mqtt mode={} startup phase={} published={} subscribed_topics={} "
+                "target={} target_present={} {} errors={}"
+            ).format(
+                mode_name,
+                "published",
+                len(startup_topics),
+                _join_values(subscribed_topics) or "none",
+                target_topic or "none",
+                1 if target_topic in tuple(transport.subscriptions or ()) else 0,
+                _transport_queue_summary(transport),
+                "none",
+            )
+        )
+        if target_topic not in tuple(transport.subscriptions or ()):
+            _log(
+                "mqtt mode={} startup phase=error reason=target_not_queued "
+                "target={} {}".format(
+                    mode_name,
+                    target_topic or "none",
+                    _transport_queue_summary(transport),
+                )
+            )
+            return False
+        return _drain_app_startup_mqtt_work(
+            adapter,
+            transport,
+            target_topic=target_topic,
+            timeout_s=timeout_s,
+            poll_interval_s=poll_interval_s,
+            mode_name=mode_name,
+        )
+    finally:
+        close_result = close_mqtt_client(adapter, transport)
+        _log(
+            "mqtt mode={} disconnect phase={} errors={}".format(
+                mode_name,
+                close_result.phase,
+                _join_errors(close_result.errors),
+            )
+        )
+
+
+def _app_startup_preconnect_probe(adapter, mode_name):
+    try:
+        from cpynodus_ii.core.mqtt_client import (
+            preflight_mqtt_broker_connect,
+            preflight_mqtt_broker_tcp,
+        )
+    except Exception as exc:
+        _log(
+            "mqtt mode={} preflight phase=error error=import_failed:{}".format(
+                mode_name,
+                exc,
+            )
+        )
+        return False
+
+    max_attempts = max(1, int(APP_MQTT_PREFLIGHT_RETRIES or 1))
+    tcp_error = ""
+    for retry_index in range(1, max_attempts + 1):
+        started = _monotonic()
+        tcp_error, tcp_target = preflight_mqtt_broker_tcp(adapter)
+        _log(
+            (
+                "mqtt mode={} preflight phase={} broker={} target={} port={} "
+                "elapsed_s={:.1f} try={} errors={}"
+            ).format(
+                mode_name,
+                "tcp_error" if tcp_error else "tcp_ok",
+                adapter.active_broker or adapter.broker or "none",
+                tcp_target or "none",
+                adapter.port,
+                _monotonic() - started,
+                retry_index,
+                tcp_error or "none",
+            )
+        )
+        if not tcp_error:
+            break
+        if retry_index >= max_attempts:
+            break
+        _app_startup_preconnect_retry_sleep("preflight", retry_index, tcp_error)
+    if tcp_error:
+        return False
+
+    if bool(APP_STARTUP_SKIP_CONNACK_PROBE):
+        _log(
+            (
+                "mqtt mode={} connect_probe phase=skipped broker={} "
+                "target={} port={} elapsed_s={:.1f} client_id={} connack={} "
+                "reason={} errors={}"
+            ).format(
+                mode_name,
+                adapter.active_broker or adapter.broker or "none",
+                tcp_target or "none",
+                adapter.port,
+                0.0,
+                "none",
+                -1,
+                "app_startup_skip_connack_probe",
+                "none",
+            )
+        )
+    else:
+        probe_error = ""
+        for retry_index in range(1, max_attempts + 1):
+            started = _monotonic()
+            probe_error, probe_target, probe_client_id, connack = (
+                preflight_mqtt_broker_connect(adapter)
+            )
+            _log(
+                (
+                    "mqtt mode={} connect_probe phase={} broker={} target={} "
+                    "port={} elapsed_s={:.1f} client_id={} connack={} try={} "
+                    "errors={}"
+                ).format(
+                    mode_name,
+                    "connack_error" if probe_error else "connack_ok",
+                    adapter.active_broker or adapter.broker or "none",
+                    probe_target or "none",
+                    adapter.port,
+                    _monotonic() - started,
+                    probe_client_id or "none",
+                    connack,
+                    retry_index,
+                    probe_error or "none",
+                )
+            )
+            if not probe_error:
+                break
+            if retry_index >= max_attempts:
+                break
+            _app_startup_preconnect_retry_sleep(
+                "connect_probe", retry_index, probe_error
+            )
+        if probe_error:
+            return False
+
+    delay_s = APP_PRE_MINIMQTT_DELAY_S
+    _log(
+        "mqtt mode={} connect_delay phase=pre_minimqtt delay_s={:.1f}".format(
+            mode_name,
+            delay_s,
+        )
+    )
+    _sleep(delay_s)
+    return True
+
+
+def _app_startup_preconnect_retry_sleep(stage, retry_index, error):
+    delay_s = max(0.0, float(APP_MQTT_PREFLIGHT_RETRY_DELAY_S or 0.0))
+    _log(
+        "mqtt {} phase=retry_sleep try={} delay_s={:.1f} errors={}".format(
+            stage,
+            retry_index,
+            delay_s,
+            error or "none",
+        )
+    )
+    _sleep(delay_s)
+
+
+def _queue_app_startup_transport_work(
+    transport,
+    runtime_config,
+    sensor_snapshot,
+    switch_snapshot,
+    *,
+    active_broker,
+):
+    from cpynodus_ii.features.command_intake import subscribe_device_runtime_topics
+    from cpynodus_ii.features.payloads import (
+        build_device_heartbeat_payload,
+        build_runtime_meta_payload,
+        build_sensor_availability_payload,
+        build_sensor_data_payload,
+        build_switch_meta_payload,
+        mqtt_topic,
+    )
+
+    subscribed_topics = subscribe_device_runtime_topics(transport, runtime_config)
+    device_id = (
+        getattr(runtime_config.sensor, "sensor_id", "")
+        or getattr(runtime_config.switch, "device_id", "")
+        or getattr(runtime_config.network, "hostname", "")
+        or "platform-test"
+    )
+    startup_topics = []
+
+    message = transport.publish(
+        mqtt_topic(runtime_config, device_id, "meta"),
+        build_runtime_meta_payload(
+            runtime_config,
+            version=PLATFORM_TEST_VERSION,
+            active_broker=active_broker,
+            include_switch_channels=False,
+        ),
+        retain=True,
+    )
+    startup_topics.append(message.topic)
+
+    message = transport.publish(
+        mqtt_topic(runtime_config, device_id, "status", "heartbeat"),
+        build_device_heartbeat_payload(runtime_config, online=True),
+        retain=True,
+    )
+    startup_topics.append(message.topic)
+
+    if getattr(runtime_config.sensor, "present", False):
+        message = transport.publish(
+            mqtt_topic(runtime_config, runtime_config.sensor.sensor_id, "availability"),
+            build_sensor_availability_payload(runtime_config, online=True),
+            retain=True,
+        )
+        startup_topics.append(message.topic)
+
+        if (
+            sensor_snapshot is not None
+            and getattr(sensor_snapshot, "phase", "") == "ready"
+        ):
+            message = transport.publish(
+                mqtt_topic(runtime_config, runtime_config.sensor.sensor_id, "data"),
+                build_sensor_data_payload(runtime_config, sensor_snapshot),
+                retain=False,
+            )
+            startup_topics.append(message.topic)
+
+    if getattr(runtime_config.switch, "present", False):
+        message = transport.publish(
+            mqtt_topic(runtime_config, device_id, "meta", "switch"),
+            build_switch_meta_payload(runtime_config, switch_snapshot or {}),
+            retain=True,
+        )
+        startup_topics.append(message.topic)
+
+    return subscribed_topics, tuple(startup_topics)
+
+
+class _AppStartupInactiveSensorSnapshot:
+    phase = "inactive"
+    metrics = {}
+    errors = ()
+
+
+def _inactive_app_startup_sensor_snapshot():
+    return _AppStartupInactiveSensorSnapshot()
+
+
+def _drain_app_startup_mqtt_work(
+    adapter,
+    transport,
+    *,
+    target_topic,
+    timeout_s,
+    poll_interval_s,
+    mode_name,
+):
+    from cpynodus_ii.core.mqtt_client import poll_mqtt_client, sync_transport_to_client
+
+    deadline = _monotonic() + float(timeout_s or 8.0)
+    sync_count = 0
+    poll_count = 0
+    target_suback = False
+    while _monotonic() <= deadline:
+        sync_count += 1
+        before_topics = tuple(getattr(transport, "subscriptions", ()) or ())
+        before = _transport_queue_summary(transport)
+        started = _monotonic()
+        sync_result = sync_transport_to_client(
+            adapter,
+            transport,
+            require_clean_poll_before_subscribe=True,
+        )
+        adapter = sync_result.adapter
+        after_topics = tuple(getattr(transport, "subscriptions", ()) or ())
+        if target_topic in before_topics and target_topic not in after_topics:
+            target_suback = True
+        _log(
+            (
+                "mqtt mode={} sync={} phase={} op={} topic={} published={} "
+                "subscribed={} pending={} elapsed_ms={} before={} after={} "
+                "target_suback={} errors={}"
+            ).format(
+                mode_name,
+                sync_count,
+                sync_result.phase,
+                sync_result.operation or "none",
+                sync_result.topic or "none",
+                sync_result.published_count,
+                sync_result.subscribed_count,
+                sync_result.pending_count,
+                sync_result.elapsed_ms,
+                before,
+                _transport_queue_summary(transport),
+                1 if target_suback else 0,
+                _join_errors(sync_result.errors),
+            )
+        )
+        if sync_result.phase == "error" or sync_result.errors:
+            return False
+        if target_suback and not _transport_has_pending_mqtt_work(transport):
+            _log(
+                "mqtt mode={} phase=target_suback_ok sync={} elapsed_s={:.1f}".format(
+                    mode_name,
+                    sync_count,
+                    _monotonic() - started,
+                )
+            )
+            return True
+
+        poll_count += 1
+        poll_result = poll_mqtt_client(adapter, transport)
+        adapter = poll_result.adapter
+        _log(
+            "mqtt mode={} poll={} phase={} received={} {} errors={}".format(
+                mode_name,
+                poll_count,
+                poll_result.phase,
+                poll_result.received_count,
+                _transport_queue_summary(transport),
+                _join_errors(poll_result.errors),
+            )
+        )
+        if poll_result.phase == "error" or poll_result.errors:
+            return False
+        _sleep(poll_interval_s)
+
+    _log(
+        "mqtt mode={} phase=timeout target_suback={} timeout_s={} {}".format(
+            mode_name,
+            1 if target_suback else 0,
+            timeout_s,
+            _transport_queue_summary(transport),
+        )
+    )
+    return False
+
+
+def _app_startup_config_topic(runtime_config, fallback_device_id):
+    try:
+        from cpynodus_ii.features.payloads import mqtt_topic
+    except Exception:
+        base_topic = str(getattr(runtime_config.mqtt, "base_topic", "nodus") or "nodus")
+        return "{}/{}/config/set".format(base_topic, fallback_device_id)
+
+    device_id = (
+        getattr(runtime_config.sensor, "sensor_id", "")
+        or getattr(runtime_config.switch, "device_id", "")
+        or getattr(runtime_config.network, "hostname", "")
+        or fallback_device_id
+    )
+    return mqtt_topic(runtime_config, device_id, "config", "set")
+
+
+def _transport_queue_summary(transport):
+    try:
+        pub = len(getattr(transport, "published_messages", ()) or ())
+        sub = len(getattr(transport, "subscriptions", ()) or ())
+        rx = len(getattr(transport, "received_messages", ()) or ())
+    except Exception:
+        return "queues pub=? sub=? rx=?"
+    return "queues pub={} sub={} rx={}".format(pub, sub, rx)
+
+
+def _transport_has_pending_mqtt_work(transport):
+    try:
+        return bool(getattr(transport, "published_messages", ()) or ()) or bool(
+            getattr(transport, "subscriptions", ()) or ()
+        )
+    except Exception:
+        return True
+
+
+def _mqtt_client_socket_summary(client):
+    sock = getattr(client, "_sock", None)
+    if sock is None:
+        return "sock=none send=0 recv=0 recv_into=0"
+    return "sock={} send={} recv={} recv_into={}".format(
+        type(sock).__name__,
+        1 if callable(getattr(sock, "send", None)) else 0,
+        1 if callable(getattr(sock, "recv", None)) else 0,
+        1 if callable(getattr(sock, "recv_into", None)) else 0,
+    )
+
+
+def _socket_has_raw_subscribe(sock):
+    return (
+        sock is not None
+        and callable(getattr(sock, "send", None))
+        and (
+            callable(getattr(sock, "recv", None))
+            or callable(getattr(sock, "recv_into", None))
+        )
+    )
 
 
 def _retained_probe_payload(runtime_config, broker_target, base_topic, device_id):
@@ -2893,4 +4087,11 @@ def _sleep(seconds):
 
 
 def _log(message):
-    print("platform_test {}".format(message))
+    global _LOG_STARTED_AT
+    now = _monotonic()
+    if _LOG_STARTED_AT is None:
+        _LOG_STARTED_AT = now
+    seconds = now - _LOG_STARTED_AT
+    if seconds < 0:
+        seconds = 0.0
+    print("platform_test seconds={:.1f} {}".format(seconds, message))

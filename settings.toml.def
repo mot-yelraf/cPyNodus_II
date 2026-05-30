@@ -18,6 +18,7 @@ USE_TLS = false
 BASE_TOPIC = "nodus"
 USERNAME = ""
 PASSWORD = ""
+STARTUP_SUBSCRIBE_BEFORE_PUBLISH = false
 
 [HomeAssistant]
 DISCOVERY_PREFIX = "homeassistant"
