@@ -193,7 +193,7 @@ In normal mode the device:
 
 ## Sensor Auto-Detect
 
-`Settings.bootstrap_factory_defaults()` probes I2C buses and the RS485 soil channels on a clean factory deploy. It creates only the detected live sensor TOML file and seeds display defaults, serial numbers, sensor IDs, switch channel IDs, and hostname. On later boots, existing TOML files are treated as the source of truth.
+`Settings.bootstrap_factory_defaults()` probes I2C buses and the RS485 soil channels on a clean factory deploy. It creates only the detected live sensor TOML file and seeds display defaults, serial numbers, sensor IDs, switch channel IDs, and hostname. On later boots, existing sensor TOML files are treated as the source of truth; switch channels also require their configured enable pin to be grounded at boot.
 
 ## Boot-Time Factory Reset
 
@@ -557,10 +557,14 @@ Nodus supports up to two switch channels. The default/detected Pico2 W mappings 
 - `S1` uses `SWITCH_1_ENABLE_PIN=GP5` and `SWITCH_1_PIN=GP28`
 - `S2` uses `SWITCH_2_ENABLE_PIN=GP10` and `SWITCH_2_PIN=GP21`
 
-`switch.toml` is the primary gate for switch-enabled operation on normal boots.
+`switch.toml` and at least one populated, grounded `SWITCH_N_ENABLE_PIN` are
+the primary gate for switch-enabled operation on normal boots.
 
 - During factory bootstrap, when no live TOML files exist yet, Nodus probes the switch enable pins and creates/populates `switch.toml` from `switch.toml.def` for grounded channels.
 - On later normal boots, Nodus expects `switch.toml` to already exist for switch-enabled devices.
+- If `switch.toml` exists but a channel has no `SWITCH_N_ENABLE_PIN`, or its
+  configured enable pin is not grounded, that channel is ignored. If no
+  channels pass that check, Nodus treats the device as not switch-enabled.
 - If only one switch is installed, only that channel is enabled/populated in `switch.toml`.
 
 Automations are implemented in Sensorius or Home Assistant. Commands are published to each channel's MQTT `config/set` topic. Nodus applies the change locally, publishes channel `config/ack` and `config/result`, emits a JSON `event`, updates retained `state`, and persists `SWITCH_#_LAST_STATE` when the filesystem is writable.

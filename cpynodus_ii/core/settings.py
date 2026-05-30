@@ -172,7 +172,7 @@ class Settings:
         return instance
 
     @classmethod
-    def from_directory(cls, root):
+    def from_directory(cls, root, *, board_module=None, digitalio_module=None):
         root_path = str(root or ".")
         settings_doc = cls._read_toml_file(_join_path(root_path, cls.SETTINGS_FILE))
         sensor_i2c_doc = cls._read_toml_file(_join_path(root_path, cls.SENSOR_I2C_FILE))
@@ -185,6 +185,8 @@ class Settings:
             sensor_i2c_doc=sensor_i2c_doc,
             sensor_soil_doc=sensor_soil_doc,
             switch_doc=switch_doc,
+            board_module=board_module,
+            digitalio_module=digitalio_module,
         )
         return cls.from_runtime_config(runtime_config)
 
@@ -916,6 +918,8 @@ class Settings:
         sensor_i2c_doc,
         sensor_soil_doc,
         switch_doc,
+        board_module=None,
+        digitalio_module=None,
     ):
         profile_doc = settings_doc.get("Profile", {})
         network_doc = settings_doc.get("Network", {})
@@ -925,7 +929,11 @@ class Settings:
         sensor = cls._detect_sensor(
             sensor_i2c_doc=sensor_i2c_doc, sensor_soil_doc=sensor_soil_doc
         )
-        switch = cls._detect_switch(switch_doc=switch_doc)
+        switch = cls._detect_switch(
+            switch_doc=switch_doc,
+            board_module=board_module,
+            digitalio_module=digitalio_module,
+        )
         return RuntimeConfig(
             active_profile=profile_doc.get("ACTIVE_PROFILE", "nodusweb"),
             network=NetworkConfig(
@@ -1209,8 +1217,8 @@ class Settings:
             address=document.get("I2C_ADDR", 0),
         )
 
-    @staticmethod
-    def _detect_switch(*, switch_doc):
+    @classmethod
+    def _detect_switch(cls, *, switch_doc, board_module=None, digitalio_module=None):
         switch_section = switch_doc.get("Switch", {})
         if not switch_section:
             return SwitchConfig()
@@ -1223,7 +1231,14 @@ class Settings:
             enable_pin = str(
                 switch_section.get(f"SWITCH_{index}_ENABLE_PIN", "") or ""
             ).strip()
-            if not (control_pin or enable_pin):
+            if not enable_pin:
+                continue
+            asserted = cls._switch_enable_pin_asserted(
+                enable_pin,
+                board_module=board_module,
+                digitalio_module=digitalio_module,
+            )
+            if asserted is False:
                 continue
             channels.append(
                 SwitchChannelConfig(
@@ -1239,6 +1254,9 @@ class Settings:
                 )
             )
 
+        if not channels:
+            return SwitchConfig()
+
         return SwitchConfig(
             present=True,
             device_id=switch_section.get("SWITCH_DEVICE_ID", ""),
@@ -1247,6 +1265,38 @@ class Settings:
             channel_count=len(channels),
             channels=tuple(channels),
         )
+
+    @classmethod
+    def _switch_enable_pin_asserted(
+        cls, pin_name, *, board_module=None, digitalio_module=None
+    ):
+        board_module = board_module or cls._try_import_module("board")
+        digitalio_module = digitalio_module or cls._try_import_module("digitalio")
+        if board_module is None or digitalio_module is None:
+            return None
+
+        pin = getattr(board_module, str(pin_name or ""), None)
+        if pin is None:
+            return None
+
+        direction = getattr(getattr(digitalio_module, "Direction", None), "INPUT", None)
+        pull = getattr(getattr(digitalio_module, "Pull", None), "UP", None)
+        handle = None
+        try:
+            handle = digitalio_module.DigitalInOut(pin)
+            if direction is not None and hasattr(handle, "direction"):
+                handle.direction = direction
+            if pull is not None and hasattr(handle, "pull"):
+                handle.pull = pull
+            return getattr(handle, "value", True) is False
+        except Exception:
+            return None
+        finally:
+            try:
+                if handle is not None and hasattr(handle, "deinit"):
+                    handle.deinit()
+            except Exception:
+                pass
 
     @classmethod
     def _target_file_for_update(cls, runtime_config, update):

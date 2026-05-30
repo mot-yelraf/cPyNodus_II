@@ -237,7 +237,7 @@ startup snapshot. It includes:
 1. `network`, `profile`, and `mqtt` shadow fields for Sensorius TOML materialization.
 2. `sensor.display_metrics` for Sensorius TOML `[Display]` materialization.
 3. `sensor.display_styles` for Sensorius TOML `[Display.Style]` materialization.
-4. `switch.device_id`, `switch.location`, `switch.channel_count`, and `switch.meta_topic` when switch channels are present.
+4. `switch.device_id`, `switch.channel_count`, and `switch.meta_topic` when switch channels are present. Switch location is carried by retained `meta/switch`.
 5. `location_group` grouping metadata.
 
 Password fields in `meta` must be `obf1:` obfuscated, not plaintext.

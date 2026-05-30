@@ -225,7 +225,6 @@ def test_startup_cycle_can_publish_reduced_switch_meta():
     assert meta["capabilities"]["switch"] is True
     assert meta["switch"] == {
         "device_id": "switch-x943fm",
-        "location": "TestLab",
         "channel_count": 1,
         "meta_topic": "nodus/aqi-x943fm/meta/switch",
     }

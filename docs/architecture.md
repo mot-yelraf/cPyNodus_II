@@ -96,7 +96,8 @@ calibration code trying to manage the radio directly.
   `lux`.
 - Soil sensors use `sensor_soil.toml` and support one or two RS485 channels
   through `[Modbus.CH1]` and `[Modbus.CH2]`.
-- Switch runtime supports up to two GPIO relay channels, gated by `switch.toml`.
+- Switch runtime supports up to two GPIO relay channels, gated by `switch.toml`
+  plus populated and grounded per-channel `SWITCH_N_ENABLE_PIN` entries.
 - MQTT runtime supports startup `meta`, split `meta/switch`, heartbeat,
   availability, sensor data, device `config/set`, switch `config/set`,
   calibration commands, log transfer, and OTA prepare.

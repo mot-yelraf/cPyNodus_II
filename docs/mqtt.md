@@ -85,11 +85,8 @@ current contract:
   `/set` payloads defensively.
 - Startup retained `meta` publishing belongs to startup and reconnect handling.
   It is compact and excludes `switch.channels[*]`; detailed switch control
-  topics live in retained `meta/switch`. By default, retained startup identity
-  publishes drain before runtime command subscriptions. Devices that need the
-  diagnostic compatibility path can set
-  `MQTT.STARTUP_SUBSCRIBE_BEFORE_PUBLISH = true` to subscribe to device command
-  topics before retained startup publishes drain. New compact `meta` payloads
+  topics live in retained `meta/switch`. Retained startup identity publishes
+  drain before runtime command subscriptions. New compact `meta` payloads
   expose `switch.meta_topic`; older payloads may still embed `switch.channels`.
 - Log-transfer topics are deterministic from the device id and are not embedded
   in retained startup `meta`; use the topic family listed above when

@@ -2,10 +2,30 @@
 
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 
 from cpynodus_ii.core.config import DetectedSensor, RuntimeConfig, TimeConfig
 from cpynodus_ii.core.obfuscation import encode_password
 from cpynodus_ii.core.settings import Settings
+
+
+def _digitalio_probe_module(pin_values):
+    class _ProbePin:
+        def __init__(self, pin):
+            self.pin = pin
+            self.direction = None
+            self.pull = None
+            self.value = bool(pin_values.get(pin, True))
+            self.deinited = False
+
+        def deinit(self):
+            self.deinited = True
+
+    return SimpleNamespace(
+        DigitalInOut=_ProbePin,
+        Direction=SimpleNamespace(INPUT="input"),
+        Pull=SimpleNamespace(UP="up"),
+    )
 
 
 def test_detected_sensor_defaults_file_and_interface_for_i2c():
@@ -32,7 +52,6 @@ def test_runtime_config_normalizes_standalone_to_nodusweb():
     assert runtime_config.ntp_enabled is True
     assert runtime_config.network.ap_ssid == "Nodus_Setup"
     assert runtime_config.mqtt.base_topic == "nodus"
-    assert runtime_config.mqtt.startup_subscribe_before_publish is False
 
 
 def test_settings_from_directory_loads_switch_only_runtime_config():
@@ -117,6 +136,164 @@ def test_settings_from_directory_loads_sensor_switch_runtime_config():
     assert runtime_config.switch.channels[1].enable_pin == "GP10"
     assert runtime_config.switch.channels[1].control_pin == "GP21"
     assert runtime_config.switch.channels[1].last_state is False
+
+
+def test_switch_toml_without_enable_pins_is_not_switch_present():
+    with TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        (tmpdir_path / "settings.toml").write_text(
+            '[Profile]\nACTIVE_PROFILE = "sensorius"\n',
+            encoding="utf-8",
+        )
+        (tmpdir_path / "switch.toml").write_text(
+            (
+                "[Switch]\n"
+                'SWITCH_DEVICE_ID = "switch-stale"\n'
+                'SWITCH_1_LABEL = "Fan"\n'
+                'SWITCH_1_CHANNEL_ID = "S1-stale"\n'
+                'SWITCH_1_PIN = "GP28"\n'
+                "SWITCH_1_LAST_STATE = true\n"
+            ),
+            encoding="utf-8",
+        )
+
+        runtime_config = Settings.from_directory(tmpdir_path).runtime_config()
+
+    assert runtime_config.switch_config_present is False
+    assert runtime_config.switch.present is False
+    assert runtime_config.switch.channel_count == 0
+    assert runtime_config.switch.channels == ()
+
+
+def test_switch_toml_skips_channels_without_enable_pin():
+    with TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        (tmpdir_path / "settings.toml").write_text(
+            '[Profile]\nACTIVE_PROFILE = "sensorius"\n',
+            encoding="utf-8",
+        )
+        (tmpdir_path / "switch.toml").write_text(
+            (
+                "[Switch]\n"
+                'SWITCH_DEVICE_ID = "switch-partial"\n'
+                'SWITCH_1_LABEL = "Fan"\n'
+                'SWITCH_1_CHANNEL_ID = "S1-partial"\n'
+                'SWITCH_1_PIN = "GP28"\n'
+                'SWITCH_2_LABEL = "Light"\n'
+                'SWITCH_2_CHANNEL_ID = "S2-partial"\n'
+                'SWITCH_2_ENABLE_PIN = "GP10"\n'
+                'SWITCH_2_PIN = "GP21"\n'
+            ),
+            encoding="utf-8",
+        )
+
+        runtime_config = Settings.from_directory(tmpdir_path).runtime_config()
+
+    assert runtime_config.switch_config_present is True
+    assert runtime_config.switch.channel_count == 1
+    assert len(runtime_config.switch.channels) == 1
+    assert runtime_config.switch.channels[0].key == "SWITCH_2"
+    assert runtime_config.switch.channels[0].channel_id == "S2-partial"
+    assert runtime_config.switch.channels[0].enable_pin == "GP10"
+
+
+def test_switch_toml_with_unasserted_enable_pin_is_not_switch_present():
+    with TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        (tmpdir_path / "settings.toml").write_text(
+            '[Profile]\nACTIVE_PROFILE = "sensorius"\n',
+            encoding="utf-8",
+        )
+        (tmpdir_path / "switch.toml").write_text(
+            (
+                "[Switch]\n"
+                'SWITCH_DEVICE_ID = "switch-stale"\n'
+                'SWITCH_1_LABEL = "Fan"\n'
+                'SWITCH_1_CHANNEL_ID = "S1-stale"\n'
+                'SWITCH_1_ENABLE_PIN = "GP5"\n'
+                'SWITCH_1_PIN = "GP28"\n'
+            ),
+            encoding="utf-8",
+        )
+
+        runtime_config = Settings.from_directory(
+            tmpdir_path,
+            board_module=SimpleNamespace(GP5="pin-gp5"),
+            digitalio_module=_digitalio_probe_module({"pin-gp5": True}),
+        ).runtime_config()
+
+    assert runtime_config.switch_config_present is False
+    assert runtime_config.switch.present is False
+    assert runtime_config.switch.channel_count == 0
+    assert runtime_config.switch.channels == ()
+
+
+def test_switch_toml_with_asserted_enable_pin_is_switch_present():
+    with TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        (tmpdir_path / "settings.toml").write_text(
+            '[Profile]\nACTIVE_PROFILE = "sensorius"\n',
+            encoding="utf-8",
+        )
+        (tmpdir_path / "switch.toml").write_text(
+            (
+                "[Switch]\n"
+                'SWITCH_DEVICE_ID = "switch-live"\n'
+                'SWITCH_1_LABEL = "Fan"\n'
+                'SWITCH_1_CHANNEL_ID = "S1-live"\n'
+                'SWITCH_1_ENABLE_PIN = "GP5"\n'
+                'SWITCH_1_PIN = "GP28"\n'
+            ),
+            encoding="utf-8",
+        )
+
+        runtime_config = Settings.from_directory(
+            tmpdir_path,
+            board_module=SimpleNamespace(GP5="pin-gp5"),
+            digitalio_module=_digitalio_probe_module({"pin-gp5": False}),
+        ).runtime_config()
+
+    assert runtime_config.switch_config_present is True
+    assert runtime_config.switch.present is True
+    assert runtime_config.switch.channel_count == 1
+    assert runtime_config.switch.channels[0].channel_id == "S1-live"
+
+
+def test_switch_toml_skips_unasserted_channel_enable_pin():
+    with TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        (tmpdir_path / "settings.toml").write_text(
+            '[Profile]\nACTIVE_PROFILE = "sensorius"\n',
+            encoding="utf-8",
+        )
+        (tmpdir_path / "switch.toml").write_text(
+            (
+                "[Switch]\n"
+                'SWITCH_DEVICE_ID = "switch-partial"\n'
+                'SWITCH_1_LABEL = "Fan"\n'
+                'SWITCH_1_CHANNEL_ID = "S1-partial"\n'
+                'SWITCH_1_ENABLE_PIN = "GP5"\n'
+                'SWITCH_1_PIN = "GP28"\n'
+                'SWITCH_2_LABEL = "Light"\n'
+                'SWITCH_2_CHANNEL_ID = "S2-partial"\n'
+                'SWITCH_2_ENABLE_PIN = "GP10"\n'
+                'SWITCH_2_PIN = "GP21"\n'
+            ),
+            encoding="utf-8",
+        )
+
+        runtime_config = Settings.from_directory(
+            tmpdir_path,
+            board_module=SimpleNamespace(GP5="pin-gp5", GP10="pin-gp10"),
+            digitalio_module=_digitalio_probe_module(
+                {"pin-gp5": True, "pin-gp10": False}
+            ),
+        ).runtime_config()
+
+    assert runtime_config.switch_config_present is True
+    assert runtime_config.switch.channel_count == 1
+    assert runtime_config.switch.channels[0].key == "SWITCH_2"
+    assert runtime_config.switch.channels[0].channel_id == "S2-partial"
 
 
 def test_settings_from_directory_loads_i2c_altitude_calibration():
@@ -212,25 +389,6 @@ def test_settings_from_directory_prefers_soil_sensor_file_when_soil_config_is_ac
     assert runtime_config.sensor.soil_npk.n_target == 100.0
     assert runtime_config.sensor.soil_npk.p_target == 55.0
     assert runtime_config.sensor.soil_npk.k_target == 130.0
-
-
-def test_settings_from_directory_loads_startup_subscribe_before_publish_flag():
-    with TemporaryDirectory() as tmpdir:
-        tmpdir_path = Path(tmpdir)
-        (tmpdir_path / "settings.toml").write_text(
-            (
-                '[Profile]\nACTIVE_PROFILE = "sensorius"\n'
-                "[MQTT]\n"
-                'BROKER = "broker.local"\n'
-                'BROKER_IP = "10.0.0.9"\n'
-                "STARTUP_SUBSCRIBE_BEFORE_PUBLISH = true\n"
-            ),
-            encoding="utf-8",
-        )
-
-        runtime_config = Settings.from_directory(tmpdir_path).runtime_config()
-
-    assert runtime_config.mqtt.startup_subscribe_before_publish is True
 
 
 def test_settings_from_directory_loads_dual_soil_modbus_channels():

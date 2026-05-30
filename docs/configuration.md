@@ -50,9 +50,13 @@ switch TOML files needed for the detected hardware.
 
 ## Switch bootstrap behavior
 
-- `switch.toml` is the normal-runtime switch gate.
+- `switch.toml` plus at least one populated and grounded `SWITCH_N_ENABLE_PIN`
+  is the normal-runtime switch gate.
 - On a true factory bootstrap, Nodus detects grounded switch enable pins and creates/populates `switch.toml`.
-- On later boots, if `switch.toml` is absent, grounded enable pins alone do not make the device switch-enabled.
+- On later boots, if `switch.toml` is absent, grounded enable pins alone do not
+  make the device switch-enabled.
+- If `switch.toml` exists but no channel has a populated and grounded
+  `SWITCH_N_ENABLE_PIN`, the runtime treats the device as not switch-enabled.
 
 ## Factory reset behavior
 
@@ -100,7 +104,6 @@ The shared MQTT connection is configured in `[MQTT]`:
 - `BASE_TOPIC`
 - `USERNAME`
 - `PASSWORD`
-- `STARTUP_SUBSCRIBE_BEFORE_PUBLISH`
 
 `BROKER` is the canonical broker hostname from Sensorius. MQTT connections use
 IP literals only. During startup, Nodus uses a configured `BROKER_IP` directly
@@ -112,13 +115,6 @@ is absent, and cannot persist it.
 
 The same settings rewrite obfuscates any plaintext passwords that were manually
 entered in `settings.toml`.
-
-`STARTUP_SUBSCRIBE_BEFORE_PUBLISH` is an opt-in diagnostic compatibility flag
-for devices that can connect and publish retained startup MQTT topics but fail
-the first runtime command subscription immediately afterward. The default is
-`false`, preserving the normal publish-first startup order. When set to `true`,
-Nodus subscribes to device command topics before draining retained startup
-publishes.
 
 ## Home Assistant section
 

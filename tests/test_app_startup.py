@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import cpynodus_ii.app as app_module
 from cpynodus_ii.app import (
     _broker_ip_refresh_needed,
+    _defer_switch_subscriptions_until_after_startup_publish,
     _increase_mqtt_preflight_connect_delay,
     _is_mqtt_subscription_failure,
     _load_settings_for_startup,
@@ -23,6 +24,7 @@ from cpynodus_ii.app import (
     _mqtt_repeated_failure_elapsed_s,
     _mqtt_repeated_failure_reboot_gate_tripped,
     _mqtt_startup_queues_clear,
+    _mqtt_sync_should_log_success,
     _ota_state_path,
     _recovery_reconnect_attempts,
     _recovery_reconnect_delay_s,
@@ -38,12 +40,12 @@ from cpynodus_ii.app import (
     _should_fast_reboot_mqtt_connect_failures,
     _should_fast_reboot_wifi_after_ready,
     _should_fast_reset_wifi_station,
+    _should_keep_mqtt_station_reset_after_verify,
     _should_log_wifi_failure_signature,
     _should_reboot_long_mqtt_recovery,
     _should_reboot_mqtt_memory_failures,
     _should_reboot_sensor_not_found,
     _should_rebuild_mqtt_adapter_for_recovery,
-    _should_keep_mqtt_station_reset_after_verify,
     _should_reset_mqtt_station_for_plain_connect_failure,
     _should_reset_wifi_station_before_ready,
     _should_stage_mqtt_station_reset_before_reboot,
@@ -57,7 +59,12 @@ from cpynodus_ii.app import (
     _wifi_station_reset_reason,
 )
 from cpynodus_ii.core import RecoveryState
-from cpynodus_ii.core.config import MQTTConfig, NetworkConfig, RuntimeConfig
+from cpynodus_ii.core.config import (
+    MQTTConfig,
+    NetworkConfig,
+    RuntimeConfig,
+    SwitchConfig,
+)
 from cpynodus_ii.core.mqtt import MQTTTransport
 from cpynodus_ii.ota.state import FwUpdateState, save_ota_state
 
@@ -83,6 +90,29 @@ def test_resolve_startup_plan_keeps_default_behavior_without_override():
 
     assert plan.profile == "sensorius"
     assert plan.web_enabled is False
+
+
+def test_default_startup_defers_switch_subscriptions_until_after_publishes():
+    runtime_config = RuntimeConfig(
+        active_profile="sensorius",
+        switch=SwitchConfig(present=True),
+    )
+
+    assert (
+        _defer_switch_subscriptions_until_after_startup_publish(runtime_config)
+        is True
+    )
+
+
+def test_mqtt_sync_should_log_successful_subscription_batches():
+    sync_result = SimpleNamespace(
+        phase="synced",
+        operation="subscribe",
+        subscribed_count=5,
+        diagnostic="",
+    )
+
+    assert _mqtt_sync_should_log_success(sync_result) is True
 
 
 def test_detects_mqtt_subscription_sync_failure():
@@ -606,7 +636,7 @@ def test_mqtt_preconnect_probe_checks_connack_before_minimqtt_connect(monkeypatc
             active_broker="10.0.0.4",
             broker="samhain.local",
             port=1883,
-            socket_compat_enabled=False,
+            socket_compat_enabled=True,
             client_kwargs={"socket_pool": _SocketPool()},
         ),
         SimpleNamespace(socket_artifact_source="direct"),

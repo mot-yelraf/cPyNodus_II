@@ -224,12 +224,14 @@ The payload must include:
 - `sensor.sensor_id`, `sensor.location`, `sensor.data_topic`,
   `sensor.event_topic`, `sensor.availability_topic`,
   `sensor.display_metrics`, `sensor.display_styles`
-- `switch.device_id`, `switch.location`, `switch.channel_count`, and
-  `switch.meta_topic` when switch capability is present
+- `switch.device_id`, `switch.channel_count`, and `switch.meta_topic` when
+  switch capability is present
 
 The startup `meta` payload intentionally does not include
 `switch.channels[*]`. The detailed per-channel switch topic map is published
-separately on retained `nodus/<device_id>/meta/switch`.
+separately on retained `nodus/<device_id>/meta/switch`. Switch location also
+lives in retained `meta/switch` to keep the main retained `meta` packet small
+on constrained Pico 2 W MQTT startup paths.
 
 The startup `meta` payload also intentionally does not include the log-transfer
 topic map. When `capabilities.log_transfer` is true, Sensorius should use the

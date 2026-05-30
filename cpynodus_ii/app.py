@@ -53,7 +53,6 @@ MQTT_STARTUP_CONDITIONING_ENABLED = False
 MQTT_STARTUP_CONDITIONING_SOFT_RELOAD_ENABLED = True
 MQTT_STARTUP_CONDITIONING_TIMEOUT_S = 3.0
 MQTT_STARTUP_CONDITIONING_RETRIES = 1
-MQTT_STARTUP_SUBSCRIBE_SETTLE_S = 0.0
 SENSOR_NOT_FOUND_REBOOT_S = 60.0
 SENSOR_NOT_FOUND_REBOOT_MIN_COUNT = 6
 SENSOR_NOT_FOUND_REINIT_MAX_ATTEMPTS = 2
@@ -379,17 +378,21 @@ def _transport_queue_summary(transport):
     )
 
 
-def _mqtt_adapter_summary(adapter):
-    """Return compact MQTT adapter state for diagnostics."""
+def _defer_switch_subscriptions_until_after_startup_publish(runtime_config):
+    """Return True when switch command topics should use the normal deferred path."""
+    switch_config = getattr(runtime_config, "switch", None)
+    return bool(getattr(switch_config, "present", False))
+
+
+def _mqtt_startup_queues_clear(transport):
+    """Return True when startup MQTT publish and subscription queues are empty."""
     try:
-        published_index = int(getattr(adapter, "published_index", 0) or 0)
+        return not (
+            getattr(transport, "published_messages", ())
+            or getattr(transport, "subscriptions", ())
+        )
     except Exception:
-        published_index = -1
-    try:
-        subscription_index = int(getattr(adapter, "subscription_index", 0) or 0)
-    except Exception:
-        subscription_index = -1
-    return "adapter pub_i={} sub_i={}".format(published_index, subscription_index)
+        return False
 
 
 def _mqtt_sync_operation_summary(sync_result):
@@ -422,20 +425,33 @@ def _mqtt_sync_operation_summary(sync_result):
 def _mqtt_sync_summary(sync_result, transport, *, source, before_queues):
     """Return a compact MQTT sync diagnostic string."""
     errors = ",".join(sync_result.errors) if sync_result.errors else "none"
+    diagnostic = str(getattr(sync_result, "diagnostic", "") or "").strip()
+    diagnostic_text = ""
+    if diagnostic:
+        diagnostic_text = " {}".format(diagnostic)
     return (
-        "sync source={} phase={} published={} subscribed={} before={} after={} "
-        "{} {} errors={}"
+        "sync source={} phase={} published={} subscribed={} {}{} errors={}"
     ).format(
         str(source or "unknown"),
         sync_result.phase,
         sync_result.published_count,
         sync_result.subscribed_count,
-        before_queues,
-        _transport_queue_summary(transport),
-        _mqtt_adapter_summary(sync_result.adapter),
         _mqtt_sync_operation_summary(sync_result),
+        diagnostic_text,
         errors,
     )
+
+
+def _mqtt_sync_should_log_success(sync_result):
+    """Return True when a successful sync result carries startup diagnostics."""
+    if getattr(sync_result, "phase", "") != "synced":
+        return False
+    if (
+        str(getattr(sync_result, "operation", "") or "") == "subscribe"
+        and int(getattr(sync_result, "subscribed_count", 0) or 0) > 0
+    ):
+        return True
+    return False
 
 
 def _sensor_error_text(*parts):
@@ -478,6 +494,15 @@ def _sensor_errors_indicate_not_found(errors):
     for error in tuple(errors or ()):
         text = str(error or "").strip()
         if text == "sensor_not_found" or text.startswith("sensor_not_found:"):
+            return True
+    return False
+
+
+def _sensor_driver_start_deferred(sensor_service):
+    """Return True when sensor startup was intentionally deferred."""
+    errors = getattr(sensor_service, "errors", ())
+    for error in tuple(errors or ()):
+        if str(error or "").strip() == "sensor_driver_start_deferred":
             return True
     return False
 
@@ -2801,8 +2826,6 @@ async def main(*, startup_plan_override=None):
     mqtt_subscribe_recovery_pending = False
     mqtt_connack_timeout_recovery_pending = False
     deferred_switch_subscription_generation = 0
-    startup_subscribe_settle_generation = 0
-    startup_subscribe_settle_until = -1.0
     last_ntp_defer_detail = ""
     wifi_was_ready = network_link_is_ready(network_stack)
     last_wifi_failure_signature = ""
@@ -4629,6 +4652,17 @@ async def main(*, startup_plan_override=None):
                             ),
                             start_monotonic=start_monotonic,
                         )
+                    elif _mqtt_sync_should_log_success(sync_result):
+                        _print_log(
+                            "mqtt",
+                            _mqtt_sync_summary(
+                                sync_result,
+                                transport,
+                                source="post_connect",
+                                before_queues=sync_before,
+                            ),
+                            start_monotonic=start_monotonic,
+                        )
                     elif sync_result.phase == "deferred":
                         _print_log(
                             "mqtt",
@@ -4671,8 +4705,6 @@ async def main(*, startup_plan_override=None):
                     if _is_mqtt_subscription_failure(sync_result):
                         mqtt_subscribe_recovery_pending = True
                         deferred_switch_subscription_generation = 0
-                        startup_subscribe_settle_generation = 0
-                        startup_subscribe_settle_until = -1.0
                         mqtt_adapter = _recover_mqtt_subscription_failure(
                             runtime_config=runtime_config,
                             network_stack=network_stack,
@@ -4853,6 +4885,11 @@ async def main(*, startup_plan_override=None):
                         repeated_mqtt_connect_failure_count = 0
                         repeated_mqtt_connect_failure_started_at = -1.0
             if plan.mqtt_enabled:
+                defer_switch_subscriptions = (
+                    _defer_switch_subscriptions_until_after_startup_publish(
+                        runtime_config
+                    )
+                )
                 iteration = run_steady_state_iteration(
                     transport,
                     runtime_config,
@@ -4863,7 +4900,7 @@ async def main(*, startup_plan_override=None):
                     now_monotonic=now_monotonic,
                     active_broker=mqtt_adapter.active_broker,
                     settings_root=writable_settings_root,
-                    subscribe_switch_topics=False,
+                    subscribe_switch_topics=not defer_switch_subscriptions,
                     publish_switch_startup=False,
                     include_switch_meta_channels=False,
                 )
@@ -4996,12 +5033,14 @@ async def main(*, startup_plan_override=None):
                     sensor_not_found_failure_started_at = -1.0
                     sensor_reinit_attempt_count = 0
             if iteration.subscribed_topics:
-                if runtime_config.switch.present:
+                if _defer_switch_subscriptions_until_after_startup_publish(
+                    runtime_config
+                ):
                     deferred_switch_subscription_generation = (
                         transport.connection_generation
                     )
-                startup_subscribe_settle_generation = transport.connection_generation
-                startup_subscribe_settle_until = -1.0
+                else:
+                    deferred_switch_subscription_generation = 0
                 _print_log(
                     "mqtt",
                     "subscriptions queued topics={} gen={} {}".format(
@@ -5077,118 +5116,90 @@ async def main(*, startup_plan_override=None):
                 while float(next_periodic_gc_at) <= float(now_monotonic):
                     next_periodic_gc_at += 60.0
             if transport.connected:
-                startup_subscribe_settling = False
+                sync_before = _transport_queue_summary(transport)
+                sync_result = sync_transport_to_client(
+                    mqtt_adapter,
+                    transport,
+                    require_clean_poll_before_subscribe=True,
+                )
+                mqtt_adapter = sync_result.adapter
+                if sync_result.phase == "error":
+                    _print_log(
+                        "mqtt",
+                        _mqtt_sync_summary(
+                            sync_result,
+                            transport,
+                            source="main_loop",
+                            before_queues=sync_before,
+                        ),
+                        start_monotonic=start_monotonic,
+                    )
+                elif _mqtt_sync_should_log_success(sync_result):
+                    _print_log(
+                        "mqtt",
+                        _mqtt_sync_summary(
+                            sync_result,
+                            transport,
+                            source="main_loop",
+                            before_queues=sync_before,
+                        ),
+                        start_monotonic=start_monotonic,
+                    )
+                elif sync_result.phase == "deferred":
+                    _print_log(
+                        "mqtt",
+                        _mqtt_sync_summary(
+                            sync_result,
+                            transport,
+                            source="main_loop",
+                            before_queues=sync_before,
+                        ),
+                        start_monotonic=start_monotonic,
+                    )
+                if _is_mqtt_subscription_failure(sync_result):
+                    mqtt_subscribe_recovery_pending = True
+                    deferred_switch_subscription_generation = 0
+                    mqtt_adapter = _recover_mqtt_subscription_failure(
+                        runtime_config=runtime_config,
+                        network_stack=network_stack,
+                        mqtt_adapter=mqtt_adapter,
+                        transport=transport,
+                        sync_result=sync_result,
+                        fs_writable=fs_writable,
+                        start_monotonic=start_monotonic,
+                    )
+                    recovery_state = RecoveryState(
+                        phase="mqtt",
+                        phase_started_at=now_monotonic,
+                        last_mqtt_rebuild_at=now_monotonic,
+                    )
+                    last_mqtt_connect_attempt_at = float(now_monotonic) - 5.0
+                    _collect_garbage()
+                    await asyncio.sleep(0.05)
+                    continue
                 if (
-                    startup_subscribe_settle_generation
+                    deferred_switch_subscription_generation
                     == transport.connection_generation
                     and not getattr(transport, "published_messages", ())
-                    and getattr(transport, "subscriptions", ())
+                    and not getattr(transport, "subscriptions", ())
                 ):
-                    if float(startup_subscribe_settle_until) < 0.0:
-                        startup_subscribe_settle_until = (
-                            float(now_monotonic) + MQTT_STARTUP_SUBSCRIBE_SETTLE_S
-                        )
+                    switch_topics = _subscribe_switch_runtime_topics(
+                        transport,
+                        runtime_config,
+                    )
+                    deferred_switch_subscription_generation = 0
+                    if switch_topics:
                         _print_log(
                             "mqtt",
                             (
-                                "startup_subscribe_settle phase=start gen={} "
-                                "delay_s={:.1f} {}"
+                                "switch_subscriptions queued topics={} gen={} {}"
                             ).format(
-                                transport.connection_generation,
-                                MQTT_STARTUP_SUBSCRIBE_SETTLE_S,
-                                _transport_queue_summary(transport),
-                            ),
-                            start_monotonic=start_monotonic,
-                        )
-                    if float(now_monotonic) < float(startup_subscribe_settle_until):
-                        startup_subscribe_settling = True
-                    else:
-                        _print_log(
-                            "mqtt",
-                            "startup_subscribe_settle phase=complete gen={} {}".format(
+                                ",".join(switch_topics),
                                 transport.connection_generation,
                                 _transport_queue_summary(transport),
                             ),
                             start_monotonic=start_monotonic,
                         )
-                        startup_subscribe_settle_generation = 0
-                        startup_subscribe_settle_until = -1.0
-                if not startup_subscribe_settling:
-                    sync_before = _transport_queue_summary(transport)
-                    sync_result = sync_transport_to_client(
-                        mqtt_adapter,
-                        transport,
-                        require_clean_poll_before_subscribe=True,
-                    )
-                    mqtt_adapter = sync_result.adapter
-                    if sync_result.phase == "error":
-                        _print_log(
-                            "mqtt",
-                            _mqtt_sync_summary(
-                                sync_result,
-                                transport,
-                                source="main_loop",
-                                before_queues=sync_before,
-                            ),
-                            start_monotonic=start_monotonic,
-                        )
-                    elif sync_result.phase == "deferred":
-                        _print_log(
-                            "mqtt",
-                            _mqtt_sync_summary(
-                                sync_result,
-                                transport,
-                                source="main_loop",
-                                before_queues=sync_before,
-                            ),
-                            start_monotonic=start_monotonic,
-                        )
-                    if _is_mqtt_subscription_failure(sync_result):
-                        mqtt_subscribe_recovery_pending = True
-                        deferred_switch_subscription_generation = 0
-                        startup_subscribe_settle_generation = 0
-                        startup_subscribe_settle_until = -1.0
-                        mqtt_adapter = _recover_mqtt_subscription_failure(
-                            runtime_config=runtime_config,
-                            network_stack=network_stack,
-                            mqtt_adapter=mqtt_adapter,
-                            transport=transport,
-                            sync_result=sync_result,
-                            fs_writable=fs_writable,
-                            start_monotonic=start_monotonic,
-                        )
-                        recovery_state = RecoveryState(
-                            phase="mqtt",
-                            phase_started_at=now_monotonic,
-                            last_mqtt_rebuild_at=now_monotonic,
-                        )
-                        last_mqtt_connect_attempt_at = float(now_monotonic) - 5.0
-                        _collect_garbage()
-                        await asyncio.sleep(0.05)
-                        continue
-                    if (
-                        deferred_switch_subscription_generation
-                        == transport.connection_generation
-                        and not getattr(transport, "published_messages", ())
-                        and not getattr(transport, "subscriptions", ())
-                    ):
-                        switch_topics = _subscribe_switch_runtime_topics(
-                            transport,
-                            runtime_config,
-                        )
-                        deferred_switch_subscription_generation = 0
-                        if switch_topics:
-                            _print_log(
-                                "mqtt",
-                                (
-                                    "switch_subscriptions queued topics={} gen={} {}"
-                                ).format(
-                                    ",".join(switch_topics),
-                                    transport.connection_generation,
-                                    _transport_queue_summary(transport),
-                                ),
-                                start_monotonic=start_monotonic,
-                            )
                 if ota_reboot_requested:
                     _print_log(
                         "ota",

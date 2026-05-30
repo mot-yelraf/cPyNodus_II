@@ -268,3 +268,451 @@ CONNECT packet/send/read path:
 Do not change runtime app startup again until the appliance reproduces the
 successful `samhain.local` app baseline or identifies the adapter preflight
 delta precisely.
+
+## 2026-05-30 Morning Follow-up: `avpd-0kl7sx+s1`
+
+The May 30 investigation moved from `avpd-zbcalz` to a second BME280 plus S1
+Nodus, `avpd-0kl7sx`, and added startup publish/subscribe memory diagnostics.
+The important result is that the observable failure is now narrower than
+"BME280 plus switch cannot use MQTT":
+
+- `aht-yuk0nv+s1` works against `10.0.0.246`.
+- `avpd-0kl7sx` without the S1 switch enable jumper works.
+- `avpd-0kl7sx+s1` works against `10.0.0.248`.
+- `avpd-0kl7sx+s1` repeatedly fails against `10.0.0.246`.
+
+The switch-enable gate was also corrected during this series: for runtime
+switch detection, `switch.toml` is necessary but not sufficient. At least one
+configured `SWITCH_N_ENABLE_PIN` must be populated and grounded at boot. With
+the S1 enable jumper removed, `avpd-0kl7sx` is now treated as sensor-only and
+does not publish `meta/switch`.
+
+### Heap and Publish Sequence
+
+The post-device-`/meta` garbage collection experiment improved heap headroom but
+did not resolve the failure.
+
+Representative successful `aht-yuk0nv+s1`, `v0.26.150.7`, broker
+`10.0.0.246`:
+
+```text
+post_mqtt_connect free_mem=101920
+publish nodus/aht-yuk0nv/meta bytes=1405
+    after=free_mem=59616 post_gc=free_mem=98096
+publish heartbeat after=free_mem=83648
+publish availability after=free_mem=70640
+publish meta/switch after=free_mem=56096
+subscriptions drain; NTP syncs
+```
+
+Representative failing `avpd-0kl7sx+s1`, `v0.26.150.7`, broker
+`10.0.0.246`:
+
+```text
+post_mqtt_connect free_mem=98112
+publish nodus/avpd-0kl7sx/meta bytes=1434
+    after=free_mem=48548 post_gc=free_mem=92884
+publish heartbeat after=free_mem=78436
+publish availability after=free_mem=65396
+publish meta/switch after=free_mem=50852
+subscribe nodus/avpd-0kl7sx/config/set
+    before=free_mem=38740
+    raw_subscribe_diag pkt_bytes=35 topic_len=28 send_ms=0
+    error=mqtt_suback_stage=header:[Errno 116] ETIMEDOUT
+```
+
+The later reconnect/preflight path then reported `ENOMEM` while Python heap was
+back near 90 KB free:
+
+```text
+mqtt connect_context ... free_mem=91636
+mqtt preflight phase=tcp_error ... OSError:[Errno 12] ENOMEM
+```
+
+That pattern argues against ordinary CircuitPython heap exhaustion as the
+primary fault. The Nodus sends the raw SUBSCRIBE packet immediately, then fails
+waiting for the first SUBACK byte. After that timeout, the socket/radio/lwIP
+state appears fragile or poisoned enough that immediate TCP preflight can fail
+with `ENOMEM` despite healthy Python heap.
+
+Extending the SUBACK timeout to 2 seconds did not resolve the failure and was
+not retained. The failure remained `mqtt_suback_stage=header:ETIMEDOUT`.
+
+### BME280 Driver Profile Experiment
+
+`v0.26.150.8` changed the BME280 import from `adafruit_bme280.basic` to
+`adafruit_bme280.advanced` as a heap/timing experiment. It did not resolve the
+failure and reduced heap headroom by roughly 3 KB in the failing path. The
+experiment was reverted in `v0.26.150.9`, returning `avpd`/`apvpd` to
+`adafruit_bme280.basic`.
+
+Representative `v0.26.150.8`, `avpd-0kl7sx+s1`, broker `10.0.0.246`:
+
+```text
+post_mqtt_connect free_mem=94912
+publish /meta post_gc=free_mem=89556
+publish meta/switch after=free_mem=47524
+subscribe before=free_mem=35412
+error=mqtt_suback_stage=header:[Errno 116] ETIMEDOUT
+recovery preflight OSError:[Errno 12] ENOMEM with free_mem=88308
+```
+
+The same `v0.26.150.8` sensor-only control, with the switch disabled, reached
+`sub=0`, synced NTP, and continued running. That reinforces the current
+trigger shape as `avpd+s1`, not BME280 alone.
+
+### Broker A/B on `v0.26.150.9`
+
+The most useful May 30 comparison used the same `avpd-0kl7sx+s1` firmware and
+hardware against two brokers.
+
+Failing broker `10.0.0.246`:
+
+```text
+runtime mqtt_connect=deferred:10.0.0.246
+post_mqtt_connect free_mem=98064
+publish /meta bytes=1434 post_gc=free_mem=92712
+publish meta/switch after=free_mem=50680
+subscribe nodus/avpd-0kl7sx/config/set
+    before=free_mem=38568
+    send_ms=0
+    error=mqtt_suback_stage=header:[Errno 116] ETIMEDOUT
+recovery preflight OSError:[Errno 12] ENOMEM with free_mem=91464
+```
+
+Successful broker `10.0.0.248`:
+
+```text
+runtime mqtt_connect=deferred:10.0.0.248
+post_mqtt_connect free_mem=98128
+publish /meta bytes=1427 post_gc=free_mem=95984
+publish meta/switch after=free_mem=52448
+device subscriptions drain from sub=4 to sub=0
+switch_subscriptions queued topics=nodus/S1-0kl7sx/config/set
+startup_subscribe_settle complete
+NTP syncs
+```
+
+The final `v0.26.150.9` run was configured with
+`MQTT.STARTUP_SUBSCRIBE_BEFORE_PUBLISH = true`, but the serial sequence still
+showed retained startup publishes before the first subscription attempt:
+
+```text
+subscriptions queued ... queues pub=6 sub=4
+publish nodus/avpd-0kl7sx/meta
+publish nodus/avpd-0kl7sx/status/heartbeat
+publish nodus/avpd-0kl7sx/availability
+publish nodus/avpd-0kl7sx/meta/switch
+subscribe nodus/avpd-0kl7sx/config/set
+```
+
+That means the final `.246` failure should not be treated as a valid
+subscribe-before-publish experiment. The runtime code path appears not to be
+honoring the diagnostic flag in `sync_transport_to_client`: when subscriptions
+are pending, the adapter still selects the next retained startup-priority
+publish before syncing subscriptions. The docs and focused test expectation say
+the flag should subscribe first, so the next runtime fix should wire this flag
+through the MQTT adapter and skip the startup-priority publish override when it
+is true.
+
+Implementation follow-up: `v0.26.150.10` wires
+`STARTUP_SUBSCRIBE_BEFORE_PUBLISH` through `MQTTConfig` and
+`MQTTClientAdapter`. With the flag set, pending command subscriptions now sync
+before retained startup-priority publishes.
+
+`v0.26.150.10` hardware evidence showed the flag was honored for device command
+topics: the queue moved from `sub=4` to `sub=0` before the retained `/meta`
+publish. The remaining failure moved to the deferred switch command
+subscription after `meta/switch`:
+
+```text
+switch_subscriptions queued topics=nodus/S1-0kl7sx/config/set
+subscribe nodus/S1-0kl7sx/config/set
+    error=mqtt_suback_stage=header:[Errno 116] ETIMEDOUT
+```
+
+Implementation follow-up: `v0.26.150.11` makes the diagnostic flag subscribe
+device and switch command topics in the initial startup subscription batch. The
+normal default path still defers switch command subscriptions until after the
+retained startup publish batch.
+
+The two broker runs had nearly identical Python heap at MQTT connect. The
+successful `.248` run had slightly more headroom after retained startup
+publishes, but the failing `.246` run still had enough heap for the small
+35-byte SUBSCRIBE packet. In later `.246` retry cycles, SUBACK timeout was also
+observed with approximately 90 KB free before subscribe, further weakening a
+simple low-heap explanation.
+
+### External Mosquitto SUBACK Probes
+
+External `mosquitto_sub -d` probes confirmed that broker `10.0.0.246` can
+normally SUBACK both the individual device command topic and the full startup
+topic set:
+
+```text
+mosquitto_sub -h 10.0.0.246 -p 1883 -i suback-probe-246 \
+  -V mqttv311 -q 0 -d -W 3 \
+  -t 'nodus/avpd-0kl7sx/config/set'
+
+Client suback-probe-246 received CONNACK (0)
+Client suback-probe-246 sending SUBSCRIBE ...
+Client suback-probe-246 received SUBACK
+Subscribed (mid: 1): 0
+```
+
+The full topic-set probe also received one SUBACK granting all five QoS 0
+subscriptions:
+
+```text
+nodus/avpd-0kl7sx/config/set
+nodus/avpd-0kl7sx/calibration/set
+nodus/avpd-0kl7sx/fwupdate
+nodus/avpd-0kl7sx/logs/get
+nodus/S1-0kl7sx/config/set
+
+Client suback-probe-avpd-246 received SUBACK
+Subscribed (mid: 1): 0, 0, 0, 0, 0
+```
+
+The final `Timed out` line from these probes is expected with `-W 3`; it means
+no message payload arrived before the client exited. It is not a SUBACK
+failure.
+
+These probes rule out "broker refuses or cannot SUBACK these topics" as a
+normal-client explanation. The remaining Nodus-specific difference is the
+sequence:
+
+1. connect raw MQTT successfully,
+2. publish retained startup identity/status payloads,
+3. send raw SUBSCRIBE successfully,
+4. time out waiting for the first SUBACK byte,
+5. enter recovery where socket/preflight can return `ENOMEM` despite high
+   Python heap.
+
+### Current Working Theory
+
+The strongest current theory is not a broker policy failure and not ordinary
+Python heap exhaustion. It is a Nodus/Pico2 W socket receive-path failure after
+the `avpd+s1` retained startup publish sequence. Broker `10.0.0.246` triggers
+the failure with this Nodus/config, while `10.0.0.248` tolerates the same Nodus
+startup shape.
+
+Useful next tests or changes should focus on SUBACK resolution rather than more
+sensor-driver heap tuning:
+
+- Fix and retest `MQTT.STARTUP_SUBSCRIBE_BEFORE_PUBLISH = true` for
+  `avpd-0kl7sx+s1` against `10.0.0.246`. The `v0.26.150.9` run was configured
+  with the flag, but serial evidence shows the retained publish-first path was
+  still used. After the flag is actually honored, a pass would implicate the
+  retained publish sequence as the receive-path poison; a failure would show
+  raw subscribe receive is broken independent of publish ordering.
+- Treat `mqtt_suback_stage=header:[Errno 116] ETIMEDOUT` as a poisoned
+  MQTT/socket condition. Plain MQTT client rebuild may be insufficient because
+  the next immediate TCP preflight can return `ENOMEM` with high Python heap.
+- Consider recovery escalation that refreshes station/socket artifacts or hard
+  resets after this exact SUBACK timeout pattern, rather than repeatedly
+  rebuilding the MQTT adapter on the same fragile socket state.
+- Broker-visible MQTT capture remains required when validating any startup
+  ordering or recovery behavior change. Serial `published=1` alone is not
+  proof of broker-visible success.
+
+## 2026-05-30 Afternoon Follow-up: Retained `/meta` Delivery
+
+Later May 30 tcpdump captures moved the primary suspect earlier than SUBACK.
+The SUBACK timeout remains a useful symptom, but it is no longer the first
+known broker-visible failure. The strongest evidence now points to incomplete
+delivery of the long retained `nodus/avpd-0kl7sx/meta` publish when S1 is
+enabled.
+
+### Broker Capture Reliability
+
+Mosquitto retained snapshots and live captures were useful but not sufficient
+on their own during the mixed `v0.26.150.11` runs:
+
+- Retained snapshots sometimes showed only older retained startup messages.
+- Live `mosquitto_sub -R` captures could time out without receiving new
+  messages even while serial reported local publish success.
+- The investigation therefore switched to broker-side `tcpdump` on MQTT port
+  `1883` to verify whether bytes for the Nodus connection actually reached the
+  broker.
+
+This reinforced the validation rule for this issue: serial-side
+`published=1`, queue advancement, or a retained snapshot alone is not proof of
+current-run MQTT success.
+
+### `v0.26.150.12`: Raw Publish Chunking
+
+`v0.26.150.12` added generic raw MQTT packet send chunking so long MQTT
+packets are fed to the CircuitPython socket in bounded writes instead of one
+large `send()`.
+
+The `avpd-0kl7sx+s1` startup still failed against `10.0.0.246`. Serial still
+reported local publish success for retained startup topics and then reached
+the familiar device-command SUBACK timeout:
+
+```text
+boot version=v0.26.150.12
+switch enabled=True channels=1
+publish nodus/avpd-0kl7sx/meta bytes=1435 errors=none
+publish nodus/avpd-0kl7sx/meta/switch bytes=490 errors=none
+subscribe nodus/avpd-0kl7sx/config/set
+    error=mqtt_suback_stage=header:[Errno 116] ETIMEDOUT
+```
+
+However, broker-side tcpdump showed the retained `/meta` publish itself was
+not completely delivered. Only the first 512 bytes of the MQTT PUBLISH reached
+the broker, and that same first 512-byte range was retransmitted. The remainder
+of the MQTT packet was not observed, so the broker could not publish the
+message to subscribers:
+
+```text
+10.0.0.221 > 10.0.0.246.1883: seq 26:538 length 512
+... nodus/avpd-0kl7sx/meta ...
+10.0.0.221 > 10.0.0.246.1883: seq 26:538 length 512
+10.0.0.221 > 10.0.0.246.1883: seq 26:538 length 512
+```
+
+Because the raw publish was still QoS 0 in this firmware, Nodus could count the
+local socket write as success even though the broker never received the
+complete MQTT PUBLISH.
+
+### `v0.26.150.13`: PUBACK Verification For Long Raw Publishes
+
+`v0.26.150.13` changed long raw publishes on recv-capable sockets to MQTT QoS
+1 and waited for PUBACK before counting the publish as successful. This did not
+fix the transport failure, but it made the failure observable at the correct
+operation.
+
+Switch-enabled `avpd-0kl7sx+s1` against `10.0.0.246`:
+
+```text
+boot version=v0.26.150.13
+switch enabled=True channels=1
+op=publish topic=nodus/avpd-0kl7sx/meta retain=1 bytes=1435
+    raw_publish_diag qos=1 pkt_id=1 pkt_bytes=1464 topic_len=22
+    puback_ms=1001
+    error=mqtt_puback_stage=header:[Errno 116] ETIMEDOUT
+```
+
+The matching tcpdump again showed only the first 512 bytes of the retained
+`/meta` PUBLISH arriving and being retransmitted. No complete MQTT PUBLISH
+arrived at the broker, and therefore no PUBACK was sent.
+
+This changed the interpretation of the previous SUBACK timeout: in the failing
+`avpd+s1` case, the socket path can already be broken during the retained
+`/meta` publish. SUBACK is often the next visible timeout only because earlier
+QoS 0 publishes did not require broker acknowledgement.
+
+### `v0.26.150.13`: No-Switch Control
+
+The same firmware, same AVPD sensor, same broker, and same IP path succeeded
+when the S1 switch enable jumper was removed:
+
+```text
+boot version=v0.26.150.13
+switch enabled=False channels=0
+switch_channels ids=none labels=none
+publish nodus/avpd-0kl7sx/meta bytes=1301
+    qos=1 pkt_id=1 pkt_bytes=1330 puback_ms=27 errors=none
+publish heartbeat errors=none
+publish availability errors=none
+subscribed=4 errors=none
+ntp phase=synced
+```
+
+The no-switch tcpdump aligned with serial:
+
+```text
+CONNECT / CONNACK complete
+10.0.0.221 > 10.0.0.246.1883: seq 26:1356 length 1330
+    nodus/avpd-0kl7sx/meta
+10.0.0.246.1883 > 10.0.0.221: seq 5:9 length 4
+    PUBACK
+heartbeat publish observed
+availability publish observed
+four device SUBSCRIBE/SUBACK exchanges observed
+data publish observed
+32 packets captured, 0 dropped
+```
+
+The retained no-switch `/meta` included:
+
+```json
+"capabilities":{"switch":false,"fwupdate":true,"log_transfer":true,"sensor":true}
+"location_group":{"location":"Unknown","members":["avpd-0kl7sx"]}
+```
+
+There was no `S1-0kl7sx` member, no switch object, no `meta/switch`, and no
+switch command subscription. This is strong evidence that AVPD/BME280 alone is
+not sufficient to trigger the failure. Enabling the switch adds enough retained
+startup metadata to move the main `/meta` MQTT packet from about 1330 bytes to
+about 1464 bytes, and that larger retained publish is the first operation now
+known to fail broker-visible validation.
+
+### `v0.26.150.14`: Smaller Raw Send Chunks
+
+`v0.26.150.14` is the next hardware experiment. It reduces raw MQTT socket send
+chunks from 512 bytes to 256 bytes while keeping the long-publish verification
+threshold at 512 bytes:
+
+```text
+MQTT_RAW_SEND_CHUNK_BYTES = 256
+MQTT_RAW_VERIFY_PUBLISH_BYTES = 512
+```
+
+Keeping the verification threshold at 512 means ordinary mid-sized publishes
+between 256 and 512 packet bytes remain QoS 0, while the long retained
+`avpd+s1` `/meta` publish still uses QoS 1 and must receive PUBACK before the
+firmware counts it as successful.
+
+Expected hardware-test interpretation:
+
+- Pass: `avpd-0kl7sx+s1` publishes retained `/meta` with
+  `qos=1 pkt_bytes=1464`, receives a small `puback_ms`, and broker-side capture
+  shows complete `/meta`.
+- Fail with PUBACK timeout: smaller application-level chunks are still not
+  enough; the Pico2 W/CircuitPython socket path is fragile for this long raw
+  retained PUBLISH.
+
+If `v0.26.150.14` still fails, the next likely fix should avoid requiring this
+startup path to deliver a long retained `/meta` as one raw MQTT PUBLISH. The
+main options are to keep the compact retained `/meta` below the known-good
+envelope for this device class, move more switch material into retained
+`meta/switch`, or use a different publish path for retained startup metadata.
+
+### `v0.26.150.15`: Compact Switch Block In Main `/meta`
+
+The `v0.26.150.14` tcpdump showed that the broker received exactly one
+MSS-sized 1460-byte segment for the switch-enabled retained `/meta` packet and
+never received the final 4 bytes of the 1464-byte MQTT packet. That made the
+next fix a payload-size fix rather than another socket pacing change.
+
+`v0.26.150.15` removes the duplicated `switch.location` field from the main
+retained `/meta` switch block. The main `meta.switch` block still carries
+`device_id`, `channel_count`, and `meta_topic`; retained `meta/switch` remains
+the authoritative switch detail payload and still includes switch location.
+
+The new host-side guard builds the observed `avpd-0kl7sx+s1` metadata shape
+and asserts that the retained QoS 1 `/meta` MQTT packet stays at or below 1460
+bytes. Hardware validation should confirm that the broker now sees the full
+`/meta` packet and returns PUBACK before startup moves on.
+
+The `v0.26.150.15` hardware run did confirm this. Serial showed the main
+retained `/meta` publish at `bytes=1414`, `pkt_bytes=1443`, `qos=1`, and
+`puback_ms=6`, followed by successful retained `meta/switch`, device
+subscriptions, switch subscription, sensor data, and NTP sync. Tcpdump aligned:
+the broker received the complete 1443-byte MQTT PUBLISH and returned PUBACK.
+
+### `v0.26.150.16`: Cleanup After Root Cause Confirmation
+
+After the compact `/meta` fix validated broker-visible startup success, the
+temporary `STARTUP_SUBSCRIBE_BEFORE_PUBLISH` diagnostic flag and its alternate
+startup path were removed. Publish-first startup is now the only runtime path:
+retained identity/status publishes drain before command subscriptions, with the
+existing clean-poll check before the first subscribe.
+
+The noisy MQTT sync instrumentation was also reduced. Routine successful
+publishes no longer log queue snapshots, adapter indexes, heap snapshots,
+socket capabilities, or QoS/PUBACK summaries. Raw QoS 1 retained publish
+failures and raw SUBACK failures still include detailed diagnostics because
+those remain actionable failure signals.

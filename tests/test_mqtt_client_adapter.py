@@ -2,6 +2,7 @@
 
 import time
 
+import cpynodus_ii.core.mqtt_client as mqtt_client_module
 from cpynodus_ii.core import (
     build_mqtt_client_adapter,
     close_mqtt_client,
@@ -29,9 +30,17 @@ def _run_direct_tests():
         test_build_mqtt_client_adapter_drops_optional_connect_kwargs_when_unsupported,
         test_build_mqtt_client_adapter_sets_runtime_client_id,
         test_connect_sync_poll_and_disconnect_flow,
-        test_sync_transport_to_client_records_last_publish_diagnostics,
+        test_sync_transport_to_client_records_last_publish_state,
+        test_sync_transport_to_client_records_startup_publish_state,
+        test_sync_transport_to_client_collects_after_retained_device_meta,
         test_sync_transport_to_client_publishes_qos0_packet_on_socket,
+        test_sync_transport_to_client_chunks_large_qos0_publish_on_socket,
+        test_sync_transport_to_client_verifies_large_raw_publish_with_puback,
+        test_sync_transport_to_client_keeps_retained_large_raw_publish_on_puback_timeout,
+        test_sync_transport_to_client_retries_partial_qos0_socket_sends,
+        test_sync_transport_to_client_chunks_send_nbytes_only_socket,
         test_sync_transport_to_client_subscribes_qos0_packet_on_socket,
+        test_sync_transport_to_client_reports_raw_subscribe_failure_diagnostics,
         test_poll_mqtt_client_receives_qos0_publish_on_socket_without_loop,
         test_poll_mqtt_client_receives_qos0_publish_on_recv_into_only_socket,
         test_poll_mqtt_client_treats_socket_timeout_as_empty_poll,
@@ -49,8 +58,8 @@ def _run_direct_tests():
         test_preflight_mqtt_broker_tcp_reports_socket_connect_errors,
         test_preflight_mqtt_broker_connect_reads_connack_and_disconnects,
         test_preflight_mqtt_broker_connect_reports_connack_refusal,
-        test_connect_mqtt_client_uses_minimqtt_when_raw_socket_available,
-        test_connect_mqtt_client_ignores_raw_connack_refusal,
+        test_connect_mqtt_client_uses_raw_socket_when_available,
+        test_connect_mqtt_client_reports_raw_connack_refusal,
         test_poll_mqtt_client_uses_timeout_compatible_with_socket_timeout,
         test_sync_transport_to_client_marks_transport_disconnected_on_publish_oserror,
         test_sync_transport_to_client_subscribes_before_low_priority_publish,
@@ -59,7 +68,6 @@ def _run_direct_tests():
         test_sync_transport_to_client_disconnects_after_slow_publish,
         test_sync_transport_to_client_disconnects_on_subscribe_failure,
         test_poll_mqtt_client_marks_transport_disconnected_on_oserror,
-        test_sync_transport_to_client_can_subscribe_before_priority_status,
         test_close_mqtt_client_disconnects_without_shutdown_publish,
         test_close_mqtt_client_keeps_pending_publish_queue,
         test_close_mqtt_client_force_closes_socket_when_client_is_not_connected,
@@ -326,6 +334,69 @@ class _SendingSocket:
         return len(buffer)
 
 
+class _NoneReturningSendingSocket:
+    def __init__(self):
+        self.chunks = []
+
+    @property
+    def sent(self):
+        return b"".join(self.chunks)
+
+    def send(self, buffer):
+        self.chunks.append(bytes(buffer))
+        return None
+
+
+class _PartialSendingSocket:
+    def __init__(self, max_send=257):
+        self.max_send = max_send
+        self.sent = bytearray()
+        self.calls = []
+
+    def send(self, buffer):
+        count = min(self.max_send, len(buffer))
+        self.calls.append(len(buffer))
+        self.sent.extend(bytes(buffer[:count]))
+        return count
+
+
+class _SendNbytesOnlyChunkedSocket:
+    def __init__(self):
+        self.sent = bytearray()
+        self.calls = []
+
+    def send(self, buffer, nbytes):
+        self.calls.append(nbytes)
+        self.sent.extend(bytes(buffer[:nbytes]))
+        return None
+
+
+class _PubackSocket:
+    def __init__(self, incoming=b"\x40\x02\x00\x01"):
+        self.chunks = []
+        self.incoming = bytearray(incoming)
+        self.timeouts = []
+
+    @property
+    def sent(self):
+        return b"".join(self.chunks)
+
+    def send(self, buffer):
+        self.chunks.append(bytes(buffer))
+        return None
+
+    def recv(self, nbytes):
+        if not self.incoming:
+            raise OSError(116, "ETIMEDOUT")
+        count = min(int(nbytes or 0), len(self.incoming))
+        data = bytes(self.incoming[:count])
+        del self.incoming[:count]
+        return data
+
+    def settimeout(self, timeout):
+        self.timeouts.append(timeout)
+
+
 class _SocketPublishMQTTClient(_FakeMQTTClient):
     def connect(self):
         super().connect()
@@ -335,10 +406,41 @@ class _SocketPublishMQTTClient(_FakeMQTTClient):
         raise AssertionError("MiniMQTT publish should not be called")
 
 
+class _NoneReturningSocketPublishMQTTClient(_SocketPublishMQTTClient):
+    def connect(self):
+        _FakeMQTTClient.connect(self)
+        self._sock = _NoneReturningSendingSocket()
+
+
+class _PartialSocketPublishMQTTClient(_SocketPublishMQTTClient):
+    def connect(self):
+        _FakeMQTTClient.connect(self)
+        self._sock = _PartialSendingSocket()
+
+
+class _SendNbytesOnlySocketPublishMQTTClient(_SocketPublishMQTTClient):
+    def connect(self):
+        _FakeMQTTClient.connect(self)
+        self._sock = _SendNbytesOnlyChunkedSocket()
+
+
+class _PubackSocketPublishMQTTClient(_SocketPublishMQTTClient):
+    def connect(self):
+        _FakeMQTTClient.connect(self)
+        self._sock = _PubackSocket()
+
+
+class _PubackTimeoutSocketPublishMQTTClient(_SocketPublishMQTTClient):
+    def connect(self):
+        _FakeMQTTClient.connect(self)
+        self._sock = _PubackSocket(incoming=b"")
+
+
 class _SubscribeSocket:
     def __init__(self):
         self.sent = bytearray()
         self.incoming = bytearray(b"\x90\x03\x00\x01\x00")
+        self.timeouts = []
 
     def send(self, buffer):
         self.sent.extend(buffer)
@@ -350,11 +452,39 @@ class _SubscribeSocket:
         del self.incoming[:count]
         return data
 
+    def settimeout(self, timeout):
+        self.timeouts.append(timeout)
+
 
 class _SocketSubscribeMQTTClient(_FakeMQTTClient):
     def connect(self):
         super().connect()
         self._sock = _SubscribeSocket()
+
+    def subscribe(self, topic):
+        raise AssertionError("MiniMQTT subscribe should not be called")
+
+
+class _SubscribeTimeoutSocket:
+    def __init__(self):
+        self.sent = bytearray()
+        self.timeouts = []
+
+    def send(self, buffer):
+        self.sent.extend(buffer)
+        return len(buffer)
+
+    def recv(self, nbytes):
+        raise OSError(116, "ETIMEDOUT")
+
+    def settimeout(self, timeout):
+        self.timeouts.append(timeout)
+
+
+class _SocketSubscribeTimeoutMQTTClient(_FakeMQTTClient):
+    def connect(self):
+        super().connect()
+        self._sock = _SubscribeTimeoutSocket()
 
     def subscribe(self, topic):
         raise AssertionError("MiniMQTT subscribe should not be called")
@@ -832,7 +962,7 @@ def test_connect_sync_poll_and_disconnect_flow():
     )
 
 
-def test_sync_transport_to_client_records_last_publish_diagnostics():
+def test_sync_transport_to_client_records_last_publish_state():
     runtime_config = _runtime_config()
     transport = MQTTTransport("broker.local", 1883)
     transport.mark_connect_requested()
@@ -855,6 +985,70 @@ def test_sync_transport_to_client_records_last_publish_diagnostics():
     assert transport.last_publish_bytes == len('{"schema":"nodus-sensor/v1"}')
     assert transport.last_publish_retain == 0
     assert "last_pub_topic=nodus/aqi-x943fm/data" in transport.publish_diagnostic()
+    assert sync_result.diagnostic == ""
+
+
+def test_sync_transport_to_client_records_startup_publish_state():
+    runtime_config = _runtime_config()
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connect_requested()
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=object(),
+        modules={"mqtt_cls": _FakeMQTTClient},
+    )
+
+    connect_result = connect_mqtt_client(adapter, transport)
+    transport.publish(
+        "nodus/aqi-x943fm/status/heartbeat",
+        {"schema": "nodus-heartbeat/v1", "status": "online"},
+        retain=True,
+    )
+    sync_result = sync_transport_to_client(connect_result.adapter, transport)
+
+    assert sync_result.phase == "synced"
+    assert sync_result.published_count == 1
+    assert sync_result.operation == "publish"
+    assert sync_result.retain is True
+    assert sync_result.diagnostic == ""
+
+
+def test_sync_transport_to_client_collects_after_retained_device_meta():
+    runtime_config = _runtime_config()
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connect_requested()
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=object(),
+        modules={"mqtt_cls": _FakeMQTTClient},
+    )
+
+    collect_calls = []
+    original_collect = mqtt_client_module.gc.collect
+
+    def _collect():
+        collect_calls.append(1)
+        return 0
+
+    try:
+        mqtt_client_module.gc.collect = _collect
+        connect_result = connect_mqtt_client(adapter, transport)
+        transport.publish(
+            "nodus/aqi-x943fm/meta",
+            {"schema": "nodus-meta/v1"},
+            retain=True,
+        )
+
+        sync_result = sync_transport_to_client(connect_result.adapter, transport)
+    finally:
+        mqtt_client_module.gc.collect = original_collect
+
+    assert sync_result.phase == "synced"
+    assert sync_result.published_count == 1
+    assert sync_result.topic == "nodus/aqi-x943fm/meta"
+    assert collect_calls == [1]
+    assert transport.published_messages == []
+    assert sync_result.diagnostic == ""
 
 
 def test_sync_transport_to_client_publishes_qos0_packet_on_socket():
@@ -885,6 +1079,206 @@ def test_sync_transport_to_client_publishes_qos0_packet_on_socket():
     assert packet[-2:] == b"ON"
 
 
+def test_sync_transport_to_client_chunks_large_qos0_publish_on_socket():
+    runtime_config = _runtime_config()
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connect_requested()
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=object(),
+        modules={"mqtt_cls": _NoneReturningSocketPublishMQTTClient},
+    )
+
+    connect_result = connect_mqtt_client(adapter, transport)
+    topic = "nodus/avpd-0kl7sx/meta"
+    payload = "x" * 1435
+    transport.publish(topic, payload, retain=True)
+
+    sync_result = sync_transport_to_client(connect_result.adapter, transport)
+
+    assert sync_result.phase == "synced"
+    assert sync_result.published_count == 1
+    expected = bytes(mqtt_client_module._mqtt_qos0_publish_packet(topic, payload, True))
+    sock = connect_result.adapter.client._sock
+    assert len(expected) == 1462
+    assert bytes(sock.sent) == expected
+    chunk_size = mqtt_client_module.MQTT_RAW_SEND_CHUNK_BYTES
+    assert [len(chunk) for chunk in sock.chunks] == [
+        chunk_size,
+        chunk_size,
+        chunk_size,
+        chunk_size,
+        chunk_size,
+        182,
+    ]
+
+
+def test_sync_transport_to_client_verifies_large_raw_publish_with_puback():
+    runtime_config = _runtime_config()
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connect_requested()
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=object(),
+        modules={"mqtt_cls": _PubackSocketPublishMQTTClient},
+    )
+
+    connect_result = connect_mqtt_client(adapter, transport)
+    topic = "nodus/avpd-0kl7sx/meta"
+    payload = "x" * 1435
+    transport.publish(topic, payload, retain=True)
+
+    sync_result = sync_transport_to_client(connect_result.adapter, transport)
+
+    assert sync_result.phase == "synced"
+    assert sync_result.published_count == 1
+    assert transport.published_messages == []
+    expected = bytes(
+        mqtt_client_module._mqtt_qos1_publish_packet(topic, payload, True, 1)
+    )
+    sock = connect_result.adapter.client._sock
+    assert len(expected) == 1464
+    assert bytes(sock.sent) == expected
+    chunk_size = mqtt_client_module.MQTT_RAW_SEND_CHUNK_BYTES
+    assert [len(chunk) for chunk in sock.chunks] == [
+        chunk_size,
+        chunk_size,
+        chunk_size,
+        chunk_size,
+        chunk_size,
+        184,
+    ]
+    assert sock.incoming == bytearray()
+    assert sync_result.diagnostic == ""
+
+
+def test_sync_transport_to_client_keeps_mid_size_raw_publish_qos0():
+    runtime_config = _runtime_config()
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connect_requested()
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=object(),
+        modules={"mqtt_cls": _PubackSocketPublishMQTTClient},
+    )
+
+    connect_result = connect_mqtt_client(adapter, transport)
+    topic = "nodus/avpd-0kl7sx/data"
+    payload = "x" * 320
+    transport.publish(topic, payload, retain=False)
+
+    sync_result = sync_transport_to_client(connect_result.adapter, transport)
+
+    assert sync_result.phase == "synced"
+    assert sync_result.published_count == 1
+    expected = bytes(
+        mqtt_client_module._mqtt_qos0_publish_packet(topic, payload, False)
+    )
+    sock = connect_result.adapter.client._sock
+    assert mqtt_client_module.MQTT_RAW_SEND_CHUNK_BYTES < len(expected)
+    assert len(expected) < mqtt_client_module.MQTT_RAW_VERIFY_PUBLISH_BYTES
+    assert bytes(sock.sent) == expected
+    assert [len(chunk) for chunk in sock.chunks] == [
+        mqtt_client_module.MQTT_RAW_SEND_CHUNK_BYTES,
+        len(expected) - mqtt_client_module.MQTT_RAW_SEND_CHUNK_BYTES,
+    ]
+    assert sock.incoming == bytearray(b"\x40\x02\x00\x01")
+
+
+def test_sync_transport_to_client_keeps_retained_large_raw_publish_on_puback_timeout():
+    runtime_config = _runtime_config()
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connect_requested()
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=object(),
+        modules={"mqtt_cls": _PubackTimeoutSocketPublishMQTTClient},
+    )
+
+    connect_result = connect_mqtt_client(adapter, transport)
+    topic = "nodus/avpd-0kl7sx/meta"
+    payload = "x" * 1435
+    transport.publish(topic, payload, retain=True)
+
+    sync_result = sync_transport_to_client(connect_result.adapter, transport)
+
+    assert sync_result.phase == "error"
+    assert sync_result.published_count == 0
+    assert sync_result.operation == "publish"
+    assert sync_result.topic == topic
+    assert transport.connected is False
+    assert len(transport.published_messages) == 1
+    assert transport.published_messages[0].topic == topic
+    error = sync_result.errors[0]
+    assert error.startswith("mqtt_publish_failed:{}:bytes=1435:".format(topic))
+    assert "raw_publish_diag qos=1 pkt_id=1" in error
+    assert "pkt_bytes=1464" in error
+    assert "topic_len={}".format(len(topic.encode("utf-8"))) in error
+    assert "puback_ms=" in error
+    assert "puback_timeout_s=1" in error
+    assert "sock=raw" in error
+    assert "caps=_PubackSocket:send1 recv1 recv_into0" in error
+    assert "error=mqtt_puback_stage=header:[Errno 116] ETIMEDOUT" in error
+    assert "raw_publish_diag qos=1 pkt_id=1" in transport.last_disconnect_reason
+
+
+def test_sync_transport_to_client_retries_partial_qos0_socket_sends():
+    runtime_config = _runtime_config()
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connect_requested()
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=object(),
+        modules={"mqtt_cls": _PartialSocketPublishMQTTClient},
+    )
+
+    connect_result = connect_mqtt_client(adapter, transport)
+    topic = "nodus/avpd-0kl7sx/meta"
+    payload = "x" * 1435
+    transport.publish(topic, payload, retain=True)
+
+    sync_result = sync_transport_to_client(connect_result.adapter, transport)
+
+    assert sync_result.phase == "synced"
+    expected = bytes(mqtt_client_module._mqtt_qos0_publish_packet(topic, payload, True))
+    sock = connect_result.adapter.client._sock
+    assert bytes(sock.sent) == expected
+    assert max(sock.calls) <= mqtt_client_module.MQTT_RAW_SEND_CHUNK_BYTES
+    assert len(sock.calls) > 3
+
+
+def test_sync_transport_to_client_chunks_send_nbytes_only_socket():
+    runtime_config = _runtime_config()
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connect_requested()
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=object(),
+        modules={"mqtt_cls": _SendNbytesOnlySocketPublishMQTTClient},
+    )
+
+    connect_result = connect_mqtt_client(adapter, transport)
+    topic = "nodus/avpd-0kl7sx/meta"
+    payload = "x" * 1435
+    transport.publish(topic, payload, retain=True)
+
+    sync_result = sync_transport_to_client(connect_result.adapter, transport)
+
+    assert sync_result.phase == "synced"
+    expected = bytes(mqtt_client_module._mqtt_qos0_publish_packet(topic, payload, True))
+    sock = connect_result.adapter.client._sock
+    assert bytes(sock.sent) == expected
+    chunk_size = mqtt_client_module.MQTT_RAW_SEND_CHUNK_BYTES
+    assert sock.calls == [
+        chunk_size,
+        chunk_size,
+        chunk_size,
+        chunk_size,
+        chunk_size,
+        182,
+    ]
+
+
 def test_sync_transport_to_client_subscribes_qos0_packet_on_socket():
     runtime_config = _runtime_config()
     transport = MQTTTransport("broker.local", 1883)
@@ -912,6 +1306,47 @@ def test_sync_transport_to_client_subscribes_qos0_packet_on_socket():
     assert packet[6 : 6 + len(topic_bytes)] == topic_bytes
     assert packet[-1] == 0
     assert connect_result.adapter.client._sock.incoming == bytearray()
+    assert connect_result.adapter.client._sock.timeouts == [1]
+
+
+def test_sync_transport_to_client_reports_raw_subscribe_failure_diagnostics():
+    runtime_config = _runtime_config()
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connect_requested()
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=object(),
+        modules={"mqtt_cls": _SocketSubscribeTimeoutMQTTClient},
+    )
+
+    connect_result = connect_mqtt_client(adapter, transport)
+    topic = "nodus/avpd-0kl7sx/config/set"
+    transport.subscribe(topic)
+
+    sync_result = sync_transport_to_client(connect_result.adapter, transport)
+
+    assert sync_result.phase == "error"
+    assert sync_result.operation == "subscribe"
+    assert sync_result.topic == topic
+    assert transport.connected is False
+    error = sync_result.errors[0]
+    assert error.startswith("mqtt_subscribe_failed:topic={}:index=0/1:".format(topic))
+    assert "raw_subscribe_diag pkt_id=1" in error
+    packet_len = len(connect_result.adapter.client._sock.sent)
+    assert "pkt_bytes={}".format(packet_len) in error
+    assert "topic_len={}".format(len(topic.encode("utf-8"))) in error
+    assert "send_ms=" in error
+    assert "suback_ms=" in error
+    assert "runtime_timeout_s=1" in error
+    assert "suback_timeout_s=1" in error
+    assert "suback_timeout_set=0" in error
+    assert "sock=raw" in error
+    assert "caps=_SubscribeTimeoutSocket:send1 recv1 recv_into0" in error
+    assert "before=free_mem=" in error
+    assert "after=free_mem=" in error
+    assert "error=mqtt_suback_stage=header:[Errno 116] ETIMEDOUT" in error
+    assert "raw_subscribe_diag pkt_id=1" in transport.last_disconnect_reason
+    assert connect_result.adapter.client._sock.timeouts == [1]
 
 
 def test_poll_mqtt_client_receives_qos0_publish_on_socket_without_loop():
@@ -1333,7 +1768,7 @@ def test_preflight_mqtt_broker_connect_reports_connack_refusal():
     assert socket_pool.socket_obj.closed is True
 
 
-def test_connect_mqtt_client_uses_minimqtt_when_raw_socket_available():
+def test_connect_mqtt_client_uses_raw_socket_when_available():
     socket_pool = _ConnectProbeSocketPool()
     runtime_config = RuntimeConfig(
         active_profile="sensorius",
@@ -1357,11 +1792,12 @@ def test_connect_mqtt_client_uses_minimqtt_when_raw_socket_available():
     assert connect_result.phase == "connected"
     assert transport.connected is True
     assert adapter.client.connected is True
-    assert socket_pool.socket_calls == 0
-    assert bytes(socket_pool.socket_obj.sent) == b""
+    assert socket_pool.socket_calls == 1
+    assert bytes(socket_pool.socket_obj.sent).startswith(b"\x10")
+    assert connect_result.adapter.client._sock is socket_pool.socket_obj
 
 
-def test_connect_mqtt_client_ignores_raw_connack_refusal():
+def test_connect_mqtt_client_reports_raw_connack_refusal():
     socket_pool = _ConnectProbeSocketPool(b"\x20\x02\x00\x02")
     runtime_config = RuntimeConfig(
         active_profile="sensorius",
@@ -1381,10 +1817,15 @@ def test_connect_mqtt_client_ignores_raw_connack_refusal():
 
     connect_result = connect_mqtt_client(adapter, transport)
 
-    assert connect_result.phase == "connected"
-    assert transport.connected is True
-    assert adapter.client.connected is True
-    assert socket_pool.socket_calls == 0
+    assert connect_result.phase == "error"
+    assert transport.connected is False
+    assert adapter.client.connected is False
+    assert socket_pool.socket_calls == 1
+    assert socket_pool.socket_obj.closed is True
+    assert connect_result.errors == (
+        "mqtt_connect_failed:10.0.0.4:raw:OSError:"
+        "mqtt_connack_code:10.0.0.4:2",
+    )
 
 
 def test_poll_mqtt_client_uses_timeout_compatible_with_socket_timeout():
@@ -1608,41 +2049,6 @@ def test_sync_transport_to_client_publishes_priority_status_before_subscribe():
         "nodus/aqi-x943fm/data"
     ]
     assert transport.subscriptions == ["nodus/S1-x943fm/config/set"]
-
-
-def test_sync_transport_to_client_can_subscribe_before_priority_status():
-    runtime_config = _runtime_config()
-    runtime_config.mqtt.startup_subscribe_before_publish = True
-    transport = MQTTTransport("broker.local", 1883)
-    transport.mark_connect_requested()
-    adapter = build_mqtt_client_adapter(
-        runtime_config,
-        socket_pool=object(),
-        modules={"mqtt_cls": _FakeMQTTClient},
-    )
-
-    connect_result = connect_mqtt_client(adapter, transport)
-    transport.publish("nodus/aqi-x943fm/data", {"schema": "nodus-sensor/v1"})
-    transport.publish(
-        "nodus/aqi-x943fm/status/heartbeat",
-        {"online": True},
-        retain=True,
-    )
-    transport.subscribe("nodus/S1-x943fm/config/set")
-
-    sync_result = sync_transport_to_client(connect_result.adapter, transport)
-
-    assert sync_result.phase == "synced"
-    assert sync_result.published_count == 0
-    assert sync_result.subscribed_count == 1
-    assert sync_result.operation == "subscribe"
-    assert sync_result.adapter.startup_subscribe_before_publish is True
-    assert sync_result.adapter.client.subscribed == ["nodus/S1-x943fm/config/set"]
-    assert [message.topic for message in transport.published_messages] == [
-        "nodus/aqi-x943fm/data",
-        "nodus/aqi-x943fm/status/heartbeat",
-    ]
-    assert transport.subscriptions == []
 
 
 def test_sync_transport_to_client_defers_subscribe_until_clean_poll():

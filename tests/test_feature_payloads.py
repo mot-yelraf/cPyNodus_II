@@ -13,6 +13,7 @@ from cpynodus_ii.core.config import (
     SwitchChannelConfig,
     SwitchConfig,
 )
+from cpynodus_ii.core.mqtt_client import _mqtt_publish_packet_size
 from cpynodus_ii.core.obfuscation import decode_password
 from cpynodus_ii.features.payloads import (
     build_calibration_ack_payload,
@@ -193,6 +194,7 @@ def test_runtime_meta_payload_includes_sensor_and_switch_topics():
     assert payload["sensor"]["event_topic"] == "nodus/aqi-x943fm/event"
     assert payload["switch"]["channel_count"] == 1
     assert payload["switch"]["meta_topic"] == "nodus/aqi-x943fm/meta/switch"
+    assert "location" not in payload["switch"]
     assert "channels" not in payload["switch"]
 
 
@@ -280,7 +282,6 @@ def test_runtime_meta_payload_can_omit_switch_channel_detail():
     assert payload["location_group"]["members"] == ["aqi-x943fm", "S1-x943fm"]
     assert payload["switch"] == {
         "device_id": "switch-x943fm",
-        "location": "TestLab",
         "channel_count": 1,
         "meta_topic": "nodus/aqi-x943fm/meta/switch",
     }
@@ -365,6 +366,85 @@ def test_compact_runtime_meta_stays_below_startup_payload_budget():
 
     assert "logs" not in payload
     assert len(encoded) < 1500
+
+
+def test_avpd_switch_runtime_meta_packet_stays_under_single_mss():
+    runtime_config = RuntimeConfig(
+        active_profile="sensorius",
+        network=NetworkConfig(
+            hostname="avpd-0kl7sx",
+            ssid="PeaceHill",
+            password="wifi-secret",
+        ),
+        mqtt=MQTTConfig(
+            broker="sensoria-hub-0.local",
+            broker_ip="10.0.0.246",
+            base_topic="nodus",
+        ),
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            device="avpd",
+            sensor_id="avpd-0kl7sx",
+            serial_number="0kl7sx",
+            location="Unknown",
+            display=DisplayConfig(
+                metrics=(
+                    "Ambient VPD",
+                    "Temperature",
+                    "Rel-Humidity",
+                    "Baro-Pressure",
+                    "Dew Point Deficit",
+                    "DewVPD Risk",
+                ),
+                styles=(
+                    "Graph24hr",
+                    "Graph24hr",
+                    "Graph24hr",
+                    "Graph24hr",
+                    "Graph24hr",
+                    "Graph24hr",
+                ),
+            ),
+        ),
+        switch=SwitchConfig(
+            present=True,
+            device_id="switch-0kl7sx",
+            serial_number="0kl7sx",
+            location="Unknown",
+            channel_count=1,
+            channels=(
+                SwitchChannelConfig(
+                    key="SWITCH_1",
+                    channel_id="S1-0kl7sx",
+                    label="Fan",
+                    enable_pin="GP5",
+                    control_pin="GP28",
+                ),
+            ),
+        ),
+    )
+
+    payload = build_runtime_meta_payload(
+        runtime_config,
+        version="v0.26.150.15",
+        active_broker="10.0.0.246",
+        include_switch_channels=False,
+    )
+    encoded = json.dumps(payload, separators=(",", ":"))
+    packet_size = _mqtt_publish_packet_size(
+        "nodus/avpd-0kl7sx/meta",
+        encoded,
+        qos=1,
+    )
+
+    assert payload["capabilities"]["switch"] is True
+    assert payload["switch"] == {
+        "device_id": "switch-0kl7sx",
+        "channel_count": 1,
+        "meta_topic": "nodus/avpd-0kl7sx/meta/switch",
+    }
+    assert packet_size <= 1460
 
 
 def test_switch_meta_payload_includes_channel_topic_map_without_pin_fields():

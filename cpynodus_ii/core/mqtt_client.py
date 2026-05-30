@@ -5,13 +5,18 @@ behavior so the main application can reason about MQTT state through a small
 and testable interface.
 """
 
+import gc
 import time
 from dataclasses import dataclass
 
 MQTT_CONNECT_SOCKET_TIMEOUT_S = 3
 MQTT_POLL_SOCKET_TIMEOUT_S = 1
+MQTT_SUBACK_SOCKET_TIMEOUT_S = MQTT_POLL_SOCKET_TIMEOUT_S
+MQTT_PUBACK_SOCKET_TIMEOUT_S = MQTT_POLL_SOCKET_TIMEOUT_S
 MQTT_CONNECT_RETRIES = 1
 MQTT_SLOW_OPERATION_MS = 10000
+MQTT_RAW_SEND_CHUNK_BYTES = 256
+MQTT_RAW_VERIFY_PUBLISH_BYTES = 512
 MQTT_OPTIONAL_CLIENT_KWARGS = (
     "socket_timeout",
     "connect_retries",
@@ -56,6 +61,7 @@ class MQTTClientSyncResult:
     payload_bytes: int = -1
     pending_count: int = 0
     elapsed_ms: int = -1
+    diagnostic: str = ""
 
 
 def build_mqtt_client_adapter(
@@ -498,11 +504,14 @@ def sync_transport_to_client(
         )
 
     message = transport.published_messages[publish_index]
+    message_topic = message.topic
+    message_retain = bool(message.retain)
+    collect_after_publish = _should_collect_after_startup_meta_publish(message)
     payload = _serialize_payload(message.payload)
     payload_bytes = _payload_size(payload)
     operation_started = time.monotonic()
     try:
-        _publish_mqtt_qos0(
+        _publish_mqtt(
             adapter.client,
             message.topic,
             payload,
@@ -511,9 +520,9 @@ def sync_transport_to_client(
     except Exception as exc:
         elapsed_ms = _elapsed_ms(operation_started)
         transport.mark_disconnected(
-            reason="mqtt_publish_failed:{}:{}".format(message.topic, exc)
+            reason="mqtt_publish_failed:{}:{}".format(message_topic, exc)
         )
-        if not bool(message.retain):
+        if not message_retain:
             _drop_published_message(transport, publish_index)
         return MQTTClientSyncResult(
             phase="error",
@@ -522,33 +531,37 @@ def sync_transport_to_client(
             subscribed_count=0,
             errors=(
                 "mqtt_publish_failed:{}:bytes={}:{}".format(
-                    message.topic,
+                    message_topic,
                     payload_bytes,
                     exc,
                 ),
             ),
             operation="publish",
-            topic=message.topic,
-            retain=bool(message.retain),
+            topic=message_topic,
+            retain=message_retain,
             payload_bytes=payload_bytes,
             pending_count=pending_publish_count,
             elapsed_ms=elapsed_ms,
         )
     elapsed_ms = _elapsed_ms(operation_started)
     transport.record_publish_success(
-        message.topic,
+        message_topic,
         payload_bytes=payload_bytes,
-        retain=message.retain,
+        retain=message_retain,
         socket_state=_socket_state(getattr(adapter.client, "_sock", None)),
         client_connected=_client_connected_state(adapter.client),
         backcompat=1 if adapter.socket_compat_enabled else 0,
     )
     transport.mark_success()
     _drop_published_message(transport, publish_index)
+    message = None
+    payload = None
+    if collect_after_publish:
+        _collect_garbage()
     if _operation_is_slow(elapsed_ms, slow_threshold):
         transport.mark_disconnected(
             reason="mqtt_publish_slow:{}:elapsed_ms={}".format(
-                message.topic,
+                message_topic,
                 elapsed_ms,
             )
         )
@@ -559,14 +572,14 @@ def sync_transport_to_client(
             subscribed_count=0,
             errors=(
                 "mqtt_publish_slow:{}:bytes={}:elapsed_ms={}".format(
-                    message.topic,
+                    message_topic,
                     payload_bytes,
                     elapsed_ms,
                 ),
             ),
             operation="publish",
-            topic=message.topic,
-            retain=bool(message.retain),
+            topic=message_topic,
+            retain=message_retain,
             payload_bytes=payload_bytes,
             pending_count=pending_publish_count,
             elapsed_ms=elapsed_ms,
@@ -578,28 +591,43 @@ def sync_transport_to_client(
         subscribed_count=0,
         errors=(),
         operation="publish",
-        topic=message.topic,
-        retain=bool(message.retain),
+        topic=message_topic,
+        retain=message_retain,
         payload_bytes=payload_bytes,
         pending_count=pending_publish_count,
         elapsed_ms=elapsed_ms,
     )
 
 
-def _publish_mqtt_qos0(client, topic, payload, retain):
+def _publish_mqtt(client, topic, payload, retain):
     sock = getattr(client, "_sock", None)
     if sock is None or not callable(getattr(sock, "send", None)):
         client.publish(topic, payload, retain=retain)
-        return
-    _send_mqtt_packet(sock, _mqtt_qos0_publish_packet(topic, payload, retain))
+        return _mqtt_publish_result(0, 0, -1, -1, 0)
+    packet_size = _mqtt_publish_packet_size(topic, payload, qos=0)
+    if packet_size > MQTT_RAW_VERIFY_PUBLISH_BYTES and _socket_can_recv(sock):
+        return _publish_mqtt_qos1_verified(client, sock, topic, payload, retain)
+    packet = _mqtt_qos0_publish_packet(topic, payload, retain)
+    _send_mqtt_packet(sock, packet)
+    return _mqtt_publish_result(0, 0, len(packet), -1, 0)
 
 
 def _mqtt_qos0_publish_packet(topic, payload, retain):
+    return _mqtt_publish_packet(topic, payload, retain, qos=0, packet_id=0)
+
+
+def _mqtt_qos1_publish_packet(topic, payload, retain, packet_id):
+    return _mqtt_publish_packet(topic, payload, retain, qos=1, packet_id=packet_id)
+
+
+def _mqtt_publish_packet(topic, payload, retain, *, qos=0, packet_id=0):
     topic_bytes = _mqtt_bytes(topic)
     payload_bytes = _mqtt_bytes(payload)
-    remaining = 2 + len(topic_bytes) + len(payload_bytes)
+    qos = int(qos or 0)
+    packet_id_bytes = 2 if qos else 0
+    remaining = 2 + len(topic_bytes) + packet_id_bytes + len(payload_bytes)
     remaining_bytes = _mqtt_remaining_length(remaining)
-    header = 0x31 if retain else 0x30
+    header = 0x30 | ((qos & 0x03) << 1) | (0x01 if retain else 0)
     packet = bytearray(1 + len(remaining_bytes) + remaining)
     packet[0] = header
     offset = 1
@@ -611,8 +639,76 @@ def _mqtt_qos0_publish_packet(topic, payload, retain):
     offset += 2
     packet[offset : offset + len(topic_bytes)] = topic_bytes
     offset += len(topic_bytes)
+    if qos:
+        packet[offset] = (packet_id >> 8) & 0xFF
+        packet[offset + 1] = packet_id & 0xFF
+        offset += 2
     packet[offset : offset + len(payload_bytes)] = payload_bytes
     return packet
+
+
+def _mqtt_publish_packet_size(topic, payload, *, qos=0):
+    topic_bytes = _mqtt_bytes(topic)
+    payload_bytes = _mqtt_bytes(payload)
+    packet_id_bytes = 2 if int(qos or 0) else 0
+    remaining = 2 + len(topic_bytes) + packet_id_bytes + len(payload_bytes)
+    return 1 + len(_mqtt_remaining_length(remaining)) + remaining
+
+
+def _publish_mqtt_qos1_verified(client, sock, topic, payload, retain):
+    packet_id = _next_mqtt_packet_id(client)
+    packet = _mqtt_qos1_publish_packet(topic, payload, retain, packet_id)
+    runtime_timeout = _poll_timeout_for_client(client)
+    puback_timeout_set = False
+    puback_elapsed_ms = -1
+    operation_started = time.monotonic()
+    puback_started = operation_started
+    try:
+        _send_mqtt_packet(sock, packet)
+        if float(runtime_timeout) != float(MQTT_PUBACK_SOCKET_TIMEOUT_S):
+            puback_timeout_set = _set_mqtt_socket_timeout(
+                sock,
+                MQTT_PUBACK_SOCKET_TIMEOUT_S,
+            )
+        puback_started = time.monotonic()
+        _read_mqtt_puback(sock, packet_id)
+        puback_elapsed_ms = _elapsed_ms(puback_started)
+    except Exception as exc:
+        puback_elapsed_ms = _elapsed_ms(puback_started)
+        raise OSError(
+            _mqtt_raw_publish_failure_detail(
+                topic,
+                packet_id,
+                packet,
+                sock,
+                _elapsed_ms(operation_started),
+                puback_elapsed_ms,
+                runtime_timeout,
+                MQTT_PUBACK_SOCKET_TIMEOUT_S,
+                puback_timeout_set,
+                exc,
+            )
+        )
+    finally:
+        if puback_timeout_set:
+            _set_mqtt_socket_timeout(sock, runtime_timeout)
+    return _mqtt_publish_result(
+        1,
+        packet_id,
+        len(packet),
+        puback_elapsed_ms,
+        puback_timeout_set,
+    )
+
+
+def _mqtt_publish_result(qos, packet_id, packet_bytes, puback_ms, timeout_set):
+    return (
+        int(qos or 0),
+        int(packet_id or 0),
+        int(packet_bytes or 0),
+        int(puback_ms or 0),
+        1 if timeout_set else 0,
+    )
 
 
 def _mqtt_bytes(value):
@@ -652,9 +748,12 @@ def _send_mqtt_packet(sock, packet):
     total = len(packet)
     sent_total = 0
     while sent_total < total:
-        sent = _send_socket_bytes(sock, packet[sent_total:])
+        chunk_end = min(sent_total + MQTT_RAW_SEND_CHUNK_BYTES, total)
+        chunk = packet[sent_total:chunk_end]
+        sent = _send_socket_bytes(sock, chunk)
         if sent is None:
-            return
+            sent_total = chunk_end
+            continue
         sent_total += int(sent or 0)
         if sent <= 0:
             raise OSError("mqtt_socket_send_zero")
@@ -799,8 +898,48 @@ def _subscribe_mqtt_qos0(client, topic):
         client.subscribe(topic)
         return
     packet_id = _next_mqtt_packet_id(client)
-    _send_mqtt_packet(sock, _mqtt_qos0_subscribe_packet(topic, packet_id))
-    _read_mqtt_suback(sock, packet_id)
+    packet = _mqtt_qos0_subscribe_packet(topic, packet_id)
+    memory_before = _memory_snapshot()
+    runtime_timeout = _poll_timeout_for_client(client)
+    suback_timeout_set = False
+    send_elapsed_ms = -1
+    suback_elapsed_ms = -1
+    operation_started = time.monotonic()
+    suback_started = operation_started
+    try:
+        send_started = time.monotonic()
+        _send_mqtt_packet(sock, packet)
+        send_elapsed_ms = _elapsed_ms(send_started)
+        if float(runtime_timeout) != float(MQTT_SUBACK_SOCKET_TIMEOUT_S):
+            suback_timeout_set = _set_mqtt_socket_timeout(
+                sock,
+                MQTT_SUBACK_SOCKET_TIMEOUT_S,
+            )
+        suback_started = time.monotonic()
+        _read_mqtt_suback(sock, packet_id)
+        suback_elapsed_ms = _elapsed_ms(suback_started)
+    except Exception as exc:
+        suback_elapsed_ms = _elapsed_ms(suback_started)
+        raise OSError(
+            _mqtt_raw_subscribe_failure_detail(
+                topic,
+                packet_id,
+                packet,
+                sock,
+                memory_before,
+                _memory_snapshot(),
+                _elapsed_ms(operation_started),
+                send_elapsed_ms,
+                suback_elapsed_ms,
+                runtime_timeout,
+                MQTT_SUBACK_SOCKET_TIMEOUT_S,
+                suback_timeout_set,
+                exc,
+            )
+        )
+    finally:
+        if suback_timeout_set:
+            _set_mqtt_socket_timeout(sock, runtime_timeout)
 
 
 def _mqtt_qos0_subscribe_packet(topic, packet_id):
@@ -839,20 +978,121 @@ def _next_mqtt_packet_id(client):
     return packet_id
 
 
+def _mqtt_raw_subscribe_failure_detail(
+    topic,
+    packet_id,
+    packet,
+    sock,
+    memory_before,
+    memory_after,
+    elapsed_ms,
+    send_elapsed_ms,
+    suback_elapsed_ms,
+    runtime_timeout,
+    suback_timeout,
+    suback_timeout_set,
+    exc,
+):
+    topic_bytes = _mqtt_bytes(topic)
+    return (
+        "raw_subscribe_diag pkt_id={} pkt_bytes={} topic_len={} "
+        "elapsed_ms={} send_ms={} suback_ms={} runtime_timeout_s={} "
+        "suback_timeout_s={} suback_timeout_set={} sock={} caps={} "
+        "before={} after={} error={}"
+    ).format(
+        int(packet_id or 0),
+        _payload_size(packet),
+        _payload_size(topic_bytes),
+        int(elapsed_ms or 0),
+        int(send_elapsed_ms or 0),
+        int(suback_elapsed_ms or 0),
+        _timeout_summary(runtime_timeout),
+        _timeout_summary(suback_timeout),
+        1 if suback_timeout_set else 0,
+        _socket_state(sock),
+        _socket_capability_summary(sock),
+        _memory_summary(memory_before),
+        _memory_summary(memory_after),
+        exc,
+    )
+
+
+def _mqtt_raw_publish_failure_detail(
+    topic,
+    packet_id,
+    packet,
+    sock,
+    elapsed_ms,
+    puback_elapsed_ms,
+    runtime_timeout,
+    puback_timeout,
+    puback_timeout_set,
+    exc,
+):
+    topic_bytes = _mqtt_bytes(topic)
+    return (
+        "raw_publish_diag qos=1 pkt_id={} pkt_bytes={} topic_len={} "
+        "elapsed_ms={} puback_ms={} runtime_timeout_s={} "
+        "puback_timeout_s={} puback_timeout_set={} sock={} caps={} error={}"
+    ).format(
+        int(packet_id or 0),
+        _payload_size(packet),
+        _payload_size(topic_bytes),
+        int(elapsed_ms or 0),
+        int(puback_elapsed_ms or 0),
+        _timeout_summary(runtime_timeout),
+        _timeout_summary(puback_timeout),
+        1 if puback_timeout_set else 0,
+        _socket_state(sock),
+        _socket_capability_summary(sock),
+        exc,
+    )
+
+
+def _read_mqtt_puback(sock, packet_id):
+    stage = "header"
+    try:
+        header = _recv_mqtt_byte(sock)
+        if header != 0x40:
+            raise OSError("mqtt_puback_unexpected:{:02x}".format(header))
+        stage = "remaining"
+        remaining = _recv_mqtt_remaining_length(sock)
+        stage = "payload"
+        payload = _recv_socket_exact(sock, remaining)
+        if len(payload) < 2:
+            raise OSError("mqtt_puback_short:{}".format(len(payload)))
+        stage = "packet_id"
+        received_id = (payload[0] << 8) | payload[1]
+        if received_id != packet_id:
+            raise OSError("mqtt_puback_packet_id:{}:{}".format(received_id, packet_id))
+    except Exception as exc:
+        raise OSError("mqtt_puback_stage={}:{}".format(stage, exc))
+
+
 def _read_mqtt_suback(sock, packet_id):
-    header = _recv_mqtt_byte(sock)
-    if header != 0x90:
-        raise OSError("mqtt_suback_unexpected:{:02x}".format(header))
-    remaining = _recv_mqtt_remaining_length(sock)
-    payload = _recv_socket_exact(sock, remaining)
-    if len(payload) < 3:
-        raise OSError("mqtt_suback_short:{}".format(len(payload)))
-    received_id = (payload[0] << 8) | payload[1]
-    if received_id != packet_id:
-        raise OSError("mqtt_suback_packet_id:{}:{}".format(received_id, packet_id))
-    return_code = payload[2]
-    if return_code > 2:
-        raise OSError("mqtt_suback_failed:{}".format(return_code))
+    stage = "header"
+    try:
+        header = _recv_mqtt_byte(sock)
+        if header != 0x90:
+            raise OSError("mqtt_suback_unexpected:{:02x}".format(header))
+        stage = "remaining"
+        remaining = _recv_mqtt_remaining_length(sock)
+        stage = "payload"
+        payload = _recv_socket_exact(sock, remaining)
+        if len(payload) < 3:
+            raise OSError("mqtt_suback_short:{}".format(len(payload)))
+        stage = "packet_id"
+        received_id = (payload[0] << 8) | payload[1]
+        if received_id != packet_id:
+            raise OSError(
+                "mqtt_suback_packet_id:{}:{}".format(received_id, packet_id)
+            )
+        stage = "return_code"
+        return_code = payload[2]
+        if return_code > 2:
+            raise OSError("mqtt_suback_failed:{}".format(return_code))
+    except Exception as exc:
+        raise OSError("mqtt_suback_stage={}:{}".format(stage, exc))
 
 
 def _recv_mqtt_remaining_length(sock):
@@ -1765,12 +2005,29 @@ def _set_minimqtt_runtime_socket_timeout(client, timeout):
             except Exception:
                 pass
     socket_obj = getattr(client, "_sock", None)
+    _set_mqtt_socket_timeout(socket_obj, timeout)
+
+
+def _set_mqtt_socket_timeout(socket_obj, timeout):
     settimeout = getattr(socket_obj, "settimeout", None)
     if callable(settimeout):
         try:
             settimeout(timeout)
+            return True
         except Exception:
-            pass
+            return False
+    return False
+
+
+def _timeout_summary(timeout):
+    try:
+        value = float(timeout)
+    except Exception:
+        return "unknown"
+    int_value = int(value)
+    if value == int_value:
+        return str(int_value)
+    return str(value)
 
 
 def _inner_socket_obj(socket_obj):
@@ -2266,6 +2523,32 @@ def _payload_size(payload):
         return 0
 
 
+def _memory_snapshot():
+    free_mem = -1
+    mem_alloc = -1
+    try:
+        free_mem = int(gc.mem_free())
+    except Exception:
+        pass
+    try:
+        mem_alloc = int(gc.mem_alloc())
+    except Exception:
+        pass
+    return free_mem, mem_alloc
+
+
+def _memory_summary(snapshot):
+    try:
+        free_mem, mem_alloc = snapshot
+    except Exception:
+        free_mem = -1
+        mem_alloc = -1
+    return "free_mem={} mem_alloc={}".format(
+        free_mem if free_mem >= 0 else "unknown",
+        mem_alloc if mem_alloc >= 0 else "unknown",
+    )
+
+
 def _next_publish_index(adapter, transport):
     try:
         index = int(getattr(adapter, "published_index", 0) or 0)
@@ -2305,6 +2588,24 @@ def _is_startup_priority_publish(message):
         or topic.endswith("/status/heartbeat")
         or topic.endswith("/availability")
     )
+
+
+def _should_collect_after_startup_meta_publish(message):
+    """Return True when a successful retained device meta publish should GC."""
+    if not bool(getattr(message, "retain", False)):
+        return False
+    topic = str(getattr(message, "topic", "") or "").strip().lower()
+    if topic.startswith("homeassistant/"):
+        return False
+    return topic.endswith("/meta")
+
+
+def _collect_garbage():
+    try:
+        gc.collect()
+        return True
+    except Exception:
+        return False
 
 
 def _drop_published_message(transport, index):

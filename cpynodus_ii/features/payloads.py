@@ -304,7 +304,6 @@ def build_runtime_meta_payload(
                 )
         payload["switch"] = {
             "device_id": switch.device_id,
-            "location": switch.location,
             "channel_count": len(switch.channels),
             "meta_topic": mqtt_topic(runtime_config, device_id, "meta", "switch"),
         }
