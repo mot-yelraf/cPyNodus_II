@@ -716,3 +716,93 @@ publishes no longer log queue snapshots, adapter indexes, heap snapshots,
 socket capabilities, or QoS/PUBACK summaries. Raw QoS 1 retained publish
 failures and raw SUBACK failures still include detailed diagnostics because
 those remain actionable failure signals.
+
+### `v0.26.150.17`: EBADF Follow-Up Diagnostics
+
+The first `v0.26.150.17` `co2-ykdvea` run confirmed that recovery could
+survive an `mqtt_poll_failed:[Errno 9] EBADF` event, but the existing serial
+and broker evidence did not pinpoint when the socket became invalid. In one
+aligned broker capture, the last broker-visible message before recovery was a
+normal `/data` publish at `06:07:04`, while serial did not enter MQTT recovery
+until about `06:09:59`. With the steady-state heartbeat and availability cycle
+still at roughly 120 seconds, the evidence window was too wide to determine
+whether the poisoned socket followed `/data`, heartbeat, sensor availability,
+or switch availability.
+
+The follow-up diagnostics added compact "last ACK" context to the MQTT
+transport:
+
+- raw PUBACK/SUBACK reads record ACK kind, topic, packet id, elapsed time,
+  timeout, socket state, and socket capabilities;
+- EBADF poll failures include poll socket state/capabilities/timeout, the last
+  publish diagnostic, the last loop diagnostic, and the last raw ACK diagnostic;
+- successful routine publish logs remain quiet, so the extra context is only
+  emitted when a failure makes it useful.
+
+This did not change recovery policy. It was added to answer a narrower
+question: when a later poll reports EBADF, what was the most recent broker-ACKed
+operation and what socket shape was being polled?
+
+### `v0.26.151.1` / `v0.26.151.2`: Narrow Rollback Toward `148.1`
+
+The overnight `150.16`/`150.17` runs showed a regression in socket stability:
+more MQTT recoveries and restarts than the `148.1` baseline, especially after
+the long-publish QoS 1/PUBACK verification and generic 256-byte chunking work.
+That made the next experiment a rollback toward the known-good `148.1` raw
+publish behavior.
+
+The operator clarification was important: the 256-byte chunking and PUBACK
+work had been introduced for the retained startup `/meta` and `/meta/switch`
+problem, not as a broad steady-state transport policy. The final `151.2` shape
+therefore split the behavior:
+
+- normal raw publishes use QoS 0 and send the MQTT packet as one socket write,
+  matching the `148.1`-style steady-state path more closely;
+- retained startup `/meta` and `/meta/switch` publishes remain identified
+  explicitly and keep the constrained startup send path;
+- long-publish QoS 1/PUBACK verification is disabled by default
+  (`MQTT_RAW_VERIFY_PUBLISH_BYTES = 0`) and remains only as an optional
+  diagnostic path for tests or temporary hardware experiments;
+- SUBACK diagnostics remain, because startup subscribe failures are still a
+  separate observable symptom;
+- the steady-state availability refresh interval was lowered to 30 seconds for
+  this debug run, so the next EBADF/socket-poisoning window should be much
+  tighter than the earlier 120-second cadence.
+
+`v0.26.151.1` was treated as an intermediate rollback candidate after startup
+tails showed failures. `v0.26.151.2` is the narrower compromise: closer to
+`148.1` for normal steady-state publishing while preserving the startup-specific
+handling that was added for the AVPD + switch retained metadata envelope.
+
+### `v0.26.151.2`: Initial Soak Read
+
+The first multi-device `151.2` soak used these serial-log mappings:
+
+- `cu.usbmodem133101.log`: `switch-w9umh8`
+- `cu.usbmodem133301.log`: `aht-yuk0nv`
+- `cu.usbmodem1334301.log`: `avpd-zbcalz`
+- `cu.usbmodem1334101.log`: `co2-ykdvea`
+
+Serial review from each final `151.2` boot showed materially quieter behavior
+than `150.x`:
+
+- `switch-w9umh8` hit one early publish failure on
+  `nodus/S1-w9umh8/availability` with `[Errno 5] Input/output error`, then
+  escalated through repeated direct-IP MQTT connect `ETIMEDOUT` to a hard
+  reboot. After the reboot, no further MQTT/recovery failures were seen in the
+  reviewed window. This device was on the USB hub port already suspected of
+  extra Wi-Fi instability.
+- `aht-yuk0nv` was clean from the final `151.2` boot: no publish, subscribe,
+  poll, or reset markers in the reviewed window.
+- `avpd-zbcalz` had two startup raw SUBACK timeouts on
+  `nodus/avpd-zbcalz/config/set`, each followed by `ENOMEM` during reconnect.
+  It recovered and then ran cleanly in the reviewed window.
+- `co2-ykdvea` was clean from the final `151.2` boot: no EBADF poll failures,
+  no MQTT recovery, and no reset markers in the reviewed window.
+
+Most importantly for the regression investigation, the reviewed `151.2`
+windows did not show the `150.x` retained `/meta` PUBACK-timeout signature and
+did not show EBADF poll failures on the stable devices. Broker-visible
+validation is still required before treating the behavior as fully accepted,
+but this run supports keeping the broad QoS 1/PUBACK verification disabled and
+continuing the soak with the 30-second debug cadence.

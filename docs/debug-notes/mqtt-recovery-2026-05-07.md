@@ -1504,3 +1504,27 @@
   escalation, such as one station-reset/socket rebuild after sustained
   no-success `mqtt_connect_failed:` errors, while preserving the post-success
   soft-reboot guard for the `1334101` stuck-loop class.
+- 2026-05-31: `v0.26.150.17` added EBADF-oriented MQTT diagnostics after the
+  `150.16`/`150.17` soak showed more socket recoveries and restarts than the
+  `148.1` baseline. The new diagnostic path records the most recent raw
+  PUBACK/SUBACK context and appends socket state, socket capabilities, timeout,
+  last publish, last loop, and last ACK context to
+  `mqtt_poll_failed:[Errno 9] EBADF` errors. This is diagnostic-only; recovery
+  policy was not changed by the EBADF logging.
+- 2026-05-31: Broker/serial alignment on `co2-ykdvea` showed why the previous
+  120 second heartbeat/availability cadence was too slow for socket-poisoning
+  discovery. In one capture the broker saw `/data` at `06:07:04`, while serial
+  did not start recovery until about `06:09:59`. `v0.26.151.2` lowered the
+  default availability refresh cadence to 30 seconds for the debug run, so the
+  next MQTT poll/publish failure should be bounded to a much smaller window.
+- 2026-05-31: `v0.26.151.2` also narrowed the rollback from the
+  long-publish QoS 1/PUBACK experiment. Normal raw publishes are back to a
+  `148.1`-style QoS 0 path, while retained startup `/meta` and `/meta/switch`
+  remain explicitly identified for the startup-specific handling documented in
+  `avpd-bme280-mqtt-startup-2026-05-29.md`. The first `151.2` soak showed no
+  EBADF poll failures on `aht-yuk0nv`, `avpd-zbcalz`, or `co2-ykdvea`; the only
+  early hard reboot was `switch-w9umh8` after an S1 availability publish
+  `[Errno 5] Input/output error`, on the USB hub port already suspected of
+  extra Wi-Fi instability. `avpd-zbcalz` still showed two startup SUBACK
+  timeouts before recovering, so subscribe startup behavior remains a separate
+  watch item.

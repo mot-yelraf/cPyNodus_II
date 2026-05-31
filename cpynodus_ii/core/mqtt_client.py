@@ -16,7 +16,8 @@ MQTT_PUBACK_SOCKET_TIMEOUT_S = MQTT_POLL_SOCKET_TIMEOUT_S
 MQTT_CONNECT_RETRIES = 1
 MQTT_SLOW_OPERATION_MS = 10000
 MQTT_RAW_SEND_CHUNK_BYTES = 256
-MQTT_RAW_VERIFY_PUBLISH_BYTES = 512
+# Nonzero only for temporary diagnostics; normal runtime stays QoS0.
+MQTT_RAW_VERIFY_PUBLISH_BYTES = 0
 MQTT_OPTIONAL_CLIENT_KWARGS = (
     "socket_timeout",
     "connect_retries",
@@ -506,16 +507,18 @@ def sync_transport_to_client(
     message = transport.published_messages[publish_index]
     message_topic = message.topic
     message_retain = bool(message.retain)
+    startup_meta_publish = _is_retained_startup_meta_publish(message)
     collect_after_publish = _should_collect_after_startup_meta_publish(message)
     payload = _serialize_payload(message.payload)
     payload_bytes = _payload_size(payload)
     operation_started = time.monotonic()
     try:
-        _publish_mqtt(
+        publish_result = _publish_mqtt(
             adapter.client,
             message.topic,
             payload,
             message.retain,
+            startup_meta_publish=startup_meta_publish,
         )
     except Exception as exc:
         elapsed_ms = _elapsed_ms(operation_started)
@@ -544,6 +547,12 @@ def sync_transport_to_client(
             elapsed_ms=elapsed_ms,
         )
     elapsed_ms = _elapsed_ms(operation_started)
+    _record_raw_publish_ack_diagnostic(
+        transport,
+        adapter.client,
+        message_topic,
+        publish_result,
+    )
     transport.record_publish_success(
         message_topic,
         payload_bytes=payload_bytes,
@@ -599,16 +608,21 @@ def sync_transport_to_client(
     )
 
 
-def _publish_mqtt(client, topic, payload, retain):
+def _publish_mqtt(client, topic, payload, retain, *, startup_meta_publish=False):
     sock = getattr(client, "_sock", None)
     if sock is None or not callable(getattr(sock, "send", None)):
         client.publish(topic, payload, retain=retain)
         return _mqtt_publish_result(0, 0, -1, -1, 0)
     packet_size = _mqtt_publish_packet_size(topic, payload, qos=0)
-    if packet_size > MQTT_RAW_VERIFY_PUBLISH_BYTES and _socket_can_recv(sock):
+    if (
+        startup_meta_publish
+        and MQTT_RAW_VERIFY_PUBLISH_BYTES > 0
+        and packet_size > MQTT_RAW_VERIFY_PUBLISH_BYTES
+        and _socket_can_recv(sock)
+    ):
         return _publish_mqtt_qos1_verified(client, sock, topic, payload, retain)
     packet = _mqtt_qos0_publish_packet(topic, payload, retain)
-    _send_mqtt_packet(sock, packet)
+    _send_mqtt_packet(sock, packet, chunked=startup_meta_publish)
     return _mqtt_publish_result(0, 0, len(packet), -1, 0)
 
 
@@ -664,7 +678,7 @@ def _publish_mqtt_qos1_verified(client, sock, topic, payload, retain):
     operation_started = time.monotonic()
     puback_started = operation_started
     try:
-        _send_mqtt_packet(sock, packet)
+        _send_mqtt_packet(sock, packet, chunked=True)
         if float(runtime_timeout) != float(MQTT_PUBACK_SOCKET_TIMEOUT_S):
             puback_timeout_set = _set_mqtt_socket_timeout(
                 sock,
@@ -711,6 +725,81 @@ def _mqtt_publish_result(qos, packet_id, packet_bytes, puback_ms, timeout_set):
     )
 
 
+def _mqtt_ack_result(raw_ack, packet_id, packet_bytes, ack_ms, timeout_set):
+    return (
+        1 if raw_ack else 0,
+        int(packet_id or 0),
+        int(packet_bytes or 0),
+        int(ack_ms or 0),
+        1 if timeout_set else 0,
+    )
+
+
+def _record_raw_publish_ack_diagnostic(transport, client, topic, publish_result):
+    try:
+        qos, packet_id, _packet_bytes, puback_ms, timeout_set = publish_result
+    except Exception:
+        return
+    if int(qos or 0) != 1:
+        return
+    _record_raw_ack_diagnostic(
+        transport,
+        client,
+        "puback",
+        topic,
+        packet_id,
+        puback_ms,
+        MQTT_PUBACK_SOCKET_TIMEOUT_S,
+        timeout_set,
+    )
+
+
+def _record_raw_subscribe_ack_diagnostic(transport, client, topic, subscribe_result):
+    try:
+        raw_ack, packet_id, _packet_bytes, suback_ms, timeout_set = subscribe_result
+    except Exception:
+        return
+    if not int(raw_ack or 0):
+        return
+    _record_raw_ack_diagnostic(
+        transport,
+        client,
+        "suback",
+        topic,
+        packet_id,
+        suback_ms,
+        MQTT_SUBACK_SOCKET_TIMEOUT_S,
+        timeout_set,
+    )
+
+
+def _record_raw_ack_diagnostic(
+    transport,
+    client,
+    kind,
+    topic,
+    packet_id,
+    ack_ms,
+    timeout_s,
+    timeout_set,
+):
+    record_ack = getattr(transport, "record_ack_read", None)
+    if not callable(record_ack):
+        return
+    sock = getattr(client, "_sock", None)
+    record_ack(
+        kind,
+        topic,
+        stage="complete",
+        packet_id=packet_id,
+        elapsed_ms=ack_ms,
+        timeout_s=timeout_s,
+        timeout_set=bool(timeout_set),
+        socket_state=_socket_state(sock),
+        socket_caps=_socket_capability_summary(sock),
+    )
+
+
 def _mqtt_bytes(value):
     if isinstance(value, bytes):
         return value
@@ -744,16 +833,21 @@ def _mqtt_remaining_length(value):
     return encoded
 
 
-def _send_mqtt_packet(sock, packet):
+def _send_mqtt_packet(sock, packet, *, chunked=False):
     total = len(packet)
     sent_total = 0
     while sent_total < total:
-        chunk_end = min(sent_total + MQTT_RAW_SEND_CHUNK_BYTES, total)
+        if chunked:
+            chunk_end = min(sent_total + MQTT_RAW_SEND_CHUNK_BYTES, total)
+        else:
+            chunk_end = total
         chunk = packet[sent_total:chunk_end]
         sent = _send_socket_bytes(sock, chunk)
         if sent is None:
-            sent_total = chunk_end
-            continue
+            if chunked:
+                sent_total = chunk_end
+                continue
+            return
         sent_total += int(sent or 0)
         if sent <= 0:
             raise OSError("mqtt_socket_send_zero")
@@ -785,7 +879,7 @@ def _sync_subscriptions_to_client(
     for topic in pending_subscriptions:
         operation_started = time.monotonic()
         try:
-            _subscribe_mqtt_qos0(adapter.client, topic)
+            subscribe_result = _subscribe_mqtt_qos0(adapter.client, topic)
         except Exception as exc:
             elapsed_ms = _elapsed_ms(operation_started)
             if subscribed_count:
@@ -817,6 +911,12 @@ def _sync_subscriptions_to_client(
                 elapsed_ms=elapsed_ms,
             )
         elapsed_ms = _elapsed_ms(operation_started)
+        _record_raw_subscribe_ack_diagnostic(
+            transport,
+            adapter.client,
+            topic,
+            subscribe_result,
+        )
         subscribed_count += 1
         last_subscribed_topic = topic
         if _operation_is_slow(elapsed_ms, slow_threshold):
@@ -896,7 +996,7 @@ def _subscribe_mqtt_qos0(client, topic):
         or not _socket_can_recv(sock)
     ):
         client.subscribe(topic)
-        return
+        return _mqtt_ack_result(0, 0, -1, -1, 0)
     packet_id = _next_mqtt_packet_id(client)
     packet = _mqtt_qos0_subscribe_packet(topic, packet_id)
     memory_before = _memory_snapshot()
@@ -940,6 +1040,13 @@ def _subscribe_mqtt_qos0(client, topic):
     finally:
         if suback_timeout_set:
             _set_mqtt_socket_timeout(sock, runtime_timeout)
+    return _mqtt_ack_result(
+        1,
+        packet_id,
+        len(packet),
+        suback_elapsed_ms,
+        suback_timeout_set,
+    )
 
 
 def _mqtt_qos0_subscribe_packet(topic, packet_id):
@@ -1284,12 +1391,13 @@ def _poll_mqtt_client_raw(adapter, transport):
                 errors=(error,),
             )
     except OSError as exc:
-        transport.mark_disconnected(reason="mqtt_poll_failed:{}".format(exc))
+        error = _mqtt_poll_oserror_detail(adapter.client, transport, exc)
+        transport.mark_disconnected(reason=error)
         return MQTTClientSyncResult(
             phase="error",
             adapter=adapter,
             received_count=0,
-            errors=("mqtt_poll_failed:{}".format(exc),),
+            errors=(error,),
         )
     except RuntimeError as exc:
         if not _is_pystack_exhausted(exc):
@@ -1325,12 +1433,13 @@ def _poll_mqtt_client_socket(adapter, transport, before_count):
     try:
         received_count = _poll_mqtt_socket_once(sock, transport)
     except OSError as exc:
-        transport.mark_disconnected(reason="mqtt_poll_failed:{}".format(exc))
+        error = _mqtt_poll_oserror_detail(adapter.client, transport, exc)
+        transport.mark_disconnected(reason=error)
         return MQTTClientSyncResult(
             phase="error",
             adapter=adapter,
             received_count=0,
-            errors=("mqtt_poll_failed:{}".format(exc),),
+            errors=(error,),
         )
     except RuntimeError as exc:
         if not _is_pystack_exhausted(exc):
@@ -1537,6 +1646,73 @@ def _mqtt_poll_pystack_error(client, source, exc):
     )
 
 
+def _mqtt_poll_oserror_detail(client, transport, exc):
+    base = "mqtt_poll_failed:{}".format(exc)
+    if not _is_bad_file_descriptor_error(exc):
+        return base
+    sock = getattr(client, "_sock", None)
+    details = []
+    if sock is not None:
+        details.append("poll_sock={}".format(_socket_state(sock)))
+        details.append("poll_caps={}".format(_socket_capability_summary(sock)))
+        details.append("poll_timeout_s={}".format(_socket_timeout_summary(sock)))
+    for method_name in ("publish_diagnostic", "loop_diagnostic", "ack_diagnostic"):
+        diagnostic = ""
+        method = getattr(transport, method_name, None)
+        if callable(method):
+            try:
+                diagnostic = str(method() or "").strip()
+            except Exception:
+                diagnostic = ""
+        if diagnostic:
+            details.append(diagnostic)
+    if not details:
+        return base
+    return "{} {}".format(base, " ".join(details))
+
+
+def _is_bad_file_descriptor_error(exc):
+    errno = getattr(exc, "errno", None)
+    if errno == 9:
+        return True
+    args = getattr(exc, "args", ()) or ()
+    if args and args[0] == 9:
+        return True
+    text = str(exc or "").lower()
+    return (
+        "ebadf" in text
+        or "[errno 9]" in text
+        or "errno 9" in text
+        or "bad file descriptor" in text
+    )
+
+
+def _socket_timeout_summary(sock):
+    gettimeout = getattr(sock, "gettimeout", None)
+    if callable(gettimeout):
+        try:
+            return _timeout_summary(gettimeout())
+        except Exception:
+            pass
+    for attr_name in ("timeout", "_timeout", "socket_timeout"):
+        try:
+            value = getattr(sock, attr_name)
+        except Exception:
+            continue
+        if value is not None:
+            return _timeout_summary(value)
+    try:
+        history = getattr(sock, "timeouts", None)
+    except Exception:
+        history = None
+    if history:
+        try:
+            return _timeout_summary(history[-1])
+        except Exception:
+            pass
+    return "unknown"
+
+
 def _socket_capability_summary(sock):
     if sock is None:
         return "none"
@@ -1647,12 +1823,13 @@ def _poll_mqtt_client_compat(adapter, transport):
                     errors=(error,),
                 )
         except OSError as exc:
-            transport.mark_disconnected(reason="mqtt_poll_failed:{}".format(exc))
+            error = _mqtt_poll_oserror_detail(adapter.client, transport, exc)
+            transport.mark_disconnected(reason=error)
             return MQTTClientSyncResult(
                 phase="error",
                 adapter=adapter,
                 received_count=0,
-                errors=("mqtt_poll_failed:{}".format(exc),),
+                errors=(error,),
             )
         except RuntimeError as exc:
             if not _is_pystack_exhausted(exc):
@@ -2588,6 +2765,16 @@ def _is_startup_priority_publish(message):
         or topic.endswith("/status/heartbeat")
         or topic.endswith("/availability")
     )
+
+
+def _is_retained_startup_meta_publish(message):
+    """Return True for retained startup meta publishes needing chunked send."""
+    if not bool(getattr(message, "retain", False)):
+        return False
+    topic = str(getattr(message, "topic", "") or "").strip().lower()
+    if topic.startswith("homeassistant/"):
+        return False
+    return topic.endswith("/meta") or topic.endswith("/meta/switch")
 
 
 def _should_collect_after_startup_meta_publish(message):

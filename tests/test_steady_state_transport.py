@@ -9,7 +9,11 @@ from cpynodus_ii.core.config import (
     SwitchConfig,
 )
 from cpynodus_ii.core.mqtt import MQTTTransport
-from cpynodus_ii.features.steady_state import SteadyState, run_steady_state_iteration
+from cpynodus_ii.features.steady_state import (
+    DEFAULT_AVAILABILITY_INTERVAL_S,
+    SteadyState,
+    run_steady_state_iteration,
+)
 
 
 def _switch_service():
@@ -345,6 +349,49 @@ def test_steady_state_refreshes_availability_on_interval():
     assert third.availability_refresh_phase == "published"
     assert third.availability_refresh_published_count == 3
     assert third.state.last_availability_publish_at == 26.0
+
+
+def test_default_availability_refresh_interval_is_debug_30_seconds():
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connect_requested()
+    transport.mark_connected()
+    runtime_config = _runtime_config()
+
+    first = run_steady_state_iteration(
+        transport,
+        runtime_config,
+        _switch_service(),
+        _sensor_service(),
+        state=SteadyState(sensor_interval_s=300.0),
+        version="0.1.0",
+        now_monotonic=10.0,
+    )
+    transport.subscriptions.clear()
+    transport.published_messages.clear()
+
+    second = run_steady_state_iteration(
+        transport,
+        runtime_config,
+        _switch_service(),
+        _sensor_service(),
+        state=first.state,
+        version="0.1.0",
+        now_monotonic=10.0 + DEFAULT_AVAILABILITY_INTERVAL_S - 1.0,
+    )
+    assert second.availability_refresh_phase == "skipped"
+    assert transport.published_messages == []
+
+    third = run_steady_state_iteration(
+        transport,
+        runtime_config,
+        _switch_service(),
+        _sensor_service(),
+        state=second.state,
+        version="0.1.0",
+        now_monotonic=10.0 + DEFAULT_AVAILABILITY_INTERVAL_S,
+    )
+    assert third.availability_refresh_phase == "published"
+    assert third.availability_refresh_published_count == 3
 
 
 def test_switch_only_steady_state_refreshes_availability_before_idle_gap():

@@ -21,6 +21,7 @@ from cpynodus_ii.features.publish_cycle import (
     publish_switch_meta_cycle,
 )
 
+DEFAULT_AVAILABILITY_INTERVAL_S = 30.0
 SWITCH_ONLY_AVAILABILITY_INTERVAL_S = 45.0
 
 
@@ -31,7 +32,7 @@ class SteadyState:
     connection_generation: int = 0
     switch_meta_generation: int = 0
     sensor_interval_s: float = 60.0
-    availability_interval_s: float = 120.0
+    availability_interval_s: float = DEFAULT_AVAILABILITY_INTERVAL_S
     last_sensor_publish_at: float = -1.0
     last_availability_publish_at: float = -1.0
     handled_message_ids: tuple = ()

@@ -54,6 +54,16 @@ class MQTTTransport:
         self.last_loop_socket_state = ""
         self.last_loop_client_connected = ""
         self.last_loop_backcompat = -1
+        self.last_ack_at = -1.0
+        self.last_ack_kind = ""
+        self.last_ack_topic = ""
+        self.last_ack_stage = ""
+        self.last_ack_packet_id = -1
+        self.last_ack_elapsed_ms = -1
+        self.last_ack_timeout_s = -1.0
+        self.last_ack_timeout_set = -1
+        self.last_ack_socket_state = ""
+        self.last_ack_socket_caps = ""
         self.published_messages = []
         self.subscriptions = []
         self.received_messages = []
@@ -189,6 +199,69 @@ class MQTTTransport:
             self.last_loop_backcompat,
         )
 
+    def record_ack_read(
+        self,
+        kind,
+        topic,
+        *,
+        stage="",
+        packet_id=-1,
+        elapsed_ms=-1,
+        timeout_s=-1.0,
+        timeout_set=False,
+        socket_state="",
+        socket_caps="",
+        now_monotonic=None,
+    ):
+        """Record compact diagnostics for the last raw MQTT ACK read."""
+        self.last_ack_at = _monotonic_value(now_monotonic)
+        self.last_ack_kind = str(kind or "").strip()
+        self.last_ack_topic = str(topic or "").strip()
+        self.last_ack_stage = str(stage or "").strip()
+        try:
+            self.last_ack_packet_id = int(packet_id)
+        except Exception:
+            self.last_ack_packet_id = -1
+        try:
+            self.last_ack_elapsed_ms = int(elapsed_ms)
+        except Exception:
+            self.last_ack_elapsed_ms = -1
+        try:
+            self.last_ack_timeout_s = float(timeout_s)
+        except Exception:
+            self.last_ack_timeout_s = -1.0
+        self.last_ack_timeout_set = 1 if timeout_set else 0
+        self.last_ack_socket_state = str(socket_state or "").strip()
+        self.last_ack_socket_caps = str(socket_caps or "").strip()
+
+    def ack_diagnostic(self, now_monotonic=None):
+        """Return compact last-ACK diagnostics for recovery logs."""
+        if not self.last_ack_kind:
+            return ""
+        age = "unknown"
+        now_value = _monotonic_value(now_monotonic)
+        if now_value >= 0.0 and self.last_ack_at >= 0.0:
+            age = str(int(max(0.0, now_value - self.last_ack_at)))
+        socket_state = self.last_ack_socket_state or "unknown"
+        socket_caps = self.last_ack_socket_caps or "unknown"
+        return (
+            "last_ack_kind={} last_ack_topic={} last_ack_age_s={} "
+            "last_ack_stage={} last_ack_packet_id={} "
+            "last_ack_elapsed_ms={} last_ack_timeout_s={} "
+            "last_ack_timeout_set={} last_ack_sock={} last_ack_caps={}"
+        ).format(
+            self.last_ack_kind,
+            self.last_ack_topic,
+            age,
+            self.last_ack_stage or "unknown",
+            self.last_ack_packet_id,
+            self.last_ack_elapsed_ms,
+            _timeout_text(self.last_ack_timeout_s),
+            self.last_ack_timeout_set,
+            socket_state,
+            socket_caps,
+        )
+
     def compact(self, *, published_keep_from=0, subscriptions_keep_from=0):
         """Drop already-synced transport queues to limit long-run heap growth."""
         published_start = max(0, int(published_keep_from or 0))
@@ -266,3 +339,16 @@ def _monotonic_value(now_monotonic=None):
         return float(time.monotonic())
     except Exception:
         return -1.0
+
+
+def _timeout_text(value):
+    try:
+        timeout = float(value)
+    except Exception:
+        return "unknown"
+    if timeout < 0.0:
+        return "unknown"
+    int_timeout = int(timeout)
+    if timeout == int_timeout:
+        return str(int_timeout)
+    return str(timeout)

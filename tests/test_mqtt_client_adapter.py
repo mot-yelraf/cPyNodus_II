@@ -35,8 +35,11 @@ def _run_direct_tests():
         test_sync_transport_to_client_collects_after_retained_device_meta,
         test_sync_transport_to_client_publishes_qos0_packet_on_socket,
         test_sync_transport_to_client_chunks_large_qos0_publish_on_socket,
-        test_sync_transport_to_client_verifies_large_raw_publish_with_puback,
-        test_sync_transport_to_client_keeps_retained_large_raw_publish_on_puback_timeout,
+        test_sync_transport_to_client_keeps_startup_meta_qos0_by_default,
+        test_sync_transport_to_client_can_verify_large_raw_publish_when_debug_enabled,
+        test_sync_transport_to_client_keeps_large_non_startup_publish_qos0,
+        test_sync_transport_to_client_ignores_puback_timeout_by_default,
+        test_sync_transport_to_client_reports_optional_puback_timeout_when_enabled,
         test_sync_transport_to_client_retries_partial_qos0_socket_sends,
         test_sync_transport_to_client_chunks_send_nbytes_only_socket,
         test_sync_transport_to_client_subscribes_qos0_packet_on_socket,
@@ -434,6 +437,19 @@ class _PubackTimeoutSocketPublishMQTTClient(_SocketPublishMQTTClient):
     def connect(self):
         _FakeMQTTClient.connect(self)
         self._sock = _PubackSocket(incoming=b"")
+
+
+class _PubackThenEbadfSocket(_PubackSocket):
+    def recv(self, nbytes):
+        if not self.incoming:
+            raise OSError(9, "EBADF")
+        return super().recv(nbytes)
+
+
+class _PubackThenEbadfSocketPublishMQTTClient(_SocketPublishMQTTClient):
+    def connect(self):
+        _FakeMQTTClient.connect(self)
+        self._sock = _PubackThenEbadfSocket()
 
 
 class _SubscribeSocket:
@@ -1113,7 +1129,7 @@ def test_sync_transport_to_client_chunks_large_qos0_publish_on_socket():
     ]
 
 
-def test_sync_transport_to_client_verifies_large_raw_publish_with_puback():
+def test_sync_transport_to_client_keeps_startup_meta_qos0_by_default():
     runtime_config = _runtime_config()
     transport = MQTTTransport("broker.local", 1883)
     transport.mark_connect_requested()
@@ -1129,6 +1145,49 @@ def test_sync_transport_to_client_verifies_large_raw_publish_with_puback():
     transport.publish(topic, payload, retain=True)
 
     sync_result = sync_transport_to_client(connect_result.adapter, transport)
+
+    assert sync_result.phase == "synced"
+    assert sync_result.published_count == 1
+    assert transport.published_messages == []
+    expected = bytes(mqtt_client_module._mqtt_qos0_publish_packet(topic, payload, True))
+    sock = connect_result.adapter.client._sock
+    assert len(expected) == 1462
+    assert bytes(sock.sent) == expected
+    chunk_size = mqtt_client_module.MQTT_RAW_SEND_CHUNK_BYTES
+    assert [len(chunk) for chunk in sock.chunks] == [
+        chunk_size,
+        chunk_size,
+        chunk_size,
+        chunk_size,
+        chunk_size,
+        182,
+    ]
+    assert sock.incoming == bytearray(b"\x40\x02\x00\x01")
+    assert transport.ack_diagnostic() == ""
+    assert sync_result.diagnostic == ""
+
+
+def test_sync_transport_to_client_can_verify_large_raw_publish_when_debug_enabled():
+    original_threshold = mqtt_client_module.MQTT_RAW_VERIFY_PUBLISH_BYTES
+    mqtt_client_module.MQTT_RAW_VERIFY_PUBLISH_BYTES = 512
+    try:
+        runtime_config = _runtime_config()
+        transport = MQTTTransport("broker.local", 1883)
+        transport.mark_connect_requested()
+        adapter = build_mqtt_client_adapter(
+            runtime_config,
+            socket_pool=object(),
+            modules={"mqtt_cls": _PubackSocketPublishMQTTClient},
+        )
+
+        connect_result = connect_mqtt_client(adapter, transport)
+        topic = "nodus/avpd-0kl7sx/meta"
+        payload = "x" * 1435
+        transport.publish(topic, payload, retain=True)
+
+        sync_result = sync_transport_to_client(connect_result.adapter, transport)
+    finally:
+        mqtt_client_module.MQTT_RAW_VERIFY_PUBLISH_BYTES = original_threshold
 
     assert sync_result.phase == "synced"
     assert sync_result.published_count == 1
@@ -1149,7 +1208,42 @@ def test_sync_transport_to_client_verifies_large_raw_publish_with_puback():
         184,
     ]
     assert sock.incoming == bytearray()
+    ack_diagnostic = transport.ack_diagnostic()
+    assert "last_ack_kind=puback" in ack_diagnostic
+    assert "last_ack_topic={}".format(topic) in ack_diagnostic
+    assert "last_ack_stage=complete" in ack_diagnostic
+    assert "last_ack_packet_id=1" in ack_diagnostic
     assert sync_result.diagnostic == ""
+
+
+def test_sync_transport_to_client_keeps_large_non_startup_publish_qos0():
+    runtime_config = _runtime_config()
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connect_requested()
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=object(),
+        modules={"mqtt_cls": _PubackSocketPublishMQTTClient},
+    )
+
+    connect_result = connect_mqtt_client(adapter, transport)
+    topic = "nodus/avpd-0kl7sx/data"
+    payload = "x" * 700
+    transport.publish(topic, payload, retain=False)
+
+    sync_result = sync_transport_to_client(connect_result.adapter, transport)
+
+    assert sync_result.phase == "synced"
+    assert sync_result.published_count == 1
+    expected = bytes(
+        mqtt_client_module._mqtt_qos0_publish_packet(topic, payload, False)
+    )
+    sock = connect_result.adapter.client._sock
+    assert len(expected) > mqtt_client_module.MQTT_RAW_VERIFY_PUBLISH_BYTES
+    assert bytes(sock.sent) == expected
+    assert [len(chunk) for chunk in sock.chunks] == [len(expected)]
+    assert sock.incoming == bytearray(b"\x40\x02\x00\x01")
+    assert transport.ack_diagnostic() == ""
 
 
 def test_sync_transport_to_client_keeps_mid_size_raw_publish_qos0():
@@ -1176,16 +1270,13 @@ def test_sync_transport_to_client_keeps_mid_size_raw_publish_qos0():
     )
     sock = connect_result.adapter.client._sock
     assert mqtt_client_module.MQTT_RAW_SEND_CHUNK_BYTES < len(expected)
-    assert len(expected) < mqtt_client_module.MQTT_RAW_VERIFY_PUBLISH_BYTES
+    assert mqtt_client_module.MQTT_RAW_VERIFY_PUBLISH_BYTES == 0
     assert bytes(sock.sent) == expected
-    assert [len(chunk) for chunk in sock.chunks] == [
-        mqtt_client_module.MQTT_RAW_SEND_CHUNK_BYTES,
-        len(expected) - mqtt_client_module.MQTT_RAW_SEND_CHUNK_BYTES,
-    ]
+    assert [len(chunk) for chunk in sock.chunks] == [len(expected)]
     assert sock.incoming == bytearray(b"\x40\x02\x00\x01")
 
 
-def test_sync_transport_to_client_keeps_retained_large_raw_publish_on_puback_timeout():
+def test_sync_transport_to_client_ignores_puback_timeout_by_default():
     runtime_config = _runtime_config()
     transport = MQTTTransport("broker.local", 1883)
     transport.mark_connect_requested()
@@ -1201,6 +1292,38 @@ def test_sync_transport_to_client_keeps_retained_large_raw_publish_on_puback_tim
     transport.publish(topic, payload, retain=True)
 
     sync_result = sync_transport_to_client(connect_result.adapter, transport)
+
+    assert sync_result.phase == "synced"
+    assert sync_result.published_count == 1
+    assert transport.connected is True
+    assert transport.published_messages == []
+    expected = bytes(mqtt_client_module._mqtt_qos0_publish_packet(topic, payload, True))
+    sock = connect_result.adapter.client._sock
+    assert bytes(sock.sent) == expected
+    assert transport.ack_diagnostic() == ""
+
+
+def test_sync_transport_to_client_reports_optional_puback_timeout_when_enabled():
+    original_threshold = mqtt_client_module.MQTT_RAW_VERIFY_PUBLISH_BYTES
+    mqtt_client_module.MQTT_RAW_VERIFY_PUBLISH_BYTES = 512
+    try:
+        runtime_config = _runtime_config()
+        transport = MQTTTransport("broker.local", 1883)
+        transport.mark_connect_requested()
+        adapter = build_mqtt_client_adapter(
+            runtime_config,
+            socket_pool=object(),
+            modules={"mqtt_cls": _PubackTimeoutSocketPublishMQTTClient},
+        )
+
+        connect_result = connect_mqtt_client(adapter, transport)
+        topic = "nodus/avpd-0kl7sx/meta"
+        payload = "x" * 1435
+        transport.publish(topic, payload, retain=True)
+
+        sync_result = sync_transport_to_client(connect_result.adapter, transport)
+    finally:
+        mqtt_client_module.MQTT_RAW_VERIFY_PUBLISH_BYTES = original_threshold
 
     assert sync_result.phase == "error"
     assert sync_result.published_count == 0
@@ -1307,6 +1430,11 @@ def test_sync_transport_to_client_subscribes_qos0_packet_on_socket():
     assert packet[-1] == 0
     assert connect_result.adapter.client._sock.incoming == bytearray()
     assert connect_result.adapter.client._sock.timeouts == [1]
+    ack_diagnostic = transport.ack_diagnostic()
+    assert "last_ack_kind=suback" in ack_diagnostic
+    assert "last_ack_topic={}".format(topic) in ack_diagnostic
+    assert "last_ack_stage=complete" in ack_diagnostic
+    assert "last_ack_packet_id=1" in ack_diagnostic
 
 
 def test_sync_transport_to_client_reports_raw_subscribe_failure_diagnostics():
@@ -1439,6 +1567,45 @@ def test_poll_mqtt_client_treats_etimedout_as_empty_poll():
     assert transport.connected is True
     assert transport.last_disconnect_reason == ""
     assert transport.received_messages == []
+
+
+def test_poll_mqtt_client_reports_ebadf_context_after_raw_puback():
+    original_threshold = mqtt_client_module.MQTT_RAW_VERIFY_PUBLISH_BYTES
+    mqtt_client_module.MQTT_RAW_VERIFY_PUBLISH_BYTES = 512
+    try:
+        runtime_config = _runtime_config()
+        transport = MQTTTransport("broker.local", 1883)
+        transport.mark_connect_requested()
+        adapter = build_mqtt_client_adapter(
+            runtime_config,
+            socket_pool=object(),
+            modules={"mqtt_cls": _PubackThenEbadfSocketPublishMQTTClient},
+        )
+
+        connect_result = connect_mqtt_client(adapter, transport)
+        topic = "nodus/avpd-0kl7sx/meta"
+        payload = "x" * 1435
+        transport.publish(topic, payload, retain=True)
+        sync_result = sync_transport_to_client(connect_result.adapter, transport)
+
+        assert sync_result.phase == "synced"
+        poll_result = poll_mqtt_client(sync_result.adapter, transport)
+    finally:
+        mqtt_client_module.MQTT_RAW_VERIFY_PUBLISH_BYTES = original_threshold
+
+    assert poll_result.phase == "error"
+    error = poll_result.errors[0]
+    assert error.startswith("mqtt_poll_failed:[Errno 9] EBADF")
+    assert "poll_sock=raw" in error
+    assert "poll_caps=_PubackThenEbadfSocket:send1 recv1 recv_into0" in error
+    assert "poll_timeout_s=1" in error
+    assert "last_pub_topic={}".format(topic) in error
+    assert "last_pub_retain=1" in error
+    assert "last_ack_kind=puback" in error
+    assert "last_ack_topic={}".format(topic) in error
+    assert "last_ack_stage=complete" in error
+    assert "last_ack_packet_id=1" in error
+    assert "last_ack_timeout_s=1" in error
 
 
 def test_poll_mqtt_client_reports_raw_socket_pystack_source():
