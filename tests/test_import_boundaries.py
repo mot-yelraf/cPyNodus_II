@@ -44,6 +44,11 @@ def test_command_intake_import_does_not_load_web_or_hardware_services():
 
         blocked = (
             "cpynodus_ii.core.settings",
+            "cpynodus_ii.features.calibration_config",
+            "cpynodus_ii.features.calibration_offset_parse",
+            "cpynodus_ii.features.calibration_offset_persistence",
+            "cpynodus_ii.features.calibration_offsets",
+            "cpynodus_ii.features.calibration_persistence",
             "cpynodus_ii.features.command_handlers",
             "cpynodus_ii.features.log_transfer",
             "cpynodus_ii.features.onboarding_state",
@@ -76,6 +81,11 @@ def test_empty_command_poll_does_not_load_command_handlers():
 
         blocked = (
             "cpynodus_ii.core.settings",
+            "cpynodus_ii.features.calibration_config",
+            "cpynodus_ii.features.calibration_offset_parse",
+            "cpynodus_ii.features.calibration_offset_persistence",
+            "cpynodus_ii.features.calibration_offsets",
+            "cpynodus_ii.features.calibration_persistence",
             "cpynodus_ii.features.command_handlers",
             "cpynodus_ii.features.log_transfer",
             "cpynodus_ii.features.payloads",
@@ -107,6 +117,10 @@ def test_idle_calibration_poll_does_not_load_command_handlers():
 
         blocked = (
             "cpynodus_ii.core.settings",
+            "cpynodus_ii.features.calibration_config",
+            "cpynodus_ii.features.calibration_offset_parse",
+            "cpynodus_ii.features.calibration_offset_persistence",
+            "cpynodus_ii.features.calibration_persistence",
             "cpynodus_ii.features.command_handlers",
             "cpynodus_ii.features.payloads",
             "cpynodus_ii.features.runtime_config_update",
@@ -182,6 +196,9 @@ def test_switch_command_does_not_load_heavy_command_handlers():
 
         blocked = (
             "cpynodus_ii.core.settings",
+            "cpynodus_ii.features.calibration_config",
+            "cpynodus_ii.features.calibration_offset_persistence",
+            "cpynodus_ii.features.calibration_persistence",
             "cpynodus_ii.features.command_handlers",
             "cpynodus_ii.features.payloads",
             "cpynodus_ii.features.runtime_config_update",
@@ -385,6 +402,59 @@ def test_calibration_fast_apply_does_not_load_heavy_command_handlers():
 
         blocked = (
             "cpynodus_ii.core.settings",
+            "cpynodus_ii.features.calibration_config",
+            "cpynodus_ii.features.calibration_persistence",
+            "cpynodus_ii.features.command_handlers",
+            "cpynodus_ii.features.payloads",
+            "cpynodus_ii.features.runtime_config_update",
+            "cpynodus_ii.ota.state",
+        )
+        loaded = [name for name in blocked if name in sys.modules]
+        if loaded:
+            raise SystemExit("unexpected imports: {}".format(",".join(loaded)))
+        """
+    )
+
+
+def test_calibration_fast_apply_without_persistence_does_not_load_file_writer():
+    _run_import_check(
+        """
+        import sys
+
+        from cpynodus_ii.core.config import DetectedSensor, RuntimeConfig
+        from cpynodus_ii.core.mqtt import MQTTTransport
+        from cpynodus_ii.features.command_intake import process_inbound_messages
+
+        runtime_config = RuntimeConfig(
+            sensor=DetectedSensor(
+                family="i2c",
+                interface="i2c",
+                active_config_file="sensor_i2c.toml",
+                device="co2",
+                sensor_id="co2-x",
+            ),
+        )
+        transport = MQTTTransport("broker.local", 1883)
+        transport.receive(
+            "nodus/co2-x/calibration/set",
+            (
+                '{"message_id":"cal-volatile","action":"apply","payload":{"offsets":['
+                '{"key":"Calibration.Device.TEMP_OFFSET","value":1.25}'
+                ']}}'
+            ),
+        )
+
+        results = process_inbound_messages(transport, runtime_config, None)
+
+        if len(results) != 1 or results[0].phase != "published":
+            raise SystemExit("unexpected calibration result: {}".format(results))
+        if results[0].runtime_config.sensor.calibration_device.temp_offset != 1.25:
+            raise SystemExit("calibration was not applied")
+
+        blocked = (
+            "cpynodus_ii.core.settings",
+            "cpynodus_ii.features.calibration_config",
+            "cpynodus_ii.features.calibration_persistence",
             "cpynodus_ii.features.command_handlers",
             "cpynodus_ii.features.payloads",
             "cpynodus_ii.features.runtime_config_update",

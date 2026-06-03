@@ -915,48 +915,13 @@ def process_calibration_message(
                 runtime_config=runtime_config,
                 message_id=command.message_id,
             )
-        updated_runtime_config = runtime_config
         applied_updates = tuple(command.updates)
         persistence_errors = ()
-        if settings_root is not None:
-            try:
-                _, applied_updates, persistence_errors = (
-                    Settings.apply_updates_to_directory(
-                        settings_root,
-                        runtime_config,
-                        command.updates,
-                        reload_runtime=False,
-                    )
-                )
-            except RuntimeError as exc:
-                if "pystack exhausted" not in str(exc).lower():
-                    raise
-                transport.publish(
-                    result_topic,
-                    build_calibration_result_payload(
-                        command.message_id,
-                        applied=False,
-                        updated=0,
-                        error="pystack_exhausted",
-                    ),
-                    retain=False,
-                )
-                return CommandResult(
-                    phase="error",
-                    topic=topic,
-                    command_type="calibration",
-                    published_count=published_count + 1,
-                    errors=("pystack_exhausted",),
-                    runtime_config=runtime_config,
-                    message_id=command.message_id,
-                    persistence_mode="volatile",
-                )
-        if applied_updates:
-            updated_runtime_config, _, _ = apply_runtime_config_updates(
-                runtime_config,
-                applied_updates,
-                settings_root=None,
-            )
+        updated_runtime_config, applied_updates, _ = apply_runtime_config_updates(
+            runtime_config,
+            applied_updates,
+            settings_root=None,
+        )
         transport.publish(
             result_topic,
             build_calibration_result_payload(
@@ -977,6 +942,18 @@ def process_calibration_message(
             ),
             retain=False,
         )
+        if settings_root is not None:
+            try:
+                _, _, persistence_errors = Settings.apply_updates_to_directory(
+                    settings_root,
+                    runtime_config,
+                    applied_updates,
+                    reload_runtime=False,
+                )
+            except RuntimeError as exc:
+                if "pystack exhausted" not in str(exc).lower():
+                    raise
+                persistence_errors = ("pystack_exhausted",)
         return CommandResult(
             phase="published",
             topic=topic,
@@ -985,7 +962,7 @@ def process_calibration_message(
             errors=tuple(persistence_errors),
             runtime_config=updated_runtime_config,
             message_id=command.message_id,
-            persistence_mode="volatile" if persistence_errors else "persisted",
+            persistence_mode=_persistence_mode(settings_root, persistence_errors),
         )
 
     if command.action == "status":
@@ -1616,6 +1593,12 @@ def _extract_config_updates(body):
                 )
         return updates
     return None
+
+
+def _persistence_mode(settings_root, errors):
+    if settings_root is None:
+        return ""
+    return "volatile" if errors else "persisted"
 
 
 def _extract_calibration_updates(body):

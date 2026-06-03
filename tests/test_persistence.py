@@ -182,11 +182,16 @@ def test_calibration_message_reports_pystack_persistence_failure(monkeypatch):
             settings_root=tmpdir_path,
         )
 
-    assert result.phase == "error"
+    assert result.phase == "published"
     assert result.errors == ("pystack_exhausted",)
-    assert result.published_count == 2
+    assert result.published_count == 3
+    assert result.persistence_mode == "volatile"
+    assert result.runtime_config.sensor.calibration_device.temp_offset == 1.5
     assert transport.published_messages[0].payload["accepted"] is True
-    assert transport.published_messages[1].payload["error"] == "pystack_exhausted"
+    assert transport.published_messages[1].payload["applied"] is True
+    assert transport.published_messages[1].payload["updated"] == 1
+    assert transport.published_messages[1].payload["error"] == ""
+    assert transport.published_messages[2].topic == "nodus/aqi-x943fm/meta/patch"
 
 
 def test_soil_ph_calibration_persists_without_recursive_toml_dump(monkeypatch):

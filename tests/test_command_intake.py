@@ -4,6 +4,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 
+import cpynodus_ii.features.command_intake as command_intake
 from cpynodus_ii.core.config import (
     DetectedSensor,
     MQTTConfig,
@@ -939,6 +940,413 @@ def test_process_inbound_messages_fast_calibration_apply_persists_offsets():
     assert transport.published_messages[1].payload["updated"] == 2
     assert transport.published_messages[2].topic == "nodus/co2-ykdvea/meta/patch"
     assert transport.published_messages[2].payload["source"] == "calibration_set"
+
+
+def test_process_inbound_messages_fast_calibration_split_offsets_persist():
+    docs_root = Path(__file__).resolve().parents[1] / "docs" / "sensor+switch"
+    transport = MQTTTransport("broker.local", 1883)
+    with TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        for name in ("settings.toml", "switch.toml", "sensor_i2c.toml"):
+            (root / name).write_text((docs_root / name).read_text(), encoding="utf-8")
+        runtime_config = _sensor_switch_runtime_config()
+        transport.receive(
+            "nodus/co2-ykdvea/calibration/set",
+            (
+                '{"message_id":"cal-co2","action":"apply","payload":{"offsets":['
+                '{"key":"Calibration.Device.CO2_OFFSET","value":-100.0}'
+                "]}}"
+            ),
+        )
+        transport.receive(
+            "nodus/co2-ykdvea/calibration/set",
+            (
+                '{"message_id":"cal-alt","action":"apply","payload":{"offsets":['
+                '{"key":"Calibration.Device.ALTITUDE_METERS","value":1783.0}'
+                "]}}"
+            ),
+        )
+
+        results = process_inbound_messages(
+            transport,
+            runtime_config,
+            _sensor_switch_service(),
+            settings_root=tmpdir,
+        )
+        sensor_doc = Settings._read_toml_file(root / Settings.SENSOR_I2C_FILE)
+
+    assert len(results) == 2
+    assert all(result.phase == "published" for result in results)
+    assert all(result.persistence_mode == "persisted" for result in results)
+    assert all(result.errors == () for result in results)
+    assert [result.message_id for result in results] == ["cal-co2", "cal-alt"]
+    calibration = results[-1].runtime_config.sensor.calibration_device
+    assert calibration.co2_offset == -100.0
+    assert calibration.altitude_meters == 1783.0
+    assert sensor_doc["Calibration"]["Device"]["CO2_OFFSET"] == -100.0
+    assert sensor_doc["Calibration"]["Device"]["ALTITUDE_METERS"] == 1783.0
+    assert [message.topic for message in transport.published_messages] == [
+        "nodus/co2-ykdvea/calibration/ack",
+        "nodus/co2-ykdvea/calibration/result",
+        "nodus/co2-ykdvea/meta/patch",
+        "nodus/co2-ykdvea/calibration/ack",
+        "nodus/co2-ykdvea/calibration/result",
+        "nodus/co2-ykdvea/meta/patch",
+    ]
+    assert transport.published_messages[1].payload["applied"] is True
+    assert transport.published_messages[1].payload["updated"] == 1
+    assert transport.published_messages[2].payload["updates"] == [
+        {
+            "section": "Calibration.Device",
+            "key": "CO2_OFFSET",
+            "value": -100.0,
+        },
+    ]
+    assert transport.published_messages[4].payload["applied"] is True
+    assert transport.published_messages[4].payload["updated"] == 1
+    assert transport.published_messages[5].payload["updates"] == [
+        {
+            "section": "Calibration.Device",
+            "key": "ALTITUDE_METERS",
+            "value": 1783.0,
+        },
+    ]
+
+
+def test_process_inbound_messages_fast_calibration_memory_error_is_contained(
+    monkeypatch,
+):
+    transport = MQTTTransport("broker.local", 1883)
+    runtime_config = _sensor_switch_runtime_config()
+    transport.receive(
+        "nodus/co2-ykdvea/calibration/set",
+        (
+            '{"message_id":"cal-oom","action":"apply","payload":{"offsets":['
+            '{"key":"Calibration.Device.CO2_OFFSET","value":-100.0}'
+            "]}}"
+        ),
+    )
+
+    def raise_memory_error(*args, **kwargs):
+        raise MemoryError("memory allocation failed")
+
+    monkeypatch.setattr(
+        command_intake,
+        "_process_calibration_offsets_message",
+        raise_memory_error,
+    )
+
+    results = process_inbound_messages(
+        transport,
+        runtime_config,
+        _sensor_switch_service(),
+    )
+
+    assert len(results) == 1
+    assert results[0].phase == "error"
+    assert results[0].command_type == "calibration"
+    assert results[0].published_count == 2
+    assert results[0].errors == ("calibration_offsets_memory",)
+    assert results[0].message_id == "cal-oom"
+    assert transport.received_messages == []
+    assert transport.published_messages[0].topic == "nodus/co2-ykdvea/calibration/ack"
+    assert transport.published_messages[0].payload == {
+        "message_id": "cal-oom",
+        "accepted": True,
+    }
+    assert (
+        transport.published_messages[1].topic
+        == "nodus/co2-ykdvea/calibration/result"
+    )
+    assert transport.published_messages[1].payload == {
+        "message_id": "cal-oom",
+        "applied": False,
+        "updated": 0,
+        "duplicate": False,
+        "error": "calibration_offsets_memory",
+    }
+
+
+def test_calibration_memory_failure_publish_memory_error_is_contained(monkeypatch):
+    transport = MQTTTransport("broker.local", 1883)
+    runtime_config = _sensor_switch_runtime_config()
+    transport.receive(
+        "nodus/co2-ykdvea/calibration/set",
+        (
+            '{"message_id":"cal-pub-oom","action":"apply","payload":{"offsets":['
+            '{"key":"Calibration.Device.CO2_OFFSET","value":-100.0}'
+            "]}}"
+        ),
+    )
+
+    def raise_memory_error(*args, **kwargs):
+        raise MemoryError("memory allocation failed")
+
+    monkeypatch.setattr(
+        command_intake,
+        "_process_calibration_offsets_message",
+        raise_memory_error,
+    )
+    monkeypatch.setattr(transport, "publish", raise_memory_error)
+
+    results = process_inbound_messages(
+        transport,
+        runtime_config,
+        _sensor_switch_service(),
+    )
+
+    assert len(results) == 1
+    assert results[0].phase == "error"
+    assert results[0].published_count == 0
+    assert results[0].errors == (
+        "calibration_offsets_memory",
+        "calibration_failure_publish_memory",
+    )
+    assert results[0].message_id == "cal-pub-oom"
+    assert transport.received_messages == []
+    assert transport.published_messages == []
+
+
+def test_fast_calibration_offset_persistence_import_memory_is_reported(
+    monkeypatch,
+    tmp_path,
+):
+    import builtins
+
+    transport = MQTTTransport("broker.local", 1883)
+    runtime_config = _sensor_switch_runtime_config()
+    real_import = builtins.__import__
+
+    def import_with_memory_error(name, *args, **kwargs):
+        if name == "cpynodus_ii.features.calibration_offset_persistence":
+            raise MemoryError("memory allocation failed")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", import_with_memory_error)
+    transport.receive(
+        "nodus/co2-ykdvea/calibration/set",
+        (
+            '{"message_id":"cal-offset-persist-oom","action":"apply",'
+            '"payload":{"offsets":['
+            '{"key":"Calibration.Device.CO2_OFFSET","value":-100.0}'
+            "]}}"
+        ),
+    )
+
+    results = process_inbound_messages(
+        transport,
+        runtime_config,
+        _sensor_switch_service(),
+        settings_root=tmp_path,
+    )
+
+    assert len(results) == 1
+    assert results[0].phase == "published"
+    assert results[0].published_count == 3
+    assert results[0].errors == ("calibration_offset_persist_import_memory",)
+    assert results[0].persistence_mode == "volatile"
+    assert results[0].requested_state == "offset_fast:applied"
+    assert results[0].runtime_config.sensor.calibration_device.co2_offset == -100.0
+    assert transport.published_messages[1].payload == {
+        "message_id": "cal-offset-persist-oom",
+        "applied": True,
+        "updated": 1,
+        "duplicate": False,
+        "error": "",
+    }
+    assert transport.published_messages[2].topic == "nodus/co2-ykdvea/meta/patch"
+
+
+def test_fast_calibration_offset_persistence_pystack_is_nonfatal(
+    monkeypatch,
+    tmp_path,
+):
+    from cpynodus_ii.features import calibration_offset_persistence
+
+    transport = MQTTTransport("broker.local", 1883)
+    runtime_config = _sensor_switch_runtime_config()
+
+    def raise_pystack(*args, **kwargs):
+        raise RuntimeError("pystack exhausted")
+
+    monkeypatch.setattr(
+        calibration_offset_persistence,
+        "persist_single_calibration_offset",
+        raise_pystack,
+    )
+    transport.receive(
+        "nodus/co2-ykdvea/calibration/set",
+        (
+            '{"message_id":"cal-offset-persist-stack","action":"apply",'
+            '"payload":{"offsets":['
+            '{"key":"Calibration.Device.CO2_OFFSET","value":-100.0}'
+            "]}}"
+        ),
+    )
+
+    results = process_inbound_messages(
+        transport,
+        runtime_config,
+        _sensor_switch_service(),
+        settings_root=tmp_path,
+    )
+
+    assert len(results) == 1
+    assert results[0].phase == "published"
+    assert results[0].published_count == 3
+    assert results[0].errors == ("calibration_offset_persist_pystack",)
+    assert results[0].persistence_mode == "volatile"
+    assert results[0].requested_state == "offset_fast:applied"
+    assert results[0].runtime_config.sensor.calibration_device.co2_offset == -100.0
+    assert transport.published_messages[0].topic == "nodus/co2-ykdvea/calibration/ack"
+    assert transport.published_messages[1].payload == {
+        "message_id": "cal-offset-persist-stack",
+        "applied": True,
+        "updated": 1,
+        "duplicate": False,
+        "error": "",
+    }
+    assert transport.published_messages[2].topic == "nodus/co2-ykdvea/meta/patch"
+
+
+def test_fast_calibration_persistence_import_memory_error_is_reported(
+    monkeypatch,
+    tmp_path,
+):
+    import builtins
+
+    from cpynodus_ii.features.calibration_config import (
+        process_calibration_apply_message,
+    )
+
+    transport = MQTTTransport("broker.local", 1883)
+    runtime_config = _sensor_switch_runtime_config()
+    real_import = builtins.__import__
+
+    def import_with_memory_error(name, *args, **kwargs):
+        if name == "cpynodus_ii.features.calibration_persistence":
+            raise MemoryError("memory allocation failed")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", import_with_memory_error)
+
+    result = process_calibration_apply_message(
+        transport,
+        runtime_config,
+        topic="nodus/co2-ykdvea/calibration/set",
+        payload_text=(
+            '{"message_id":"cal-persist-oom","action":"apply","payload":{"offsets":['
+            '{"key":"Calibration.Device.CO2_OFFSET","value":-100.0}'
+            "]}}"
+        ),
+        settings_root=tmp_path,
+    )
+
+    assert result.phase == "published"
+    assert result.errors == ("calibration_persist_import_memory",)
+    assert result.published_count == 3
+    assert result.persistence_mode == "volatile"
+    assert result.runtime_config.sensor.calibration_device.co2_offset == -100.0
+    assert transport.published_messages[0].topic == "nodus/co2-ykdvea/calibration/ack"
+    assert transport.published_messages[1].payload["applied"] is True
+    assert transport.published_messages[1].payload["updated"] == 1
+    assert transport.published_messages[1].payload["error"] == ""
+    assert transport.published_messages[2].topic == "nodus/co2-ykdvea/meta/patch"
+
+
+def test_process_inbound_messages_ignores_empty_calibration_clear(monkeypatch):
+    transport = MQTTTransport("broker.local", 1883)
+    runtime_config = _sensor_switch_runtime_config()
+    transport.receive("nodus/co2-ykdvea/calibration/set", "")
+
+    def fail_handlers():
+        raise AssertionError("empty calibration clear should not load handlers")
+
+    monkeypatch.setattr(command_intake, "_handlers", fail_handlers)
+
+    results = process_inbound_messages(
+        transport,
+        runtime_config,
+        _sensor_switch_service(),
+    )
+
+    assert results == ()
+    assert transport.received_messages == []
+    assert transport.published_messages == []
+
+
+def test_process_inbound_messages_calibration_status_uses_heavy_handler(monkeypatch):
+    transport = MQTTTransport("broker.local", 1883)
+    runtime_config = _sensor_switch_runtime_config()
+    transport.receive(
+        "nodus/co2-ykdvea/calibration/set",
+        '{"message_id":"cal-status","action":"status"}',
+    )
+    calls = []
+
+    class Handlers:
+        def process_inbound_messages(self, *args, **kwargs):
+            calls.append(args[0].received_messages[0].payload_text)
+            args[0].received_messages.clear()
+            return (
+                command_intake.CommandResult(
+                    phase="published",
+                    topic="nodus/co2-ykdvea/calibration/set",
+                    command_type="calibration",
+                    published_count=2,
+                    runtime_config=runtime_config,
+                ),
+            )
+
+    monkeypatch.setattr(command_intake, "_handlers", lambda: Handlers())
+
+    results = process_inbound_messages(
+        transport,
+        runtime_config,
+        _sensor_switch_service(),
+    )
+
+    assert len(results) == 1
+    assert results[0].phase == "published"
+    assert calls == ['{"message_id":"cal-status","action":"status"}']
+
+
+def test_process_inbound_messages_location_config_memory_error_is_contained(
+    monkeypatch,
+):
+    transport = MQTTTransport("broker.local", 1883)
+    runtime_config = _sensor_switch_runtime_config()
+    transport.receive(
+        "nodus/co2-ykdvea/config/set",
+        (
+            '{"message_id":"cfg-location-oom","payload":{"updates":['
+            '{"section":"Sensor","key":"LOCATION","value":"Office"}'
+            "]}}"
+        ),
+    )
+
+    def raise_memory_error(*args, **kwargs):
+        raise MemoryError("memory allocation failed")
+
+    monkeypatch.setattr(
+        command_intake,
+        "_process_location_config_message",
+        raise_memory_error,
+    )
+
+    results = process_inbound_messages(
+        transport,
+        runtime_config,
+        _sensor_switch_service(),
+    )
+
+    assert len(results) == 1
+    assert results[0].phase == "error"
+    assert results[0].command_type == "config"
+    assert results[0].published_count == 0
+    assert results[0].errors == ("config_location_handler_memory",)
+    assert transport.received_messages == []
+    assert transport.published_messages == []
 
 
 def test_process_inbound_messages_fast_calibration_handles_aqi_offset_batch():

@@ -100,31 +100,100 @@ def process_inbound_messages(
             continue
 
         fast_result = None
-        if _is_location_config_topic(message.topic, runtime_config):
-            fast_result = _process_location_config_message(
-                transport,
-                runtime_config,
-                topic=message.topic,
-                payload_text=message.payload_text,
-                handled_message_ids=handled_message_ids,
-                settings_root=settings_root,
-            )
+        if _should_try_location_config_fast_path(
+            message.topic,
+            runtime_config,
+            message.payload_text,
+        ):
+            try:
+                fast_result = _process_location_config_message(
+                    transport,
+                    runtime_config,
+                    topic=message.topic,
+                    payload_text=message.payload_text,
+                    handled_message_ids=handled_message_ids,
+                    settings_root=settings_root,
+                )
+            except MemoryError:
+                _restore_received_messages(transport, messages[index + 1 :])
+                results.append(
+                    CommandResult(
+                        phase="error",
+                        topic=message.topic,
+                        command_type="config",
+                        published_count=0,
+                        errors=("config_location_handler_memory",),
+                        runtime_config=runtime_config,
+                    )
+                )
+                return tuple(results)
         if fast_result is not None:
             if fast_result.runtime_config is not None:
                 runtime_config = fast_result.runtime_config
             results.append(fast_result)
             continue
 
+        if _is_empty_payload(message.payload_text) and _is_sensor_calibration_topic(
+            message.topic,
+            runtime_config,
+        ):
+            continue
+
         fast_result = None
-        if _is_sensor_calibration_topic(message.topic, runtime_config):
-            fast_result = _process_calibration_apply_message(
-                transport,
-                runtime_config,
-                topic=message.topic,
-                payload_text=message.payload_text,
-                handled_message_ids=handled_message_ids,
-                settings_root=settings_root,
-            )
+        if _should_try_calibration_apply_fast_path(
+            message.topic,
+            runtime_config,
+            message.payload_text,
+        ):
+            if _payload_may_apply_calibration_offsets(message.payload_text):
+                try:
+                    fast_result = _process_calibration_offsets_message(
+                        transport,
+                        runtime_config,
+                        topic=message.topic,
+                        payload_text=message.payload_text,
+                        handled_message_ids=handled_message_ids,
+                        settings_root=settings_root,
+                    )
+                except MemoryError:
+                    _restore_received_messages(transport, messages[index + 1 :])
+                    results.append(
+                        _publish_minimal_calibration_failure(
+                            transport,
+                            runtime_config,
+                            topic=message.topic,
+                            payload_text=message.payload_text,
+                            error="calibration_offsets_memory",
+                        )
+                    )
+                    return tuple(results)
+            if fast_result is not None:
+                if fast_result.runtime_config is not None:
+                    runtime_config = fast_result.runtime_config
+                results.append(fast_result)
+                continue
+
+            try:
+                fast_result = _process_calibration_apply_message(
+                    transport,
+                    runtime_config,
+                    topic=message.topic,
+                    payload_text=message.payload_text,
+                    handled_message_ids=handled_message_ids,
+                    settings_root=settings_root,
+                )
+            except MemoryError:
+                _restore_received_messages(transport, messages[index + 1 :])
+                results.append(
+                    _publish_minimal_calibration_failure(
+                        transport,
+                        runtime_config,
+                        topic=message.topic,
+                        payload_text=message.payload_text,
+                        error="calibration_handler_memory",
+                    )
+                )
+                return tuple(results)
         if fast_result is not None:
             if fast_result.runtime_config is not None:
                 runtime_config = fast_result.runtime_config
@@ -490,6 +559,35 @@ def _process_calibration_apply_message(
     )
 
 
+def _process_calibration_offsets_message(
+    transport,
+    runtime_config,
+    *,
+    topic,
+    payload_text,
+    handled_message_ids=(),
+    settings_root=None,
+):
+    try:
+        import gc
+
+        gc.collect()
+    except Exception:
+        pass
+    from cpynodus_ii.features.calibration_offsets import (
+        process_calibration_offsets_message,
+    )
+
+    return process_calibration_offsets_message(
+        transport,
+        runtime_config,
+        topic=topic,
+        payload_text=payload_text,
+        handled_message_ids=handled_message_ids,
+        settings_root=settings_root,
+    )
+
+
 def _is_switch_command_topic(topic, runtime_config):
     text = str(topic or "").strip()
     if not text.endswith("/config/set"):
@@ -509,6 +607,54 @@ def _is_location_config_topic(topic, runtime_config):
     )
 
 
+def _should_try_location_config_fast_path(topic, runtime_config, payload_text):
+    if not _is_location_config_topic(topic, runtime_config):
+        return False
+    return _payload_may_update_location(payload_text)
+
+
+def _payload_may_update_location(payload_text):
+    text = str(payload_text or "").strip()
+    if not text:
+        return False
+    upper = text.upper()
+    return "LOCATION" in upper or "SWITCH_LOCATION" in upper
+
+
+def _should_try_calibration_apply_fast_path(topic, runtime_config, payload_text):
+    if not _is_sensor_calibration_topic(topic, runtime_config):
+        return False
+    return _payload_may_apply_calibration(payload_text)
+
+
+def _payload_may_apply_calibration(payload_text):
+    text = str(payload_text or "").strip()
+    if not text:
+        return False
+    lower = text.lower()
+    if '"action"' not in lower:
+        return False
+    if not ('"apply"' in lower or '"set"' in lower or '"update"' in lower):
+        return False
+    return "offsets" in lower or "calibration" in lower
+
+
+def _payload_may_apply_calibration_offsets(payload_text):
+    text = str(payload_text or "").strip()
+    if not text:
+        return False
+    lower = text.lower()
+    if '"offsets"' not in lower:
+        return False
+    if '"action"' not in lower:
+        return False
+    return '"apply"' in lower or '"set"' in lower or '"update"' in lower
+
+
+def _is_empty_payload(payload_text):
+    return not str(payload_text or "").strip()
+
+
 def _is_sensor_calibration_topic(topic, runtime_config):
     device_id = _device_id(runtime_config)
     return bool(
@@ -516,6 +662,90 @@ def _is_sensor_calibration_topic(topic, runtime_config):
         and runtime_config.sensor.present
         and topic == mqtt_topic(runtime_config, device_id, "calibration", "set")
     )
+
+
+def _publish_minimal_calibration_failure(
+    transport,
+    runtime_config,
+    *,
+    topic,
+    payload_text,
+    error,
+):
+    message_id = _extract_json_string_field(payload_text, "message_id")
+    device_id = _device_id(runtime_config)
+    published_count = 0
+    errors = (str(error or "calibration_handler_memory"),)
+    if not device_id:
+        return CommandResult(
+            phase="error",
+            topic=topic,
+            command_type="calibration",
+            published_count=published_count,
+            errors=errors,
+            runtime_config=runtime_config,
+            message_id=message_id,
+            persistence_mode="volatile",
+        )
+    try:
+        transport.publish(
+            mqtt_topic(runtime_config, device_id, "calibration", "ack"),
+            {
+                "message_id": message_id,
+                "accepted": True,
+            },
+            retain=False,
+        )
+        published_count += 1
+        transport.publish(
+            mqtt_topic(runtime_config, device_id, "calibration", "result"),
+            {
+                "message_id": message_id,
+                "applied": False,
+                "updated": 0,
+                "duplicate": False,
+                "error": errors[0],
+            },
+            retain=False,
+        )
+        published_count += 1
+    except MemoryError:
+        errors = errors + ("calibration_failure_publish_memory",)
+    return CommandResult(
+        phase="error",
+        topic=topic,
+        command_type="calibration",
+        published_count=published_count,
+        errors=errors,
+        runtime_config=runtime_config,
+        message_id=message_id,
+        persistence_mode="volatile",
+    )
+
+
+def _extract_json_string_field(payload_text, field):
+    text = str(payload_text or "")
+    marker = '"{}"'.format(str(field or ""))
+    index = text.find(marker)
+    if index < 0:
+        return ""
+    colon_index = text.find(":", index + len(marker))
+    if colon_index < 0:
+        return ""
+    start = text.find('"', colon_index + 1)
+    if start < 0:
+        return ""
+    end = start + 1
+    escaped = False
+    while end < len(text):
+        char = text[end]
+        if char == '"' and not escaped:
+            return text[start + 1 : end]
+        escaped = char == "\\" and not escaped
+        if char != "\\":
+            escaped = False
+        end += 1
+    return ""
 
 
 def _apply_switch_state(switch_service, *, channel_id, state):

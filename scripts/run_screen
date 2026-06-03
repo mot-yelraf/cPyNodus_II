@@ -13,8 +13,8 @@ Examples:
   run_screen /dev/ttyACM0 115200
 
 If screen exits because the device reset or disappeared, this script waits for
-the same device path to return and reconnects. Press Ctrl-C at the wrapper
-prompt between reconnect attempts to stop.
+the same device path to return and reconnects. Press Ctrl-C while waiting for
+the device or between reconnect attempts to stop.
 EOF
 }
 
@@ -90,6 +90,12 @@ BASE_NAME="$(basename "$DEV")"
 SESSION_BASE="run_screen_$(sanitize_name "$BASE_NAME")_$$"
 MONITOR_PID=""
 
+run_stty() {
+  stty "$@" 2>/dev/null || stty "$@" 2>/dev/null </dev/tty
+}
+
+ORIG_STTY="$(run_stty -g || true)"
+
 cleanup_monitor() {
   if [[ -n "${MONITOR_PID:-}" ]]; then
     kill "$MONITOR_PID" >/dev/null 2>&1 || true
@@ -98,8 +104,29 @@ cleanup_monitor() {
   fi
 }
 
-trap 'cleanup_monitor; exit 130' INT
-trap 'cleanup_monitor; exit 143' TERM
+restore_terminal() {
+  if [[ -n "${ORIG_STTY:-}" ]]; then
+    run_stty "$ORIG_STTY" || run_stty sane || true
+  else
+    run_stty sane || true
+  fi
+  run_stty isig intr '^C' || true
+}
+
+handle_int() {
+  cleanup_monitor
+  restore_terminal
+  exit 130
+}
+
+handle_term() {
+  cleanup_monitor
+  restore_terminal
+  exit 143
+}
+
+trap handle_int INT
+trap handle_term TERM
 
 while true; do
   wait_for_device "$DEV"
@@ -117,6 +144,7 @@ while true; do
   screen -S "$SESSION" "$DEV" "$BAUD"
   SCREEN_STATUS="$?"
 
+  restore_terminal
   cleanup_monitor
 
   if [[ "$SCREEN_STATUS" -ne 0 ]]; then
