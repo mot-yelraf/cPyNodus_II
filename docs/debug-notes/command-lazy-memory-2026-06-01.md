@@ -153,3 +153,51 @@ write-through to a temporary TOML file, and backup/rename. The writer avoids
 nested context managers and per-line helper calls so the post-publish
 persistence step can succeed instead of reporting
 `calibration_offset_persist_pystack`.
+
+## 2026-06-03 Calibration Appliance Heap Pressure Findings
+
+After failed attempts to add automated MQTT heap sweeps, the appliance was
+restored to the known-good `mqtt_round_trip()` path with version logging
+(`caltest-2026-06-03.4`). The useful manual test shape was direct command
+source, `self_publish=False`, `persist=False`, one Sensorius-style
+`Calibration.Device.CO2_OFFSET=-130.0` offset, and explicit `pressure_bytes`.
+
+Fresh REPL single-threshold runs produced broker-visible `calibration/ack`,
+successful `calibration/result`, and `meta/patch` at these pressure points:
+
+- `0 KiB` pressure, `207696` bytes free before command, passed as
+  `calmqtt-753-r1-1`.
+- `50 KiB` pressure, `173824` bytes free before command, passed as
+  `calmqtt-33-r1-1`.
+- `100 KiB` pressure, `120688` bytes free before command, passed as
+  `calmqtt-26-r1-1`.
+- `150 KiB` pressure, `66688` and then `66848` bytes free before command on two
+  fresh runs, passed as `calmqtt-31-r1-1` and `calmqtt-30-r1-1`.
+
+The 150 KiB pressure runs are the most useful lower-bound data. Both completed
+the command and drained all three MQTT outputs while free heap dropped into the
+mid-35 KiB range during output sync. That means the observed boundary is not
+simply "MQTT publish needs about 65 KiB free"; the fragile point in this test is
+earlier, around command receipt and command processing.
+
+At `165 KiB` pressure, allocation succeeded (`168960` requested and allocated),
+but command processing failed with `mqtt_round_command_memory_error`. The log
+showed `53728` bytes free after pressure allocation, `52400` before direct
+receive, and `50960` before command handling. No broker-visible ack/result/meta
+was produced for that attempt. At `180 KiB` pressure, the pressure allocation
+itself failed (`183808` allocated of `184320` requested, `39568` free) and the
+command was not attempted.
+
+The current measured command-entry threshold for this appliance path is
+therefore between roughly `51 KiB` and `67 KiB` free heap. That does not prove
+that the original Sensorius `calibration_offsets_memory` failure was caused by
+raw free heap alone: fragmentation, prior imports, warm-start state, and stack
+depth can still change the effective headroom. It does show that the direct
+single-offset path can apply and publish successfully with substantially less
+than 100 KiB free, and repeatably fails once command-entry free heap is near
+51 KiB.
+
+A separate top-level loop over multiple pressure points produced
+`mqtt_connect_failed:10.0.0.248:raw:OSError:[Errno 116] ETIMEDOUT` on later
+points before pressure allocation. Those failures should be treated as
+warm-start/MQTT session behavior, not heap-threshold evidence.

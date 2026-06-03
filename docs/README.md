@@ -112,12 +112,25 @@ Examples:
   - `scripts/deploy_nodus.sh --target pi@raspberrypi:/media/pi/CIRCUITPY --dry-run`
 - Sync runtime files only:
   - `scripts/deploy_nodus.sh --target /Volumes/CIRCUITPY --content runtime`
+- Sync runtime files with compiled firmware modules:
+  - `scripts/deploy_nodus.sh --target /Volumes/CIRCUITPY --content mpy`
 
 Notes:
 
 - The script excludes development files (`tests/`, `docs/`, `.git/`, caches, etc.).
-- `--content` options are `full` (default) or `runtime`.
+- `--content` options are `full` (default), `runtime`, or `mpy`.
 - `runtime` syncs `boot.py`, `code.py`, `dataclasses.py`, root `*.def` templates, `cpynodus_ii/`, and `lib/` when present.
+- `mpy` requires a complete, current `build/firmware/cpynodus_ii/` tree. It
+  syncs root `*.py`, root `*.def` templates, compiled
+  `build/firmware/cpynodus_ii/*.mpy` files, and `lib/` when present. Before
+  copying the compiled package, it removes matching `cpynodus_ii/*.py` files
+  from the target so CircuitPython imports the `.mpy` modules.
+- `mpy` can be used on a factory CircuitPython Pico2 W with no existing Nodus
+  firmware. It installs the compiled Nodus package plus the root startup files,
+  default TOML templates, and library dependencies needed for first boot.
+- Active target TOML files such as `settings.toml`, `sensor_i2c.toml`,
+  `sensor_soil.toml`, and `switch.toml` are not part of `runtime` or `mpy`
+  deploy content and remain intact.
 - On macOS, deploy sets `COPYFILE_DISABLE=1` and `COPY_EXTENDED_ATTRIBUTES_DISABLE=1` to prevent `._*` sidecar files on CIRCUITPY.
 - In `drive` mode, the target path must contain `CIRCUITPY` (override with `--force`).
 - `--mode` options are `auto` (default), `drive`, or `staging`.

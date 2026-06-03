@@ -35,9 +35,12 @@ Target formats:
 Options:
   --target VALUE      Required. Destination path or host:path.
   --mode VALUE        `auto` (default), `drive`, or `staging`.
-  --content VALUE     `full` (default) or `runtime`.
+  --content VALUE     `full` (default), `runtime`, or `mpy`.
                       `runtime` syncs boot/code, package files, root
                       `*.def`, and `lib/` when present.
+                      `mpy` syncs root `*.py`, root `*.def`, `lib/`,
+                      and compiled build/firmware/cpynodus_ii/*.mpy,
+                      removing matching target cpynodus_ii/*.py first.
   --dry-run           Show what would be copied, do not write anything.
   --force             Skip CIRCUITPY path safety guard.
   --delete            Delete files on destination not present in source set.
@@ -50,6 +53,7 @@ Options:
 Examples:
   scripts/deploy_nodus.sh --target /Volumes/CIRCUITPY
   scripts/deploy_nodus.sh --target /Volumes/CIRCUITPY --content runtime
+  scripts/deploy_nodus.sh --target /Volumes/CIRCUITPY --content mpy
   scripts/deploy_nodus.sh --target pi@raspberrypi:/media/pi/CIRCUITPY --dry-run
   scripts/deploy_nodus.sh --target pi@raspberrypi:/home/pi/cPyNodus_II-release --mode staging
 EOF
@@ -125,8 +129,8 @@ if [[ "$MODE" != "auto" && "$MODE" != "drive" && "$MODE" != "staging" ]]; then
   exit 2
 fi
 
-if [[ "$CONTENT" != "full" && "$CONTENT" != "runtime" ]]; then
-  echo "Invalid --content '$CONTENT'. Use: full or runtime." >&2
+if [[ "$CONTENT" != "full" && "$CONTENT" != "runtime" && "$CONTENT" != "mpy" ]]; then
+  echo "Invalid --content '$CONTENT'. Use: full, runtime, or mpy." >&2
   exit 2
 fi
 
@@ -207,6 +211,49 @@ fi
 run_full_sync() {
   local destination="$1"
   rsync "${RSYNC_ARGS[@]}" "$SRC" "$destination"
+}
+
+validate_mpy_build() {
+  local build_root="$ROOT_DIR/build/firmware/cpynodus_ii"
+  local src=""
+  local rel_path=""
+  local artifact=""
+  local missing=0
+  local stale=0
+  local count=0
+
+  if [[ ! -d "$build_root" ]]; then
+    echo "Missing MPY build directory: $build_root" >&2
+    echo "Compile cpynodus_ii modules before using --content mpy." >&2
+    exit 1
+  fi
+
+  while IFS= read -r -d '' src; do
+    rel_path="${src#$ROOT_DIR/}"
+    artifact="$ROOT_DIR/build/firmware/${rel_path%.py}.mpy"
+    count=$((count + 1))
+
+    if [[ ! -f "$artifact" ]]; then
+      echo "Missing MPY artifact for $rel_path: ${artifact#$ROOT_DIR/}" >&2
+      missing=1
+      continue
+    fi
+
+    if [[ "$src" -nt "$artifact" ]]; then
+      echo "Stale MPY artifact for $rel_path: ${artifact#$ROOT_DIR/}" >&2
+      stale=1
+    fi
+  done < <(find "$ROOT_DIR/cpynodus_ii" -type f -name '*.py' -print0)
+
+  if [[ $count -eq 0 ]]; then
+    echo "No cpynodus_ii source modules found to validate for --content mpy." >&2
+    exit 1
+  fi
+
+  if [[ $missing -ne 0 || $stale -ne 0 ]]; then
+    echo "MPY build is incomplete or stale; refusing --content mpy deploy." >&2
+    exit 1
+  fi
 }
 
 validate_manifest_entry() {
@@ -296,6 +343,48 @@ clear_postmortem_logs() {
   done
 }
 
+remove_mpy_shadow_py_targets() {
+  local destination="$1"
+  local build_root="$ROOT_DIR/build/firmware/cpynodus_ii"
+  local artifact=""
+  local rel_path=""
+  local py_rel_path=""
+  local target_ref=""
+
+  while IFS= read -r -d '' artifact; do
+    rel_path="${artifact#$ROOT_DIR/build/firmware/}"
+    py_rel_path="${rel_path%.mpy}.py"
+
+    if ! validate_manifest_entry "$py_rel_path"; then
+      echo "Skipping invalid MPY shadow target path: $py_rel_path" >&2
+      continue
+    fi
+
+    target_ref="${destination%/}/$py_rel_path"
+
+    if [[ "$TARGET" == *:* ]]; then
+      if [[ $DRY_RUN -eq 1 ]]; then
+        echo "Would remove remote MPY-shadowed source if present: $target_ref"
+      else
+        ssh "${TARGET%%:*}" "TARGET_PATH=$(remote_shell_quote "${TARGET_PATH_ONLY%/}/$py_rel_path"); if [ -f \"\$TARGET_PATH\" ]; then rm -f -- \"\$TARGET_PATH\" && echo \"Removed remote MPY-shadowed source: \$TARGET_PATH\"; fi"
+      fi
+    else
+      if [[ $DRY_RUN -eq 1 ]]; then
+        if [[ -f "$target_ref" ]]; then
+          echo "Would remove local MPY-shadowed source: $target_ref"
+        else
+          echo "Would remove local MPY-shadowed source if present: $target_ref"
+        fi
+      else
+        if [[ -f "$target_ref" ]]; then
+          rm -f -- "$target_ref"
+          echo "Removed local MPY-shadowed source: $target_ref"
+        fi
+      fi
+    fi
+  done < <(find "$build_root" -type f -name '*.mpy' -print0)
+}
+
 run_runtime_sync() {
   local destination="$1"
   local root_runtime_files=()
@@ -339,25 +428,71 @@ run_runtime_sync() {
   fi
 }
 
+run_mpy_sync() {
+  local destination="$1"
+  local root_runtime_files=()
+  local root_def_files=()
+  local mpy_root="$ROOT_DIR/build/firmware/cpynodus_ii"
+  local f
+
+  validate_mpy_build
+
+  for f in \
+    "$ROOT_DIR/boot.py" \
+    "$ROOT_DIR/code.py" \
+    "$ROOT_DIR/dataclasses.py"; do
+    if [[ -f "$f" ]]; then
+      root_runtime_files+=("$f")
+    fi
+  done
+
+  shopt -s nullglob
+  for f in "$ROOT_DIR"/*.def; do
+    root_def_files+=("$f")
+  done
+  shopt -u nullglob
+
+  if [[ ${#root_runtime_files[@]} -eq 0 && ${#root_def_files[@]} -eq 0 && ! -d "$mpy_root" && ! -d "$ROOT_DIR/lib" ]]; then
+    echo "No MPY deployable files found in $ROOT_DIR" >&2
+    exit 1
+  fi
+
+  if [[ ${#root_runtime_files[@]} -gt 0 ]]; then
+    rsync "${RSYNC_ARGS[@]}" "${root_runtime_files[@]}" "$destination"
+  fi
+
+  if [[ ${#root_def_files[@]} -gt 0 ]]; then
+    rsync "${RSYNC_ARGS[@]}" "${root_def_files[@]}" "$destination"
+  fi
+
+  remove_mpy_shadow_py_targets "$destination"
+
+  rsync "${RSYNC_ARGS[@]}" "$mpy_root/" "$destination/cpynodus_ii/"
+
+  if [[ -d "$ROOT_DIR/lib" ]]; then
+    rsync "${RSYNC_ARGS[@]}" "$ROOT_DIR/lib/" "$destination/lib/"
+  fi
+}
+
 if [[ "$TARGET" == *:* ]]; then
   DEST="$TARGET/"
   echo "Deploying to remote target ($DEPLOY_MODE, content=$CONTENT): $TARGET"
-  if [[ "$CONTENT" == "runtime" ]]; then
-    run_runtime_sync "$DEST"
-  else
-    run_full_sync "$DEST"
-  fi
+  case "$CONTENT" in
+    runtime) run_runtime_sync "$DEST" ;;
+    mpy) run_mpy_sync "$DEST" ;;
+    *) run_full_sync "$DEST" ;;
+  esac
 else
   if [[ ! -d "$TARGET" ]]; then
     mkdir -p "$TARGET"
   fi
   DEST="$TARGET/"
   echo "Deploying to local target ($DEPLOY_MODE, content=$CONTENT): $TARGET"
-  if [[ "$CONTENT" == "runtime" ]]; then
-    run_runtime_sync "$DEST"
-  else
-    run_full_sync "$DEST"
-  fi
+  case "$CONTENT" in
+    runtime) run_runtime_sync "$DEST" ;;
+    mpy) run_mpy_sync "$DEST" ;;
+    *) run_full_sync "$DEST" ;;
+  esac
 fi
 
 if [[ $PRUNE_DEPRECATED -eq 1 ]]; then

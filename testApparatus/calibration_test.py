@@ -45,6 +45,9 @@ import gc
 import json
 import time
 
+CALIBRATION_TEST_VERSION = "caltest-2026-06-03.4"
+__version__ = CALIBRATION_TEST_VERSION
+
 DEFAULT_BASE_TOPIC = "nodus"
 DEFAULT_SENSOR_FILE = "sensor_i2c.toml"
 
@@ -75,7 +78,7 @@ def run(
     socket_timeout=1.0,
 ):
     """Inject serialized one-offset calibration/set messages locally."""
-    _log("calibration_test phase=start")
+    _log("calibration_test phase=start version={}".format(CALIBRATION_TEST_VERSION))
     settings = _read_settings(root)
     offset_list = _offsets_from_args(
         offsets,
@@ -206,10 +209,11 @@ def pressure_sweep(
     """Run calibration tests while holding progressively more heap."""
     _log(
         (
-            "pressure_sweep phase=start step_bytes={} max_pressure_bytes={} "
-            "min_free_bytes={} block_bytes={} socket_count={} "
+            "pressure_sweep phase=start version={} step_bytes={} "
+            "max_pressure_bytes={} min_free_bytes={} block_bytes={} socket_count={} "
             "stop_sweep_on_failure={} allow_volatile_persistence={}"
         ).format(
+            CALIBRATION_TEST_VERSION,
             int(step_bytes or 0),
             int(max_pressure_bytes or 0),
             int(min_free_bytes or 0),
@@ -418,10 +422,12 @@ def mqtt_round_trip(
     """Run calibration/set through the real MQTT client and broker."""
     _log(
         (
-            "mqtt_round phase=start self_publish={} wait_external={} repeat={} "
-            "pressure_bytes={} subscribe_outputs={} command_source={} "
+            "mqtt_round phase=start version={} self_publish={} "
+            "wait_external={} repeat={} pressure_bytes={} subscribe_outputs={} "
+            "command_source={} "
             "allow_volatile_persistence={}"
         ).format(
+            CALIBRATION_TEST_VERSION,
             1 if self_publish else 0,
             1 if wait_external else 0,
             int(repeat or 1),
