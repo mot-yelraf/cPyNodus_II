@@ -2,9 +2,9 @@
 
 `cPyNodus_II` is a fresh CircuitPython 9.2.8 codebase for the Raspberry Pi Pico 2 W.
 
-This project is intentionally not a wholesale copy of `cPyNodus`. It uses the
-smaller `cPySwitch` runtime shape as a starting point and treats the current
-`cPyNodus` behavior as a specification to re-implement in controlled slices.
+`cPyNodus_II` is based on the earlier `cPyNodus` project. It was produced with
+AI-agent assistance from work previously done in `cPyNodus`, then substantially
+tested and modified by the human operator to reach the desired device behavior.
 
 ## Principles
 
