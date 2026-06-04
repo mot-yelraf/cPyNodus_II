@@ -114,6 +114,8 @@ Examples:
   - `scripts/deploy_nodus.sh --target /Volumes/CIRCUITPY --content runtime`
 - Sync runtime files with compiled firmware modules:
   - `scripts/deploy_nodus.sh --target /Volumes/CIRCUITPY --content mpy`
+- Build the compiled package artifacts first:
+  - `scripts/nodus_mpy.sh`
 
 Notes:
 

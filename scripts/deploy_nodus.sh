@@ -3,7 +3,11 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VERSION_FILE="$ROOT_DIR/cpynodus_ii/__init__.py"
+MPY_BUILD_SCRIPT="$ROOT_DIR/scripts/nodus_mpy.sh"
+MPY_BUILD_ROOT="$ROOT_DIR/build/firmware/cpynodus_ii"
+MPY_VERSION_ARTIFACT="$MPY_BUILD_ROOT/__init__.mpy"
 DEPRECATED_MANIFEST="$ROOT_DIR/scripts/deprecated_target_files.txt"
+MPY_REBUILD_DEFERRED=0
 
 # Prevent macOS from creating AppleDouble sidecar files (._*) on FAT/CIRCUITPY.
 export COPYFILE_DISABLE=1
@@ -18,6 +22,26 @@ get_project_version() {
     version="unknown-version"
   fi
   printf '%s\n' "$version"
+}
+
+get_mpy_artifact_version() {
+  local artifact="$1"
+  local line=""
+  local saw_version_name=0
+
+  if [[ ! -f "$artifact" ]] || ! command -v strings >/dev/null 2>&1; then
+    return 0
+  fi
+
+  while IFS= read -r line; do
+    if [[ $saw_version_name -eq 1 ]]; then
+      printf '%s\n' "$line"
+      return 0
+    fi
+    if [[ "$line" == "__version__" ]]; then
+      saw_version_name=1
+    fi
+  done < <(strings "$artifact")
 }
 
 usage() {
@@ -37,10 +61,12 @@ Options:
   --mode VALUE        `auto` (default), `drive`, or `staging`.
   --content VALUE     `full` (default), `runtime`, or `mpy`.
                       `runtime` syncs boot/code, package files, root
-                      `*.def`, and `lib/` when present.
+                      `*.def`, and `lib/` when present, removing target
+                      cpynodus_ii/*.mpy first.
                       `mpy` syncs root `*.py`, root `*.def`, `lib/`,
                       and compiled build/firmware/cpynodus_ii/*.mpy,
                       removing matching target cpynodus_ii/*.py first.
+                      It runs scripts/nodus_mpy.sh first when artifacts are stale.
   --dry-run           Show what would be copied, do not write anything.
   --force             Skip CIRCUITPY path safety guard.
   --delete            Delete files on destination not present in source set.
@@ -213,8 +239,75 @@ run_full_sync() {
   rsync "${RSYNC_ARGS[@]}" "$SRC" "$destination"
 }
 
+find_mpy_rebuild_reason() {
+  local src=""
+  local rel_path=""
+  local artifact=""
+  local source_version=""
+  local artifact_version=""
+
+  if [[ ! -d "$MPY_BUILD_ROOT" ]]; then
+    echo "missing MPY build directory: ${MPY_BUILD_ROOT#$ROOT_DIR/}"
+    return 0
+  fi
+
+  if [[ ! -f "$MPY_VERSION_ARTIFACT" ]]; then
+    echo "missing MPY version artifact: ${MPY_VERSION_ARTIFACT#$ROOT_DIR/}"
+    return 0
+  fi
+
+  source_version="$(get_project_version)"
+  artifact_version="$(get_mpy_artifact_version "$MPY_VERSION_ARTIFACT")"
+  if [[ "$source_version" != "unknown-version" && -z "$artifact_version" ]]; then
+    echo "could not read MPY artifact version from ${MPY_VERSION_ARTIFACT#$ROOT_DIR/}"
+    return 0
+  fi
+  if [[ "$source_version" != "unknown-version" && "$source_version" != "$artifact_version" ]]; then
+    echo "source version $source_version does not match MPY artifact version $artifact_version"
+    return 0
+  fi
+
+  while IFS= read -r -d '' src; do
+    rel_path="${src#$ROOT_DIR/}"
+    artifact="$ROOT_DIR/build/firmware/${rel_path%.py}.mpy"
+
+    if [[ ! -f "$artifact" ]]; then
+      echo "missing MPY artifact for $rel_path"
+      return 0
+    fi
+
+    if [[ "$src" -nt "$artifact" ]]; then
+      echo "source newer than MPY artifact for $rel_path"
+      return 0
+    fi
+  done < <(find "$ROOT_DIR/cpynodus_ii" -type f -name '*.py' -print0)
+}
+
+run_mpy_build_if_needed() {
+  local reason=""
+
+  reason="$(find_mpy_rebuild_reason)"
+  if [[ -z "$reason" ]]; then
+    return 0
+  fi
+
+  if [[ ! -x "$MPY_BUILD_SCRIPT" ]]; then
+    echo "MPY build is stale, but build script is not executable: ${MPY_BUILD_SCRIPT#$ROOT_DIR/}" >&2
+    echo "Reason: $reason" >&2
+    exit 1
+  fi
+
+  if [[ $DRY_RUN -eq 1 ]]; then
+    echo "Would run ${MPY_BUILD_SCRIPT#$ROOT_DIR/} before --content mpy deploy: $reason"
+    MPY_REBUILD_DEFERRED=1
+    return 0
+  fi
+
+  echo "Running ${MPY_BUILD_SCRIPT#$ROOT_DIR/} before --content mpy deploy: $reason"
+  "$MPY_BUILD_SCRIPT"
+}
+
 validate_mpy_build() {
-  local build_root="$ROOT_DIR/build/firmware/cpynodus_ii"
   local src=""
   local rel_path=""
   local artifact=""
@@ -222,8 +315,8 @@ validate_mpy_build() {
   local stale=0
   local count=0
 
-  if [[ ! -d "$build_root" ]]; then
-    echo "Missing MPY build directory: $build_root" >&2
+  if [[ ! -d "$MPY_BUILD_ROOT" ]]; then
+    echo "Missing MPY build directory: $MPY_BUILD_ROOT" >&2
     echo "Compile cpynodus_ii modules before using --content mpy." >&2
     exit 1
   fi
@@ -345,7 +438,6 @@ clear_postmortem_logs() {
 
 remove_mpy_shadow_py_targets() {
   local destination="$1"
-  local build_root="$ROOT_DIR/build/firmware/cpynodus_ii"
   local artifact=""
   local rel_path=""
   local py_rel_path=""
@@ -382,7 +474,44 @@ remove_mpy_shadow_py_targets() {
         fi
       fi
     fi
-  done < <(find "$build_root" -type f -name '*.mpy' -print0)
+  done < <(find "$MPY_BUILD_ROOT" -type f -name '*.mpy' -print0)
+}
+
+remove_runtime_shadow_mpy_targets() {
+  local destination="$1"
+  local package_ref="${destination%/}/cpynodus_ii"
+  local found=0
+  local target_ref=""
+
+  if [[ "$TARGET" == *:* ]]; then
+    if [[ $DRY_RUN -eq 1 ]]; then
+      echo "Would remove remote runtime MPY files if present under: $package_ref"
+    else
+      ssh "${TARGET%%:*}" "TARGET_PATH=$(remote_shell_quote "${TARGET_PATH_ONLY%/}/cpynodus_ii"); if [ -d \"\$TARGET_PATH\" ]; then find \"\$TARGET_PATH\" -type f -name '*.mpy' -print -exec rm -f -- {} \\; | while IFS= read -r path; do echo \"Removed remote runtime MPY: \$path\"; done; fi"
+    fi
+    return 0
+  fi
+
+  if [[ ! -d "$package_ref" ]]; then
+    if [[ $DRY_RUN -eq 1 ]]; then
+      echo "Would remove local runtime MPY files if present under: $package_ref"
+    fi
+    return 0
+  fi
+
+  while IFS= read -r -d '' target_ref; do
+    found=1
+    if [[ $DRY_RUN -eq 1 ]]; then
+      echo "Would remove local runtime MPY: $target_ref"
+    else
+      rm -f -- "$target_ref"
+      echo "Removed local runtime MPY: $target_ref"
+    fi
+  done < <(find "$package_ref" -type f -name '*.mpy' -print0)
+
+  if [[ $DRY_RUN -eq 1 && $found -eq 0 ]]; then
+    echo "No local runtime MPY files found under: $package_ref"
+  fi
 }
 
 run_runtime_sync() {
@@ -420,6 +549,7 @@ run_runtime_sync() {
   fi
 
   if [[ -d "$ROOT_DIR/cpynodus_ii" ]]; then
+    remove_runtime_shadow_mpy_targets "$destination"
     rsync "${RSYNC_ARGS[@]}" "$ROOT_DIR/cpynodus_ii/" "$destination/cpynodus_ii/"
   fi
 
@@ -432,10 +562,14 @@ run_mpy_sync() {
   local destination="$1"
   local root_runtime_files=()
   local root_def_files=()
-  local mpy_root="$ROOT_DIR/build/firmware/cpynodus_ii"
   local f
 
-  validate_mpy_build
+  run_mpy_build_if_needed
+  if [[ $MPY_REBUILD_DEFERRED -eq 0 ]]; then
+    validate_mpy_build
+  else
+    echo "Skipping strict MPY validation because dry-run did not rebuild artifacts."
+  fi
 
   for f in \
     "$ROOT_DIR/boot.py" \
@@ -452,7 +586,7 @@ run_mpy_sync() {
   done
   shopt -u nullglob
 
-  if [[ ${#root_runtime_files[@]} -eq 0 && ${#root_def_files[@]} -eq 0 && ! -d "$mpy_root" && ! -d "$ROOT_DIR/lib" ]]; then
+  if [[ ${#root_runtime_files[@]} -eq 0 && ${#root_def_files[@]} -eq 0 && ! -d "$MPY_BUILD_ROOT" && ! -d "$ROOT_DIR/lib" ]]; then
     echo "No MPY deployable files found in $ROOT_DIR" >&2
     exit 1
   fi
@@ -465,9 +599,13 @@ run_mpy_sync() {
     rsync "${RSYNC_ARGS[@]}" "${root_def_files[@]}" "$destination"
   fi
 
-  remove_mpy_shadow_py_targets "$destination"
+  if [[ -d "$MPY_BUILD_ROOT" ]]; then
+    remove_mpy_shadow_py_targets "$destination"
 
-  rsync "${RSYNC_ARGS[@]}" "$mpy_root/" "$destination/cpynodus_ii/"
+    rsync "${RSYNC_ARGS[@]}" "$MPY_BUILD_ROOT/" "$destination/cpynodus_ii/"
+  elif [[ $MPY_REBUILD_DEFERRED -eq 1 ]]; then
+    echo "Would sync compiled package after MPY build: ${MPY_BUILD_ROOT#$ROOT_DIR/}/ -> $destination/cpynodus_ii/"
+  fi
 
   if [[ -d "$ROOT_DIR/lib" ]]; then
     rsync "${RSYNC_ARGS[@]}" "$ROOT_DIR/lib/" "$destination/lib/"
