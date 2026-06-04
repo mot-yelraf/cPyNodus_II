@@ -15,9 +15,10 @@ Pin numbers (physical) for Nodus wiring. Use the section that matches your build
 - 14 (GP10): S2 ENABLE
 - 16 (GP12): Battery Charge Controller Fault
 - 17 (GP13): BCC Charging
-- 22 (GP17): Factory reset input, hold LOW at boot for 5s to force `ACTIVE_PROFILE = "nodusweb"` and reboot
 - 18 (GND): GND for RW Enable
 - 19 (GP14): RW ENABLE
+- 22 (GP17): Factory reset input, hold LOW at boot for 5s to force `ACTIVE_PROFILE = "nodusweb"` and reboot
+- 23 (GND): GND for Reset
 - 27 (GP21): Switch 2
 - 28 (GND): Switch 2 GND
 - 33 (AGND): Switch 1 GND
