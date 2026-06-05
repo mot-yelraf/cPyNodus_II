@@ -199,6 +199,11 @@ that configured server. MQTT
 availability and heartbeat status do not require NTP; unsynced devices continue
 publishing online state with best-effort timestamps.
 
+Accepted runtime `config/set` writes for supported `Time.*` keys also request a
+fresh NTP sync after the config acknowledgements and MQTT publish queue drain.
+This lets Sensorius daylight/standard-time `TZ_OFFSET` and `TZ_NAME` changes
+move the Nodus RTC without a reboot.
+
 ## Soil RS485 channels
 
 `sensor_soil.toml` supports one or two soil sensors on a dual-channel RS485 hat.

@@ -70,3 +70,4 @@ class CommandResult:
     persistence_mode: str = ""
     requested_state: str = ""
     reboot_requested: bool = False
+    ntp_resync_requested: bool = False

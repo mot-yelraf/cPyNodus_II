@@ -94,6 +94,8 @@ current contract:
 - Device config uses `config/set`, `config/ack`, `config/result`, and
   `meta/patch`. Nodus does not clear device `config/set`; Sensorius owns any
   retained command cleanup.
+- Accepted device `Time.*` config writes request a fresh NTP sync after command
+  responses and queued MQTT publishes drain.
 - Switch config uses channel-scoped `config/set`, `config/ack`,
   `config/result`, retained `state`, and `meta/patch`. Nodus does not clear
   switch `config/set`; Sensorius owns any retained command cleanup.

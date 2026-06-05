@@ -33,6 +33,14 @@ from cpynodus_ii.features.payloads import (
 from cpynodus_ii.features.runtime_config_update import apply_runtime_config_updates
 from cpynodus_ii.features.topics import mqtt_topic
 
+_TIME_KEYS_TRIGGER_NTP_RESYNC = (
+    "TZ",
+    "TZ_OFFSET",
+    "TZ_NAME",
+    "NTP_SERVER",
+    "NTP_SERVER_IP",
+)
+
 
 def subscribe_runtime_topics(transport, runtime_config):
     """Subscribe the transport to current runtime command topics."""
@@ -826,6 +834,7 @@ def process_device_config_message(
         runtime_config=updated_runtime_config,
         message_id=command.message_id,
         persistence_mode="volatile" if persistence_errors else "persisted",
+        ntp_resync_requested=_updates_request_ntp_resync(applied_updates),
     )
 
 
@@ -1599,6 +1608,16 @@ def _persistence_mode(settings_root, errors):
     if settings_root is None:
         return ""
     return "volatile" if errors else "persisted"
+
+
+def _updates_request_ntp_resync(updates):
+    """Return True when applied config updates should force an NTP attempt."""
+    for update in updates or ():
+        section = str(update.get("section", "") or "").strip()
+        key = str(update.get("key", "") or "").strip().upper()
+        if section == "Time" and key in _TIME_KEYS_TRIGGER_NTP_RESYNC:
+            return True
+    return False
 
 
 def _extract_calibration_updates(body):

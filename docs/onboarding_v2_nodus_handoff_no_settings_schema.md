@@ -106,6 +106,10 @@ Do not merge onboarding protocol state into persistent config schema.
    - duplicate `message_id` should be safe.
 3. Publish `config/ack` immediately when accepted.
 4. Publish `config/result` after apply attempt.
+5. Apply `payload.settings.Time.TZ`, `payload.settings.Time.TZ_OFFSET`, and
+   `payload.settings.Time.TZ_NAME` when present.
+6. Accepted non-duplicate `Time.*` writes request a fresh NTP sync after command
+   responses and queued MQTT publishes drain.
 
 ## Failure Behavior
 1. Token mismatch: reject onboarding/config flow and publish negative `config/result` when applicable.

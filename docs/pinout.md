@@ -18,7 +18,8 @@ Pin numbers (physical) for Nodus wiring. Use the section that matches your build
 - 18 (GND): GND for RW Enable
 - 19 (GP14): RW ENABLE
 - 22 (GP17): Factory reset input, hold LOW at boot for 5s to force `ACTIVE_PROFILE = "nodusweb"` and reboot
-- 23 (GND): GND for Reset
+- 23 (GND): GND for Reset/Status LED
+- 24 (GP18): Status LED
 - 27 (GP21): Switch 2
 - 28 (GND): Switch 2 GND
 - 33 (AGND): Switch 1 GND
@@ -35,9 +36,11 @@ Pin numbers (physical) for Nodus wiring. Use the section that matches your build
 - 7 (GP5) CH2 UART RX
 - 13 (GND): GND for S2 EN
 - 14 (GP10): S2 ENABLE
-- 22 (GP17): Factory reset input, hold LOW at boot for 5s to force `ACTIVE_PROFILE = "nodusweb"` and reboot
 - 18 (GND): GND for RW Enable
 - 19 (GP14): RW ENABLE
+- 22 (GP17): Factory reset input, hold LOW at boot for 5s to force `ACTIVE_PROFILE = "nodusweb"` and reboot
+- 23 (GND): GND for Reset/Status LED
+- 24 (GP18): Status LED
 - 27 (GP21): Switch 2
 - 28 (GND): Switch 2 GND
 - 38 GND: GND (Ground)

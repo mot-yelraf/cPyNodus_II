@@ -381,6 +381,8 @@ Implemented behavior:
   `updated = 0`, and `duplicate = true`.
 - Accepted non-duplicate writes publish `config/result` and a non-retained
   `meta/patch` with `source = "config_set"`.
+- Accepted non-duplicate `Time.*` writes request a fresh NTP sync after command
+  responses and queued MQTT publishes drain.
 - Switch-only devices accept `Sensor.LOCATION` as a device-location alias and
   persist it as `Switch.SWITCH_LOCATION`.
 - Failed validation or rejected writes publish `config/result` with

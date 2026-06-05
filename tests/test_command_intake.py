@@ -802,9 +802,36 @@ def test_process_device_config_message_applies_runtime_update_and_publishes_patc
     assert result.phase == "published"
     assert result.published_count == 3
     assert result.runtime_config.network.hostname == "switch-new"
+    assert result.ntp_resync_requested is False
     assert transport.published_messages[0].topic == "nodus/switch-x943fm/config/ack"
     assert transport.published_messages[1].topic == "nodus/switch-x943fm/config/result"
     assert transport.published_messages[2].topic == "nodus/switch-x943fm/meta/patch"
+
+
+def test_process_device_config_message_requests_ntp_resync_for_time_update():
+    transport = MQTTTransport("broker.local", 1883)
+
+    result = process_device_config_message(
+        transport,
+        _runtime_config(),
+        topic="nodus/switch-x943fm/config/set",
+        payload_text=(
+            '{"message_id":"cfg-time","payload":{"updates":['
+            '{"section":"Time","key":"TZ_OFFSET","value":-21600}'
+            "]}}"
+        ),
+    )
+
+    assert result.phase == "published"
+    assert result.ntp_resync_requested is True
+    assert result.runtime_config.time.tz_offset == -21600
+    assert transport.published_messages[2].payload["updates"] == [
+        {
+            "section": "Time",
+            "key": "TZ_OFFSET",
+            "value": -21600,
+        },
+    ]
 
 
 def test_process_device_config_message_applies_soil_npk_target_update():
@@ -835,6 +862,7 @@ def test_process_device_config_message_replays_duplicate_message_id_idempotently
 
     assert result.phase == "published"
     assert result.duplicate is True
+    assert result.ntp_resync_requested is False
     assert result.published_count == 2
     assert transport.published_messages[-1].payload["duplicate"] is True
 

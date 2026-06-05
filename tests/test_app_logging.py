@@ -8,6 +8,7 @@ import pytest
 import cpynodus_ii.app as app_module
 from cpynodus_ii.app import (
     _clear_recovery_hard_reset_marker,
+    _command_results_request_ntp_resync,
     _consume_soft_reload_cleanup_marker,
     _consume_soft_reload_prepared,
     _cycle_wifi_radio_for_warm_start,
@@ -21,6 +22,7 @@ from cpynodus_ii.app import (
     _mqtt_disconnect_reason_requires_rebuild,
     _ntp_allowed_for_startup,
     _ntp_health_text,
+    _ntp_state_forced_resync,
     _recovery_hard_reset_marker_is_set,
     _recovery_reboot_kind,
     _runtime_restart_kind,
@@ -32,6 +34,7 @@ from cpynodus_ii.app import (
     _teardown_network_for_shutdown,
 )
 from cpynodus_ii.core.config import RuntimeConfig
+from cpynodus_ii.core.ntp import NTPState
 
 
 def test_should_log_command_result_skips_switch_commands():
@@ -81,6 +84,45 @@ def test_dns_health_reports_ok_when_network_ready_without_dns_errors():
 def test_ntp_health_uses_state_phase_or_idle():
     assert _ntp_health_text(SimpleNamespace(phase="synced")) == "synced"
     assert _ntp_health_text(SimpleNamespace(phase="")) == "idle"
+
+
+def test_command_results_request_ntp_resync_uses_result_flag():
+    assert (
+        _command_results_request_ntp_resync(
+            (
+                SimpleNamespace(ntp_resync_requested=False),
+                SimpleNamespace(ntp_resync_requested=True),
+            )
+        )
+        is True
+    )
+    assert _command_results_request_ntp_resync(()) is False
+
+
+def test_ntp_state_forced_resync_clears_due_and_failure_state():
+    state = NTPState(
+        phase="disabled",
+        server="us.pool.ntp.org",
+        datetime_text="2026-06-05T12:00:00",
+        last_attempt_at=20.0,
+        last_sync_at=10.0,
+        failure_count=4,
+        failure_window=2,
+        cooldown_until=3600.0,
+        errors=("ntp_dns_unready:-2",),
+    )
+
+    reset = _ntp_state_forced_resync(state)
+
+    assert reset.phase == "idle"
+    assert reset.server == ""
+    assert reset.datetime_text == "2026-06-05T12:00:00"
+    assert reset.last_attempt_at == -1.0
+    assert reset.last_sync_at == -1.0
+    assert reset.failure_count == 0
+    assert reset.failure_window == 1
+    assert reset.cooldown_until == -1.0
+    assert reset.errors == ()
 
 
 def test_ntp_waits_for_mqtt_startup_when_mqtt_enabled():

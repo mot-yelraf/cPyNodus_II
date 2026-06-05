@@ -123,7 +123,8 @@ the device:
 - MQTT preflight distinguishes several cases before MiniMQTT connect:
   TCP failure, raw MQTT CONNACK timeout, and socket-progress/stuck-socket
   patterns. Those cases can trigger socket refresh, station reset, adapter
-  rebuild, or escalation depending on elapsed time and failure count.
+  rebuild, a targeted `wifi.radio.enabled` power cycle, or escalation depending
+  on elapsed time and failure count.
 - Sensor-not-found recovery tries bounded reinitialization before rebooting.
 
 Soft reboot means `supervisor.reload()`. Before a soft recovery reload, Nodus

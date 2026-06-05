@@ -7,6 +7,13 @@ AP_CHANNEL = 6
 HOSTNAME = ""
 HTTPPORT = 8000
 
+[Time]
+TZ = "America/Denver"
+TZ_OFFSET = -25200
+TZ_NAME = "MST"
+NTP_SERVER = "us.pool.ntp.org"
+NTP_SERVER_IP = "132.163.96.6"
+
 [Profile]
 ACTIVE_PROFILE = "nodusweb"   # nodusweb | sensorius | weewx | homeassistant
 
@@ -24,10 +31,3 @@ DISCOVERY_PREFIX = "homeassistant"
 PUBLISH_DISCOVERY_RETAIN = true
 PUBLISH_STATE_RETAIN = true
 PUBLISH_LEGACY_SENSOR_TOPIC = true
-
-[Time]
-TZ = "America/Denver"
-TZ_OFFSET = -25200
-TZ_NAME = "MST"
-NTP_SERVER = "us.pool.ntp.org"
-NTP_SERVER_IP = "132.163.96.6"

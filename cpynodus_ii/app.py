@@ -572,6 +572,29 @@ def _ntp_health_text(ntp_state):
     return phase or "idle"
 
 
+def _command_results_request_ntp_resync(command_results):
+    """Return True when applied commands changed runtime time settings."""
+    for result in command_results or ():
+        if bool(getattr(result, "ntp_resync_requested", False)):
+            return True
+    return False
+
+
+def _ntp_state_forced_resync(ntp_state):
+    """Return NTP state reset so the next allowed pass attempts a sync."""
+    return NTPState(
+        phase="idle",
+        server="",
+        datetime_text=str(getattr(ntp_state, "datetime_text", "") or ""),
+        last_attempt_at=-1.0,
+        last_sync_at=-1.0,
+        failure_count=0,
+        failure_window=1,
+        cooldown_until=-1.0,
+        errors=(),
+    )
+
+
 def _is_recoverable_mqtt_poll_error(errors):
     """Return True when poll errors match known recoverable MiniMQTT noise."""
     for error in tuple(errors or ()):
@@ -1329,6 +1352,25 @@ def _should_stage_mqtt_station_reset_before_reboot(
         first_failure_at,
         now_monotonic,
     )
+
+
+def _should_cycle_mqtt_radio_for_socket_progress(station_verify, last_station_reset_at):
+    """Return True when MQTT socket-progress recovery should power-cycle Wi-Fi."""
+    try:
+        if float(last_station_reset_at) >= 0.0:
+            return False
+    except Exception:
+        pass
+    if bool(getattr(station_verify, "reset_needed", False)):
+        return False
+    if not bool(getattr(station_verify, "station_ready", False)):
+        return False
+    if str(getattr(station_verify, "status", "") or "") != "tcp_failed":
+        return False
+    for error in tuple(getattr(station_verify, "errors", ()) or ()):
+        if _mqtt_error_indicates_socket_progress(error):
+            return True
+    return False
 
 
 def _mqtt_client_init_memory_failed(errors):
@@ -4243,19 +4285,38 @@ async def main(*, startup_plan_override=None):
                         start_monotonic=start_monotonic,
                     )
                     socket_progress_station_reset = bool(station_verify.reset_needed)
+                    socket_progress_cycle_radio = (
+                        _should_cycle_mqtt_radio_for_socket_progress(
+                            station_verify,
+                            last_mqtt_station_reset_at,
+                        )
+                    )
+                    if socket_progress_cycle_radio:
+                        socket_progress_station_reset = True
+                        _print_log(
+                            "recovery",
+                            (
+                                "mqtt action=force_station_reset "
+                                "reason=socket_progress status={} "
+                                "signal=socket_progress"
+                            ).format(station_verify.status or "unknown"),
+                            start_monotonic=start_monotonic,
+                        )
                     if socket_progress_station_reset:
                         last_mqtt_station_reset_at = float(time.monotonic())
                         _print_log(
                             "recovery",
                             (
                                 "mqtt action=station_reset reason=socket_progress "
-                                "count={} elapsed_s={} tcp_error={} probe_error={}"
+                                "count={} elapsed_s={} cycle_radio={} "
+                                "tcp_error={} probe_error={}"
                             ).format(
                                 repeated_mqtt_connect_failure_count,
                                 _elapsed_since_s(
                                     repeated_mqtt_connect_failure_started_at,
                                     connect_probe_finished_at,
                                 ),
+                                1 if socket_progress_cycle_radio else 0,
                                 tcp_preflight_error or "none",
                                 connect_probe_error or "none",
                             ),
@@ -4268,7 +4329,7 @@ async def main(*, startup_plan_override=None):
                             retry_delay_s=_recovery_reconnect_delay_s(True),
                             rebuild_socket_artifacts=True,
                             reset_station=True,
-                            cycle_radio=False,
+                            cycle_radio=socket_progress_cycle_radio,
                             log_start_monotonic=start_monotonic,
                         )
                     else:
@@ -5067,6 +5128,17 @@ async def main(*, startup_plan_override=None):
                         result.persistence_mode or persistence_mode,
                         ",".join(result.errors) if result.errors else "none",
                     ),
+                    start_monotonic=start_monotonic,
+                )
+            if plan.ntp_enabled and _command_results_request_ntp_resync(
+                iteration.command_results
+            ):
+                ntp_state = _ntp_state_forced_resync(ntp_state)
+                ntp_startup_defer_logged = False
+                last_ntp_defer_detail = ""
+                _print_log(
+                    "ntp",
+                    "phase=resync_requested reason=time_config_update",
                     start_monotonic=start_monotonic,
                 )
             ota_reboot_requested = any(

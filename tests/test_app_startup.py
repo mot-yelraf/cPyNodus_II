@@ -35,6 +35,7 @@ from cpynodus_ii.app import (
     _runtime_device_id,
     _sensor_driver_start_deferred,
     _sensor_errors_indicate_not_found,
+    _should_cycle_mqtt_radio_for_socket_progress,
     _should_enter_ota_mode,
     _should_fallback_to_ap,
     _should_fast_reboot_mqtt_connect_failures,
@@ -880,6 +881,52 @@ def test_repeated_mqtt_failures_stage_station_reset_before_reboot():
             112.0,
             105.0,
         )
+        is False
+    )
+
+
+def test_mqtt_socket_progress_can_force_one_radio_cycle():
+    station_verify = SimpleNamespace(
+        reset_needed=False,
+        station_ready=True,
+        status="tcp_failed",
+        errors=(
+            "tcp_failed:10.0.0.248:OSError:[Errno 119] EINPROGRESS",
+        ),
+    )
+
+    assert (
+        _should_cycle_mqtt_radio_for_socket_progress(station_verify, -1.0)
+        is True
+    )
+    assert (
+        _should_cycle_mqtt_radio_for_socket_progress(station_verify, 105.0)
+        is False
+    )
+
+
+def test_mqtt_socket_progress_radio_cycle_requires_ready_stuck_tcp():
+    station_verify = SimpleNamespace(
+        reset_needed=False,
+        station_ready=False,
+        status="tcp_failed",
+        errors=(
+            "tcp_failed:10.0.0.248:OSError:[Errno 119] EINPROGRESS",
+        ),
+    )
+
+    assert (
+        _should_cycle_mqtt_radio_for_socket_progress(station_verify, -1.0)
+        is False
+    )
+
+    station_verify.station_ready = True
+    station_verify.errors = (
+        "tcp_failed:10.0.0.248:OSError:[Errno 116] ETIMEDOUT",
+    )
+
+    assert (
+        _should_cycle_mqtt_radio_for_socket_progress(station_verify, -1.0)
         is False
     )
 
