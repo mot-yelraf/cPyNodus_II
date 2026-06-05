@@ -96,6 +96,9 @@ current contract:
   retained command cleanup.
 - Accepted device `Time.*` config writes request a fresh NTP sync after command
   responses and queued MQTT publishes drain.
+- Accepted device `Time.*` config writes are applied live before best-effort
+  TOML persistence, so persistence stack or memory failures are reported in
+  serial logs as volatile without turning the MQTT command result into failure.
 - Switch config uses channel-scoped `config/set`, `config/ack`,
   `config/result`, retained `state`, and `meta/patch`. Nodus does not clear
   switch `config/set`; Sensorius owns any retained command cleanup.

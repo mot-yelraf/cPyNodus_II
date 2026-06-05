@@ -383,6 +383,11 @@ Implemented behavior:
   `meta/patch` with `source = "config_set"`.
 - Accepted non-duplicate `Time.*` writes request a fresh NTP sync after command
   responses and queued MQTT publishes drain.
+- Accepted `Time.*` writes are live-first. Nodus publishes successful
+  `config/result` and `meta/patch` before best-effort TOML persistence; if
+  persistence fails from constrained-memory or Python-stack pressure, the
+  command remains MQTT-visible as applied and serial logging reports
+  `persistence_mode = "volatile"`.
 - Switch-only devices accept `Sensor.LOCATION` as a device-location alias and
   persist it as `Switch.SWITCH_LOCATION`.
 - Failed validation or rejected writes publish `config/result` with

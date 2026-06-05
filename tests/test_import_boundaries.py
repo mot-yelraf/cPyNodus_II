@@ -347,6 +347,73 @@ def test_sensor_location_fast_config_does_not_load_heavy_command_handlers():
     )
 
 
+def test_time_fast_config_does_not_load_heavy_command_handlers():
+    _run_import_check(
+        """
+        import sys
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+
+        from cpynodus_ii.core.config import DetectedSensor, RuntimeConfig
+        from cpynodus_ii.core.mqtt import MQTTTransport
+        from cpynodus_ii.features.command_intake import process_inbound_messages
+
+        runtime_config = RuntimeConfig(
+            sensor=DetectedSensor(
+                family="i2c",
+                interface="i2c",
+                active_config_file="sensor_i2c.toml",
+                device="aht",
+                sensor_id="aht-x",
+            ),
+        )
+        runtime_config.time.tz = "UTC"
+        transport = MQTTTransport("broker.local", 1883)
+        transport.receive(
+            "nodus/aht-x/config/set",
+            (
+                '{"message_id":"cfg-time","payload":{"updates":['
+                '{"section":"Time","key":"TZ","value":"America/Denver"}'
+                ']}}'
+            ),
+        )
+
+        with TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "settings.toml").write_text(
+                '[Time]\\nTZ = "UTC"\\n',
+                encoding="utf-8",
+            )
+            results = process_inbound_messages(
+                transport,
+                runtime_config,
+                None,
+                settings_root=tmpdir,
+            )
+            settings_text = Path(tmpdir, "settings.toml").read_text(
+                encoding="utf-8"
+            )
+
+        if len(results) != 1 or results[0].phase != "published":
+            raise SystemExit("unexpected time result: {}".format(results))
+        if results[0].ntp_resync_requested is not True:
+            raise SystemExit("time update did not request NTP resync")
+        if 'TZ = "America/Denver"' not in settings_text:
+            raise SystemExit("time config was not persisted")
+
+        blocked = (
+            "cpynodus_ii.core.settings",
+            "cpynodus_ii.features.command_handlers",
+            "cpynodus_ii.features.payloads",
+            "cpynodus_ii.features.runtime_config_update",
+            "cpynodus_ii.ota.state",
+        )
+        loaded = [name for name in blocked if name in sys.modules]
+        if loaded:
+            raise SystemExit("unexpected imports: {}".format(",".join(loaded)))
+        """
+    )
+
+
 def test_calibration_fast_apply_does_not_load_heavy_command_handlers():
     _run_import_check(
         """

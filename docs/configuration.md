@@ -204,6 +204,12 @@ fresh NTP sync after the config acknowledgements and MQTT publish queue drain.
 This lets Sensorius daylight/standard-time `TZ_OFFSET` and `TZ_NAME` changes
 move the Nodus RTC without a reboot.
 
+Runtime MQTT `Time.*` writes use a low-stack handler. Nodus applies the live
+time setting and publishes successful `config/result` plus `meta/patch` before
+attempting TOML persistence. If persistence fails from memory or Python-stack
+pressure, the live change remains active until reboot and the serial command
+log reports `persistence_mode=volatile`.
+
 ## Soil RS485 channels
 
 `sensor_soil.toml` supports one or two soil sensors on a dual-channel RS485 hat.

@@ -834,6 +834,114 @@ def test_process_device_config_message_requests_ntp_resync_for_time_update():
     ]
 
 
+def test_process_inbound_messages_fast_time_config_persists_and_resyncs(tmp_path):
+    transport = MQTTTransport("broker.local", 1883)
+    runtime_config = _sensor_switch_runtime_config()
+    runtime_config.time.tz = "UTC"
+    settings_path = tmp_path / "settings.toml"
+    settings_path.write_text(
+        (
+            '[Time]\nTZ = "UTC"\nTZ_OFFSET = -25200\nTZ_NAME = "MST"\n'
+            'NTP_SERVER = ""\nNTP_SERVER_IP = "132.163.96.6"\n'
+        ),
+        encoding="utf-8",
+    )
+    transport.receive(
+        "nodus/co2-ykdvea/config/set",
+        (
+            '{"message_id":"cfg-time-tz","payload":{"updates":['
+            '{"section":"Time","key":"TZ","value":"America/Denver"}'
+            ']},"restart":false}'
+        ),
+    )
+
+    results = process_inbound_messages(
+        transport,
+        runtime_config,
+        _sensor_switch_service(),
+        settings_root=tmp_path,
+    )
+
+    assert len(results) == 1
+    assert results[0].phase == "published"
+    assert results[0].published_count == 3
+    assert results[0].errors == ()
+    assert results[0].persistence_mode == "persisted"
+    assert results[0].ntp_resync_requested is True
+    assert results[0].runtime_config.time.tz == "America/Denver"
+    assert 'TZ = "America/Denver"' in settings_path.read_text(encoding="utf-8")
+    assert [message.topic for message in transport.published_messages] == [
+        "nodus/co2-ykdvea/config/ack",
+        "nodus/co2-ykdvea/config/result",
+        "nodus/co2-ykdvea/meta/patch",
+    ]
+    assert transport.published_messages[1].payload == {
+        "message_id": "cfg-time-tz",
+        "applied": True,
+        "updated": 1,
+        "duplicate": False,
+        "error": "",
+    }
+    assert transport.published_messages[2].payload["updates"] == [
+        {
+            "section": "Time",
+            "key": "TZ",
+            "value": "America/Denver",
+        },
+    ]
+
+
+def test_process_inbound_messages_fast_time_config_pystack_is_volatile(
+    monkeypatch,
+    tmp_path,
+):
+    from cpynodus_ii.features import time_config
+
+    transport = MQTTTransport("broker.local", 1883)
+    runtime_config = _sensor_switch_runtime_config()
+    runtime_config.time.tz = "UTC"
+    (tmp_path / "settings.toml").write_text(
+        '[Time]\nTZ = "UTC"\n',
+        encoding="utf-8",
+    )
+
+    def raise_pystack(*args, **kwargs):
+        raise RuntimeError("pystack exhausted")
+
+    monkeypatch.setattr(time_config, "_write_time_file", raise_pystack)
+    transport.receive(
+        "nodus/co2-ykdvea/config/set",
+        (
+            '{"message_id":"cfg-time-stack","payload":{"updates":['
+            '{"section":"Time","key":"TZ","value":"America/Denver"}'
+            "]}}"
+        ),
+    )
+
+    results = process_inbound_messages(
+        transport,
+        runtime_config,
+        _sensor_switch_service(),
+        settings_root=tmp_path,
+    )
+
+    assert len(results) == 1
+    assert results[0].phase == "published"
+    assert results[0].published_count == 3
+    assert results[0].errors == ("time_persist_pystack",)
+    assert results[0].persistence_mode == "volatile"
+    assert results[0].ntp_resync_requested is True
+    assert results[0].runtime_config.time.tz == "America/Denver"
+    assert transport.published_messages[1].payload == {
+        "message_id": "cfg-time-stack",
+        "applied": True,
+        "updated": 1,
+        "duplicate": False,
+        "error": "",
+    }
+    assert transport.published_messages[2].topic == "nodus/co2-ykdvea/meta/patch"
+
+
 def test_process_device_config_message_applies_soil_npk_target_update():
     transport = MQTTTransport("broker.local", 1883)
 
