@@ -53,6 +53,7 @@ MQTT_STARTUP_CONDITIONING_ENABLED = False
 MQTT_STARTUP_CONDITIONING_SOFT_RELOAD_ENABLED = True
 MQTT_STARTUP_CONDITIONING_TIMEOUT_S = 3.0
 MQTT_STARTUP_CONDITIONING_RETRIES = 1
+NTP_DEFER_UNTIL_MQTT_STARTUP_CLEAR = False
 SENSOR_NOT_FOUND_REBOOT_S = 60.0
 SENSOR_NOT_FOUND_REBOOT_MIN_COUNT = 6
 SENSOR_NOT_FOUND_REINIT_MAX_ATTEMPTS = 2
@@ -1810,8 +1811,10 @@ def _is_mqtt_subscription_failure(sync_result):
 
 
 def _ntp_allowed_for_startup(*, mqtt_enabled, transport, ntp_state=None):
-    """Return True when startup MQTT work no longer needs socket priority."""
+    """Return True when startup NTP may attempt a sync."""
     if str(getattr(ntp_state, "phase", "") or "") == "synced":
+        return True
+    if not bool(NTP_DEFER_UNTIL_MQTT_STARTUP_CLEAR):
         return True
     if not bool(mqtt_enabled):
         return True

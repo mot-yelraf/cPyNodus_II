@@ -125,7 +125,44 @@ def test_ntp_state_forced_resync_clears_due_and_failure_state():
     assert reset.errors == ()
 
 
-def test_ntp_waits_for_mqtt_startup_when_mqtt_enabled():
+def test_ntp_does_not_wait_for_mqtt_startup_by_default():
+    assert (
+        _ntp_allowed_for_startup(
+            mqtt_enabled=True,
+            transport=SimpleNamespace(connected=False, subscriptions=()),
+        )
+        is True
+    )
+    assert (
+        _ntp_allowed_for_startup(
+            mqtt_enabled=True,
+            transport=SimpleNamespace(connected=True, subscriptions=("topic",)),
+        )
+        is True
+    )
+    assert (
+        _ntp_allowed_for_startup(
+            mqtt_enabled=True,
+            transport=SimpleNamespace(
+                connected=True, subscriptions=(), published_messages=("message",)
+            ),
+        )
+        is True
+    )
+    assert (
+        _ntp_allowed_for_startup(
+            mqtt_enabled=True,
+            transport=SimpleNamespace(
+                connected=True, subscriptions=(), published_messages=()
+            ),
+        )
+        is True
+    )
+
+
+def test_ntp_startup_rollback_guard_can_wait_for_mqtt_queues(monkeypatch):
+    monkeypatch.setattr(app_module, "NTP_DEFER_UNTIL_MQTT_STARTUP_CLEAR", True)
+
     assert (
         _ntp_allowed_for_startup(
             mqtt_enabled=True,

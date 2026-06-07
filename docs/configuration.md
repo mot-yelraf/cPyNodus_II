@@ -195,9 +195,10 @@ resolution is available when no fallback succeeds; this avoids early boot
 failures when DNS/mDNS is not ready yet. Nodus attempts startup sync up to
 three times (60s spacing), then pauses NTP for one hour. After the cooldown it
 performs one final three-attempt window, then disables further NTP attempts for
-that configured server. MQTT
-availability and heartbeat status do not require NTP; unsynced devices continue
-publishing online state with best-effort timestamps.
+that configured server. Startup NTP is attempted after normal network/socket
+artifacts are ready and is not held behind MQTT startup publish/subscription
+queues. MQTT availability and heartbeat status do not require NTP; unsynced
+devices continue publishing online state with best-effort timestamps.
 
 Accepted runtime `config/set` writes for supported `Time.*` keys also request a
 fresh NTP sync after the config acknowledgements and MQTT publish queue drain.

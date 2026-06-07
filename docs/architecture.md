@@ -53,7 +53,9 @@ The current network startup path is intentional and stability-sensitive:
 7. Create the MQTT adapter from the network stack's current socket pool and SSL
    context, then run MQTT preflight/probe logic before MiniMQTT owns the socket.
 8. Start sensor, switch, web, NTP, and MQTT loops from that single startup
-   plan.
+   plan. NTP sync is attempted once normal network/socket artifacts are ready;
+   MQTT startup publish and subscription queues do not block the first NTP
+   attempt.
 
 This ordering matters on Pico2 W. Socket pools, SSL contexts, mDNS/DNS, and
 MiniMQTT state are tied to the current radio mode. Starting features before the
