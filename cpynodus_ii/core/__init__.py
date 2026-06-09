@@ -173,6 +173,20 @@ def refresh_network_stack(*args, **kwargs):
     )
 
 
+def start_network_mdns(*args, **kwargs):
+    """Start mDNS for the network stack."""
+    return _load_attr("cpynodus_ii.core.network", "start_network_mdns")(
+        *args, **kwargs
+    )
+
+
+def stop_network_mdns(*args, **kwargs):
+    """Stop mDNS for the network stack."""
+    return _load_attr("cpynodus_ii.core.network", "stop_network_mdns")(
+        *args, **kwargs
+    )
+
+
 def teardown_network_stack(*args, **kwargs):
     """Tear down the network stack."""
     return _load_attr("cpynodus_ii.core.network", "teardown_network_stack")(
@@ -226,6 +240,8 @@ __all__ = [
     "reconnect_network_stack",
     "refresh_network_socket_artifacts",
     "refresh_network_stack",
+    "start_network_mdns",
+    "stop_network_mdns",
     "sync_transport_to_client",
     "teardown_network_stack",
     "verify_station_connectivity",

@@ -116,6 +116,21 @@ is absent, and cannot persist it.
 The same settings rewrite obfuscates any plaintext passwords that were manually
 entered in `settings.toml`.
 
+## Device hostname and mDNS
+
+`Network.HOSTNAME` is the Nodus device hostname. In station mode, Nodus can
+start a small mDNS server so the device answers at `<Network.HOSTNAME>.local`
+on networks that pass multicast DNS. This is for operator access, diagnostics,
+and HTTP discovery; it is not used as the MQTT broker connection target.
+
+When `ACTIVE_PROFILE = "nodusweb"`, Nodus also advertises `_http._tcp` on
+`Network.HTTPPORT` immediately after Wi-Fi is ready so Bonjour/mDNS browsers can
+discover the web UI. Temporary OTA HTTP mode also starts mDNS for the transfer
+window. MQTT profiles do not start mDNS in normal runtime; they stay headless
+and keep MQTT startup/recovery focused on broker IP literals. Use
+`ping <hostname>.local` or `curl http://<hostname>.local:8000` only when an
+HTTP runtime is active, such as `nodusweb` or temporary OTA mode.
+
 ## Home Assistant section
 
 Home Assistant integration is configured in `[HomeAssistant]` and is active

@@ -59,7 +59,10 @@ async def run_ota_mode(
         ),
     )
     _log_memory(log_fn, "startup")
-    network_stack = network_builder(runtime_config)
+    try:
+        network_stack = network_builder(runtime_config, mdns_mode="ota")
+    except TypeError:
+        network_stack = network_builder(runtime_config)
     _log(
         log_fn,
         "ota",

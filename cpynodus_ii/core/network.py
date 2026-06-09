@@ -6,7 +6,7 @@ station-mode and access-point behavior explicit.
 """
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 RADIO_CYCLE_SETTLE_S = 3.0
 RADIO_ENABLE_TOGGLE_SETTLE_S = 0.5
@@ -63,6 +63,11 @@ class NetworkStack:
     socket_pool: object | None = None
     ssl_context: object | None = None
     socket_artifact_source: str = ""
+    mdns_server: object | None = None
+    mdns_hostname: str = ""
+    mdns_http_advertised: bool = False
+    mdns_status: str = ""
+    mdns_errors: tuple = ()
     wifi_radio: object | None = None
     connection_manager_module: object | None = None
     errors: tuple = ()
@@ -92,6 +97,8 @@ def build_network_stack(
     station_reset_settle_s=STATION_RESET_SETTLE_S,
     station_connect_timeout_s=STATION_CONNECT_TIMEOUT_S,
     log_start_monotonic=None,
+    mdns_module=None,
+    mdns_mode="auto",
 ):
     """Build the runtime network stack needed by MQTT and networked profiles."""
     if runtime_config.ap_mode:
@@ -230,6 +237,28 @@ def build_network_stack(
     socket_pool, ssl_context, socket_artifact_source = _build_socket_artifacts(
         wifi_radio, connection_manager_module
     )
+    mdns_server = None
+    mdns_hostname = ""
+    mdns_http_advertised = False
+    mdns_status = ""
+    mdns_errors = ()
+    if _mdns_start_immediately(runtime_config, mdns_mode):
+        (
+            mdns_server,
+            mdns_hostname,
+            mdns_http_advertised,
+            mdns_status,
+            mdns_errors,
+        ) = _build_mdns_artifact(
+            runtime_config,
+            wifi_radio,
+            mdns_module=mdns_module,
+            log_start_monotonic=log_start_monotonic,
+            advertise_http=_mdns_advertise_http_immediately(
+                runtime_config,
+                mdns_mode,
+            ),
+        )
     return NetworkStack(
         phase="ready",
         mode="station",
@@ -239,6 +268,11 @@ def build_network_stack(
         socket_pool=socket_pool,
         ssl_context=ssl_context,
         socket_artifact_source=socket_artifact_source,
+        mdns_server=mdns_server,
+        mdns_hostname=mdns_hostname,
+        mdns_http_advertised=mdns_http_advertised,
+        mdns_status=mdns_status,
+        mdns_errors=mdns_errors,
         wifi_radio=wifi_radio,
         connection_manager_module=connection_manager_module,
         errors=(),
@@ -279,6 +313,13 @@ def refresh_network_socket_artifacts(network_stack):
         socket_pool=socket_pool,
         ssl_context=ssl_context,
         socket_artifact_source=socket_artifact_source,
+        mdns_server=getattr(network_stack, "mdns_server", None),
+        mdns_hostname=getattr(network_stack, "mdns_hostname", ""),
+        mdns_http_advertised=bool(
+            getattr(network_stack, "mdns_http_advertised", False)
+        ),
+        mdns_status=getattr(network_stack, "mdns_status", ""),
+        mdns_errors=tuple(getattr(network_stack, "mdns_errors", ()) or ()),
         wifi_radio=wifi_radio,
         connection_manager_module=connection_manager_module,
         errors=(),
@@ -298,6 +339,8 @@ def reconnect_network_stack(
     station_reset_settle_s=STATION_RESET_SETTLE_S,
     station_connect_timeout_s=STATION_CONNECT_TIMEOUT_S,
     log_start_monotonic=None,
+    mdns_module=None,
+    mdns_mode="auto",
 ):
     """Reconnect station Wi-Fi, preserving socket artifacts when allowed."""
     wifi_radio = getattr(network_stack, "wifi_radio", None)
@@ -313,10 +356,13 @@ def reconnect_network_stack(
             station_reset_settle_s=station_reset_settle_s,
             station_connect_timeout_s=station_connect_timeout_s,
             log_start_monotonic=log_start_monotonic,
+            mdns_module=mdns_module,
+            mdns_mode=mdns_mode,
         )
 
     reset_station = bool(reset_station or force_station_reset)
     if reset_station:
+        _deinit_mdns_server(network_stack)
         if force_station_reset:
             _network_log(
                 "network station reset reason=forced",
@@ -351,6 +397,11 @@ def reconnect_network_stack(
             socket_artifact_source=""
             if rebuild_socket_artifacts
             else getattr(network_stack, "socket_artifact_source", ""),
+            mdns_server=None,
+            mdns_hostname="",
+            mdns_http_advertised=False,
+            mdns_status="",
+            mdns_errors=(),
             wifi_radio=wifi_radio,
             connection_manager_module=connection_manager_module,
             errors=connect_result["errors"],
@@ -381,6 +432,28 @@ def reconnect_network_stack(
         ) = _build_socket_artifacts(
             wifi_radio, connection_manager_module
         )
+    mdns_server = None
+    mdns_hostname = ""
+    mdns_http_advertised = False
+    mdns_status = ""
+    mdns_errors = ()
+    if _mdns_start_immediately(runtime_config, mdns_mode):
+        (
+            mdns_server,
+            mdns_hostname,
+            mdns_http_advertised,
+            mdns_status,
+            mdns_errors,
+        ) = _build_mdns_artifact(
+            runtime_config,
+            wifi_radio,
+            mdns_module=mdns_module,
+            log_start_monotonic=log_start_monotonic,
+            advertise_http=_mdns_advertise_http_immediately(
+                runtime_config,
+                mdns_mode,
+            ),
+        )
     return NetworkStack(
         phase="ready",
         mode="station",
@@ -390,6 +463,11 @@ def reconnect_network_stack(
         socket_pool=socket_pool,
         ssl_context=ssl_context,
         socket_artifact_source=socket_artifact_source,
+        mdns_server=mdns_server,
+        mdns_hostname=mdns_hostname,
+        mdns_http_advertised=mdns_http_advertised,
+        mdns_status=mdns_status,
+        mdns_errors=mdns_errors,
         wifi_radio=wifi_radio,
         connection_manager_module=connection_manager_module,
         errors=(),
@@ -404,6 +482,73 @@ def network_link_is_ready(network_stack):
     if wifi_radio is None:
         return bool(getattr(network_stack, "ip_address", ""))
     return bool(_current_ip_address(wifi_radio))
+
+
+def start_network_mdns(
+    runtime_config,
+    network_stack,
+    *,
+    advertise_http=False,
+    mdns_module=None,
+    log_start_monotonic=None,
+):
+    """Start mDNS for a ready station stack and return the updated stack."""
+    if getattr(network_stack, "mdns_server", None) is not None:
+        return network_stack
+    if bool(getattr(runtime_config, "mqtt_enabled", False)) and not bool(
+        advertise_http
+    ):
+        return replace(
+            network_stack,
+            mdns_server=None,
+            mdns_hostname="",
+            mdns_http_advertised=False,
+            mdns_status="disabled",
+            mdns_errors=("mdns_disabled_for_mqtt",),
+        )
+    if getattr(network_stack, "phase", "") != "ready":
+        return network_stack
+    if getattr(network_stack, "mode", "") != "station":
+        return network_stack
+    wifi_radio = getattr(network_stack, "wifi_radio", None)
+    if wifi_radio is None:
+        return network_stack
+    (
+        mdns_server,
+        mdns_hostname,
+        mdns_http_advertised,
+        mdns_status,
+        mdns_errors,
+    ) = _build_mdns_artifact(
+        runtime_config,
+        wifi_radio,
+        mdns_module=mdns_module,
+        log_start_monotonic=log_start_monotonic,
+        advertise_http=bool(advertise_http),
+    )
+    return replace(
+        network_stack,
+        mdns_server=mdns_server,
+        mdns_hostname=mdns_hostname,
+        mdns_http_advertised=mdns_http_advertised,
+        mdns_status=mdns_status,
+        mdns_errors=mdns_errors,
+    )
+
+
+def stop_network_mdns(network_stack):
+    """Stop mDNS for a network stack and return the updated stack."""
+    if getattr(network_stack, "mdns_server", None) is None:
+        return network_stack
+    _deinit_mdns_server(network_stack)
+    return replace(
+        network_stack,
+        mdns_server=None,
+        mdns_hostname="",
+        mdns_http_advertised=False,
+        mdns_status="stopped",
+        mdns_errors=(),
+    )
 
 
 def verify_station_connectivity(
@@ -485,11 +630,14 @@ def teardown_network_stack(network_stack, *, cycle_radio=False):
     wifi_radio = getattr(network_stack, "wifi_radio", None)
     if wifi_radio is None:
         return False
+    stopped_mdns = _deinit_mdns_server(network_stack)
     disconnected = _call_radio_method(wifi_radio, "disconnect")
     stopped_station = _call_radio_method(wifi_radio, "stop_station")
     stopped_ap = _call_radio_method(wifi_radio, "stop_ap")
     cycled_radio = _cycle_radio_power(wifi_radio) if cycle_radio else False
-    return bool(disconnected or stopped_station or stopped_ap or cycled_radio)
+    return bool(
+        stopped_mdns or disconnected or stopped_station or stopped_ap or cycled_radio
+    )
 
 
 def refresh_network_stack(network_stack):
@@ -509,6 +657,13 @@ def refresh_network_stack(network_stack):
         socket_pool=network_stack.socket_pool,
         ssl_context=network_stack.ssl_context,
         socket_artifact_source=getattr(network_stack, "socket_artifact_source", ""),
+        mdns_server=getattr(network_stack, "mdns_server", None),
+        mdns_hostname=getattr(network_stack, "mdns_hostname", ""),
+        mdns_http_advertised=bool(
+            getattr(network_stack, "mdns_http_advertised", False)
+        ),
+        mdns_status=getattr(network_stack, "mdns_status", ""),
+        mdns_errors=tuple(getattr(network_stack, "mdns_errors", ()) or ()),
         wifi_radio=network_stack.wifi_radio,
         connection_manager_module=network_stack.connection_manager_module,
         errors=network_stack.errors,
@@ -1158,6 +1313,166 @@ def _build_socket_artifacts(wifi_radio, connection_manager_module):
         connection_manager_module.get_radio_socketpool(wifi_radio),
         connection_manager_module.get_radio_ssl_context(wifi_radio),
         "connection_manager",
+    )
+
+
+def _build_mdns_artifact(
+    runtime_config,
+    wifi_radio,
+    *,
+    mdns_module=None,
+    log_start_monotonic=None,
+    advertise_http=False,
+):
+    hostname = _mdns_hostname(getattr(runtime_config.network, "hostname", ""))
+    if not hostname:
+        return None, "", False, "skipped", ("mdns_hostname_missing",)
+    mdns_module = _resolve_mdns_module(mdns_module)
+    if mdns_module is None:
+        return None, "", False, "unavailable", ("mdns_module_unavailable",)
+    server_cls = getattr(mdns_module, "Server", None)
+    if not callable(server_cls):
+        return None, "", False, "unavailable", ("mdns_server_unavailable",)
+    server = None
+    errors = ()
+    try:
+        server = server_cls(wifi_radio)
+    except Exception as exc:
+        errors = ("mdns_server_failed:{}".format(_exception_label(exc)), str(exc))
+        _log_mdns_result(
+            "error",
+            hostname,
+            False,
+            errors,
+            start_monotonic=log_start_monotonic,
+        )
+        return None, "", False, "error", errors
+    try:
+        server.hostname = hostname
+    except Exception as exc:
+        errors += ("mdns_hostname_failed:{}".format(_exception_label(exc)), str(exc))
+    try:
+        server.instance_name = hostname
+    except Exception:
+        pass
+
+    http_advertised = False
+    if bool(advertise_http):
+        advertise_service = getattr(server, "advertise_service", None)
+        if callable(advertise_service):
+            try:
+                advertise_service(
+                    service_type="_http",
+                    protocol="_tcp",
+                    port=_mdns_http_port(runtime_config),
+                )
+                http_advertised = True
+            except Exception as exc:
+                errors += (
+                    "mdns_http_failed:{}".format(_exception_label(exc)),
+                    str(exc),
+                )
+        else:
+            errors += ("mdns_http_unavailable",)
+
+    status = "ready" if not errors else "partial"
+    _log_mdns_result(
+        status,
+        hostname,
+        http_advertised,
+        errors,
+        start_monotonic=log_start_monotonic,
+    )
+    return server, hostname, http_advertised, status, errors
+
+
+def _resolve_mdns_module(mdns_module):
+    if mdns_module is not None:
+        return mdns_module
+    try:
+        import mdns as mdns_module  # type: ignore
+    except ImportError:
+        return None
+    return mdns_module
+
+
+def _deinit_mdns_server(network_stack):
+    server = getattr(network_stack, "mdns_server", None)
+    if server is None:
+        return False
+    deinit = getattr(server, "deinit", None)
+    if not callable(deinit):
+        return False
+    try:
+        deinit()
+    except Exception:
+        return False
+    return True
+
+
+def _mdns_start_immediately(runtime_config, mdns_mode):
+    mode = str(mdns_mode or "auto").strip().lower()
+    if mode in {"never", "off", "disabled"}:
+        return False
+    if mode in {"always", "immediate", "ota"}:
+        return True
+    return _mdns_should_advertise_http(runtime_config)
+
+
+def _mdns_advertise_http_immediately(runtime_config, mdns_mode):
+    mode = str(mdns_mode or "auto").strip().lower()
+    if mode in {"always", "immediate", "ota"}:
+        return True
+    return _mdns_should_advertise_http(runtime_config)
+
+
+def _mdns_hostname(value):
+    text = str(value or "").strip().strip(".").lower()
+    if text.endswith(".local"):
+        text = text[:-6].strip(".")
+    cleaned = ""
+    previous_dash = False
+    for char in text:
+        valid = "a" <= char <= "z" or "0" <= char <= "9"
+        if valid:
+            cleaned += char
+            previous_dash = False
+        elif char in {"-", "_", " "} and cleaned and not previous_dash:
+            cleaned += "-"
+            previous_dash = True
+    return cleaned.strip("-")[:63]
+
+
+def _mdns_should_advertise_http(runtime_config):
+    return bool(
+        not getattr(runtime_config, "ap_mode", False)
+        and getattr(runtime_config, "web_enabled", False)
+    )
+
+
+def _mdns_http_port(runtime_config):
+    try:
+        return int(getattr(runtime_config.network, "http_port", 8000) or 8000)
+    except Exception:
+        return 8000
+
+
+def _log_mdns_result(
+    status,
+    hostname,
+    http_advertised,
+    errors,
+    *,
+    start_monotonic=None,
+):
+    _network_log(
+        "network mdns phase={} host={}.local service={} errors={}".format(
+            status,
+            hostname or "none",
+            "http" if http_advertised else "none",
+            ",".join(errors) if errors else "none",
+        ),
+        start_monotonic=start_monotonic,
     )
 
 

@@ -148,7 +148,9 @@ Notes:
 3. Network logic chooses AP mode or normal mode:
    - **AP mode**: starts an AP SSID named `Nodus_Setup` password is `password` (default channel `6`, configurable with `Network.AP_CHANNEL`).
    After connecting to the AP, use `POST /itaot-init` for Sensorius bootstrap or browse to `http://192.168.4.1:8000/setup` for the lightweight local setup page.
-   - **Normal mode**: connects to Wi‑Fi, configures mDNS, and starts profile-specific runtime services.
+   - **Normal mode**: connects to Wi‑Fi and starts profile-specific runtime
+     services. `nodusweb` publishes mDNS immediately; MQTT profiles do not
+     start mDNS.
 4. The runtime starts its asynchronous sensor, MQTT, recovery, and memory-management loops.
 
 ## AP Mode (Factory / Recovery)
@@ -175,7 +177,10 @@ Nodus uses intentional low-memory guards around the web UI to protect runtime st
 
 In normal mode the device:
 
-- Connects to Wi‑Fi and configures socket pool and mDNS.
+- Connects to Wi‑Fi and configures socket artifacts.
+- Publishes `<Network.HOSTNAME>.local` through mDNS for `nodusweb` and
+  temporary OTA HTTP mode when supported by CircuitPython. MQTT profiles stay
+  headless and do not start mDNS.
 - Starts sensor data collection loop.
 - Publishes sensor metrics on a fixed interval.
 - Serves lightweight status/setup routes only when `ACTIVE_PROFILE = "nodusweb"`.
@@ -598,6 +603,9 @@ Automations are implemented in Sensorius or Home Assistant. Commands are publish
 - AP mode routes are intentionally minimal to reduce memory pressure.
 - Normal-mode routes are exposed only in `nodusweb`.
 - Route set: `/`, `/current-data`, `/setup`, `/config`, `/set-switch-state`, and `/restart` when enabled; `/itaot-init` and `/itaot-meta` are AP-bootstrap routes.
+- In station mode, mDNS publishes `<Network.HOSTNAME>.local` only for
+  `nodusweb` and temporary OTA HTTP mode. MQTT profiles remain headless and do
+  not start mDNS.
 
 ## Known Constraints / Notes
 
@@ -617,6 +625,9 @@ Automations are implemented in Sensorius or Home Assistant. Commands are publish
   `BROKER_IP` is absent and the filesystem is writable, startup resolves the
   configured broker hostname and persists the result in `settings.toml`; ROFS
   deployments should include a manually configured `BROKER_IP`.
+- Device mDNS does not change MQTT broker target selection. `MQTT.BROKER`
+  remains the canonical broker hostname, while `MQTT.BROKER_IP` is the connect
+  target used by MiniMQTT.
 - Implemented Home Assistant corner case:
   - when `ACTIVE_PROFILE=homeassistant` or `ACTIVE_PROFILE=weewx`, Nodus skips the normal-mode webserver in both ROFS and RWFS
   - this policy exists because these networked MQTT-only profiles are intended to run without the normal local web UI path

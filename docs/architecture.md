@@ -30,7 +30,9 @@ The architecture is split into three layers:
 - AP mode is used when credentials are missing/invalid or station join fails.
 - AP mode hosts minimal routes at `192.168.4.1:8000`, including `/setup`,
   `/config`, `/itaot-meta`, and `/itaot-init`.
-- Normal mode connects to Wi-Fi and configures mDNS/socket artifacts.
+- Normal mode connects to Wi-Fi and configures socket artifacts. `nodusweb`
+  publishes the configured Nodus hostname through mDNS immediately; MQTT
+  profiles do not start mDNS and keep broker access IP-literal.
 - Normal-mode web routes are started only for `ACTIVE_PROFILE = "nodusweb"`;
   MQTT profiles run headless after provisioning.
 
@@ -56,14 +58,19 @@ The current network startup path is intentional and stability-sensitive:
    plan. NTP sync is attempted once normal network/socket artifacts are ready;
    MQTT startup publish and subscription queues do not block the first NTP
    attempt.
+9. Keep mDNS out of MQTT profiles. Hostname publishing is limited to
+   `nodusweb` and temporary OTA HTTP mode so the long-lived MQTT socket path
+   does not share the constrained Pico2 W radio/socket stack with an mDNS
+   server.
 
 This ordering matters on Pico2 W. Socket pools, SSL contexts, mDNS/DNS, and
 MiniMQTT state are tied to the current radio mode. Starting features before the
 network phase is known can leave stale sockets, partial AP/station state, or
 feature-owned network objects that recovery cannot replace cleanly. Keeping
 network ownership in `core.network` lets recovery rebuild socket artifacts,
-reset station mode, or enter AP mode without sensor, switch, web, or
-calibration code trying to manage the radio directly.
+reset station mode, manage HTTP-mode mDNS, tear down mDNS, or enter AP mode
+without sensor, switch, web, or calibration code trying to manage the radio
+directly.
 
 ## Profiles
 

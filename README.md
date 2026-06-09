@@ -32,7 +32,8 @@ The repository is no longer just a scaffold. Current implemented slices include:
 - TOML-backed runtime configuration loading for `settings.toml`, `switch.toml`, `sensor_i2c.toml`, and `sensor_soil.toml`
 - startup planning and runtime capability detection
 - Wi-Fi bootstrap and MQTT client lifecycle
-- mDNS-preferred MQTT broker connection with pinned-IP fallback when configured
+- mDNS device hostname publishing for `nodusweb` and OTA HTTP; MQTT profiles
+  stay IP-literal and do not run mDNS in steady state
 - switch runtime initialization, MQTT command intake, retained state publish, `config/ack`, `config/result`, and `meta/patch`
 - config/calibration apply plumbing with TOML persistence support and ROFS-aware volatile mode
 - host-testable sensor, switch, payload, publish-cycle, and transport layers
@@ -44,7 +45,7 @@ Validated on a Raspberry Pi Pico 2 W running CircuitPython `9.2.8`:
 - switch-only `sensorius` profile boot and runtime
 - combined sensor + switch `sensorius` profile boot and runtime
 - Wi-Fi join from root `settings.toml`
-- MQTT connect to Sensorius broker by hostname
+- MQTT connect to Sensorius broker by configured or startup-resolved broker IP
 - switch command handling on `nodus/<channel_id>/config/set`
 - relay toggle on-device from Sensorius commands
 - sensor telemetry publish on `nodus/<sensor_id>/data`

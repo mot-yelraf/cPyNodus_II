@@ -105,6 +105,34 @@ class _FakeConnMgr:
         return {"kind": "ssl", "radio": radio}
 
 
+class _FakeMdnsServer:
+    instances = []
+
+    def __init__(self, radio):
+        self.radio = radio
+        self.hostname = ""
+        self.instance_name = ""
+        self.advertised = []
+        self.deinit_count = 0
+        self.instances.append(self)
+
+    def advertise_service(self, *, service_type, protocol, port):
+        self.advertised.append((service_type, protocol, port))
+
+    def deinit(self):
+        self.deinit_count += 1
+
+
+class _FakeMdnsModule:
+    Server = _FakeMdnsServer
+
+
+class _FailingMdnsModule:
+    class Server:
+        def __init__(self, radio):
+            raise RuntimeError("mdns unavailable")
+
+
 class _FakeSocket:
     def __init__(self, failure=None):
         self.failure = failure
@@ -351,6 +379,147 @@ def test_build_network_stack_connects_station_mode_and_returns_socket_artifacts(
     assert stack.socket_pool["kind"] == "socketpool"
     assert stack.ssl_context["kind"] == "ssl"
     assert stack.socket_artifact_source == "connection_manager"
+
+
+def test_build_network_stack_starts_mdns_for_station_hostname():
+    _FakeMdnsServer.instances = []
+    radio = _FakeRadio()
+    runtime_config = RuntimeConfig(
+        active_profile="nodusweb",
+        network=NetworkConfig(
+            ssid="TestWiFi",
+            password="secretpass",
+            hostname="AQI_X943FM.local",
+            http_port=8765,
+        ),
+    )
+
+    stack = build_network_stack(
+        runtime_config,
+        wifi_radio=radio,
+        connection_manager_module=_FakeConnMgr,
+        mdns_module=_FakeMdnsModule,
+    )
+
+    assert stack.phase == "ready"
+    assert stack.mdns_status == "ready"
+    assert stack.mdns_hostname == "aqi-x943fm"
+    assert stack.mdns_server is _FakeMdnsServer.instances[0]
+    assert stack.mdns_server.hostname == "aqi-x943fm"
+    assert stack.mdns_server.instance_name == "aqi-x943fm"
+    assert stack.mdns_http_advertised is True
+    assert stack.mdns_server.advertised == [("_http", "_tcp", 8765)]
+
+
+def test_build_network_stack_defers_mdns_for_mqtt_profile_startup():
+    _FakeMdnsServer.instances = []
+    radio = _FakeRadio()
+    runtime_config = RuntimeConfig(
+        active_profile="sensorius",
+        network=NetworkConfig(
+            ssid="TestWiFi",
+            password="secretpass",
+            hostname="co2-ykdvea",
+        ),
+    )
+
+    stack = build_network_stack(
+        runtime_config,
+        wifi_radio=radio,
+        connection_manager_module=_FakeConnMgr,
+        mdns_module=_FakeMdnsModule,
+    )
+
+    assert stack.phase == "ready"
+    assert stack.mdns_server is None
+    assert stack.mdns_status == ""
+    assert stack.mdns_hostname == ""
+    assert stack.mdns_http_advertised is False
+    assert _FakeMdnsServer.instances == []
+
+
+def test_start_network_mdns_skips_mqtt_profile_without_http_advertisement():
+    _FakeMdnsServer.instances = []
+    radio = _FakeRadio()
+    runtime_config = RuntimeConfig(
+        active_profile="sensorius",
+        network=NetworkConfig(
+            ssid="TestWiFi",
+            password="secretpass",
+            hostname="co2-ykdvea",
+        ),
+    )
+    stack = build_network_stack(
+        runtime_config,
+        wifi_radio=radio,
+        connection_manager_module=_FakeConnMgr,
+        mdns_module=_FakeMdnsModule,
+    )
+
+    mdns_stack = network_module.start_network_mdns(
+        runtime_config,
+        stack,
+        mdns_module=_FakeMdnsModule,
+    )
+
+    assert mdns_stack.mdns_server is None
+    assert mdns_stack.mdns_status == "disabled"
+    assert mdns_stack.mdns_hostname == ""
+    assert mdns_stack.mdns_http_advertised is False
+    assert mdns_stack.mdns_errors == ("mdns_disabled_for_mqtt",)
+    assert _FakeMdnsServer.instances == []
+
+
+def test_build_network_stack_can_force_mdns_for_ota_http_mode():
+    _FakeMdnsServer.instances = []
+    radio = _FakeRadio()
+    runtime_config = RuntimeConfig(
+        active_profile="sensorius",
+        network=NetworkConfig(
+            ssid="TestWiFi",
+            password="secretpass",
+            hostname="co2-ykdvea",
+            http_port=8000,
+        ),
+    )
+
+    stack = build_network_stack(
+        runtime_config,
+        wifi_radio=radio,
+        connection_manager_module=_FakeConnMgr,
+        mdns_module=_FakeMdnsModule,
+        mdns_mode="ota",
+    )
+
+    assert stack.phase == "ready"
+    assert stack.mdns_status == "ready"
+    assert stack.mdns_hostname == "co2-ykdvea"
+    assert stack.mdns_http_advertised is True
+    assert stack.mdns_server.advertised == [("_http", "_tcp", 8000)]
+
+
+def test_build_network_stack_keeps_station_ready_when_mdns_fails():
+    radio = _FakeRadio()
+    runtime_config = RuntimeConfig(
+        active_profile="nodusweb",
+        network=NetworkConfig(
+            ssid="TestWiFi",
+            password="secretpass",
+            hostname="aqi-x943fm",
+        ),
+    )
+
+    stack = build_network_stack(
+        runtime_config,
+        wifi_radio=radio,
+        connection_manager_module=_FakeConnMgr,
+        mdns_module=_FailingMdnsModule,
+    )
+
+    assert stack.phase == "ready"
+    assert stack.mdns_server is None
+    assert stack.mdns_status == "error"
+    assert "mdns_server_failed:exception=RuntimeError" in stack.mdns_errors
 
 
 def test_build_network_stack_prefers_direct_socket_artifacts(monkeypatch):
@@ -629,6 +798,23 @@ def test_teardown_network_stack_disconnects_and_stops_station():
     assert radio.stop_station_calls == 1
     assert radio.stop_ap_calls == 1
     assert radio.start_station_calls == 0
+
+
+def test_teardown_network_stack_deinitializes_mdns_server():
+    radio = _StaleAPStationRadio()
+    mdns_server = _FakeMdnsServer(radio)
+    stack = network_module.NetworkStack(
+        phase="ready",
+        mode="station",
+        ssid="PeaceHill",
+        hostname="co2-ykdvea",
+        wifi_radio=radio,
+        mdns_server=mdns_server,
+        mdns_status="ready",
+    )
+
+    assert teardown_network_stack(stack) is True
+    assert mdns_server.deinit_count == 1
 
 
 def test_teardown_network_stack_can_cycle_radio_power(monkeypatch):

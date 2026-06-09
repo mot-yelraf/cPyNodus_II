@@ -23,7 +23,6 @@ from cpynodus_ii.app import (
     _mqtt_repeated_failure_budget_exhausted,
     _mqtt_repeated_failure_elapsed_s,
     _mqtt_repeated_failure_reboot_gate_tripped,
-    _mqtt_startup_queues_clear,
     _mqtt_sync_should_log_success,
     _ota_state_path,
     _recovery_reconnect_attempts,
@@ -1047,7 +1046,7 @@ def test_sensor_not_found_window_and_reboot_gate():
     assert started_at == -1.0
 
 
-def test_deferred_sensor_driver_marker_and_mqtt_queue_gate():
+def test_deferred_sensor_driver_marker():
     assert (
         _sensor_driver_start_deferred(
             SimpleNamespace(errors=("sensor_driver_start_deferred",))
@@ -1055,15 +1054,7 @@ def test_deferred_sensor_driver_marker_and_mqtt_queue_gate():
         is True
     )
     assert _sensor_driver_start_deferred(SimpleNamespace(errors=())) is False
-    assert _mqtt_startup_queues_clear(
-        SimpleNamespace(published_messages=[], subscriptions=[])
-    ) is True
-    assert _mqtt_startup_queues_clear(
-        SimpleNamespace(published_messages=[object()], subscriptions=[])
-    ) is False
-    assert _mqtt_startup_queues_clear(
-        SimpleNamespace(published_messages=[], subscriptions=["topic"])
-    ) is False
+
 
 
 def test_restart_sensor_stack_stops_rebinds_and_reads_snapshot(monkeypatch):

@@ -11,8 +11,10 @@ from tests.test_ota_http import _FakeServerModule
 
 def test_run_ota_mode_marks_state_ready_and_skips_feature_startup(tmp_path):
     logs = []
+    network_builder_kwargs = []
 
-    def _network_builder(runtime_config):
+    def _network_builder(runtime_config, **kwargs):
+        network_builder_kwargs.append(dict(kwargs))
         return SimpleNamespace(
             phase="ready",
             ssid=runtime_config.network.ssid,
@@ -46,6 +48,7 @@ def test_run_ota_mode_marks_state_ready_and_skips_feature_startup(tmp_path):
     assert result.package_id == "ota-tagA-to-tagB"
     assert state.phase == "ready"
     assert state.prior_profile == "homeassistant"
+    assert network_builder_kwargs == [{"mdns_mode": "ota"}]
     assert [prefix for prefix, _message in logs].count("ota") == 4
     assert any("phase=ota_startup" in message for _prefix, message in logs)
     assert any("phase=ota_ready" in message for _prefix, message in logs)

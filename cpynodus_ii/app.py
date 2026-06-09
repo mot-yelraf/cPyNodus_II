@@ -19,6 +19,7 @@ from cpynodus_ii.core.network import (
     reconnect_network_stack,
     refresh_network_socket_artifacts,
     refresh_network_stack,
+    stop_network_mdns,
     teardown_network_stack,
     verify_station_connectivity,
 )
@@ -385,15 +386,17 @@ def _defer_switch_subscriptions_until_after_startup_publish(runtime_config):
     return bool(getattr(switch_config, "present", False))
 
 
-def _mqtt_startup_queues_clear(transport):
-    """Return True when startup MQTT publish and subscription queues are empty."""
-    try:
-        return not (
-            getattr(transport, "published_messages", ())
-            or getattr(transport, "subscriptions", ())
-        )
-    except Exception:
-        return False
+def _stop_mqtt_mdns(network_stack, *, reason="", start_monotonic=None):
+    """Stop any unexpected MQTT-profile mDNS before recovery touches sockets."""
+    if getattr(network_stack, "mdns_server", None) is None:
+        return network_stack
+    network_stack = stop_network_mdns(network_stack)
+    _print_log(
+        "network",
+        "mdns phase=stopped reason={}".format(reason or "mqtt_recovery"),
+        start_monotonic=start_monotonic,
+    )
+    return network_stack
 
 
 def _mqtt_sync_operation_summary(sync_result):
@@ -3121,6 +3124,14 @@ async def main(*, startup_plan_override=None):
                         ),
                         start_monotonic=start_monotonic,
                     )
+            if plan.mqtt_enabled and (
+                recovery_state.phase != "idle" or not transport.connected
+            ):
+                network_stack = _stop_mqtt_mdns(
+                    network_stack,
+                    reason="mqtt_not_idle",
+                    start_monotonic=start_monotonic,
+                )
             if (
                 plan.mqtt_enabled
                 and network_link_is_ready(network_stack)
