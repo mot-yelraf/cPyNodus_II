@@ -332,7 +332,7 @@ Nodus currently supports these sensor device types: `aht`, `apvpd_aht`, `apvpd`,
 
 ## Soil Sensor Metrics
 
-HaliSense-compatible RS485 soil sensors are the best-tested soil devices because their register layout matches the default Nodus register map. Nodus reads the configured register map and omits metrics whose register read fails.
+HaliSense-compatible RS485 soil sensors are the best-tested soil devices because their register layout matches the default Nodus register map. Nodus reads the configured register map and omits metrics whose register read fails. For 4-in-1 and 7-in-1 soil profiles, Nodus keeps the configured map as primary but can use the observed alternate `pH@0x0007` and `EC@0x000C` registers when the primary pH register is not plausible and the alternate pH value is valid.
 
 When one soil channel is active, Nodus publishes unprefixed metric names. When both RS485 channels are active, Nodus prefixes each metric with the channel name, for example `CH1 Soil Moisture` and `CH2 Soil pH`.
 

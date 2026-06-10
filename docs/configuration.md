@@ -242,6 +242,14 @@ log reports `persistence_mode=volatile`.
 - Leave a channel's `UART_TX` and `UART_RX` blank to disable that channel.
 - Factory bootstrap probes both CH1 and CH2 and writes whichever soil channels respond.
 
+`[SoilSensorRegisters]` remains the primary source for soil metric registers.
+For 4-in-1 and 7-in-1 profiles, the runtime also has a narrow fallback for an
+observed alternate manufacturer layout: if the configured pH register is not a
+plausible soil pH value and register `0x0007` is plausible, Nodus reports pH
+from `0x0007` and EC from `0x000C` when the configured EC value is empty or
+zero. N/P/K registers are not guessed; set `N_REG`, `P_REG`, and `K_REG`
+explicitly when a sensor's nutrient registers are confirmed.
+
 Each channel uses the same keys:
 
 ```toml

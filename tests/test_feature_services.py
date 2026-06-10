@@ -93,6 +93,25 @@ class _FakeDigitalInOut:
         self.deinited = True
 
 
+def _modbus_register_response(address, *registers):
+    data = []
+    for value in registers:
+        data.extend([(int(value) >> 8) & 0xFF, int(value) & 0xFF])
+    body = bytes([address & 0xFF, 0x03, len(data)]) + bytes(data)
+    crc = sensor_service_module._modbus_crc16(body)
+    return body + bytes([crc & 0xFF, (crc >> 8) & 0xFF])
+
+
+def test_modbus_parser_accepts_echoed_response_prefix():
+    response = b"\x04\x03\x00\x07\x00\x01\x35\x9d" + _modbus_register_response(
+        4, 70
+    )
+
+    assert sensor_service_module._parse_modbus_register_response(
+        response, address=4, count=1
+    ) == (70,)
+
+
 class _FakeBME680:
     def __init__(self, transport, *, address):
         self.transport = transport
@@ -719,6 +738,206 @@ def test_sensor_service_reads_soil_snapshot_from_wrapped_uart_transport():
     assert snapshot.metrics["Soil pH"] == 6.8
     assert snapshot.metrics["Soil Nitrogen"] == 11.0
     assert snapshot.metrics["Soil Fertility Index"] == 50.0
+
+
+def test_sensor_service_keeps_primary_soil_register_map_when_ph_is_valid():
+    class _FakeSoilTransport:
+        def read_registers(self, start, count):
+            values = {
+                0: 285,
+                1: 430,
+                2: 55,
+                3: 68,
+                4: 11,
+                5: 22,
+                6: 33,
+                7: 70,
+                12: 584,
+            }
+            return values.get(start)
+
+        def deinit(self):
+            pass
+
+    runtime_config = RuntimeConfig(
+        sensor=DetectedSensor(
+            family="soil",
+            interface="modbus_rs485",
+            active_config_file="sensor_soil.toml",
+            device="soil",
+            sensor_id="soil-1",
+            modbus=SoilModbusConfig(variant="soil_7in1"),
+            soil_registers=SimpleNamespace(
+                temperature=0, moisture=1, ec=2, ph=3, n=4, p=5, k=6
+            ),
+            soil_scales=SimpleNamespace(
+                temperature=10.0, moisture=10.0, ec=1.0, ph=10.0, n=1.0, p=1.0, k=1.0
+            ),
+            soil_thresholds=SimpleNamespace(wet_pct=38.0, dry_pct=18.0),
+            soil_npk=SoilNPKConfig(n_target=11.0, p_target=22.0, k_target=33.0),
+            soil_stress=SimpleNamespace(
+                temp_low_crit_c=15.0,
+                temp_low_ok_c=18.0,
+                temp_high_ok_c=24.0,
+                temp_high_crit_c=30.0,
+                moisture_weight_pct=70.0,
+                temp_weight_pct=30.0,
+            ),
+        )
+    )
+    sensor_service = start_sensor_service(
+        build_sensor_runtime(
+            plan_sensor_initialization(runtime_config), runtime_config
+        ),
+        SimpleNamespace(
+            phase="bound",
+            transport=_FakeSoilTransport(),
+            errors=(),
+            interface="modbus_rs485",
+        ),
+        runtime_config,
+    )
+
+    snapshot = read_sensor_snapshot(sensor_service, runtime_config)
+
+    assert snapshot.phase == "ready"
+    assert snapshot.metrics["Soil pH"] == 6.8
+    assert snapshot.metrics["Soil EC"] == 55.0
+
+
+def test_sensor_service_uses_observed_soil_ph_and_ec_fallback_registers():
+    class _FakeSoilTransport:
+        def read_registers(self, start, count):
+            values = {
+                0: 285,
+                1: 0,
+                2: 0,
+                3: 0,
+                4: 0,
+                5: 0,
+                6: 0,
+                7: 70,
+                12: 584,
+            }
+            return values.get(start)
+
+        def deinit(self):
+            pass
+
+    runtime_config = RuntimeConfig(
+        sensor=DetectedSensor(
+            family="soil",
+            interface="modbus_rs485",
+            active_config_file="sensor_soil.toml",
+            device="soil",
+            sensor_id="soil-1",
+            modbus=SoilModbusConfig(variant="soil_7in1"),
+            soil_registers=SimpleNamespace(
+                temperature=0, moisture=1, ec=2, ph=3, n=4, p=5, k=6
+            ),
+            soil_scales=SimpleNamespace(
+                temperature=10.0, moisture=10.0, ec=1.0, ph=10.0, n=1.0, p=1.0, k=1.0
+            ),
+            soil_thresholds=SimpleNamespace(wet_pct=38.0, dry_pct=18.0),
+            soil_npk=SoilNPKConfig(n_target=20.0, p_target=30.0, k_target=70.0),
+            soil_stress=SimpleNamespace(
+                temp_low_crit_c=15.0,
+                temp_low_ok_c=18.0,
+                temp_high_ok_c=24.0,
+                temp_high_crit_c=30.0,
+                moisture_weight_pct=70.0,
+                temp_weight_pct=30.0,
+            ),
+        )
+    )
+    sensor_service = start_sensor_service(
+        build_sensor_runtime(
+            plan_sensor_initialization(runtime_config), runtime_config
+        ),
+        SimpleNamespace(
+            phase="bound",
+            transport=_FakeSoilTransport(),
+            errors=(),
+            interface="modbus_rs485",
+        ),
+        runtime_config,
+    )
+
+    snapshot = read_sensor_snapshot(sensor_service, runtime_config)
+
+    assert snapshot.phase == "ready"
+    assert snapshot.metrics["Soil Temp_C"] == 28.5
+    assert snapshot.metrics["Soil Moisture"] == 0.0
+    assert snapshot.metrics["Soil pH"] == 7.0
+    assert snapshot.metrics["Soil EC"] == 584.0
+    assert snapshot.metrics["Soil Phosphorus"] == 0.0
+
+
+def test_sensor_service_prefers_soil_block_reads_for_sparse_zero_registers():
+    class _BlockOnlySoilTransport:
+        def __init__(self):
+            self.calls = []
+
+        def read_registers(self, start, count):
+            self.calls.append((start, count))
+            if start == 0 and count == 8:
+                return (276, 0, 0, 0, 0, 0, 0, 70)
+            if start == 12 and count == 1:
+                return 585
+            return None
+
+        def deinit(self):
+            pass
+
+    runtime_config = RuntimeConfig(
+        sensor=DetectedSensor(
+            family="soil",
+            interface="modbus_rs485",
+            active_config_file="sensor_soil.toml",
+            device="soil",
+            sensor_id="soil-1",
+            modbus=SoilModbusConfig(variant="soil_7in1"),
+            soil_registers=SimpleNamespace(
+                temperature=0, moisture=1, ec=12, ph=7, n=4, p=5, k=6
+            ),
+            soil_scales=SimpleNamespace(
+                temperature=10.0, moisture=10.0, ec=1.0, ph=10.0, n=1.0, p=1.0, k=1.0
+            ),
+            soil_thresholds=SimpleNamespace(wet_pct=38.0, dry_pct=18.0),
+            soil_npk=SoilNPKConfig(n_target=20.0, p_target=30.0, k_target=70.0),
+            soil_stress=SimpleNamespace(
+                temp_low_crit_c=15.0,
+                temp_low_ok_c=18.0,
+                temp_high_ok_c=24.0,
+                temp_high_crit_c=30.0,
+                moisture_weight_pct=70.0,
+                temp_weight_pct=30.0,
+            ),
+        )
+    )
+    soil_transport = _BlockOnlySoilTransport()
+    sensor_service = start_sensor_service(
+        build_sensor_runtime(
+            plan_sensor_initialization(runtime_config), runtime_config
+        ),
+        SimpleNamespace(
+            phase="bound",
+            transport=soil_transport,
+            errors=(),
+            interface="modbus_rs485",
+        ),
+        runtime_config,
+    )
+
+    snapshot = read_sensor_snapshot(sensor_service, runtime_config)
+
+    assert snapshot.phase == "ready"
+    assert snapshot.metrics["Soil Temp_C"] == 27.6
+    assert snapshot.metrics["Soil Moisture"] == 0.0
+    assert snapshot.metrics["Soil pH"] == 7.0
+    assert snapshot.metrics["Soil EC"] == 585.0
+    assert snapshot.metrics["Soil Phosphorus"] == 0.0
+    assert (0, 8) in soil_transport.calls
 
 
 def test_sensor_service_reads_dual_soil_snapshots_with_channel_prefixes():

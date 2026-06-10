@@ -10,6 +10,10 @@ from time import sleep
 
 from cpynodus_ii.features.derived_metrics import enrich_metrics, estimate_dli_from_ppfd
 
+_SOIL_ALT_PH_REG = 0x0007
+_SOIL_ALT_EC_REG = 0x000C
+_SOIL_BLOCK_READ_MAX = 8
+
 
 @dataclass(frozen=True)
 class SensorSnapshot:
@@ -54,20 +58,23 @@ class SoilModbusClient:
 
     def read_registers(self, start, count):
         """Read one or more holding registers from the configured sensor."""
+        count = int(count)
         request = bytes(
             [
                 self.address & 0xFF,
                 0x03,
                 (int(start) >> 8) & 0xFF,
                 int(start) & 0xFF,
-                (int(count) >> 8) & 0xFF,
-                int(count) & 0xFF,
+                (count >> 8) & 0xFF,
+                count & 0xFF,
             ]
         )
         crc = _modbus_crc16(request)
+        _drain_uart_input(self.uart_transport)
         self.uart_transport.write(request + bytes([crc & 0xFF, (crc >> 8) & 0xFF]))
         sleep(0.05)
-        response = self.uart_transport.read(5 + (int(count) * 2))
+        response_len = 5 + (count * 2)
+        response = self.uart_transport.read(response_len + len(request) + 2)
         registers = _parse_modbus_register_response(
             response, address=self.address, count=count
         )
@@ -80,6 +87,19 @@ class SoilModbusClient:
     def deinit(self):
         """Keep shutdown compatible with the generic service stop path."""
         return None
+
+
+def _drain_uart_input(uart_transport):
+    try:
+        pending = int(getattr(uart_transport, "in_waiting", 0) or 0)
+    except (TypeError, ValueError):
+        pending = 0
+    if pending <= 0:
+        return
+    try:
+        uart_transport.read(min(pending, 64))
+    except Exception:
+        pass
 
 
 def start_sensor_service(
@@ -822,7 +842,9 @@ def _read_soil_snapshot_metrics(transport, sensor):
             if not isinstance(item, tuple) or len(item) < 2:
                 continue
             channel, channel_transport = item[0], item[1]
-            metrics = _compact_metrics(_read_soil_metrics(channel_transport, sensor))
+            metrics = _compact_metrics(
+                _read_soil_metrics(channel_transport, sensor, channel=channel)
+            )
             if metrics:
                 active.append(
                     (
@@ -840,7 +862,7 @@ def _read_soil_snapshot_metrics(transport, sensor):
     return _compact_metrics(_read_soil_metrics(transport, sensor))
 
 
-def _read_soil_metrics(transport, sensor):
+def _read_soil_metrics(transport, sensor, channel=None):
     if transport is None or not hasattr(transport, "read_registers"):
         return {}
     registers = sensor.soil_registers
@@ -848,11 +870,27 @@ def _read_soil_metrics(transport, sensor):
     if registers is None or scales is None:
         return {}
     calibration = getattr(sensor, "calibration_device", None)
-    return {
+    fallback_registers = ()
+    if _soil_variant_supports_ph(sensor, channel=channel):
+        fallback_registers = (_SOIL_ALT_PH_REG, _SOIL_ALT_EC_REG)
+    raw_values = _read_soil_register_values(
+        transport,
+        (
+            registers.temperature,
+            registers.moisture,
+            registers.ec,
+            registers.ph,
+            registers.n,
+            registers.p,
+            registers.k,
+        )
+        + fallback_registers,
+    )
+    metrics = {
         "Soil Temp_C": _maybe_round(
             _apply_linear_calibration(
                 _scale_register(
-                    transport.read_registers(registers.temperature, 1),
+                    _soil_raw_value(raw_values, registers.temperature),
                     scales.temperature,
                     None,
                 ),
@@ -863,7 +901,7 @@ def _read_soil_metrics(transport, sensor):
         "Soil Moisture": _maybe_round(
             _apply_linear_calibration(
                 _scale_register(
-                    transport.read_registers(registers.moisture, 1),
+                    _soil_raw_value(raw_values, registers.moisture),
                     scales.moisture,
                     None,
                 ),
@@ -874,7 +912,7 @@ def _read_soil_metrics(transport, sensor):
         "Soil EC": _maybe_round(
             _apply_linear_calibration(
                 _scale_register(
-                    transport.read_registers(registers.ec, 1), scales.ec, None
+                    _soil_raw_value(raw_values, registers.ec), scales.ec, None
                 ),
                 getattr(calibration, "soil_ec_cal_val", 0.0),
             ),
@@ -883,22 +921,138 @@ def _read_soil_metrics(transport, sensor):
         "Soil pH": _maybe_round(
             _apply_linear_calibration(
                 _scale_register(
-                    transport.read_registers(registers.ph, 1), scales.ph, None
+                    _soil_raw_value(raw_values, registers.ph), scales.ph, None
                 ),
                 getattr(calibration, "soil_ph_cal_val", 0.0),
             ),
             1,
         ),
         "Soil Nitrogen": _scale_register(
-            transport.read_registers(registers.n, 1), scales.n, 0
+            _soil_raw_value(raw_values, registers.n), scales.n, 0
         ),
         "Soil Phosphorus": _scale_register(
-            transport.read_registers(registers.p, 1), scales.p, 0
+            _soil_raw_value(raw_values, registers.p), scales.p, 0
         ),
         "Soil Potassium": _scale_register(
-            transport.read_registers(registers.k, 1), scales.k, 0
+            _soil_raw_value(raw_values, registers.k), scales.k, 0
         ),
     }
+    return _apply_soil_register_fallbacks(
+        sensor, channel, registers, scales, calibration, metrics, raw_values
+    )
+
+
+def _read_soil_register_values(transport, registers):
+    values = {}
+    pending = sorted(
+        {int(reg) for reg in registers if reg is not None and int(reg) >= 0}
+    )
+    index = 0
+    while index < len(pending):
+        start = pending[index]
+        end = start
+        index += 1
+        while index < len(pending):
+            candidate = pending[index]
+            if candidate - start >= _SOIL_BLOCK_READ_MAX:
+                break
+            end = candidate
+            index += 1
+        count = end - start + 1
+        block = transport.read_registers(start, count)
+        if isinstance(block, (tuple, list)) and len(block) == count:
+            for offset, value in enumerate(block):
+                reg = start + offset
+                if reg in pending:
+                    values[reg] = value
+            continue
+        for reg in pending:
+            if start <= reg <= end and reg not in values:
+                single = transport.read_registers(reg, 1)
+                if single is not None:
+                    values[reg] = single
+    return values
+
+
+def _soil_raw_value(raw_values, register):
+    try:
+        return raw_values.get(int(register))
+    except (TypeError, ValueError):
+        return None
+
+
+def _apply_soil_register_fallbacks(
+    sensor, channel, registers, scales, calibration, metrics, raw_values
+):
+    if not _soil_variant_supports_ph(sensor, channel=channel):
+        return metrics
+
+    fallback_active = False
+    if (
+        getattr(registers, "ph", None) != _SOIL_ALT_PH_REG
+        and not _soil_ph_is_valid(metrics.get("Soil pH"))
+    ):
+        fallback_ph = _calibrated_soil_value(
+            _soil_raw_value(raw_values, _SOIL_ALT_PH_REG),
+            scales.ph,
+            1,
+            getattr(calibration, "soil_ph_cal_val", 0.0),
+        )
+        if _soil_ph_is_valid(fallback_ph):
+            metrics["Soil pH"] = fallback_ph
+            fallback_active = True
+
+    if (
+        fallback_active
+        and getattr(registers, "ec", None) != _SOIL_ALT_EC_REG
+        and not _soil_positive_value(metrics.get("Soil EC"))
+    ):
+        fallback_ec = _calibrated_soil_value(
+            _soil_raw_value(raw_values, _SOIL_ALT_EC_REG),
+            scales.ec,
+            2,
+            getattr(calibration, "soil_ec_cal_val", 0.0),
+        )
+        if _soil_positive_value(fallback_ec):
+            metrics["Soil EC"] = fallback_ec
+
+    return metrics
+
+
+def _calibrated_soil_value(raw_value, scale, digits, offset):
+    value = _scale_register(raw_value, scale, None)
+    value = _apply_linear_calibration(value, offset)
+    return _maybe_round(value, digits)
+
+
+def _soil_variant_supports_ph(sensor, *, channel=None):
+    variant = ""
+    if channel is not None:
+        variant = getattr(channel, "variant", "")
+    if not variant:
+        modbus = getattr(sensor, "modbus", None)
+        channels = tuple(getattr(modbus, "channels", ()) or ())
+        if len(channels) == 1:
+            variant = getattr(channels[0], "variant", "")
+        else:
+            variant = getattr(modbus, "variant", "")
+    variant = str(variant or "canonical").strip().lower()
+    return variant in {"canonical", "soil_4in1", "4in1", "soil_7in1", "7in1"}
+
+
+def _soil_ph_is_valid(value):
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return False
+    return 3.0 <= numeric <= 10.5
+
+
+def _soil_positive_value(value):
+    try:
+        return float(value) > 0.0
+    except (TypeError, ValueError):
+        return False
 
 
 def _scale_register(raw_value, scale, digits):
@@ -927,23 +1081,37 @@ def _modbus_crc16(data):
 
 
 def _parse_modbus_register_response(response, *, address, count):
-    if not response or len(response) < 5:
+    expected_len = 5 + (int(count) * 2)
+    if not response or len(response) < expected_len:
         return None
-    body = response[:-2]
-    crc_low = response[-2]
-    crc_high = response[-1]
-    expected_crc = _modbus_crc16(body)
-    if crc_low != (expected_crc & 0xFF) or crc_high != ((expected_crc >> 8) & 0xFF):
-        return None
-    if response[0] != (int(address) & 0xFF) or response[1] != 0x03:
-        return None
-    byte_count = response[2]
+    response = bytes(response)
+    address = int(address) & 0xFF
     expected_byte_count = int(count) * 2
-    if byte_count != expected_byte_count:
-        return None
-    data = response[3 : 3 + byte_count]
-    if len(data) != byte_count:
-        return None
-    return tuple(
-        (data[index] << 8) | data[index + 1] for index in range(0, len(data), 2)
-    )
+    max_start = len(response) - expected_len
+    for start in range(max_start + 1):
+        frame = response[start : start + expected_len]
+        body = frame[:-2]
+        crc_low = frame[-2]
+        crc_high = frame[-1]
+        expected_crc = _modbus_crc16(body)
+        if (
+            crc_low != (expected_crc & 0xFF)
+            or crc_high != ((expected_crc >> 8) & 0xFF)
+        ):
+            continue
+        if frame[0] != address:
+            continue
+        if frame[1] == 0x83:
+            return None
+        if frame[1] != 0x03:
+            continue
+        byte_count = frame[2]
+        if byte_count != expected_byte_count:
+            continue
+        data = frame[3 : 3 + byte_count]
+        if len(data) != byte_count:
+            continue
+        return tuple(
+            (data[index] << 8) | data[index + 1] for index in range(0, len(data), 2)
+        )
+    return None
