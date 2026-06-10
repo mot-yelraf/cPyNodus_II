@@ -83,6 +83,7 @@ def run_steady_state_iteration(
     version="0.0.0",
     now_monotonic=0.0,
     active_broker="",
+    ip_address="",
     settings_root=None,
     subscribe_switch_topics=True,
     publish_switch_startup=True,
@@ -132,6 +133,7 @@ def run_steady_state_iteration(
             sensor_snapshot=sensor_snapshot,
             switch_snapshot=switch_snapshot,
             active_broker=active_broker,
+            ip_address=ip_address,
             publish_switch_startup=publish_switch_startup,
             include_switch_meta_channels=include_switch_meta_channels,
         )

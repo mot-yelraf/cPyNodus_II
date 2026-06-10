@@ -158,6 +158,7 @@ def test_steady_state_iteration_loads_onboarding_state_for_startup_publish(tmp_p
         state=SteadyState(sensor_interval_s=60.0),
         version="v0.26.114.1",
         now_monotonic=10.0,
+        ip_address="10.0.0.44",
         settings_root=str(tmp_path),
     )
 
@@ -165,6 +166,12 @@ def test_steady_state_iteration_loads_onboarding_state_for_startup_publish(tmp_p
     assert result.startup_published_count == 4
     assert result.availability_refresh_phase == "skipped"
     assert result.availability_refresh_published_count == 0
+    meta_message = next(
+        message
+        for message in transport.published_messages
+        if message.topic == "nodus/aqi-x943fm/meta"
+    )
+    assert meta_message.payload["network"]["ipv4addr"] == "10.0.0.44"
     hello_message = next(
         message
         for message in transport.published_messages

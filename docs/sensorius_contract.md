@@ -214,7 +214,7 @@ The payload must include:
 - top-level `schema`, `device_id`, `hostname`, `serial`, `version`, `type`
 - `capabilities`
 - `status.heartbeat_topic`
-- `network.ssid`, `network.password`, `network.hostname`
+- `network.ssid`, `network.password`, `network.hostname`, `network.ipv4addr`
 - `profile.active_profile`
 - `mqtt.broker`, `mqtt.broker_ip`, `mqtt.active_broker`, `mqtt.port`,
   `mqtt.use_tls`, `mqtt.username`, `mqtt.password`, `mqtt.base_topic`
@@ -226,6 +226,15 @@ The payload must include:
   `sensor.display_metrics`, `sensor.display_styles`
 - `switch.device_id`, `switch.channel_count`, and `switch.meta_topic` when
   switch capability is present
+
+`network.ipv4addr` is the current runtime station IPv4 address from the active
+network stack. It is not a TOML setting and should be treated as volatile
+runtime state that can change after DHCP lease changes, reconnects, or network
+changes.
+
+The retained `meta.status` block intentionally advertises only the heartbeat
+topic. Consumers should use retained heartbeat and availability topics for
+online/offline state.
 
 The startup `meta` payload intentionally does not include
 `switch.channels[*]`. The detailed per-channel switch topic map is published

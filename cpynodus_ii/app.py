@@ -4974,6 +4974,7 @@ async def main(*, startup_plan_override=None):
                     version=__version__,
                     now_monotonic=now_monotonic,
                     active_broker=mqtt_adapter.active_broker,
+                    ip_address=network_stack.ip_address or "",
                     settings_root=writable_settings_root,
                     subscribe_switch_topics=not defer_switch_subscriptions,
                     publish_switch_startup=False,

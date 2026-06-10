@@ -178,6 +178,9 @@ normal reload.
   - `nodus/<device_id>/config/result`
 - Nodus TOML files are the source of truth for accepted device configuration.
 - Retained `nodus/<device_id>/meta` is the compact authoritative startup snapshot and is published on successful MQTT startup/reconnect.
+- The current Nodus station IPv4 in retained `meta.network.ipv4addr` comes from
+  the active `NetworkStack` at publish time. It is runtime state only and is not
+  part of TOML configuration persistence.
 - Retained `nodus/<device_id>/meta/switch` carries detailed switch channel control topics and is published in the startup identity batch when switch channels are present.
 - After startup, accepted runtime config writes are mirrored to Sensorius through non-retained `nodus/<device_id>/meta/patch` only; config writes do not trigger another full retained `meta` publish.
 - Runtime liveness and device materialization should come from MQTT heartbeat/availability/data topics.

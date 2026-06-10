@@ -628,6 +628,9 @@ Automations are implemented in Sensorius or Home Assistant. Commands are publish
 - Device mDNS does not change MQTT broker target selection. `MQTT.BROKER`
   remains the canonical broker hostname, while `MQTT.BROKER_IP` is the connect
   target used by MiniMQTT.
+- Retained `nodus/<device_id>/meta` includes the current runtime Nodus station
+  IPv4 as `network.ipv4addr` when available. This value is not persisted in
+  `settings.toml` and can change after DHCP lease changes or reconnects.
 - Implemented Home Assistant corner case:
   - when `ACTIVE_PROFILE=homeassistant` or `ACTIVE_PROFILE=weewx`, Nodus skips the normal-mode webserver in both ROFS and RWFS
   - this policy exists because these networked MQTT-only profiles are intended to run without the normal local web UI path

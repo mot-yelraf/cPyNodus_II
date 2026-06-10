@@ -149,18 +149,20 @@ def test_runtime_meta_payload_includes_sensor_and_switch_topics():
         runtime_config,
         version="0.1.0",
         active_broker="sensoria-hub-0.local",
+        ip_address="10.0.0.44",
     )
     assert payload["schema"] == "nodus-meta/v1"
     assert payload["device_id"] == "aqi-x943fm"
     assert payload["network"]["ssid"] == "PeaceHill"
     assert payload["network"]["hostname"] == "aqi-x943fm"
+    assert payload["network"]["ipv4addr"] == "10.0.0.44"
     assert payload["network"]["password"] != "wifi-secret"
     assert (
         decode_password(payload["network"]["password"], hostname="aqi-x943fm")
         == "wifi-secret"
     )
     assert payload["profile"]["active_profile"] == "sensorius"
-    assert payload["status"]["state"] == "online"
+    assert "state" not in payload["status"]
     assert payload["status"]["heartbeat_topic"] == "nodus/aqi-x943fm/status/heartbeat"
     assert payload["capabilities"]["fwupdate"] is True
     assert payload["capabilities"]["log_transfer"] is True
@@ -429,6 +431,7 @@ def test_avpd_switch_runtime_meta_packet_stays_under_single_mss():
         runtime_config,
         version="v0.26.150.15",
         active_broker="10.0.0.246",
+        ip_address="10.0.0.226",
         include_switch_channels=False,
     )
     encoded = json.dumps(payload, separators=(",", ":"))
@@ -439,6 +442,7 @@ def test_avpd_switch_runtime_meta_packet_stays_under_single_mss():
     )
 
     assert payload["capabilities"]["switch"] is True
+    assert payload["network"]["ipv4addr"] == "10.0.0.226"
     assert payload["switch"] == {
         "device_id": "switch-0kl7sx",
         "channel_count": 1,

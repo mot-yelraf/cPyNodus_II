@@ -187,6 +187,7 @@ def build_runtime_meta_payload(
     *,
     version,
     active_broker="",
+    ip_address="",
     include_switch_channels=False,
 ):
     """Build the retained runtime metadata payload."""
@@ -215,7 +216,6 @@ def build_runtime_meta_payload(
             "log_transfer": True,
         },
         "status": {
-            "state": "online",
             "heartbeat_topic": mqtt_topic(
                 runtime_config, device_id, "status", "heartbeat"
             ),
@@ -226,6 +226,7 @@ def build_runtime_meta_payload(
                 runtime_config.network.password, runtime_config
             ),
             "hostname": runtime_config.network.hostname,
+            "ipv4addr": str(ip_address or "").strip(),
         },
         "profile": {
             "active_profile": runtime_config.active_profile,

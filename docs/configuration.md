@@ -116,6 +116,12 @@ is absent, and cannot persist it.
 The same settings rewrite obfuscates any plaintext passwords that were manually
 entered in `settings.toml`.
 
+The Nodus device's current station IPv4 address is not stored in
+`settings.toml`. It is assigned at runtime by the network stack and published
+in retained MQTT `meta` as `network.ipv4addr` when available. Treat that value
+as volatile; it can change after DHCP lease changes, reconnects, or network
+changes.
+
 ## Device hostname and mDNS
 
 `Network.HOSTNAME` is the Nodus device hostname. In station mode, Nodus can

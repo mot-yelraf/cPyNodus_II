@@ -60,6 +60,7 @@ def test_startup_cycle_publishes_heartbeat_meta_sensor_and_switch_topics():
         version="0.1.0",
         sensor_snapshot=sensor_snapshot,
         switch_snapshot=switch_snapshot,
+        ip_address="10.0.0.44",
     )
 
     assert result.phase == "published"
@@ -84,6 +85,8 @@ def test_startup_cycle_publishes_heartbeat_meta_sensor_and_switch_topics():
         "nodus/S1-x943fm/availability"
     )
     meta_message = transport.published_messages[0]
+    assert meta_message.payload["network"]["ipv4addr"] == "10.0.0.44"
+    assert "state" not in meta_message.payload["status"]
     assert "channels" not in meta_message.payload["switch"]
     assert (
         meta_message.payload["switch"]["meta_topic"]
@@ -425,6 +428,7 @@ def test_retained_startup_refresh_publishes_meta_heartbeat_and_availability_only
         runtime_config,
         version="v0.26.128.13",
         active_broker="10.0.0.248",
+        ip_address="10.0.0.45",
     )
 
     assert result.phase == "published"
@@ -442,6 +446,10 @@ def test_retained_startup_refresh_publishes_meta_heartbeat_and_availability_only
     assert (
         transport.published_messages[0].payload["mqtt"]["active_broker"]
         == "10.0.0.248"
+    )
+    assert (
+        transport.published_messages[0].payload["network"]["ipv4addr"]
+        == "10.0.0.45"
     )
 
 

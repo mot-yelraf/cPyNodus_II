@@ -42,6 +42,7 @@ def publish_startup_cycle(
     sensor_snapshot=None,
     switch_snapshot=None,
     active_broker="",
+    ip_address="",
     publish_switch_startup=True,
     include_switch_meta_channels=False,
 ):
@@ -54,6 +55,7 @@ def publish_startup_cycle(
             runtime_config,
             version=version,
             active_broker=active_broker,
+            ip_address=ip_address,
             include_switch_channels=include_switch_meta_channels,
         ),
         retain=True,
@@ -173,6 +175,7 @@ def publish_retained_startup_refresh(
     *,
     version,
     active_broker="",
+    ip_address="",
     availability_debug_logger=None,
 ):
     """Publish retained identity and online status after MQTT recovery."""
@@ -184,6 +187,7 @@ def publish_retained_startup_refresh(
             runtime_config,
             version=version,
             active_broker=active_broker,
+            ip_address=ip_address,
             include_switch_channels=False,
         ),
         retain=True,
