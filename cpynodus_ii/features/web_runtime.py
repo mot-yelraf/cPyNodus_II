@@ -43,6 +43,7 @@ class WebRuntimeController:
         settings_root=None,
         server_module=None,
         reboot_callbacks=None,
+        event_logger=None,
     ):
         self.runtime_config = runtime_config
         self.network_stack = network_stack
@@ -52,10 +53,12 @@ class WebRuntimeController:
         self.settings_root = settings_root
         self.server_module = server_module
         self.reboot_callbacks = dict(reboot_callbacks or {})
+        self.event_logger = event_logger
         self.server = None
         self.phase = "new"
         self.errors = ()
         self._route_paths = ()
+        self._pending_reboot_callback = None
 
     def start(self):
         """Initialize the backing HTTP server and register routes."""
@@ -117,6 +120,8 @@ class WebRuntimeController:
         except Exception as exc:
             self.phase = "error"
             self.errors = ("web_poll_failed", str(exc))
+            return self
+        self._run_pending_reboot()
         return self
 
     def stop(self):
@@ -275,31 +280,91 @@ class WebRuntimeController:
 
             @route("/itaot-init", methods=["POST"])
             def _itaot_init(request):
+                self._log_ap_event("request path=/itaot-init phase=received")
                 payload = _parse_json_body(request)
                 if payload is None:
+                    self._log_ap_event(
+                        "request path=/itaot-init phase=rejected status=400 "
+                        "error=invalid_json"
+                    )
                     return self._json_response(
                         request,
                         {"success": False, "error": "invalid_json"},
                         status_code=400,
                     )
-                result = apply_itaot_init_payload(
-                    payload,
-                    self.runtime_config,
-                    settings_root=self.settings_root or ".",
+                time_present = 0
+                if isinstance(payload, dict) and isinstance(payload.get("time"), dict):
+                    time_present = 1
+                self._log_ap_event(
+                    "request path=/itaot-init phase=parsed time_present={}".format(
+                        time_present
+                    )
                 )
+                try:
+                    result = apply_itaot_init_payload(
+                        payload,
+                        self.runtime_config,
+                        settings_root=self.settings_root or ".",
+                        event_logger=self._log_itaot_apply_event,
+                    )
+                except Exception as exc:
+                    self._log_ap_event(
+                        "request path=/itaot-init phase=apply_exception type={} "
+                        "detail={}".format(type(exc).__name__, self._error_text(exc))
+                    )
+                    self._log_ap_event(
+                        "request path=/itaot-init phase=response_return status=500"
+                    )
+                    return self._json_response(
+                        request,
+                        {
+                            "success": False,
+                            "accepted": False,
+                            "error": "itaot_init_exception",
+                            "exception": type(exc).__name__,
+                        },
+                        status_code=500,
+                    )
                 self.runtime_config = result.runtime_config
+                time_keys = tuple(
+                    str(update.get("key", "") or "")
+                    for update in result.applied_updates
+                    if str(update.get("section", "") or "") == "Time"
+                )
+                self._log_ap_event(
+                    "request path=/itaot-init phase=applied status={} accepted={} "
+                    "rebooting={} updates={} time_updates={} time_keys={} "
+                    "errors={}".format(
+                        result.status_code,
+                        1 if result.accepted else 0,
+                        1 if result.rebooting else 0,
+                        len(result.applied_updates),
+                        len(time_keys),
+                        ",".join(time_keys) if time_keys else "none",
+                        ",".join(result.errors) if result.errors else "none",
+                    )
+                )
                 if result.accepted:
                     callback = self.reboot_callbacks.get(
                         "hard"
                     ) or self.reboot_callbacks.get("soft")
                     if callback is not None:
-                        callback()
+                        self._pending_reboot_callback = callback
+                        self._log_ap_event(
+                            "request path=/itaot-init phase=reboot_scheduled"
+                        )
+                self._log_ap_event(
+                    "request path=/itaot-init phase=response_return status={}".format(
+                        result.status_code
+                    )
+                )
                 return self._json_response(
                     request, result.body, status_code=result.status_code
                 )
 
             @route("/itaot-meta", methods=["GET"])
             def _itaot_meta(request):
+                self._log_ap_event("request path=/itaot-meta phase=received")
                 payload = build_itaot_meta_payload(
                     self.runtime_config,
                     version=self.version,
@@ -317,7 +382,35 @@ class WebRuntimeController:
                         ip_address=getattr(self.network_stack, "ip_address", ""),
                         switch_states=snapshot_switch_states(self.switch_service),
                     )
+                self._log_ap_event("request path=/itaot-meta phase=response status=200")
                 return self._json_response(request, payload)
+
+    def _run_pending_reboot(self):
+        callback = self._pending_reboot_callback
+        if callback is None:
+            return
+        self._pending_reboot_callback = None
+        self._log_ap_event("request path=/itaot-init phase=reboot_execute")
+        callback()
+
+    def _log_ap_event(self, message):
+        network_phase = str(getattr(self.network_stack, "phase", "") or "")
+        if not getattr(self.runtime_config, "ap_mode", False) and network_phase != "ap":
+            return
+        logger = self.event_logger
+        if not callable(logger):
+            return
+        try:
+            logger(message)
+        except Exception:
+            pass
+
+    def _log_itaot_apply_event(self, message):
+        self._log_ap_event("request path=/itaot-init {}".format(str(message or "")))
+
+    @staticmethod
+    def _error_text(exc):
+        return str(exc or "").replace(" ", "_") or type(exc).__name__
 
     def _json_response(self, request, payload, *, status_code=200):
         response_cls = getattr(self.server_module, "JSONResponse", None)

@@ -16,13 +16,14 @@ AP mode is used when:
 
 1. In AP mode, Nodus exposes `GET /itaot-meta` and `POST /itaot-init`.
 2. Sensorius reads `/itaot-meta` so the device provides its own identity.
-3. Sensorius sends a minimal bootstrap payload to `/itaot-init`.
+3. Sensorius sends a minimal bootstrap payload to `/itaot-init`, including
+   available hub `[Time]` values in top-level `time`.
 4. Nodus validates and applies bootstrap to existing TOML schema fields,
    writes short-lived `onboarding_state.json` outside `settings.toml`, then
    reboots.
 5. After Wi-Fi + MQTT connect, Nodus publishes `nodus/<device_id>/onboard/hello`.
 6. Sensorius responds with one full onboarding `nodus/<device_id>/config/set`
-   envelope.
+   envelope. Full onboarding Time values use `payload.settings.Time`.
 7. Nodus publishes `config/ack`, then `config/result`.
 8. Nodus publishes retained compact `nodus/<device_id>/meta`.
 9. If switch channels are present, Nodus publishes retained
@@ -42,6 +43,12 @@ AP mode is used when:
 ## Notes
 
 - Bootstrap route exposure is tied to AP mode.
+- In AP mode, serial logs emit `web request path=/itaot-init ...` and
+  `web request path=/itaot-meta ...` markers for bootstrap request receipt,
+  parse result, normalized field presence, update counts, persistence begin/end,
+  onboarding-state persistence, response return, reboot scheduling, reboot
+  execution, and unexpected apply exceptions. These markers do not include
+  Wi-Fi passwords, MQTT passwords, or onboarding tokens.
 - Onboarding protocol state should stay outside normal TOML config schema.
 - Current Nodus token enforcement checks the persisted token when present and
   clears `onboarding_state.json` after a successful config apply. On-device

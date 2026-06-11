@@ -175,6 +175,250 @@ def test_web_runtime_controller_config_route_updates_runtime_config():
     assert controller.runtime_config.sensor.location == "Bench D"
 
 
+def test_web_runtime_controller_defers_itaot_init_reboot_until_after_response():
+    with TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        (tmpdir_path / "settings.toml").write_text(
+            '[Profile]\nACTIVE_PROFILE = "nodusweb"\n',
+            encoding="utf-8",
+        )
+        runtime_config = _runtime_config()
+        runtime_config.ap_mode = True
+        stack = build_network_stack(
+            runtime_config,
+            wifi_radio=_FakeRadio(),
+            connection_manager_module=_FakeConnMgr,
+        )
+        reboot_calls = []
+        log_events = []
+        controller = WebRuntimeController(
+            runtime_config,
+            stack,
+            version="v0.26.162.5",
+            settings_root=tmpdir_path,
+            server_module=_FakeServerModule,
+            reboot_callbacks={"hard": lambda: reboot_calls.append("hard")},
+            event_logger=log_events.append,
+        ).start()
+
+        handler = controller.server.routes[("/itaot-init", ("POST",))]
+        response = handler(
+            _FakeRequest(
+                (
+                    b'{"onboard_token":"token-123","ssid":"TestWiFi",'
+                    b'"password":"secretpass","hostname":"co2-w9umh8",'
+                    b'"mqtt":{"broker_host":"sensorius-broker.local",'
+                    b'"broker_port":1883}}'
+                )
+            )
+        )
+
+        assert response.body["accepted"] is True
+        assert reboot_calls == []
+        assert log_events == [
+            "request path=/itaot-init phase=received",
+            "request path=/itaot-init phase=parsed time_present=0",
+            "request path=/itaot-init apply phase=normalize_begin",
+            (
+                "request path=/itaot-init apply phase=normalize_done errors=none "
+                "ssid_present=1 password_present=1 hostname_present=1 "
+                "broker_host_present=1 time_keys=none"
+            ),
+            (
+                "request path=/itaot-init apply phase=updates_built updates=7 "
+                "sections=Network,MQTT,Profile time_updates=0 time_keys=none"
+            ),
+            (
+                "request path=/itaot-init apply phase=persist_begin "
+                "writer=direct reload_runtime=0"
+            ),
+            "request path=/itaot-init apply phase=persist_targets_begin",
+            (
+                "request path=/itaot-init apply phase=persist_targets_done "
+                "targets=7 sections=Network,MQTT,Profile password_updates=1"
+            ),
+            (
+                "request path=/itaot-init apply phase=persist_open_begin "
+                "file=settings.toml"
+            ),
+            "request path=/itaot-init apply phase=persist_open_done",
+            "request path=/itaot-init apply phase=persist_copy_begin",
+            (
+                "request path=/itaot-init apply phase=persist_copy_done "
+                "copied=2 appended=6 found=7 missing=none"
+            ),
+            "request path=/itaot-init apply phase=persist_flush_done",
+            "request path=/itaot-init apply phase=persist_close_done",
+            "request path=/itaot-init apply phase=persist_validate_done",
+            "request path=/itaot-init apply phase=persist_rotate_begin",
+            "request path=/itaot-init apply phase=persist_backup_done",
+            "request path=/itaot-init apply phase=persist_rename_done",
+            (
+                "request path=/itaot-init apply phase=persist_done applied=7 "
+                "time_updates=0 time_keys=none errors=none"
+            ),
+            "request path=/itaot-init apply phase=state_persist_begin",
+            "request path=/itaot-init apply phase=state_persist_done",
+            "request path=/itaot-init apply phase=response_ready status=200",
+            (
+                "request path=/itaot-init phase=applied status=200 accepted=1 "
+                "rebooting=1 updates=7 time_updates=0 time_keys=none errors=none"
+            ),
+            "request path=/itaot-init phase=reboot_scheduled",
+            "request path=/itaot-init phase=response_return status=200",
+        ]
+
+        controller.poll()
+
+    assert reboot_calls == ["hard"]
+    assert log_events[-1] == "request path=/itaot-init phase=reboot_execute"
+
+
+def test_web_runtime_controller_logs_itaot_init_time_updates():
+    with TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        (tmpdir_path / "settings.toml").write_text(
+            '[Profile]\nACTIVE_PROFILE = "nodusweb"\n',
+            encoding="utf-8",
+        )
+        runtime_config = _runtime_config()
+        runtime_config.ap_mode = True
+        stack = build_network_stack(
+            runtime_config,
+            wifi_radio=_FakeRadio(),
+            connection_manager_module=_FakeConnMgr,
+        )
+        log_events = []
+        controller = WebRuntimeController(
+            runtime_config,
+            stack,
+            version="v0.26.162.5",
+            settings_root=tmpdir_path,
+            server_module=_FakeServerModule,
+            event_logger=log_events.append,
+        ).start()
+
+        handler = controller.server.routes[("/itaot-init", ("POST",))]
+        response = handler(
+            _FakeRequest(
+                (
+                    b'{"onboard_token":"token-123","ssid":"TestWiFi",'
+                    b'"password":"secretpass","hostname":"co2-w9umh8",'
+                    b'"mqtt":{"broker_host":"sensorius-broker.local",'
+                    b'"broker_port":1883},"time":{"TZ":"America/Denver",'
+                    b'"TZ_OFFSET":-21600,"TZ_NAME":"MDT",'
+                    b'"NTP_SERVER":"us.pool.ntp.org",'
+                    b'"NTP_SERVER_IP":"132.163.96.6"}}'
+                )
+            )
+        )
+
+    assert response.body["accepted"] is True
+    assert log_events[:3] == [
+        "request path=/itaot-init phase=received",
+        "request path=/itaot-init phase=parsed time_present=1",
+        "request path=/itaot-init apply phase=normalize_begin",
+    ]
+    assert log_events[3:21] == [
+        (
+            "request path=/itaot-init apply phase=normalize_done errors=none "
+            "ssid_present=1 password_present=1 hostname_present=1 "
+            "broker_host_present=1 "
+            "time_keys=TZ,TZ_NAME,NTP_SERVER,NTP_SERVER_IP,TZ_OFFSET"
+        ),
+        (
+            "request path=/itaot-init apply phase=updates_built updates=12 "
+            "sections=Network,MQTT,Profile,Time time_updates=5 "
+            "time_keys=TZ,TZ_NAME,NTP_SERVER,NTP_SERVER_IP,TZ_OFFSET"
+        ),
+        (
+            "request path=/itaot-init apply phase=persist_begin "
+            "writer=direct reload_runtime=0"
+        ),
+        "request path=/itaot-init apply phase=persist_targets_begin",
+        (
+            "request path=/itaot-init apply phase=persist_targets_done "
+            "targets=12 sections=Network,MQTT,Profile,Time password_updates=1"
+        ),
+        "request path=/itaot-init apply phase=persist_open_begin file=settings.toml",
+        "request path=/itaot-init apply phase=persist_open_done",
+        "request path=/itaot-init apply phase=persist_copy_begin",
+        (
+            "request path=/itaot-init apply phase=persist_copy_done "
+            "copied=2 appended=11 found=12 missing=none"
+        ),
+        "request path=/itaot-init apply phase=persist_flush_done",
+        "request path=/itaot-init apply phase=persist_close_done",
+        "request path=/itaot-init apply phase=persist_validate_done",
+        "request path=/itaot-init apply phase=persist_rotate_begin",
+        "request path=/itaot-init apply phase=persist_backup_done",
+        "request path=/itaot-init apply phase=persist_rename_done",
+        (
+            "request path=/itaot-init apply phase=persist_done applied=12 "
+            "time_updates=5 "
+            "time_keys=TZ,TZ_NAME,NTP_SERVER,NTP_SERVER_IP,TZ_OFFSET "
+            "errors=none"
+        ),
+        "request path=/itaot-init apply phase=state_persist_begin",
+        "request path=/itaot-init apply phase=state_persist_done",
+    ]
+    assert log_events[21:24] == [
+        "request path=/itaot-init apply phase=response_ready status=200",
+        (
+            "request path=/itaot-init phase=applied status=200 accepted=1 "
+            "rebooting=1 updates=12 time_updates=5 "
+            "time_keys=TZ,TZ_NAME,NTP_SERVER,NTP_SERVER_IP,TZ_OFFSET errors=none"
+        ),
+        "request path=/itaot-init phase=response_return status=200",
+    ]
+
+
+def test_web_runtime_controller_logs_itaot_init_apply_exception(monkeypatch):
+    runtime_config = _runtime_config()
+    runtime_config.ap_mode = True
+    stack = build_network_stack(
+        runtime_config,
+        wifi_radio=_FakeRadio(),
+        connection_manager_module=_FakeConnMgr,
+    )
+    log_events = []
+    controller = WebRuntimeController(
+        runtime_config,
+        stack,
+        version="v0.26.162.5",
+        server_module=_FakeServerModule,
+        event_logger=log_events.append,
+    ).start()
+
+    def fail_apply(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(
+        "cpynodus_ii.features.web_runtime.apply_itaot_init_payload",
+        fail_apply,
+    )
+    handler = controller.server.routes[("/itaot-init", ("POST",))]
+    response = handler(
+        _FakeRequest(
+            (
+                b'{"onboard_token":"token-123","ssid":"TestWiFi",'
+                b'"password":"secretpass","hostname":"co2-w9umh8",'
+                b'"mqtt":{"broker_host":"sensorius-broker.local",'
+                b'"broker_port":1883}}'
+            )
+        )
+    )
+
+    assert response.status == (500, "Internal Server Error")
+    assert response.body["error"] == "itaot_init_exception"
+    assert log_events == [
+        "request path=/itaot-init phase=received",
+        "request path=/itaot-init phase=parsed time_present=0",
+        "request path=/itaot-init phase=apply_exception type=RuntimeError detail=boom",
+        "request path=/itaot-init phase=response_return status=500",
+    ]
+
+
 def test_web_runtime_controller_switch_route_applies_live_override():
     runtime_config = _runtime_config()
     stack = build_network_stack(

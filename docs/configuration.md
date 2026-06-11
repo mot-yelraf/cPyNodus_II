@@ -212,6 +212,10 @@ Time is configured in the `[Time]` section of `settings.toml`:
 - `NTP_SERVER` (optional hostname or IP; defaults to `us.pool.ntp.org` when blank)
 - `NTP_SERVER_IP` (optional IP fallback used when hostname/DNS sync fails; default `132.163.96.6`)
 
+Sensorius AP bootstrap may provide these same supported keys in top-level
+`/itaot-init.time`. Nodus persists them to `[Time]` when present; missing Time
+keys do not block onboarding.
+
 `NTP_SERVER` may be left blank to use the default US pool host. If
 `NTP_SERVER_IP` is set, Nodus tries the hostname first and then the IP fallback
 when DNS or the hostname-based sync fails. NTP sync is deferred until hostname

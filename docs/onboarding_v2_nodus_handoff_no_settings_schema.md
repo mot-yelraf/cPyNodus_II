@@ -30,13 +30,21 @@ Do **not** add new persistent keys to Nodus `settings.toml` for onboarding state
   "mqtt": {
     "broker_host": "sensorius-broker.local",
     "broker_port": 1883
+  },
+  "time": {
+    "TZ": "America/Denver",
+    "TZ_OFFSET": -21600,
+    "TZ_NAME": "MDT",
+    "NTP_SERVER": "us.pool.ntp.org",
+    "NTP_SERVER_IP": "132.163.96.6"
   }
 }
 ```
 
 ### Required behavior on Nodus
 1. Validate required fields and types.
-2. Apply only existing settings fields already supported by current settings model.
+2. Apply only existing settings fields already supported by current settings
+   model, including supported `time` keys.
 3. Do not persist onboarding protocol metadata into `settings.toml`.
 4. Treat the flat top-level JSON shape above as canonical for Sensorius V2 clients.
 5. When `mqtt.active_profile` is omitted but `mqtt.broker_host` is present, infer `ACTIVE_PROFILE = "sensorius"` so MQTT onboarding remains enabled.

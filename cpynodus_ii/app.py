@@ -3013,6 +3013,13 @@ async def main(*, startup_plan_override=None):
     if plan.web_enabled:
         from cpynodus_ii.features.web_runtime import WebRuntimeController
 
+        def _web_event_log(message):
+            _print_log(
+                "web",
+                str(message or ""),
+                start_monotonic=start_monotonic,
+            )
+
         web_runtime = WebRuntimeController(
             runtime_config,
             network_stack,
@@ -3024,6 +3031,7 @@ async def main(*, startup_plan_override=None):
                 "soft": _request_runtime_soft_reboot,
                 "hard": _hard_reboot,
             },
+            event_logger=_web_event_log,
         ).start()
         _print_log(
             "web",

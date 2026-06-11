@@ -12,6 +12,7 @@ from cpynodus_ii.core.config import (
     SwitchConfig,
 )
 from cpynodus_ii.core.settings import Settings
+from cpynodus_ii.features import web_services
 from cpynodus_ii.features.web_services import (
     apply_itaot_init_payload,
     bootstrap_routes_enabled,
@@ -73,6 +74,97 @@ def test_apply_itaot_init_payload_persists_existing_settings_fields_only():
     assert onboarding_state["active_profile"] == "sensorius"
     assert "onboard_token" not in settings_text
     assert "token-123" not in settings_text
+    assert "secretpass" not in settings_text
+    assert 'PASSWORD = "obf1:' in settings_text
+
+
+def test_apply_itaot_init_payload_persists_time_fields_when_present():
+    with TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        (tmpdir_path / "settings.toml").write_text(
+            (
+                '[Profile]\nACTIVE_PROFILE = "nodusweb"\n'
+                '[Time]\nTZ = "UTC"\nTZ_OFFSET = 0\nTZ_NAME = "UTC"\n'
+                'NTP_SERVER = ""\nNTP_SERVER_IP = ""\n'
+            ),
+            encoding="utf-8",
+        )
+        runtime_config = Settings.from_directory(tmpdir_path).runtime_config()
+
+        result = apply_itaot_init_payload(
+            {
+                "onboard_token": "token-123",
+                "ssid": "TestWiFi",
+                "password": "secretpass",
+                "hostname": "co2-w9umh8",
+                "mqtt": {
+                    "broker_host": "sensorius-broker.local",
+                    "broker_port": 1883,
+                },
+                "time": {
+                    "TZ": "America/Denver",
+                    "TZ_OFFSET": -21600,
+                    "TZ_NAME": "MDT",
+                    "NTP_SERVER": "us.pool.ntp.org",
+                    "NTP_SERVER_IP": "132.163.96.6",
+                },
+            },
+            runtime_config,
+            settings_root=tmpdir_path,
+        )
+
+        settings = Settings.from_directory(tmpdir_path).runtime_config()
+        settings_text = (tmpdir_path / "settings.toml").read_text(encoding="utf-8")
+
+    assert result.status_code == 200
+    assert settings.time.tz == "America/Denver"
+    assert settings.time.tz_offset == -21600
+    assert settings.time.tz_name == "MDT"
+    assert settings.time.ntp_server == "us.pool.ntp.org"
+    assert settings.time.ntp_server_ip == "132.163.96.6"
+    assert 'TZ = "America/Denver"' in settings_text
+    assert "TZ_OFFSET = -21600" in settings_text
+    assert 'TZ_NAME = "MDT"' in settings_text
+    assert 'NTP_SERVER = "us.pool.ntp.org"' in settings_text
+    assert 'NTP_SERVER_IP = "132.163.96.6"' in settings_text
+
+
+def test_apply_itaot_init_payload_reports_direct_pystack_persistence(monkeypatch):
+    with TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        (tmpdir_path / "settings.toml").write_text(
+            '[Profile]\nACTIVE_PROFILE = "nodusweb"\n',
+            encoding="utf-8",
+        )
+        runtime_config = Settings.from_directory(tmpdir_path).runtime_config()
+        log_events = []
+
+        def raise_pystack(*args, **kwargs):
+            raise RuntimeError("pystack exhausted")
+
+        monkeypatch.setattr(web_services, "_write_itaot_settings_file", raise_pystack)
+        result = apply_itaot_init_payload(
+            {
+                "onboard_token": "token-123",
+                "ssid": "TestWiFi",
+                "password": "secretpass",
+                "hostname": "co2-w9umh8",
+                "mqtt": {
+                    "broker_host": "sensorius-broker.local",
+                    "broker_port": 1883,
+                },
+            },
+            runtime_config,
+            settings_root=tmpdir_path,
+            event_logger=log_events.append,
+        )
+
+    assert result.status_code == 503
+    assert result.accepted is False
+    assert result.errors == ("pystack_exhausted",)
+    assert "apply phase=persist_begin writer=direct reload_runtime=0" in log_events
+    assert "apply phase=persist_error code=pystack_exhausted" in log_events
+    assert "apply phase=response_ready status=503" in log_events
 
 
 def test_bootstrap_routes_enabled_for_ap_mode_only():
