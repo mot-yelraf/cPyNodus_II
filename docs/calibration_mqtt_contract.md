@@ -138,8 +138,11 @@ Behavior:
 - writes are applied to the active sensor TOML file when the filesystem is writable
 - additive runtime offsets in `Calibration.System` and `Calibration.Device`
   update the in-memory `RuntimeConfig` used by subsequent reads
-- driver setup calibration such as `ALTITUDE_METERS` is applied at driver
-  startup and therefore requires restart/reinitialization to affect the driver
+- BME280 `ALTITUDE_METERS` affects the published `Baro-Pressure` value on
+  subsequent sensor reads
+- driver setup calibration such as BME680 or SCD30/SCD4x `ALTITUDE_METERS` is
+  applied at driver startup and therefore requires restart/reinitialization to
+  affect the driver
 - `offsets[].key` also accepts the short alias `soil_ph_offset`, which maps to
   `Calibration.Device.SOIL_PH_CAL_VAL`
 

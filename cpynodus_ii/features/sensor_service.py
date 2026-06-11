@@ -338,7 +338,7 @@ def _read_ready_sensor_snapshot(sensor_service, runtime_config, sensor):
                 "Temperature": _maybe_round(temp_c, 2),
                 "Rel-Humidity": _maybe_round(rh_pct, 0),
                 "Baro-Pressure": _maybe_round(
-                    _scale_pressure_hpa(getattr(ambient_driver, "pressure", None)),
+                    _bme280_baro_pressure_hpa(ambient_driver, sensor),
                     None,
                 ),
             }
@@ -364,9 +364,7 @@ def _read_ready_sensor_snapshot(sensor_service, runtime_config, sensor):
                             0,
                         ),
                         "Plant Baro-Pressure": _maybe_round(
-                            _scale_pressure_hpa(
-                                getattr(driver.plant, "pressure", None)
-                            ),
+                            _bme280_baro_pressure_hpa(driver.plant, sensor),
                             None,
                         ),
                     }
@@ -643,6 +641,34 @@ def _apply_bme_altitude(driver, sensor):
         return True
     except Exception:
         return False
+
+
+def _bme280_baro_pressure_hpa(driver, sensor):
+    """Return BME280 sea-level pressure from station pressure and altitude."""
+    try:
+        pressure = getattr(driver, "pressure", None)
+    except Exception:
+        return None
+    pressure_hpa = _scale_pressure_hpa(pressure)
+    altitude = _configured_altitude_meters(sensor)
+    return _pressure_at_sea_level_hpa(pressure_hpa, altitude)
+
+
+def _pressure_at_sea_level_hpa(pressure_hpa, altitude_meters):
+    if pressure_hpa is None:
+        return None
+    if altitude_meters is None:
+        return pressure_hpa
+    try:
+        factor = 1.0 - (float(altitude_meters) / 44330.0)
+    except (TypeError, ValueError):
+        return pressure_hpa
+    if factor <= 0.0:
+        return pressure_hpa
+    try:
+        return float(pressure_hpa) / (factor**5.255)
+    except (TypeError, ValueError):
+        return pressure_hpa
 
 
 def _sensor_data_ready(driver, *, driver_kind=""):

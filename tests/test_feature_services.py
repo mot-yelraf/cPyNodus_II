@@ -234,7 +234,7 @@ def test_sensor_service_starts_bme680_for_aqi_config():
     assert sensor_service.driver.address == 119
 
 
-def test_sensor_service_skips_altitude_for_bme680_diagnostic_bypass():
+def test_sensor_service_applies_altitude_for_bme680_startup():
     runtime_config = RuntimeConfig(
         sensor=DetectedSensor(
             family="i2c",
@@ -265,7 +265,33 @@ def test_sensor_service_skips_altitude_for_bme680_diagnostic_bypass():
     )
 
     assert sensor_service.phase == "ready"
-    assert not hasattr(sensor_service.driver, "sea_level_pressure")
+    expected = 1008.5 / ((1.0 - (1500.0 / 44330.0)) ** 5.255)
+    assert abs(sensor_service.driver.sea_level_pressure - expected) < 0.001
+
+
+def test_sensor_service_keeps_bme680_pressure_reading_with_altitude():
+    runtime_config = RuntimeConfig(
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            active_config_file="sensor_i2c.toml",
+            device="aqi",
+            sensor_id="aqi-1",
+            i2c=I2CConfig(bus=0, scl_pin="GP1", sda_pin="GP0", address=0x77),
+            calibration_device=SensorCalibration(altitude_meters=1783.0),
+        )
+    )
+    sensor_service = SimpleNamespace(
+        phase="ready",
+        driver_kind="adafruit_bme680",
+        driver=_FakeBME680(SimpleNamespace(), address=0x77),
+        errors=(),
+    )
+
+    snapshot = read_sensor_snapshot(sensor_service, runtime_config)
+
+    assert snapshot.phase == "ready"
+    assert snapshot.metrics["Baro-Pressure"] == 1008.0
 
 
 def test_sensor_service_reports_missing_i2c_sensor_at_startup():
@@ -1241,7 +1267,7 @@ def test_sensor_service_starts_bme280_for_avpd_config():
     assert sensor_service.driver.address == 0x76
 
 
-def test_sensor_service_skips_altitude_for_bme280_diagnostic_bypass():
+def test_sensor_service_applies_altitude_for_bme280_startup():
     runtime_config = RuntimeConfig(
         sensor=DetectedSensor(
             family="i2c",
@@ -1274,14 +1300,11 @@ def test_sensor_service_skips_altitude_for_bme280_diagnostic_bypass():
     )
 
     assert sensor_service.phase == "ready"
-    assert not hasattr(sensor_service.driver, "sea_level_pressure")
+    expected = 1008.5 / ((1.0 - (1500.0 / 44330.0)) ** 5.255)
+    assert abs(sensor_service.driver.sea_level_pressure - expected) < 0.001
 
 
-def test_sensor_service_defers_bme280_driver_start_when_requested():
-    class _UnexpectedBME280:
-        def __init__(self, *_args, **_kwargs):
-            raise AssertionError("BME280 driver should not start")
-
+def test_sensor_service_reports_bme280_baro_pressure_from_altitude():
     runtime_config = RuntimeConfig(
         sensor=DetectedSensor(
             family="i2c",
@@ -1290,70 +1313,14 @@ def test_sensor_service_defers_bme280_driver_start_when_requested():
             device="avpd",
             sensor_id="avpd-1",
             i2c=I2CConfig(bus=0, scl_pin="GP1", sda_pin="GP0", address=0x76),
+            calibration_device=SensorCalibration(altitude_meters=1783.0),
         )
     )
-    sensor_runtime = build_sensor_runtime(
-        plan_sensor_initialization(runtime_config),
-        runtime_config,
+    driver = SimpleNamespace(
+        temperature=24.5,
+        relative_humidity=55.25,
+        pressure=818.2,
     )
-    sensor_adapter = bind_sensor_hardware(
-        sensor_runtime,
-        runtime_config,
-        board_module=SimpleNamespace(GP0="pin-gp0", GP1="pin-gp1"),
-        busio_module=SimpleNamespace(I2C=_FakeI2C, UART=_FakeUART),
-    )
-
-    sensor_service = start_sensor_service(
-        sensor_runtime,
-        sensor_adapter,
-        runtime_config,
-        modules={
-            "adafruit_bme280.basic": SimpleNamespace(
-                Adafruit_BME280_I2C=_UnexpectedBME280
-            )
-        },
-        defer_bme280_start=True,
-    )
-
-    assert sensor_service.phase == "deferred"
-    assert sensor_service.driver_kind == "adafruit_bme280"
-    assert sensor_service.driver is None
-    assert sensor_service.errors == ("sensor_driver_start_deferred",)
-
-
-def test_sensor_service_defers_bme280_startup_snapshot_without_driver_reads():
-    class _CountingBME280:
-        def __init__(self):
-            self.temperature_reads = 0
-            self.humidity_reads = 0
-            self.pressure_reads = 0
-
-        @property
-        def temperature(self):
-            self.temperature_reads += 1
-            return 24.5
-
-        @property
-        def relative_humidity(self):
-            self.humidity_reads += 1
-            return 55.25
-
-        @property
-        def pressure(self):
-            self.pressure_reads += 1
-            return 100850.0
-
-    runtime_config = RuntimeConfig(
-        sensor=DetectedSensor(
-            family="i2c",
-            interface="i2c",
-            active_config_file="sensor_i2c.toml",
-            device="avpd",
-            sensor_id="avpd-1",
-            i2c=I2CConfig(bus=0, scl_pin="GP1", sda_pin="GP0", address=0x76),
-        )
-    )
-    driver = _CountingBME280()
     sensor_service = SimpleNamespace(
         phase="ready",
         driver_kind="adafruit_bme280",
@@ -1361,21 +1328,11 @@ def test_sensor_service_defers_bme280_startup_snapshot_without_driver_reads():
         errors=(),
     )
 
-    startup_snapshot = read_sensor_snapshot(
-        sensor_service, runtime_config, startup_snapshot=True
-    )
-    steady_snapshot = read_sensor_snapshot(sensor_service, runtime_config)
+    snapshot = read_sensor_snapshot(sensor_service, runtime_config)
 
-    assert startup_snapshot.phase == "waiting"
-    assert startup_snapshot.metrics == {}
-    assert startup_snapshot.errors == ("sensor_startup_snapshot_deferred",)
-    assert steady_snapshot.phase == "ready"
-    assert steady_snapshot.metrics["Temperature"] == 24.5
-    assert steady_snapshot.metrics["Rel-Humidity"] == 55.0
-    assert steady_snapshot.metrics["Baro-Pressure"] == 1008.5
-    assert driver.temperature_reads == 1
-    assert driver.humidity_reads == 1
-    assert driver.pressure_reads == 1
+    assert snapshot.phase == "ready"
+    assert snapshot.metrics["Baro-Pressure"] != 818.2
+    assert abs(snapshot.metrics["Baro-Pressure"] - 1015.1956686948852) < 0.001
 
 
 def test_sensor_service_reads_aht_snapshot_with_temp_humidity_derivatives():

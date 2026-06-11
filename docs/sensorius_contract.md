@@ -496,9 +496,10 @@ Implemented behavior:
 - `action = "apply"`, `"set"`, or `"update"` writes accepted calibration
   values, publishes `calibration/result`, and publishes non-retained
   `meta/patch` with `source = "calibration_set"`.
-- `Calibration.Device.ALTITUDE_METERS` accepts meters for BME280/BME680
-  altitude calibration and SCD30/SCD4x CO2 altitude compensation at driver
-  startup.
+- `Calibration.Device.ALTITUDE_METERS` accepts meters for BME280 published
+  barometric-pressure normalization, BME680 altitude calibration, and
+  SCD30/SCD4x CO2 altitude compensation. BME680 and SCD30/SCD4x apply the value
+  at driver startup.
 - `action = "status"` republishes retained
   `nodus/<sensor_id>/event/calibration_status` and publishes a correlated
   `calibration/result`.
