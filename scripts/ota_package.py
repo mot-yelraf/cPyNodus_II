@@ -53,7 +53,6 @@ ROOT_DEPLOYABLE = {
 }
 DEPLOYABLE_PREFIXES = (
     "cpynodus_ii/",
-    "lib/",
 )
 
 

@@ -1,6 +1,13 @@
 # cPyNodus_II
 
-`cPyNodus_II` is CircuitPython firmware for the Nodus family of Raspberry Pi Pico2 W devices. Nodus devices support sensor-only, switch-only, and combined sensor+switch configurations. They can be provisioned through AP bootstrap, the local `nodusweb` UI/API, or the Sensorius Add Device flow. After provisioning, MQTT-enabled profiles publish telemetry and subscribe to control/config topics through a Sensorius, WeeWX, or Home Assistant MQTT broker.
+`cPyNodus_II` is CircuitPython firmware for the Nodus family of small Wi-Fi
+microcontroller devices. Pico2 W is the validated production target, and Seeed
+Studio XIAO ESP32-S3 support is in bring-up. Nodus devices support sensor-only,
+switch-only, and combined sensor+switch configurations. They can be provisioned
+through AP bootstrap, the local `nodusweb` UI/API, or the Sensorius Add Device
+flow. After provisioning, MQTT-enabled profiles publish telemetry and subscribe
+to control/config topics through a Sensorius, WeeWX, or Home Assistant MQTT
+broker.
 
 Sensorius Automatio Instrumentorum, or Sensorius, is the companion system that monitors and manages deployed Nodus devices. Nodus can also publish Home Assistant MQTT discovery/config topics directly when `ACTIVE_PROFILE = "homeassistant"`.
 
@@ -8,7 +15,7 @@ Sensorius Automatio Instrumentorum, or Sensorius, is the companion system that m
 
 - Makers and students who want a real-world IoT firmware example.
 - Contributors who want a small, readable CircuitPython codebase.
-- Anyone building Pico2 W sensor or relay nodes.
+- Anyone building Nodus sensor or relay nodes on supported CircuitPython boards.
 - Project Status: Pre-1.0. Interfaces and internal architecture may change.
 - Security Note: Wi-Fi and MQTT passwords are obfuscated on write, not encrypted. Do not deploy in security-sensitive environments.
 
@@ -69,27 +76,26 @@ Nodus is a headless IoT node with the following core responsibilities:
 
 ## Hardware
 
-- Raspberry Pi Pico2 W (required)
+- Raspberry Pi Pico2 W (validated baseline)
+- Seeed Studio XIAO ESP32-S3 Sense (bring-up target)
 - Optional I2C sensors
 - Optional UART/Modbus soil sensor
 - Optional relay switches
 
-The Pico2 W is a hard requirement because the extra memory is needed for this firmware.
-
-Firmware requirement:
-- CircuitPython 9.2.8 (tested baseline)
-- CircuitPython 10.x not validated
+Firmware requirements:
+- Pico2 W: CircuitPython 9.2.8 (tested baseline)
+- XIAO ESP32-S3 Sense: CircuitPython 10.2.1 (bring-up target)
 
 See `docs/pinout.md` for the Nodus wiring pinout.
 
 ## Quick start (device)
 
-1. Install CircuitPython on the Pico2 W.
+1. Install the matching CircuitPython build on the target board.
 2. Copy this repo to the device filesystem (CIRCUITPY).
 3. Use `docs/pinout.md` as guidance to connect sensors, switches, the RW enable pin, and factory reset input.
 4. Reboot the device and allow about a minute for it to self-configure. On a
    clean deploy, Nodus creates `settings.toml` and the detected live sensor and
-   switch TOML files from the root `*.def` templates.
+   switch TOML files from the deployed `*.def` templates.
 5. Edit the relevant files for your Nodus:
    - `settings.toml` (configure Wi-Fi, profile, MQTT, Home Assistant, and time)
    - `sensor_i2c.toml`
@@ -112,26 +118,33 @@ Examples:
   - `scripts/deploy_nodus.sh --target pi@raspberrypi:/media/pi/CIRCUITPY --dry-run`
 - Sync runtime files only:
   - `scripts/deploy_nodus.sh --target /Volumes/CIRCUITPY --content runtime`
-- Sync runtime files with compiled firmware modules:
-  - `scripts/deploy_nodus.sh --target /Volumes/CIRCUITPY --content mpy`
-- Build the compiled package artifacts first:
-  - `scripts/nodus_mpy.sh`
+- Sync Pico2 W runtime files with compiled firmware modules and 9.x libraries:
+  - `scripts/deploy_nodus.sh --target /Volumes/CIRCUITPY --content pico2w-mpy`
+- Sync XIAO ESP32-S3 runtime files with compiled firmware modules and 10.x libraries:
+  - `scripts/deploy_nodus.sh --target /Volumes/CIRCUITPY --content xesp32s3-mpy`
+- Build compiled package artifacts first:
+  - `scripts/nodus_mpy.sh --target pico2w`
+  - `scripts/nodus_mpy.sh --target xesp32s3`
 
 Notes:
 
 - The script excludes development files (`tests/`, `docs/`, `.git/`, caches, etc.).
-- `--content` options are `full` (default), `runtime`, or `mpy`.
-- `runtime` syncs `boot.py`, `code.py`, `dataclasses.py`, root `*.def` templates, `cpynodus_ii/`, and `lib/` when present.
-- `mpy` requires a complete, current `build/firmware/cpynodus_ii/` tree. It
-  syncs root `*.py`, root `*.def` templates, compiled
-  `build/firmware/cpynodus_ii/*.mpy` files, and `lib/` when present. Before
-  copying the compiled package, it removes matching `cpynodus_ii/*.py` files
-  from the target so CircuitPython imports the `.mpy` modules.
-- `mpy` can be used on a factory CircuitPython Pico2 W with no existing Nodus
+- `--content` options are `full` (default), `runtime`, `pico2w-mpy`, or
+  `xesp32s3-mpy`. `mpy` remains a compatibility alias for `pico2w-mpy`.
+- `runtime` syncs `boot.py`, `code.py`, `dataclasses.py`, root `*.def`
+  templates, and `cpynodus_ii/`. It does not manage CircuitPython libraries.
+- Target MPY deploys require a complete, current
+  `build/firmware/<target>/cpynodus_ii/` tree plus staged
+  `build/firmware/<target>/lib/` dependencies. They sync root startup files,
+  root or target-specific `*.def` templates, compiled `.mpy` files, and the
+  target library tree. Before copying the compiled package, deploy removes
+  matching `cpynodus_ii/*.py` files from the target so CircuitPython imports
+  the `.mpy` modules.
+- MPY deploy can be used on a factory CircuitPython board with no existing Nodus
   firmware. It installs the compiled Nodus package plus the root startup files,
   default TOML templates, and library dependencies needed for first boot.
 - Active target TOML files such as `settings.toml`, `sensor_i2c.toml`,
-  `sensor_soil.toml`, and `switch.toml` are not part of `runtime` or `mpy`
+  `sensor_soil.toml`, and `switch.toml` are not part of `runtime` or MPY
   deploy content and remain intact.
 - On macOS, deploy sets `COPYFILE_DISABLE=1` and `COPY_EXTENDED_ATTRIBUTES_DISABLE=1` to prevent `._*` sidecar files on CIRCUITPY.
 - In `drive` mode, the target path must contain `CIRCUITPY` (override with `--force`).
@@ -217,10 +230,15 @@ In normal mode the device:
 
 ## Boot-Time Factory Reset
 
-- `GP17` is reserved as the factory-reset input.
-- Hold `GP17` LOW continuously for 5 seconds during boot to force `ACTIVE_PROFILE = "nodusweb"` in `settings.toml`, then reboot.
-- The `GP17` reset does not currently rewrite the rest of `settings.toml`, and it does not delete or recreate `sensor_i2c.toml`, `sensor_soil.toml`, or `switch.toml`.
-- The pin uses an internal pull-up, so the reset is triggered by externally grounding `GP17` during startup.
+- Pico2 W reserves `GP17` as the factory-reset input.
+- Hold the board's configured reset pin LOW continuously for 5 seconds during
+  boot to force `ACTIVE_PROFILE = "nodusweb"` in `settings.toml`, then reboot.
+- The profile reset does not currently rewrite the rest of `settings.toml`, and
+  it does not delete or recreate `sensor_i2c.toml`, `sensor_soil.toml`, or
+  `switch.toml`.
+- The XIAO ESP32-S3 profile does not assign a factory-reset pin by default.
+- The input uses an internal pull-up, so the reset condition is an external
+  pull to ground.
 
 ## Supported Sensor Types and Metrics
 
@@ -572,10 +590,11 @@ So two rooms with the same dew point spacing can still receive different `DewVPD
 
 ## Switch Channels (S1/S2)
 
-Nodus supports up to two switch channels. The default/detected Pico2 W mappings are:
-
-- `S1` uses `SWITCH_1_ENABLE_PIN=GP5` and `SWITCH_1_PIN=GP28`
-- `S2` uses `SWITCH_2_ENABLE_PIN=GP10` and `SWITCH_2_PIN=GP21`
+Nodus supports up to two switch channels. Pico2 W defaults are
+`SWITCH_1_ENABLE_PIN=GP5`, `SWITCH_1_PIN=GP28`,
+`SWITCH_2_ENABLE_PIN=GP10`, and `SWITCH_2_PIN=GP21`. XIAO ESP32-S3 defaults
+are `SWITCH_1_ENABLE_PIN=D0`, `SWITCH_1_PIN=D1`,
+`SWITCH_2_ENABLE_PIN=D2`, and `SWITCH_2_PIN=D3`.
 
 `switch.toml` and at least one populated, grounded `SWITCH_N_ENABLE_PIN` are
 the primary gate for switch-enabled operation on normal boots.
@@ -638,14 +657,13 @@ Automations are implemented in Sensorius or Home Assistant. Commands are publish
 
 ## Project Layout
 
-- `boot.py`: GP14 filesystem/USB guard and startup-mode setup
+- `boot.py`: board-specific filesystem/USB guard and startup-mode setup
 - `code.py`: CircuitPython entrypoint and fatal traceback/reload wrapper
 - `cpynodus_ii/app.py`: main async runtime orchestration, recovery, startup, and steady state
-- `cpynodus_ii/core/`: settings, config models, network, MQTT client adapter, NTP, recovery, reboot logs
+- `cpynodus_ii/core/`: board profiles, settings, config models, network, MQTT client adapter, NTP, recovery, reboot logs
 - `cpynodus_ii/features/`: sensor/switch services, publish cycles, command intake, web handlers, log transfer, derived metrics
 - `cpynodus_ii/hardware/`: CircuitPython hardware adapters for I2C, UART/RS485, and switch GPIO
 - `cpynodus_ii/ota/`: MQTT prepare state and temporary HTTP-only OTA mode
-- `lib/`: CircuitPython `.mpy` libraries and package dependencies
 - `scripts/`: deploy, OTA package/push, and MQTT log retrieval tools
 - `tests/`: host-side pytest characterization and unit coverage
 
@@ -655,14 +673,15 @@ Automations are implemented in Sensorius or Home Assistant. Commands are publish
 - `docs/configuration.md`: configuration files and keys
 - `docs/onboarding.md`: AP provisioning behavior
 - `docs/mqtt.md`: topics and Home Assistant notes
-- `docs/pinout.md`: Nodus Pico2 W pin mapping
+- `docs/pinout.md`: Nodus board pin mappings
 - `docs/extending.md`: adding sensors or switches
 - `docs/debug-notes/`: dated investigation logs retained as archival context,
   not the current runtime contract
 
 ## Development Notes
 
-- Use the guard pin (`GP14`) to control whether the filesystem is R/W for the app.
+- Use the board-specific guard pin (`GP14` on Pico2 W, `D8` on XIAO ESP32-S3)
+  to control whether the filesystem is R/W for the app.
 - Keep web routes small; heavy handlers can destabilize startup on constrained devices.
 - Add Device flow uses `POST /itaot-init`, then MQTT onboarding topics (`nodus/<device_id>/onboard/hello`, `config/set`, `config/ack`, `config/result`) as the authoritative configuration path.
 - Nodus TOML files are the source of truth for accepted config. Sensorius should use retained `nodus/<device_id>/meta` as the compact startup/reconnect snapshot, retained `nodus/<device_id>/meta/switch` as the switch control-topic map when switch channels are present, then consume `nodus/<device_id>/meta/patch` for accepted steady-state config deltas.

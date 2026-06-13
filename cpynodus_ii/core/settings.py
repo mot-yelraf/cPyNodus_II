@@ -10,6 +10,11 @@ import random
 import time
 
 import cpynodus_ii.core.toml_compat as toml_compat
+from cpynodus_ii.core.board_profile import (
+    selected_board_profile,
+    soil_channel_defaults,
+    switch_pin_defaults,
+)
 from cpynodus_ii.core.config import (
     DetectedSensor,
     DisplayConfig,
@@ -128,6 +133,35 @@ _FACTORY_SENSOR_DISPLAY_DEFAULTS = {
 }
 
 
+def _factory_board_profile(board_module=None):
+    return selected_board_profile(board_module=board_module)
+
+
+def _factory_i2c_pins(board_module=None):
+    profile = _factory_board_profile(board_module)
+    pins = tuple(getattr(profile, "i2c_pins", ()) or ())
+    return pins or _FACTORY_I2C_PINS
+
+
+def _factory_switch_pins(board_module=None):
+    defaults = switch_pin_defaults(_factory_board_profile(board_module))
+    return defaults or dict(_FACTORY_SWITCH_PINS)
+
+
+def _factory_soil_channels(board_module=None):
+    profile = _factory_board_profile(board_module)
+    channels = soil_channel_defaults(profile)
+    if channels:
+        return channels
+    if getattr(profile, "key", "") == "pico2w":
+        return (("CH1", "GP0", "GP1"), ("CH2", "GP4", "GP5"))
+    return ()
+
+
+def _factory_reset_pin_name(board_module=None):
+    return str(getattr(_factory_board_profile(board_module), "factory_reset_pin", ""))
+
+
 class Settings:
     """Provide a narrow host-testable view of runtime configuration."""
 
@@ -219,12 +253,15 @@ class Settings:
         digitalio_module=None,
         time_module=None,
     ):
-        """Force the live profile back to nodusweb when GP17 is held low at boot."""
+        """Force the live profile back to nodusweb when reset is held low."""
         path = _join_path(str(root or "."), cls.SETTINGS_FILE)
         if not _path_exists(path):
             return False
+        reset_pin_name = _factory_reset_pin_name(board_module)
+        if not reset_pin_name:
+            return False
         if not cls._pin_held_low(
-            _FACTORY_RESET_PIN_NAME,
+            reset_pin_name,
             hold_s=_FACTORY_RESET_HOLD_S,
             sample_s=_FACTORY_RESET_SAMPLE_S,
             board_module=board_module,
@@ -540,8 +577,9 @@ class Settings:
             return "", {}
 
         time.sleep(0.05)
+        i2c_pins = _factory_i2c_pins(board_module)
         scans = {}
-        for bus_index, pins in enumerate(_FACTORY_I2C_PINS):
+        for bus_index, pins in enumerate(i2c_pins):
             scl_name, sda_name = pins
             scl = getattr(board_module, scl_name, None)
             sda = getattr(board_module, sda_name, None)
@@ -573,34 +611,42 @@ class Settings:
                     except Exception:
                         pass
 
-        if 0x76 in scans.get(0, set()) and 0x76 in scans.get(1, set()):
+        if (
+            len(i2c_pins) >= 2
+            and 0x76 in scans.get(0, set())
+            and 0x76 in scans.get(1, set())
+        ):
             return "apvpd", {
                 "i2c0": {
                     "bus": 0,
-                    "scl": _FACTORY_I2C_PINS[0][0],
-                    "sda": _FACTORY_I2C_PINS[0][1],
+                    "scl": i2c_pins[0][0],
+                    "sda": i2c_pins[0][1],
                     "addr": 0x76,
                 },
                 "i2c1": {
                     "bus": 1,
-                    "scl": _FACTORY_I2C_PINS[1][0],
-                    "sda": _FACTORY_I2C_PINS[1][1],
+                    "scl": i2c_pins[1][0],
+                    "sda": i2c_pins[1][1],
                     "addr": 0x76,
                 },
             }
 
-        if 0x38 in scans.get(0, set()) and 0x38 in scans.get(1, set()):
+        if (
+            len(i2c_pins) >= 2
+            and 0x38 in scans.get(0, set())
+            and 0x38 in scans.get(1, set())
+        ):
             return "apvpd_aht", {
                 "i2c0": {
                     "bus": 0,
-                    "scl": _FACTORY_I2C_PINS[0][0],
-                    "sda": _FACTORY_I2C_PINS[0][1],
+                    "scl": i2c_pins[0][0],
+                    "sda": i2c_pins[0][1],
                     "addr": 0x38,
                 },
                 "i2c1": {
                     "bus": 1,
-                    "scl": _FACTORY_I2C_PINS[1][0],
-                    "sda": _FACTORY_I2C_PINS[1][1],
+                    "scl": i2c_pins[1][0],
+                    "sda": i2c_pins[1][1],
                     "addr": 0x38,
                 },
             }
@@ -613,7 +659,7 @@ class Settings:
             (0x38, "aht"),
             (0x10, "lux"),
         ):
-            for bus_index, pins in enumerate(_FACTORY_I2C_PINS):
+            for bus_index, pins in enumerate(i2c_pins):
                 if address not in scans.get(bus_index, set()):
                     continue
                 scl_name, sda_name = pins
@@ -657,7 +703,7 @@ class Settings:
         active = {}
         direction = getattr(getattr(digitalio_module, "Direction", None), "INPUT", None)
         pull = getattr(getattr(digitalio_module, "Pull", None), "UP", None)
-        for index, spec in _FACTORY_SWITCH_PINS.items():
+        for index, spec in _factory_switch_pins(board_module).items():
             pin = getattr(board_module, spec["enable"], None)
             if pin is None:
                 continue
@@ -779,10 +825,7 @@ class Settings:
             return ""
 
         found = []
-        for channel_name, tx_name, rx_name in (
-            ("CH1", "GP0", "GP1"),
-            ("CH2", "GP4", "GP5"),
-        ):
+        for channel_name, tx_name, rx_name in _factory_soil_channels(board_module):
             tx = getattr(board_module, tx_name, None)
             rx = getattr(board_module, rx_name, None)
             if tx is None or rx is None:

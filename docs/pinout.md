@@ -1,8 +1,8 @@
-# Pico2 W Pinouts (Nodus)
+# Nodus Pinouts
 
 Pin numbers (physical) for Nodus wiring. Use the section that matches your build.
 
-## I2C Devices (no soil sensor)
+## Pico2 W I2C Devices (no soil sensor)
 
 - 1 (GP0): I2C_0 SDA
 - 2 (GP1): I2C_0 SCL
@@ -28,7 +28,7 @@ Pin numbers (physical) for Nodus wiring. Use the section that matches your build
 - 38 (GND): I2C_1 GND
 - 39 (VSYS): I2C_1 VCC (+5vdc)
 
-## Soil Sensor (Waveshare Pico-2CH-RS485 HAT)
+## Pico2 W Soil Sensor (Waveshare Pico-2CH-RS485 HAT)
 
 - 1 (GP0) CH1 UART TX
 - 2 (GP1) CH1 UART RX
@@ -49,3 +49,21 @@ Pin numbers (physical) for Nodus wiring. Use the section that matches your build
 
 All other pins: Unused by the default Nodus mappings. See the Pico2 W default
 pinout for GP/GND/Power details.
+
+## Seeed Studio XIAO ESP32-S3 Sense
+
+Default bring-up mapping:
+
+- `SDA` / `D4` / `A4` / GPIO5: I2C SDA
+- `SCL` / `D5` / `A5` / GPIO6: I2C SCL
+- `D0` / `A0` / GPIO1: S1 ENABLE
+- `D1` / `A1` / GPIO2: S1 switch control
+- `D2` / `A2` / GPIO3: S2 ENABLE
+- `D3` / `A3` / GPIO4: S2 switch control
+- `D8` / GPIO7: RW ENABLE, hold LOW at boot for app-writable filesystem
+- Factory reset input: not assigned by default
+- `TX` / GPIO43 and `RX` / GPIO44: optional manual UART/RS485 use
+
+The XIAO profile factory-probes only the default `SCL`/`SDA` I2C bus. Additional
+analog or digital inputs can be configured manually in TOML when supported by a
+feature adapter.

@@ -13,7 +13,8 @@ The architecture is split into three layers:
 
 ## Constraints
 
-- CircuitPython 9.2.8 on Pico 2 W
+- CircuitPython 9.2.8 on Pico2 W is the validated baseline
+- CircuitPython 10.2.1 on Seeed Studio XIAO ESP32-S3 Sense is a bring-up target
 - MQTT transport must remain small and measurable
 - Feature code should not own socket lifecycle
 - Hot paths should minimize allocations and long-lived task retention

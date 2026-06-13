@@ -683,7 +683,7 @@ def test_process_soil_calibration_session_samples_and_completes():
                 4: 1,
                 5: 2,
                 6: 3,
-            }[reg]
+            }.get(reg)
         ),
         errors=(),
     )

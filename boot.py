@@ -1,9 +1,10 @@
 """Configure filesystem and USB access before ``code.py`` starts.
 
-This boot hook uses the GP14 guard pin to choose between a runtime/debug mode
-and a host-edit mode. Runtime mode enables application writes while hiding the
-USB mass-storage drive. Edit mode exposes ``CIRCUITPY`` to the host and keeps
-the application filesystem read-only so files can be updated safely.
+This boot hook uses a board-specific guard pin to choose between a
+runtime/debug mode and a host-edit mode. Runtime mode enables application
+writes while hiding the USB mass-storage drive. Edit mode exposes
+``CIRCUITPY`` to the host and keeps the application filesystem read-only so
+files can be updated safely.
 """
 
 import time
@@ -16,7 +17,7 @@ import supervisor
 import usb_cdc
 
 # ---------- user-configurable pins ----------
-RW_GUARD_PIN_NAME = "GP14"  # pull to GND for app R/W + REPL (no USB drive)
+RW_GUARD_PIN_NAME = "GP14"  # default Pico2 W guard, low = app R/W + REPL
 ENABLE_USB_DATA_CDC = True  # keep secondary CDC channel behavior unchanged
 DISABLE_RUNTIME_AUTORELOAD = True
 
@@ -70,18 +71,41 @@ def _disable_auto_reload():
     return False
 
 
+def _resolve_rw_guard_pin_name():
+    try:
+        from cpynodus_ii.core.board_profile import selected_board_profile
+
+        profile = selected_board_profile(board_module=board)
+        pin_name = str(getattr(profile, "rw_guard_pin", "") or "").strip()
+        if pin_name:
+            return pin_name
+    except Exception as exc:
+        _warn(
+            "Board profile setup failed; using default guard pin: {err}".format(
+                err=exc
+            )
+        )
+    return RW_GUARD_PIN_NAME
+
+
 # ---------- read the guard pin ----------
 guard_pin = None
 is_guard_low = False
+active_guard_pin_name = _resolve_rw_guard_pin_name()
 try:
-    guard = getattr(board, RW_GUARD_PIN_NAME)
+    guard = getattr(board, active_guard_pin_name)
     guard_pin = digitalio.DigitalInOut(guard)
     guard_pin.direction = digitalio.Direction.INPUT
     guard_pin.pull = digitalio.Pull.UP
     is_guard_low = guard_pin.value is False  # low when grounded
 except Exception as exc:
     # Fail safe to edit mode so CIRCUITPY remains visible for recovery.
-    _warn("Guard pin setup failed; using edit mode: {err}".format(err=exc))
+    _warn(
+        "Guard pin {pin} setup failed; using edit mode: {err}".format(
+            pin=active_guard_pin_name,
+            err=exc,
+        )
+    )
 
 # ---------- remember intent in NVM ----------
 # 1 = writable by app, 0 = read-only for app

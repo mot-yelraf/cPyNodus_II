@@ -76,6 +76,25 @@ class _ScanSingleAHTI2C(_ScanAHTI2C):
         return ()
 
 
+class _ScanXiaoAHTI2C:
+    def __init__(self, scl, sda):
+        self._pins = (scl, sda)
+
+    def try_lock(self):
+        return True
+
+    def scan(self):
+        if self._pins == ("SCL", "SDA"):
+            return (0x38,)
+        return ()
+
+    def unlock(self):
+        return
+
+    def deinit(self):
+        return
+
+
 class _NoSensorI2C:
     def __init__(self, _scl, _sda):
         return
@@ -298,6 +317,92 @@ def test_factory_sensor_detect_finds_aht_when_aht_on_one_bus():
 
     assert detected_device == "aht"
     assert interfaces["i2c"]["addr"] == 0x38
+
+
+def test_factory_sensor_detect_uses_xiao_i2c_defaults():
+    detected_device, interfaces = Settings._detect_factory_sensor(
+        board_module=SimpleNamespace(
+            board_id="seeed_xiao_esp32_s3_sense",
+            SDA="SDA",
+            SCL="SCL",
+            D0="D0",
+        ),
+        busio_module=SimpleNamespace(I2C=_ScanXiaoAHTI2C),
+    )
+
+    assert detected_device == "aht"
+    assert interfaces["i2c"] == {
+        "bus": 0,
+        "scl": "SCL",
+        "sda": "SDA",
+        "addr": 0x38,
+    }
+
+
+def test_factory_profile_reset_is_disabled_when_board_has_no_reset_pin():
+    with TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        _copy_defs(tmpdir_path)
+        (tmpdir_path / "settings.toml").write_text(
+            (
+                '[Profile]\nACTIVE_PROFILE = "sensorius"\n'
+                '[Network]\nHOSTNAME = "co2-abc123"\n'
+            ),
+            encoding="utf-8",
+        )
+
+        result = Settings.apply_factory_profile_reset_if_requested(
+            tmpdir_path,
+            board_module=SimpleNamespace(
+                board_id="seeed_xiao_esp32_s3_sense",
+                SDA="SDA",
+                SCL="SCL",
+                D0="D0",
+            ),
+            digitalio_module=SimpleNamespace(
+                DigitalInOut=_HeldLowPin,
+                Direction=SimpleNamespace(INPUT="input"),
+                Pull=SimpleNamespace(UP="up"),
+            ),
+        )
+        document = Settings._read_toml_file(tmpdir_path / "settings.toml")
+
+    assert result is False
+    assert document["Profile"]["ACTIVE_PROFILE"] == "sensorius"
+
+
+def test_factory_switch_detect_uses_xiao_switch_defaults():
+    class _XiaoProbePin:
+        def __init__(self, pin):
+            self.pin = pin
+            self.direction = None
+            self.pull = None
+            self.value = pin not in ("D0", "D2")
+
+        def deinit(self):
+            return
+
+    active = Settings._detect_factory_switch_channels(
+        board_module=SimpleNamespace(
+            board_id="seeed_xiao_esp32_s3_sense",
+            SDA="SDA",
+            SCL="SCL",
+            D0="D0",
+            D1="D1",
+            D2="D2",
+            D3="D3",
+        ),
+        digitalio_module=SimpleNamespace(
+            DigitalInOut=_XiaoProbePin,
+            Direction=SimpleNamespace(INPUT="input"),
+            Pull=SimpleNamespace(UP="up"),
+        ),
+    )
+
+    assert active[1]["enable"] == "D0"
+    assert active[1]["control"] == "D1"
+    assert active[2]["enable"] == "D2"
+    assert active[2]["control"] == "D3"
 
 
 def test_factory_sensor_detect_finds_soil_on_both_rs485_channels():

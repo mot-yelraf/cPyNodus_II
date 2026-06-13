@@ -162,7 +162,6 @@ The `runtime` deploy mode should sync:
 - `code.py`
 - `cpynodus_ii/`
 - root `*.def` files
-- `lib/` if present
 
 ## Coverage guidance
 

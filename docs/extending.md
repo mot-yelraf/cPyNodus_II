@@ -24,22 +24,13 @@ There is no `sensor_modules/` folder and no `cPySensorFactory` in
 Start with an I2C sensor if you are adding a small breakout board. Most
 Adafruit and community CircuitPython drivers fit this pattern.
 
-1. Copy the CircuitPython driver into `lib/`.
+1. Add the CircuitPython driver to the target library staging set.
 
-   For a single-file driver, copy the `.mpy` or `.py` file directly:
-
-   ```text
-   lib/adafruit_example_sensor.mpy
-   ```
-
-   For a driver package, copy the whole package folder:
-
-   ```text
-   lib/adafruit_example_sensor/
-   ```
-
-   Also copy any required dependency libraries. Keep the driver set small
-   because Pico2 W memory is limited.
+   Add the dependency path to `LIB_MANIFEST` in `scripts/nodus_mpy.sh` so the
+   right 9.x or 10.x bundle copy is staged under
+   `build/firmware/<target>/lib/`. Also include any required dependency
+   libraries in `~/Projects/mcu_libs`. Keep the driver set small because board
+   heap and filesystem space are still constrained.
 
 2. Choose a short `DEVICE` name.
 
@@ -82,8 +73,8 @@ Adafruit and community CircuitPython drivers fit this pattern.
 4. Start the driver in `cpynodus_ii/features/sensor_service.py`.
 
    Add a branch to `_start_i2c_sensor_service()`. This is where Nodus imports
-   the driver from `lib/` and creates the driver object on the already-open I2C
-   bus.
+   the driver from the deployed CircuitPython `lib/` directory and creates the
+   driver object on the already-open I2C bus.
 
    ```python
    if device == "uv":
@@ -151,7 +142,7 @@ Adafruit and community CircuitPython drivers fit this pattern.
    ```
 
    Host tests do not run on CircuitPython hardware, but they catch most config,
-   service, and payload mistakes before copying code to the Pico2 W.
+   service, and payload mistakes before copying code to a board.
 
 ## Add a UART or Modbus Sensor
 
@@ -212,7 +203,7 @@ and Sensorius may already depend on them.
 ## CircuitPython Tips
 
 - Use CircuitPython-compatible drivers and APIs only.
-- Keep imports and objects small; Pico2 W memory is limited.
+- Keep imports and objects small; board memory is limited.
 - Avoid large inline JSON, HTML, or lookup tables.
 - Prefer simple property reads over complex background workers.
 - Add short docstrings to public functions and classes.

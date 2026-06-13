@@ -4,7 +4,10 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VERSION_FILE="$ROOT_DIR/cpynodus_ii/__init__.py"
 MPY_BUILD_SCRIPT="$ROOT_DIR/scripts/nodus_mpy.sh"
-MPY_BUILD_ROOT="$ROOT_DIR/build/firmware/cpynodus_ii"
+MPY_TARGET="pico2w"
+MPY_TARGET_ROOT="$ROOT_DIR/build/firmware/$MPY_TARGET"
+MPY_BUILD_ROOT="$MPY_TARGET_ROOT/cpynodus_ii"
+MPY_LIB_ROOT="$MPY_TARGET_ROOT/lib"
 MPY_VERSION_ARTIFACT="$MPY_BUILD_ROOT/__init__.mpy"
 DEPRECATED_MANIFEST="$ROOT_DIR/scripts/deprecated_target_files.txt"
 MPY_REBUILD_DEFERRED=0
@@ -59,14 +62,15 @@ Target formats:
 Options:
   --target VALUE      Required. Destination path or host:path.
   --mode VALUE        `auto` (default), `drive`, or `staging`.
-  --content VALUE     `full` (default), `runtime`, or `mpy`.
+  --content VALUE     `full` (default), `runtime`, `pico2w-mpy`, or
+                      `xesp32s3-mpy`. `mpy` remains a `pico2w-mpy` alias.
                       `runtime` syncs boot/code, package files, root
-                      `*.def`, and `lib/` when present, removing target
-                      cpynodus_ii/*.mpy first.
-                      `mpy` syncs root `*.py`, root `*.def`, `lib/`,
-                      and compiled build/firmware/cpynodus_ii/*.mpy,
-                      removing matching target cpynodus_ii/*.py first.
-                      It runs scripts/nodus_mpy.sh first when artifacts are stale.
+                      `*.def`, removing target cpynodus_ii/*.mpy first.
+                      Target MPY content syncs root `*.py`, root or
+                      target-specific `*.def`, staged target `lib/`, and
+                      compiled build/firmware/<target>/cpynodus_ii/*.mpy,
+                      removing matching target cpynodus_ii/*.py first. It runs
+                      scripts/nodus_mpy.sh first when artifacts are stale.
   --dry-run           Show what would be copied, do not write anything.
   --force             Skip CIRCUITPY path safety guard.
   --delete            Delete files on destination not present in source set.
@@ -79,7 +83,8 @@ Options:
 Examples:
   scripts/deploy_nodus.sh --target /Volumes/CIRCUITPY
   scripts/deploy_nodus.sh --target /Volumes/CIRCUITPY --content runtime
-  scripts/deploy_nodus.sh --target /Volumes/CIRCUITPY --content mpy
+  scripts/deploy_nodus.sh --target /Volumes/CIRCUITPY --content pico2w-mpy
+  scripts/deploy_nodus.sh --target /Volumes/CIRCUITPY --content xesp32s3-mpy
   scripts/deploy_nodus.sh --target pi@raspberrypi:/media/pi/CIRCUITPY --dry-run
   scripts/deploy_nodus.sh --target pi@raspberrypi:/home/pi/cPyNodus_II-release --mode staging
 EOF
@@ -155,9 +160,27 @@ if [[ "$MODE" != "auto" && "$MODE" != "drive" && "$MODE" != "staging" ]]; then
   exit 2
 fi
 
-if [[ "$CONTENT" != "full" && "$CONTENT" != "runtime" && "$CONTENT" != "mpy" ]]; then
-  echo "Invalid --content '$CONTENT'. Use: full, runtime, or mpy." >&2
-  exit 2
+case "$CONTENT" in
+  full|runtime)
+    ;;
+  mpy|pico2w-mpy)
+    MPY_TARGET="pico2w"
+    CONTENT="pico2w-mpy"
+    ;;
+  xesp32s3-mpy)
+    MPY_TARGET="xesp32s3"
+    ;;
+  *)
+    echo "Invalid --content '$CONTENT'. Use: full, runtime, pico2w-mpy, or xesp32s3-mpy." >&2
+    exit 2
+    ;;
+esac
+
+if [[ "$CONTENT" == *"-mpy" ]]; then
+  MPY_TARGET_ROOT="$ROOT_DIR/build/firmware/$MPY_TARGET"
+  MPY_BUILD_ROOT="$MPY_TARGET_ROOT/cpynodus_ii"
+  MPY_LIB_ROOT="$MPY_TARGET_ROOT/lib"
+  MPY_VERSION_ARTIFACT="$MPY_BUILD_ROOT/__init__.mpy"
 fi
 
 if ! command -v rsync >/dev/null 2>&1; then
@@ -256,6 +279,11 @@ find_mpy_rebuild_reason() {
     return 0
   fi
 
+  if [[ ! -d "$MPY_LIB_ROOT" ]]; then
+    echo "missing staged target lib directory: ${MPY_LIB_ROOT#$ROOT_DIR/}"
+    return 0
+  fi
+
   source_version="$(get_project_version)"
   artifact_version="$(get_mpy_artifact_version "$MPY_VERSION_ARTIFACT")"
   if [[ "$source_version" != "unknown-version" && -z "$artifact_version" ]]; then
@@ -269,7 +297,7 @@ find_mpy_rebuild_reason() {
 
   while IFS= read -r -d '' src; do
     rel_path="${src#$ROOT_DIR/}"
-    artifact="$ROOT_DIR/build/firmware/${rel_path%.py}.mpy"
+    artifact="$MPY_TARGET_ROOT/${rel_path%.py}.mpy"
 
     if [[ ! -f "$artifact" ]]; then
       echo "missing MPY artifact for $rel_path"
@@ -298,13 +326,13 @@ run_mpy_build_if_needed() {
   fi
 
   if [[ $DRY_RUN -eq 1 ]]; then
-    echo "Would run ${MPY_BUILD_SCRIPT#$ROOT_DIR/} before --content mpy deploy: $reason"
+    echo "Would run ${MPY_BUILD_SCRIPT#$ROOT_DIR/} --target $MPY_TARGET before --content $CONTENT deploy: $reason"
     MPY_REBUILD_DEFERRED=1
     return 0
   fi
 
-  echo "Running ${MPY_BUILD_SCRIPT#$ROOT_DIR/} before --content mpy deploy: $reason"
-  "$MPY_BUILD_SCRIPT"
+  echo "Running ${MPY_BUILD_SCRIPT#$ROOT_DIR/} --target $MPY_TARGET before --content $CONTENT deploy: $reason"
+  "$MPY_BUILD_SCRIPT" --target "$MPY_TARGET"
 }
 
 validate_mpy_build() {
@@ -317,13 +345,13 @@ validate_mpy_build() {
 
   if [[ ! -d "$MPY_BUILD_ROOT" ]]; then
     echo "Missing MPY build directory: $MPY_BUILD_ROOT" >&2
-    echo "Compile cpynodus_ii modules before using --content mpy." >&2
+    echo "Compile cpynodus_ii modules before using --content $CONTENT." >&2
     exit 1
   fi
 
   while IFS= read -r -d '' src; do
     rel_path="${src#$ROOT_DIR/}"
-    artifact="$ROOT_DIR/build/firmware/${rel_path%.py}.mpy"
+    artifact="$MPY_TARGET_ROOT/${rel_path%.py}.mpy"
     count=$((count + 1))
 
     if [[ ! -f "$artifact" ]]; then
@@ -344,7 +372,13 @@ validate_mpy_build() {
   fi
 
   if [[ $missing -ne 0 || $stale -ne 0 ]]; then
-    echo "MPY build is incomplete or stale; refusing --content mpy deploy." >&2
+    echo "MPY build is incomplete or stale; refusing --content $CONTENT deploy." >&2
+    exit 1
+  fi
+
+  if [[ ! -d "$MPY_LIB_ROOT" ]]; then
+    echo "Missing staged target lib directory: $MPY_LIB_ROOT" >&2
+    echo "Run ${MPY_BUILD_SCRIPT#$ROOT_DIR/} --target $MPY_TARGET first." >&2
     exit 1
   fi
 }
@@ -444,7 +478,7 @@ remove_mpy_shadow_py_targets() {
   local target_ref=""
 
   while IFS= read -r -d '' artifact; do
-    rel_path="${artifact#$ROOT_DIR/build/firmware/}"
+    rel_path="${artifact#$MPY_TARGET_ROOT/}"
     py_rel_path="${rel_path%.mpy}.py"
 
     if ! validate_manifest_entry "$py_rel_path"; then
@@ -535,7 +569,7 @@ run_runtime_sync() {
   done
   shopt -u nullglob
 
-  if [[ ${#root_runtime_files[@]} -eq 0 && ${#root_def_files[@]} -eq 0 && ! -d "$ROOT_DIR/cpynodus_ii" && ! -d "$ROOT_DIR/lib" ]]; then
+  if [[ ${#root_runtime_files[@]} -eq 0 && ${#root_def_files[@]} -eq 0 && ! -d "$ROOT_DIR/cpynodus_ii" ]]; then
     echo "No runtime deployable files found in $ROOT_DIR" >&2
     exit 1
   fi
@@ -553,9 +587,6 @@ run_runtime_sync() {
     rsync "${RSYNC_ARGS[@]}" "$ROOT_DIR/cpynodus_ii/" "$destination/cpynodus_ii/"
   fi
 
-  if [[ -d "$ROOT_DIR/lib" ]]; then
-    rsync "${RSYNC_ARGS[@]}" "$ROOT_DIR/lib/" "$destination/lib/"
-  fi
 }
 
 run_mpy_sync() {
@@ -563,6 +594,8 @@ run_mpy_sync() {
   local root_runtime_files=()
   local root_def_files=()
   local f
+  local override=""
+  local name=""
 
   run_mpy_build_if_needed
   if [[ $MPY_REBUILD_DEFERRED -eq 0 ]]; then
@@ -582,11 +615,17 @@ run_mpy_sync() {
 
   shopt -s nullglob
   for f in "$ROOT_DIR"/*.def; do
-    root_def_files+=("$f")
+    name="$(basename "$f")"
+    override="$ROOT_DIR/boards/$MPY_TARGET/templates/$name"
+    if [[ -f "$override" ]]; then
+      root_def_files+=("$override")
+    else
+      root_def_files+=("$f")
+    fi
   done
   shopt -u nullglob
 
-  if [[ ${#root_runtime_files[@]} -eq 0 && ${#root_def_files[@]} -eq 0 && ! -d "$MPY_BUILD_ROOT" && ! -d "$ROOT_DIR/lib" ]]; then
+  if [[ ${#root_runtime_files[@]} -eq 0 && ${#root_def_files[@]} -eq 0 && ! -d "$MPY_BUILD_ROOT" && ! -d "$MPY_LIB_ROOT" ]]; then
     echo "No MPY deployable files found in $ROOT_DIR" >&2
     exit 1
   fi
@@ -607,8 +646,10 @@ run_mpy_sync() {
     echo "Would sync compiled package after MPY build: ${MPY_BUILD_ROOT#$ROOT_DIR/}/ -> $destination/cpynodus_ii/"
   fi
 
-  if [[ -d "$ROOT_DIR/lib" ]]; then
-    rsync "${RSYNC_ARGS[@]}" "$ROOT_DIR/lib/" "$destination/lib/"
+  if [[ -d "$MPY_LIB_ROOT" ]]; then
+    rsync "${RSYNC_ARGS[@]}" "$MPY_LIB_ROOT/" "$destination/lib/"
+  elif [[ $MPY_REBUILD_DEFERRED -eq 1 ]]; then
+    echo "Would sync staged target libraries after MPY build: ${MPY_LIB_ROOT#$ROOT_DIR/}/ -> $destination/lib/"
   fi
 }
 
@@ -617,7 +658,7 @@ if [[ "$TARGET" == *:* ]]; then
   echo "Deploying to remote target ($DEPLOY_MODE, content=$CONTENT): $TARGET"
   case "$CONTENT" in
     runtime) run_runtime_sync "$DEST" ;;
-    mpy) run_mpy_sync "$DEST" ;;
+    *-mpy) run_mpy_sync "$DEST" ;;
     *) run_full_sync "$DEST" ;;
   esac
 else
@@ -628,7 +669,7 @@ else
   echo "Deploying to local target ($DEPLOY_MODE, content=$CONTENT): $TARGET"
   case "$CONTENT" in
     runtime) run_runtime_sync "$DEST" ;;
-    mpy) run_mpy_sync "$DEST" ;;
+    *-mpy) run_mpy_sync "$DEST" ;;
     *) run_full_sync "$DEST" ;;
   esac
 fi
