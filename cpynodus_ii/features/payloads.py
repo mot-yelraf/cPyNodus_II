@@ -387,24 +387,51 @@ def build_homeassistant_discovery_plan(
     if sensor_snapshot is not None and getattr(sensor_snapshot, "phase", "") == "ready":
         metric_map = getattr(sensor_snapshot, "metrics", {}) or {}
         metrics = tuple(metric_map.keys())
-    unit_map = {
-        "Temperature": "C",
-        "Rel-Humidity": "%",
-        "Humidity": "%",
-        "CO2": "ppm",
-        "Air Quality": "%",
-        "Light Intensity": "lx",
-        "Auto Light": "lx",
-        "PPFD": "umol/m2/s",
-        "Estimated PPFD": "umol/m2/s",
-        "Visible Light Intensity": "mol/m2/day",
-        "Pressure": "Pa",
-        "Soil Temp_C": "C",
-        "Soil Temp_F": "F",
-        "Soil Moisture": "%",
-        "Soil Moisture Deficit": "%",
-        "Soil Stress Index": "%",
-        "Soil Fertility Index": "%",
+    metadata_map = {
+        "Air Quality": ("AQI", "", "measurement"),
+        "Ambient VPD": ("kPa", "pressure", "measurement"),
+        "Auto Light": ("lx", "illuminance", "measurement"),
+        "Baro-Pressure": ("hPa", "atmospheric_pressure", "measurement"),
+        "CO2": ("ppm", "carbon_dioxide", "measurement"),
+        "Dew Point": ("\u00b0C", "temperature", "measurement"),
+        "Dew Point_F": ("\u00b0F", "temperature", "measurement"),
+        "Dew Point Deficit": ("\u00b0C", "temperature_delta", "measurement"),
+        "DewVPD Risk": ("%", "", "measurement"),
+        "Estimated PPFD": ("\u00b5mol/m\u00b2/s", "", "measurement"),
+        "Gas": ("\u03a9", "", "measurement"),
+        "Humidity": ("g/m\u00b3", "absolute_humidity", "measurement"),
+        "Light Intensity": ("lx", "illuminance", "measurement"),
+        "Plant Baro-Pressure": ("hPa", "atmospheric_pressure", "measurement"),
+        "Plant Dew Point": ("\u00b0C", "temperature", "measurement"),
+        "Plant Dew Point_F": ("\u00b0F", "temperature", "measurement"),
+        "Plant Dew Point Deficit": (
+            "\u00b0C",
+            "temperature_delta",
+            "measurement",
+        ),
+        "Plant DewVPD Risk": ("%", "", "measurement"),
+        "Plant Humidity": ("g/m\u00b3", "absolute_humidity", "measurement"),
+        "Plant Rel-Humidity": ("%", "humidity", "measurement"),
+        "Plant Temperature": ("\u00b0C", "temperature", "measurement"),
+        "Plant Temperature_F": ("\u00b0F", "temperature", "measurement"),
+        "Plant VPD": ("kPa", "pressure", "measurement"),
+        "PPFD": ("\u00b5mol/m\u00b2/s", "", "measurement"),
+        "Pressure": ("Pa", "pressure", "measurement"),
+        "Rel-Humidity": ("%", "humidity", "measurement"),
+        "Soil EC": ("mS/cm", "", "measurement"),
+        "Soil Fertility Index": ("%", "", "measurement"),
+        "Soil Moisture": ("%", "moisture", "measurement"),
+        "Soil Moisture Deficit": ("%", "", "measurement"),
+        "Soil Nitrogen": ("mg/kg", "", "measurement"),
+        "Soil Phosphorus": ("mg/kg", "", "measurement"),
+        "Soil Potassium": ("mg/kg", "", "measurement"),
+        "Soil Stress Index": ("%", "", "measurement"),
+        "Soil Temp_C": ("\u00b0C", "temperature", "measurement"),
+        "Soil Temp_F": ("\u00b0F", "temperature", "measurement"),
+        "Soil pH": ("pH", "ph", "measurement"),
+        "Temperature": ("\u00b0C", "temperature", "measurement"),
+        "Temperature_F": ("\u00b0F", "temperature", "measurement"),
+        "Visible Light Intensity": ("mol/m\u00b2/day", "", "measurement"),
     }
     used_object_ids = set()
     if runtime_config.sensor.present:
@@ -435,11 +462,15 @@ def build_homeassistant_discovery_plan(
                 "payload_not_available": "offline",
                 "device": device,
             }
-            unit = unit_map.get(metric_text)
-            if unit is None:
-                unit = _prefixed_soil_unit(metric_text, unit_map)
+            unit, device_class, state_class = _ha_metric_metadata(
+                metric_text, metadata_map
+            )
             if unit:
                 payload["unit_of_measurement"] = unit
+            if device_class:
+                payload["device_class"] = device_class
+            if state_class:
+                payload["state_class"] = state_class
             messages.append((topic, payload, bool(retain), False))
             published_topics.add(topic)
 
@@ -482,11 +513,16 @@ def build_homeassistant_discovery_plan(
     return tuple(messages)
 
 
-def _prefixed_soil_unit(metric_text, unit_map):
-    for suffix, unit in unit_map.items():
-        if str(metric_text or "").endswith(" {}".format(suffix)):
-            return unit
-    return None
+def _ha_metric_metadata(metric_text, metadata_map):
+    metadata = metadata_map.get(metric_text)
+    if metadata is not None:
+        return metadata
+    for suffix, candidate in metadata_map.items():
+        if suffix.startswith("Soil ") and str(metric_text or "").endswith(
+            " {}".format(suffix)
+        ):
+            return candidate
+    return ("", "", "")
 
 
 def build_config_ack_payload(message_id, *, accepted=True, duplicate=False):

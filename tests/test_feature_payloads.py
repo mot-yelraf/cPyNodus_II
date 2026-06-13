@@ -31,6 +31,14 @@ from cpynodus_ii.features.payloads import (
 )
 
 
+def _ha_payload_for_metric(messages, metric):
+    suffix = " {}".format(metric)
+    for _topic, payload, _retain, _is_clear in messages:
+        if str(payload.get("name", "")).endswith(suffix):
+            return payload
+    raise AssertionError("missing HA discovery metric {}".format(metric))
+
+
 def test_sensor_data_payload_uses_values_contract():
     runtime_config = RuntimeConfig(
         network=NetworkConfig(hostname="aqi-x943fm"),
@@ -540,6 +548,222 @@ def test_homeassistant_discovery_uses_percent_for_soil_fertility_index():
 
     payload = messages[0][1]
     assert payload["unit_of_measurement"] == "%"
+
+
+def test_homeassistant_discovery_describes_co2_metric_units_and_classes():
+    runtime_config = RuntimeConfig(
+        active_profile="homeassistant",
+        network=NetworkConfig(hostname="co2-ykdvea"),
+        homeassistant=HomeAssistantConfig(discovery_prefix="homeassistant"),
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            device="co2",
+            sensor_id="co2-ykdvea",
+        ),
+    )
+
+    messages = build_homeassistant_discovery_plan(
+        runtime_config,
+        sensor_snapshot=SimpleNamespace(
+            phase="ready",
+            metrics={
+                "CO2": 406.0,
+                "Temperature": 28.48,
+                "Temperature_F": 83.3,
+                "Rel-Humidity": 35.0,
+                "Humidity": 9.772,
+                "Ambient VPD": 2.526,
+                "Dew Point": 11.53,
+                "Dew Point_F": 52.8,
+                "Dew Point Deficit": 16.95,
+                "DewVPD Risk": 35.0,
+            },
+        ),
+    )
+
+    co2 = _ha_payload_for_metric(messages, "CO2")
+    assert co2["unit_of_measurement"] == "ppm"
+    assert co2["device_class"] == "carbon_dioxide"
+    assert co2["state_class"] == "measurement"
+    assert _ha_payload_for_metric(messages, "Temperature")["unit_of_measurement"] == (
+        "\u00b0C"
+    )
+    assert _ha_payload_for_metric(messages, "Temperature_F")[
+        "unit_of_measurement"
+    ] == "\u00b0F"
+    assert _ha_payload_for_metric(messages, "Rel-Humidity")["device_class"] == (
+        "humidity"
+    )
+    humidity = _ha_payload_for_metric(messages, "Humidity")
+    assert humidity["unit_of_measurement"] == "g/m\u00b3"
+    assert humidity["device_class"] == "absolute_humidity"
+    vpd = _ha_payload_for_metric(messages, "Ambient VPD")
+    assert vpd["unit_of_measurement"] == "kPa"
+    assert vpd["device_class"] == "pressure"
+    dew_deficit = _ha_payload_for_metric(messages, "Dew Point Deficit")
+    assert dew_deficit["unit_of_measurement"] == "\u00b0C"
+    assert dew_deficit["device_class"] == "temperature_delta"
+    assert _ha_payload_for_metric(messages, "DewVPD Risk")[
+        "unit_of_measurement"
+    ] == "%"
+
+
+def test_homeassistant_discovery_describes_plant_and_baro_metric_units():
+    runtime_config = RuntimeConfig(
+        active_profile="homeassistant",
+        network=NetworkConfig(hostname="apvpd-lab"),
+        homeassistant=HomeAssistantConfig(discovery_prefix="homeassistant"),
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            device="apvpd",
+            sensor_id="apvpd-lab",
+        ),
+    )
+
+    messages = build_homeassistant_discovery_plan(
+        runtime_config,
+        sensor_snapshot=SimpleNamespace(
+            phase="ready",
+            metrics={
+                "Baro-Pressure": 842.5,
+                "Plant Temperature": 24.2,
+                "Plant Temperature_F": 75.6,
+                "Plant Rel-Humidity": 60.0,
+                "Plant Humidity": 13.1,
+                "Plant VPD": 1.2,
+                "Plant Baro-Pressure": 843.0,
+                "Plant Dew Point": 16.1,
+                "Plant Dew Point_F": 61.0,
+                "Plant Dew Point Deficit": 8.1,
+                "Plant DewVPD Risk": 25.0,
+            },
+        ),
+    )
+
+    baro = _ha_payload_for_metric(messages, "Baro-Pressure")
+    assert baro["unit_of_measurement"] == "hPa"
+    assert baro["device_class"] == "atmospheric_pressure"
+    plant_temp = _ha_payload_for_metric(messages, "Plant Temperature")
+    assert plant_temp["unit_of_measurement"] == "\u00b0C"
+    assert plant_temp["device_class"] == "temperature"
+    plant_humidity = _ha_payload_for_metric(messages, "Plant Humidity")
+    assert plant_humidity["unit_of_measurement"] == "g/m\u00b3"
+    assert plant_humidity["device_class"] == "absolute_humidity"
+    plant_vpd = _ha_payload_for_metric(messages, "Plant VPD")
+    assert plant_vpd["unit_of_measurement"] == "kPa"
+    assert plant_vpd["device_class"] == "pressure"
+    plant_baro = _ha_payload_for_metric(messages, "Plant Baro-Pressure")
+    assert plant_baro["unit_of_measurement"] == "hPa"
+    assert plant_baro["device_class"] == "atmospheric_pressure"
+    plant_deficit = _ha_payload_for_metric(messages, "Plant Dew Point Deficit")
+    assert plant_deficit["unit_of_measurement"] == "\u00b0C"
+    assert plant_deficit["device_class"] == "temperature_delta"
+
+
+def test_homeassistant_discovery_describes_light_aqi_and_gas_units():
+    runtime_config = RuntimeConfig(
+        active_profile="homeassistant",
+        network=NetworkConfig(hostname="aqi-lab"),
+        homeassistant=HomeAssistantConfig(discovery_prefix="homeassistant"),
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            device="aqi",
+            sensor_id="aqi-lab",
+        ),
+    )
+
+    messages = build_homeassistant_discovery_plan(
+        runtime_config,
+        sensor_snapshot=SimpleNamespace(
+            phase="ready",
+            metrics={
+                "Air Quality": 87.0,
+                "Gas": 12500.0,
+                "Light Intensity": 5400.0,
+                "Auto Light": 5400.0,
+                "Estimated PPFD": 100.0,
+                "Visible Light Intensity": 8.64,
+            },
+        ),
+    )
+
+    assert _ha_payload_for_metric(messages, "Air Quality")[
+        "unit_of_measurement"
+    ] == "AQI"
+    assert _ha_payload_for_metric(messages, "Gas")["unit_of_measurement"] == (
+        "\u03a9"
+    )
+    light = _ha_payload_for_metric(messages, "Light Intensity")
+    assert light["unit_of_measurement"] == "lx"
+    assert light["device_class"] == "illuminance"
+    assert _ha_payload_for_metric(messages, "Auto Light")["device_class"] == (
+        "illuminance"
+    )
+    assert _ha_payload_for_metric(messages, "Estimated PPFD")[
+        "unit_of_measurement"
+    ] == "\u00b5mol/m\u00b2/s"
+    assert _ha_payload_for_metric(messages, "Visible Light Intensity")[
+        "unit_of_measurement"
+    ] == "mol/m\u00b2/day"
+
+
+def test_homeassistant_discovery_describes_prefixed_soil_metric_units():
+    runtime_config = RuntimeConfig(
+        active_profile="homeassistant",
+        network=NetworkConfig(hostname="soil-bd1234"),
+        homeassistant=HomeAssistantConfig(discovery_prefix="homeassistant"),
+        sensor=DetectedSensor(
+            family="soil",
+            interface="modbus_rs485",
+            device="soil",
+            sensor_id="soil-bd1234",
+        ),
+    )
+
+    messages = build_homeassistant_discovery_plan(
+        runtime_config,
+        sensor_snapshot=SimpleNamespace(
+            phase="ready",
+            metrics={
+                "CH1 Soil Moisture": 43.0,
+                "CH1 Soil Temp_C": 21.5,
+                "CH1 Soil Temp_F": 70.7,
+                "CH1 Soil pH": 6.8,
+                "CH1 Soil EC": 0.55,
+                "CH1 Soil Nitrogen": 11.0,
+                "CH1 Soil Phosphorus": 22.0,
+                "CH1 Soil Potassium": 33.0,
+                "CH1 Soil Moisture Deficit": 0.0,
+                "CH1 Soil Stress Index": 0.0,
+                "CH1 Soil Fertility Index": 93.0,
+            },
+        ),
+    )
+
+    moisture = _ha_payload_for_metric(messages, "CH1 Soil Moisture")
+    assert moisture["unit_of_measurement"] == "%"
+    assert moisture["device_class"] == "moisture"
+    soil_temp = _ha_payload_for_metric(messages, "CH1 Soil Temp_C")
+    assert soil_temp["unit_of_measurement"] == "\u00b0C"
+    assert soil_temp["device_class"] == "temperature"
+    assert _ha_payload_for_metric(messages, "CH1 Soil Temp_F")[
+        "unit_of_measurement"
+    ] == "\u00b0F"
+    soil_ph = _ha_payload_for_metric(messages, "CH1 Soil pH")
+    assert soil_ph["unit_of_measurement"] == "pH"
+    assert soil_ph["device_class"] == "ph"
+    assert _ha_payload_for_metric(messages, "CH1 Soil EC")[
+        "unit_of_measurement"
+    ] == "mS/cm"
+    assert _ha_payload_for_metric(messages, "CH1 Soil Nitrogen")[
+        "unit_of_measurement"
+    ] == "mg/kg"
+    assert _ha_payload_for_metric(messages, "CH1 Soil Fertility Index")[
+        "unit_of_measurement"
+    ] == "%"
 
 
 def test_config_and_calibration_payload_helpers_use_compact_contracts():
