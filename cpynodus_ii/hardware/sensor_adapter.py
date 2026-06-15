@@ -7,6 +7,8 @@ service logic.
 
 from dataclasses import dataclass
 
+from cpynodus_ii.core.board_profile import selected_board_profile
+
 
 @dataclass(frozen=True)
 class SensorHardwareAdapter:
@@ -18,6 +20,7 @@ class SensorHardwareAdapter:
     transport_target: str
     transport: object | None = None
     secondary_transport: object | None = None
+    i2c_fallbacks: tuple = ()
     errors: tuple = ()
 
 
@@ -52,6 +55,9 @@ def bind_sensor_hardware(
 
     sensor = runtime_config.sensor
     if sensor_runtime.interface == "i2c" and sensor.i2c is not None:
+        i2c_fallbacks = _single_i2c_fallback_specs(
+            sensor, board_module, busio_module
+        )
         scl = _resolve_pin(
             board_module, sensor.i2c.scl_pin, "missing_i2c_scl_pin_object", errors
         )
@@ -79,9 +85,38 @@ def bind_sensor_hardware(
                 interface=sensor_runtime.interface,
                 transport_kind="i2c",
                 transport_target=sensor_runtime.transport_target,
+                i2c_fallbacks=i2c_fallbacks,
                 errors=tuple(errors),
             )
-        transport = busio_module.I2C(scl, sda)
+        transport = None
+        try:
+            transport = busio_module.I2C(scl, sda)
+        except Exception as exc:
+            fallback = _open_first_i2c_fallback(busio_module, i2c_fallbacks)
+            if fallback is None:
+                return SensorHardwareAdapter(
+                    phase="error",
+                    interface=sensor_runtime.interface,
+                    transport_kind="i2c",
+                    transport_target=sensor_runtime.transport_target,
+                    i2c_fallbacks=i2c_fallbacks,
+                    errors=("i2c_open_failed:{}".format(_error_text(exc)),),
+                )
+            fallback_transport, fallback_spec, remaining_specs = fallback
+            return SensorHardwareAdapter(
+                phase="bound",
+                interface=sensor_runtime.interface,
+                transport_kind="i2c_fallback",
+                transport_target=fallback_spec.get(
+                    "target", sensor_runtime.transport_target
+                ),
+                transport=fallback_transport,
+                i2c_fallbacks=remaining_specs,
+                errors=(
+                    "i2c_open_failed:{}".format(_error_text(exc)),
+                    "i2c_fallback:{}".format(fallback_spec.get("target", "")),
+                ),
+            )
         secondary_transport = None
         if sensor.device in {"apvpd", "apvpd_aht"} and sensor.secondary_i2c is not None:
             secondary_transport = busio_module.I2C(secondary_scl, secondary_sda)
@@ -92,6 +127,7 @@ def bind_sensor_hardware(
             transport_target=sensor_runtime.transport_target,
             transport=transport,
             secondary_transport=secondary_transport,
+            i2c_fallbacks=i2c_fallbacks,
             errors=(),
         )
 
@@ -171,3 +207,59 @@ def _resolve_pin(board_module, pin_name, error_code, errors):
     if pin is None:
         errors.append(error_code)
     return pin
+
+
+def _single_i2c_fallback_specs(sensor, board_module, busio_module):
+    if str(getattr(sensor, "interface", "") or "") != "i2c":
+        return ()
+    if str(getattr(sensor, "device", "") or "") in {"apvpd", "apvpd_aht"}:
+        return ()
+    i2c = getattr(sensor, "i2c", None)
+    if i2c is None:
+        return ()
+    configured = (
+        str(getattr(i2c, "scl_pin", "") or ""),
+        str(getattr(i2c, "sda_pin", "") or ""),
+    )
+    address = int(getattr(i2c, "address", 0) or 0)
+    fallback_specs = []
+    profile = selected_board_profile(board_module=board_module)
+    for bus_index, pins in enumerate(tuple(getattr(profile, "i2c_pins", ()) or ())):
+        if len(pins) < 2:
+            continue
+        scl_name, sda_name = str(pins[0] or ""), str(pins[1] or "")
+        if (scl_name, sda_name) == configured:
+            continue
+        scl = getattr(board_module, scl_name, None)
+        sda = getattr(board_module, sda_name, None)
+        if scl is None or sda is None:
+            continue
+        fallback_specs.append(
+            {
+                "bus": int(bus_index),
+                "scl_pin": scl_name,
+                "sda_pin": sda_name,
+                "scl": scl,
+                "sda": sda,
+                "busio_module": busio_module,
+                "address": address,
+                "target": "i2c:{}@0x{:02x}".format(bus_index, address),
+            }
+        )
+    return tuple(fallback_specs)
+
+
+def _open_first_i2c_fallback(busio_module, fallback_specs):
+    remaining = []
+    for index, spec in enumerate(tuple(fallback_specs or ())):
+        try:
+            transport = busio_module.I2C(spec.get("scl"), spec.get("sda"))
+            remaining.extend(tuple(fallback_specs or ())[index + 1 :])
+            return transport, spec, tuple(remaining)
+        except Exception:
+            continue
+    return None
+
+
+def _error_text(exc):
+    return str(exc or "").strip().replace(" ", "_") or type(exc).__name__

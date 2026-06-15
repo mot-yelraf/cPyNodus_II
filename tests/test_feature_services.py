@@ -202,6 +202,13 @@ class _MissingSensorDriver:
         raise OSError("no i2c device")
 
 
+class _FallbackBME680(_FakeBME680):
+    def __init__(self, transport, *, address):
+        if getattr(transport, "scl", "") == "pin-gp1":
+            raise OSError("no i2c device")
+        super().__init__(transport, address=address)
+
+
 def test_sensor_service_starts_bme680_for_aqi_config():
     docs_root = Path(__file__).resolve().parents[1] / "docs" / "sensor+switch"
     with TemporaryDirectory() as tmpdir:
@@ -325,6 +332,56 @@ def test_sensor_service_reports_missing_i2c_sensor_at_startup():
 
     assert sensor_service.phase == "error"
     assert "sensor_not_found" in sensor_service.errors
+
+
+def test_sensor_service_tries_other_i2c_bus_when_sensor_missing_on_preferred_bus():
+    runtime_config = RuntimeConfig(
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            active_config_file="sensor_i2c.toml",
+            device="aqi",
+            sensor_id="aqi-x943fm",
+            i2c=I2CConfig(bus=0, scl_pin="GP1", sda_pin="GP0", address=0x77),
+        )
+    )
+    sensor_runtime = build_sensor_runtime(
+        plan_sensor_initialization(runtime_config),
+        runtime_config,
+    )
+    sensor_adapter = bind_sensor_hardware(
+        sensor_runtime,
+        runtime_config,
+        board_module=SimpleNamespace(
+            GP0="pin-gp0",
+            GP1="pin-gp1",
+            GP2="pin-gp2",
+            GP3="pin-gp3",
+        ),
+        busio_module=SimpleNamespace(I2C=_FakeI2C, UART=_FakeUART),
+    )
+
+    sensor_service = start_sensor_service(
+        sensor_runtime,
+        sensor_adapter,
+        runtime_config,
+        modules={
+            "adafruit_bme680": SimpleNamespace(
+                Adafruit_BME680_I2C=_FallbackBME680
+            )
+        },
+    )
+
+    assert sensor_service.phase == "ready"
+    assert sensor_service.driver_kind == "adafruit_bme680"
+    assert sensor_service.transport.scl == "pin-gp3"
+    assert sensor_service.transport.sda == "pin-gp2"
+    assert sensor_adapter.transport.deinited is True
+    assert "i2c_fallback:i2c:1@0x77" in sensor_service.errors
+    assert any(
+        str(error).startswith("i2c_preferred_not_found:OSError:no_i2c_device")
+        for error in sensor_service.errors
+    )
 
 
 def test_sensor_snapshot_reports_empty_metrics_as_error():
@@ -1415,6 +1472,7 @@ def test_sensor_service_reads_dual_bme280_snapshot_for_apvpd():
     snapshot = read_sensor_snapshot(sensor_service, runtime_config)
 
     assert sensor_service.phase == "ready"
+    assert sensor_adapter.i2c_fallbacks == ()
     assert snapshot.phase == "ready"
     assert snapshot.metrics["Temperature"] == 24.5
     assert snapshot.metrics["Ambient VPD"] > 0
@@ -1471,6 +1529,7 @@ def test_sensor_service_reads_dual_aht_snapshot_for_apvpd_aht():
 
     assert sensor_service.phase == "ready"
     assert sensor_service.driver_kind == "adafruit_ahtx0"
+    assert sensor_adapter.i2c_fallbacks == ()
     assert snapshot.phase == "ready"
     assert snapshot.metrics["Temperature"] == 24.5
     assert snapshot.metrics["Ambient VPD"] > 0

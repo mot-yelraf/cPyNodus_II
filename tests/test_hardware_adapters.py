@@ -27,6 +27,14 @@ class _FakeI2C:
         self.sda = sda
 
 
+class _PreferredI2CFails:
+    def __init__(self, scl, sda):
+        if scl == "pin-gp1":
+            raise RuntimeError("No pull up found")
+        self.scl = scl
+        self.sda = sda
+
+
 class _FakeUART:
     def __init__(self, tx, rx, *, baudrate, timeout):
         self.tx = tx
@@ -180,6 +188,41 @@ def test_sensor_hardware_adapter_reports_missing_pin_objects():
 
     assert adapter.phase == "error"
     assert "missing_i2c_sda_pin_object" in adapter.errors
+
+
+def test_sensor_hardware_adapter_falls_back_when_preferred_i2c_bus_fails_open():
+    runtime_config = RuntimeConfig(
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            active_config_file="sensor_i2c.toml",
+            device="aqi",
+            i2c=I2CConfig(bus=0, scl_pin="GP1", sda_pin="GP0", address=119),
+        )
+    )
+    sensor_runtime = build_sensor_runtime(
+        plan_sensor_initialization(runtime_config),
+        runtime_config,
+    )
+
+    adapter = bind_sensor_hardware(
+        sensor_runtime,
+        runtime_config,
+        board_module=SimpleNamespace(
+            GP0="pin-gp0",
+            GP1="pin-gp1",
+            GP2="pin-gp2",
+            GP3="pin-gp3",
+        ),
+        busio_module=SimpleNamespace(I2C=_PreferredI2CFails, UART=_FakeUART),
+    )
+
+    assert adapter.phase == "bound"
+    assert adapter.transport_kind == "i2c_fallback"
+    assert adapter.transport_target == "i2c:1@0x77"
+    assert adapter.transport.scl == "pin-gp3"
+    assert adapter.transport.sda == "pin-gp2"
+    assert "i2c_fallback:i2c:1@0x77" in adapter.errors
 
 
 def test_switch_hardware_adapter_binds_channel_pins():

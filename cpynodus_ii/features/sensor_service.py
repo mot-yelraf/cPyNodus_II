@@ -121,16 +121,9 @@ def start_sensor_service(
     transport = sensor_adapter.transport
 
     if sensor_runtime.interface == "i2c":
-        try:
-            return _start_i2c_sensor_service(sensor, sensor_adapter, modules)
-        except Exception as exc:
-            return _sensor_service_error(
-                sensor.device,
-                sensor.interface,
-                transport,
-                "sensor_not_found",
-                exc,
-            )
+        return _start_i2c_sensor_service_with_fallback(
+            sensor, sensor_adapter, modules, transport
+        )
 
     if sensor_runtime.interface == "modbus_rs485":
         driver = transport
@@ -563,6 +556,86 @@ def _start_i2c_sensor_service(sensor, sensor_adapter, modules):
 
     return _sensor_service_error(
         device, sensor.interface, transport, "unsupported_i2c_sensor_device"
+    )
+
+
+class _FallbackI2CAdapter:
+    def __init__(self, transport):
+        self.transport = transport
+        self.secondary_transport = None
+
+
+def _start_i2c_sensor_service_with_fallback(
+    sensor, sensor_adapter, modules, primary_transport
+):
+    try:
+        return _start_i2c_sensor_service(sensor, sensor_adapter, modules)
+    except Exception as exc:
+        if not _is_sensor_not_found_exception(exc):
+            return _sensor_service_error(
+                sensor.device,
+                sensor.interface,
+                primary_transport,
+                "sensor_not_found",
+                exc,
+            )
+        primary_error = _exception_error_token("i2c_preferred_not_found", exc)
+        fallback_errors = []
+        for spec in tuple(getattr(sensor_adapter, "i2c_fallbacks", ()) or ()):
+            fallback_transport = None
+            try:
+                fallback_transport = spec.get("busio_module").I2C(
+                    spec.get("scl"), spec.get("sda")
+                )
+                fallback_adapter = _FallbackI2CAdapter(fallback_transport)
+                service = _start_i2c_sensor_service(sensor, fallback_adapter, modules)
+                if getattr(service, "phase", "") != "ready":
+                    target = str(spec.get("target", "") or "").strip()
+                    fallback_errors.append(
+                        "i2c_fallback_failed:{}:{}".format(
+                            target or "unknown",
+                            ";".join(tuple(service.errors or ())) or "error",
+                        )
+                    )
+                    _safe_deinit(fallback_transport)
+                    continue
+                _safe_deinit(primary_transport)
+                target = str(spec.get("target", "") or "").strip()
+                return _sensor_service_with_extra_errors(
+                    service,
+                    (
+                        "i2c_fallback:{}".format(target or "unknown"),
+                        primary_error,
+                    ),
+                )
+            except Exception as fallback_exc:
+                fallback_errors.append(
+                    "i2c_fallback_failed:{}:{}".format(
+                        spec.get("target", "unknown"),
+                        _exception_error_token("error", fallback_exc),
+                    )
+                )
+                _safe_deinit(fallback_transport)
+        service = _sensor_service_error(
+            sensor.device,
+            sensor.interface,
+            primary_transport,
+            "sensor_not_found",
+            exc,
+        )
+        return _sensor_service_with_extra_errors(service, tuple(fallback_errors))
+
+
+def _sensor_service_with_extra_errors(service, extra_errors):
+    return SensorService(
+        phase=service.phase,
+        device=service.device,
+        interface=service.interface,
+        driver_kind=service.driver_kind,
+        driver=service.driver,
+        transport=service.transport,
+        secondary_transport=service.secondary_transport,
+        errors=tuple(extra_errors or ()) + tuple(service.errors or ()),
     )
 
 

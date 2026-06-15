@@ -35,6 +35,14 @@ Supported I2C `DEVICE` values:
 - `co2`: SCD30/SCD4x CO2
 - `lux`: VEML7700 light
 
+For single I2C sensors, `[I2Cbus]` is the preferred runtime bus. If the
+configured bus cannot be opened, or the driver reports no sensor at the
+configured address, Nodus tries the other board-profile I2C bus with the same
+address for that boot. The fallback is volatile and does not rewrite
+`sensor_i2c.toml`; update `I2C_BUS`, `I2C_SCL`, and `I2C_SDA` when the wiring
+is intentionally moved. Dual `apvpd` and `apvpd_aht` devices keep explicit
+`[I2Cbus]` and `[I2Cbus.Plant]` bus assignments and do not use this fallback.
+
 ## Templates
 
 Copy the templates and edit them:
