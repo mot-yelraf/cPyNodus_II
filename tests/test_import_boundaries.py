@@ -67,6 +67,20 @@ def test_command_intake_import_does_not_load_web_or_hardware_services():
     )
 
 
+def test_pico_startup_imports_do_not_load_board_profiles():
+    _run_import_check(
+        """
+        import sys
+
+        import cpynodus_ii.core.settings  # noqa: F401
+        import cpynodus_ii.hardware.sensor_adapter  # noqa: F401
+
+        if "cpynodus_ii.core.board_profile" in sys.modules:
+            raise SystemExit("board_profile loaded during Pico startup imports")
+        """
+    )
+
+
 def test_empty_command_poll_does_not_load_command_handlers():
     _run_import_check(
         """

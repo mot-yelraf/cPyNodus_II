@@ -166,6 +166,23 @@ def process_inbound_messages(
             results.append(fast_result)
             continue
 
+        config_schema_error = _device_config_fast_schema_error(
+            message.topic, runtime_config, message.payload_text
+        )
+        if config_schema_error == "empty":
+            continue
+        if config_schema_error:
+            results.append(
+                CommandResult(
+                    phase="error",
+                    topic=message.topic,
+                    command_type="config",
+                    published_count=0,
+                    errors=(config_schema_error,),
+                )
+            )
+            continue
+
         if _is_empty_payload(message.payload_text) and _is_sensor_calibration_topic(
             message.topic,
             runtime_config,
@@ -677,6 +694,26 @@ def _should_try_time_config_fast_path(topic, runtime_config, payload_text):
     if not _is_location_config_topic(topic, runtime_config):
         return False
     return _payload_may_update_time(payload_text)
+
+
+def _device_config_fast_schema_error(topic, runtime_config, payload_text):
+    if not _is_location_config_topic(topic, runtime_config):
+        return ""
+    text = str(payload_text or "").strip()
+    if not text:
+        return "empty"
+    lower = text.lower()
+    if not (text.startswith("{") and text.endswith("}")):
+        return "schema_invalid"
+    if '"message_id"' not in lower:
+        return "schema_invalid"
+    if '"restart"' in lower:
+        return ""
+    if '"payload"' not in lower:
+        return "schema_invalid"
+    if '"updates"' not in lower and '"settings"' not in lower:
+        return "schema_invalid"
+    return ""
 
 
 def _payload_may_update_location(payload_text):

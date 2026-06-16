@@ -761,6 +761,44 @@ def test_process_device_config_message_ignores_empty_retained_clear():
     assert result.errors == ()
 
 
+def test_process_inbound_messages_ignores_empty_device_config_without_heavy_handlers(
+    monkeypatch,
+):
+    transport = MQTTTransport("broker.local", 1883)
+    transport.receive("nodus/switch-x943fm/config/set", "")
+    monkeypatch.setattr(
+        command_intake,
+        "_handlers",
+        lambda: (_ for _ in ()).throw(AssertionError("heavy handler imported")),
+    )
+
+    results = process_inbound_messages(transport, _runtime_config(), _switch_service())
+
+    assert results == ()
+    assert transport.published_messages == []
+
+
+def test_process_inbound_messages_rejects_bad_device_config_without_heavy_handlers(
+    monkeypatch,
+):
+    transport = MQTTTransport("broker.local", 1883)
+    transport.receive("nodus/switch-x943fm/config/set", '{"payload":{"updates":[]}}')
+    monkeypatch.setattr(
+        command_intake,
+        "_handlers",
+        lambda: (_ for _ in ()).throw(AssertionError("heavy handler imported")),
+    )
+
+    results = process_inbound_messages(transport, _runtime_config(), _switch_service())
+
+    assert len(results) == 1
+    assert results[0].phase == "error"
+    assert results[0].command_type == "config"
+    assert results[0].published_count == 0
+    assert results[0].errors == ("schema_invalid",)
+    assert transport.published_messages == []
+
+
 def test_process_calibration_message_ignores_empty_retained_clear():
     transport = MQTTTransport("broker.local", 1883)
 
@@ -783,10 +821,17 @@ def test_parse_device_config_command_accepts_updates_and_settings_shapes():
     settings_command = parse_device_config_command(
         '{"message_id":"cfg-2","payload":{"settings":{"MQTT":{"BROKER":"broker2.local"}}}}'
     )
+    restart_command = parse_device_config_command(
+        '{"message_id":"rst-1","payload":{},"restart":true,"restart_mode":"soft"}'
+    )
 
     assert updates_command.message_id == "cfg-1"
     assert updates_command.updates[0]["section"] == "Network"
     assert settings_command.updates[0]["key"] == "BROKER"
+    assert restart_command.message_id == "rst-1"
+    assert restart_command.updates == ()
+    assert restart_command.restart_requested is True
+    assert restart_command.restart_mode == "soft"
 
 
 def test_process_device_config_message_applies_runtime_update_and_publishes_patch():
@@ -806,6 +851,91 @@ def test_process_device_config_message_applies_runtime_update_and_publishes_patc
     assert transport.published_messages[0].topic == "nodus/switch-x943fm/config/ack"
     assert transport.published_messages[1].topic == "nodus/switch-x943fm/config/result"
     assert transport.published_messages[2].topic == "nodus/switch-x943fm/meta/patch"
+
+
+def test_process_device_config_message_accepts_restart_only_command():
+    transport = MQTTTransport("broker.local", 1883)
+
+    result = process_device_config_message(
+        transport,
+        _runtime_config(),
+        topic="nodus/switch-x943fm/config/set",
+        payload_text=(
+            '{"message_id":"rst-1","payload":{},'
+            '"restart":true,"restart_mode":"soft"}'
+        ),
+    )
+
+    assert result.phase == "published"
+    assert result.published_count == 2
+    assert result.message_id == "rst-1"
+    assert result.requested_state == "restart:soft"
+    assert result.reboot_requested is True
+    assert result.reboot_mode == "soft"
+    assert [message.topic for message in transport.published_messages] == [
+        "nodus/switch-x943fm/config/ack",
+        "nodus/switch-x943fm/config/result",
+    ]
+    assert transport.published_messages[0].payload == {
+        "message_id": "rst-1",
+        "accepted": True,
+        "duplicate": False,
+    }
+    assert transport.published_messages[1].payload == {
+        "message_id": "rst-1",
+        "applied": True,
+        "updated": 0,
+        "duplicate": False,
+        "error": "",
+        "restart": True,
+        "restart_mode": "soft",
+    }
+
+
+def test_process_device_config_message_does_not_reboot_duplicate_restart():
+    transport = MQTTTransport("broker.local", 1883)
+
+    result = process_device_config_message(
+        transport,
+        _runtime_config(),
+        topic="nodus/switch-x943fm/config/set",
+        payload_text=(
+            '{"message_id":"rst-1","payload":{},'
+            '"restart":true,"restart_mode":"hard"}'
+        ),
+        duplicate_message_ids=("rst-1",),
+    )
+
+    assert result.phase == "published"
+    assert result.duplicate is True
+    assert result.reboot_requested is False
+    assert result.reboot_mode == "hard"
+    assert transport.published_messages[1].payload["duplicate"] is True
+    assert transport.published_messages[1].payload["restart"] is True
+    assert transport.published_messages[1].payload["restart_mode"] == "hard"
+
+
+def test_process_device_config_message_can_restart_after_config_update():
+    transport = MQTTTransport("broker.local", 1883)
+
+    result = process_device_config_message(
+        transport,
+        _runtime_config(),
+        topic="nodus/switch-x943fm/config/set",
+        payload_text=(
+            '{"message_id":"cfg-rst","payload":{"updates":['
+            '{"section":"Network","key":"HOSTNAME","value":"switch-new"}'
+            ']},"restart":true,"restart_mode":"hard"}'
+        ),
+    )
+
+    assert result.phase == "published"
+    assert result.published_count == 3
+    assert result.reboot_requested is True
+    assert result.reboot_mode == "hard"
+    assert result.runtime_config.network.hostname == "switch-new"
+    assert transport.published_messages[1].payload["restart"] is True
+    assert transport.published_messages[1].payload["restart_mode"] == "hard"
 
 
 def test_process_device_config_message_requests_ntp_resync_for_time_update():

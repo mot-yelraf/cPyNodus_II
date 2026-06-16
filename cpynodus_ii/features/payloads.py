@@ -540,14 +540,20 @@ def build_config_result_payload(
     updated=0,
     error="",
     duplicate=False,
+    restart=False,
+    restart_mode="",
 ):
-    return {
+    payload = {
         "message_id": str(message_id or ""),
         "applied": bool(applied),
         "updated": int(updated or 0),
         "duplicate": bool(duplicate),
         "error": str(error or ""),
     }
+    if restart:
+        payload["restart"] = True
+        payload["restart_mode"] = str(restart_mode or "soft")
+    return payload
 
 
 def build_meta_patch_payload(runtime_config, *, source, message_id, updates):

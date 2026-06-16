@@ -8,6 +8,7 @@ import pytest
 import cpynodus_ii.app as app_module
 from cpynodus_ii.app import (
     _clear_recovery_hard_reset_marker,
+    _command_result_reboot_request,
     _command_results_request_ntp_resync,
     _consume_soft_reload_cleanup_marker,
     _consume_soft_reload_prepared,
@@ -47,6 +48,19 @@ def test_should_log_command_result_keeps_non_switch_commands():
     result = SimpleNamespace(phase="published", command_type="config")
 
     assert _should_log_command_result(result) is True
+
+
+def test_command_result_reboot_request_returns_first_request():
+    first = SimpleNamespace(reboot_requested=False)
+    second = SimpleNamespace(
+        command_type="config",
+        reboot_requested=True,
+        reboot_mode="hard",
+        message_id="rst-1",
+    )
+
+    assert _command_result_reboot_request((first, second)) is second
+    assert _command_result_reboot_request((first,)) is None
 
 
 def test_sensor_error_text_combines_startup_errors_without_duplicates():

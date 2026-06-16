@@ -10,11 +10,6 @@ import random
 import time
 
 import cpynodus_ii.core.toml_compat as toml_compat
-from cpynodus_ii.core.board_profile import (
-    selected_board_profile,
-    soil_channel_defaults,
-    switch_pin_defaults,
-)
 from cpynodus_ii.core.config import (
     DetectedSensor,
     DisplayConfig,
@@ -73,6 +68,7 @@ _FACTORY_SWITCH_PINS = {
     1: {"enable": "GP5", "control": "GP28", "label": "Fan"},
     2: {"enable": "GP10", "control": "GP21", "label": "Light"},
 }
+_FACTORY_SOIL_CHANNELS = (("CH1", "GP0", "GP1"), ("CH2", "GP4", "GP5"))
 _FACTORY_SENSOR_DISPLAY_DEFAULTS = {
     "aht": (
         "Temperature",
@@ -134,32 +130,70 @@ _FACTORY_SENSOR_DISPLAY_DEFAULTS = {
 
 
 def _factory_board_profile(board_module=None):
+    if _use_pico_factory_defaults(board_module):
+        return _PicoFactoryProfile
+    from cpynodus_ii.core.board_profile import selected_board_profile
+
     return selected_board_profile(board_module=board_module)
 
 
 def _factory_i2c_pins(board_module=None):
+    if _use_pico_factory_defaults(board_module):
+        return _FACTORY_I2C_PINS
     profile = _factory_board_profile(board_module)
     pins = tuple(getattr(profile, "i2c_pins", ()) or ())
     return pins or _FACTORY_I2C_PINS
 
 
 def _factory_switch_pins(board_module=None):
+    if _use_pico_factory_defaults(board_module):
+        return dict(_FACTORY_SWITCH_PINS)
+    from cpynodus_ii.core.board_profile import switch_pin_defaults
+
     defaults = switch_pin_defaults(_factory_board_profile(board_module))
     return defaults or dict(_FACTORY_SWITCH_PINS)
 
 
 def _factory_soil_channels(board_module=None):
+    if _use_pico_factory_defaults(board_module):
+        return _FACTORY_SOIL_CHANNELS
+    from cpynodus_ii.core.board_profile import soil_channel_defaults
+
     profile = _factory_board_profile(board_module)
     channels = soil_channel_defaults(profile)
     if channels:
         return channels
-    if getattr(profile, "key", "") == "pico2w":
-        return (("CH1", "GP0", "GP1"), ("CH2", "GP4", "GP5"))
     return ()
 
 
 def _factory_reset_pin_name(board_module=None):
+    if _use_pico_factory_defaults(board_module):
+        return _FACTORY_RESET_PIN_NAME
     return str(getattr(_factory_board_profile(board_module), "factory_reset_pin", ""))
+
+
+class _PicoFactoryProfile:
+    key = "pico2w"
+    i2c_pins = _FACTORY_I2C_PINS
+    factory_reset_pin = _FACTORY_RESET_PIN_NAME
+
+
+def _use_pico_factory_defaults(board_module=None):
+    if board_module is None:
+        return True
+    board_id = str(getattr(board_module, "board_id", "") or "").lower()
+    if "xiao" in board_id or ("esp32" in board_id and "s3" in board_id):
+        return False
+    if getattr(board_module, "GP0", None) is not None:
+        return True
+    if getattr(board_module, "GP28", None) is not None:
+        return True
+    has_xiao_pin_shape = (
+        getattr(board_module, "SCL", None) is not None
+        and getattr(board_module, "SDA", None) is not None
+        and getattr(board_module, "D0", None) is not None
+    )
+    return not has_xiao_pin_shape
 
 
 class Settings:

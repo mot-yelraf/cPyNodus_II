@@ -584,6 +584,14 @@ def _command_results_request_ntp_resync(command_results):
     return False
 
 
+def _command_result_reboot_request(command_results):
+    """Return the first command result that requested a runtime reboot."""
+    for result in command_results or ():
+        if bool(getattr(result, "reboot_requested", False)):
+            return result
+    return None
+
+
 def _ntp_state_forced_resync(ntp_state):
     """Return NTP state reset so the next allowed pass attempts a sync."""
     return NTPState(
@@ -2978,12 +2986,14 @@ async def main(*, startup_plan_override=None):
         start_monotonic=start_monotonic,
     )
 
-    def _request_runtime_soft_reboot(reason="web:restart"):
-        if _runtime_restart_kind(runtime_config) == "hard":
+    def _request_runtime_soft_reboot(reason="web:restart", requested_kind="soft"):
+        restart_kind = _runtime_restart_kind(runtime_config, requested_kind)
+        if restart_kind == "hard":
             _print_log(
                 "runtime",
-                "action=hard_reboot reason={} requested=soft profile={}".format(
+                "action=hard_reboot reason={} requested={} profile={}".format(
                     str(reason or "soft_reboot"),
+                    str(requested_kind or "soft"),
                     runtime_config.active_profile,
                 ),
                 start_monotonic=start_monotonic,
@@ -5164,10 +5174,7 @@ async def main(*, startup_plan_override=None):
                     "phase=resync_requested reason=time_config_update",
                     start_monotonic=start_monotonic,
                 )
-            ota_reboot_requested = any(
-                bool(getattr(result, "reboot_requested", False))
-                for result in iteration.command_results
-            )
+            reboot_request = _command_result_reboot_request(iteration.command_results)
             if float(now_monotonic) >= float(next_health_at):
                 _print_log(
                     _runtime_device_id(runtime_config),
@@ -5295,15 +5302,39 @@ async def main(*, startup_plan_override=None):
                             ),
                             start_monotonic=start_monotonic,
                         )
-                if ota_reboot_requested:
-                    _print_log(
-                        "ota",
-                        "action={}_reboot reason=fwupdate_prepare".format(
-                            _runtime_restart_kind(runtime_config)
-                        ),
-                        start_monotonic=start_monotonic,
+                if reboot_request is not None:
+                    reboot_mode = str(
+                        getattr(reboot_request, "reboot_mode", "") or "soft"
                     )
-                    _request_runtime_soft_reboot("ota:fwupdate_prepare")
+                    if getattr(reboot_request, "command_type", "") == "fwupdate":
+                        _print_log(
+                            "ota",
+                            "action={}_reboot reason=fwupdate_prepare".format(
+                                _runtime_restart_kind(runtime_config, reboot_mode)
+                            ),
+                            start_monotonic=start_monotonic,
+                        )
+                        _request_runtime_soft_reboot(
+                            "ota:fwupdate_prepare",
+                            requested_kind=reboot_mode,
+                        )
+                    else:
+                        _print_log(
+                            "runtime",
+                            (
+                                "action={}_reboot reason=mqtt:restart "
+                                "requested={} message_id={}"
+                            ).format(
+                                _runtime_restart_kind(runtime_config, reboot_mode),
+                                reboot_mode,
+                                getattr(reboot_request, "message_id", "") or "none",
+                            ),
+                            start_monotonic=start_monotonic,
+                        )
+                        _request_runtime_soft_reboot(
+                            "mqtt:restart",
+                            requested_kind=reboot_mode,
+                        )
                 poll_result = poll_mqtt_client(mqtt_adapter, transport)
                 mqtt_adapter = poll_result.adapter
                 if poll_result.phase == "error" and not _is_recoverable_mqtt_poll_error(

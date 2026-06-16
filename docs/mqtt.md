@@ -11,6 +11,8 @@ wins.
 
 - AP bootstrap uses `/itaot-meta` and `/itaot-init`.
 - Runtime device config uses `nodus/<device_id>/config/set`.
+- Runtime device restart uses `nodus/<device_id>/config/set` with
+  `restart = true`.
 - Runtime switch config uses `nodus/<channel_id>/config/set`.
 - Calibration uses `nodus/<device_id>/calibration/set`.
 - Log retrieval uses `nodus/<device_id>/logs/get` and returns chunked MQTT
@@ -98,6 +100,11 @@ current contract:
 - Device config uses `config/set`, `config/ack`, `config/result`, and
   `meta/patch`. Nodus does not clear device `config/set`; Sensorius owns any
   retained command cleanup.
+- Standalone device restart uses device `config/set` with a `message_id`,
+  empty `payload`, `restart = true`, and optional `restart_mode` of `"soft"` or
+  `"hard"`. Nodus publishes `config/ack` and successful `config/result` before
+  rebooting. In MQTT profiles, app-requested soft restarts are promoted to hard
+  reset by firmware policy.
 - Accepted device `Time.*` config writes request a fresh NTP sync after command
   responses and queued MQTT publishes drain.
 - Accepted device `Time.*` config writes are applied live before best-effort

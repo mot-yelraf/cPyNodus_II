@@ -734,6 +734,8 @@ def process_device_config_message(
                 updated=0,
                 error="",
                 duplicate=True,
+                restart=command.restart_requested,
+                restart_mode=command.restart_mode,
             ),
             retain=False,
         )
@@ -746,6 +748,33 @@ def process_device_config_message(
             runtime_config=runtime_config,
             message_id=command.message_id,
             duplicate=True,
+            reboot_mode=command.restart_mode if command.restart_requested else "",
+        )
+
+    if command.restart_requested and not command.updates:
+        transport.publish(
+            result_topic,
+            build_config_result_payload(
+                command.message_id,
+                applied=True,
+                updated=0,
+                error="",
+                restart=True,
+                restart_mode=command.restart_mode,
+            ),
+            retain=False,
+        )
+        return CommandResult(
+            phase="published",
+            topic=topic,
+            command_type="config",
+            published_count=2,
+            errors=(),
+            runtime_config=runtime_config,
+            message_id=command.message_id,
+            requested_state="restart:{}".format(command.restart_mode),
+            reboot_requested=True,
+            reboot_mode=command.restart_mode,
         )
 
     try:
@@ -808,6 +837,8 @@ def process_device_config_message(
             applied=True,
             updated=len(applied_updates),
             error="",
+            restart=command.restart_requested,
+            restart_mode=command.restart_mode,
         ),
         retain=False,
     )
@@ -834,6 +865,13 @@ def process_device_config_message(
         runtime_config=updated_runtime_config,
         message_id=command.message_id,
         persistence_mode="volatile" if persistence_errors else "persisted",
+        requested_state=(
+            "restart:{}".format(command.restart_mode)
+            if command.restart_requested
+            else ""
+        ),
+        reboot_requested=command.restart_requested,
+        reboot_mode=command.restart_mode if command.restart_requested else "",
         ntp_resync_requested=_updates_request_ntp_resync(applied_updates),
     )
 
@@ -1198,14 +1236,38 @@ def parse_device_config_command(payload_text):
     if not message_id:
         return None
     body = payload.get("payload") or {}
+    body_restart_mode = (
+        body.get("restart_mode", "soft") if isinstance(body, dict) else "soft"
+    )
+    restart_requested = _truthy_config_restart(payload.get("restart", False))
+    restart_mode = _normalize_restart_mode(
+        payload.get("restart_mode", body_restart_mode)
+    )
     updates = _extract_config_updates(body)
-    if updates is None:
+    if updates is None and not restart_requested:
         return None
     return DeviceConfigCommand(
         message_id=message_id,
-        updates=tuple(updates),
+        updates=tuple(updates or ()),
         onboard_token=str(payload.get("onboard_token", "") or "").strip(),
+        restart_requested=restart_requested,
+        restart_mode=restart_mode,
     )
+
+
+def _truthy_config_restart(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return bool(value)
+
+
+def _normalize_restart_mode(value):
+    mode = str(value or "soft").strip().lower()
+    if mode == "hard":
+        return "hard"
+    return "soft"
 
 
 def parse_calibration_command(payload_text):

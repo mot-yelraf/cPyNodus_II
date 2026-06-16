@@ -18,6 +18,7 @@ import usb_cdc
 
 # ---------- user-configurable pins ----------
 RW_GUARD_PIN_NAME = "GP14"  # default Pico2 W guard, low = app R/W + REPL
+XESP32S3_RW_GUARD_PIN_NAME = "D8"
 ENABLE_USB_DATA_CDC = True  # keep secondary CDC channel behavior unchanged
 DISABLE_RUNTIME_AUTORELOAD = True
 
@@ -72,19 +73,20 @@ def _disable_auto_reload():
 
 
 def _resolve_rw_guard_pin_name():
-    try:
-        from cpynodus_ii.core.board_profile import selected_board_profile
-
-        profile = selected_board_profile(board_module=board)
-        pin_name = str(getattr(profile, "rw_guard_pin", "") or "").strip()
-        if pin_name:
-            return pin_name
-    except Exception as exc:
-        _warn(
-            "Board profile setup failed; using default guard pin: {err}".format(
-                err=exc
-            )
-        )
+    board_id = str(getattr(board, "board_id", "") or "").strip().lower()
+    normalized_board_id = board_id.replace("-", "_")
+    if (
+        "xiao_esp32_s3" in normalized_board_id
+        or "xiao_esp32s3" in normalized_board_id
+    ):
+        return XESP32S3_RW_GUARD_PIN_NAME
+    if (
+        hasattr(board, "SDA")
+        and hasattr(board, "SCL")
+        and hasattr(board, "D0")
+        and not hasattr(board, "GP0")
+    ):
+        return XESP32S3_RW_GUARD_PIN_NAME
     return RW_GUARD_PIN_NAME
 
 

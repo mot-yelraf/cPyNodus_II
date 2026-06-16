@@ -18,6 +18,8 @@ define the contract. When other docs drift, this document wins.
 - After accepted runtime changes, Nodus publishes only `meta/patch`.
 - Sensorius paces ordinary runtime config writes one key at a time per
   physical Nodus host and waits for `ack` plus successful `result`.
+- Sensorius restarts a Nodus through device `config/set` with `restart = true`
+  and waits for `ack`, successful `result`, then the device's reconnect.
 
 ## AP Bootstrap
 
@@ -394,15 +396,42 @@ Canonical replies:
 {"message_id":"cfg-123","applied":true,"updated":1,"duplicate":false,"error":""}
 ```
 
+Canonical standalone restart request:
+
+```json
+{
+  "message_id": "rst-123",
+  "payload": {},
+  "restart": true,
+  "restart_mode": "soft"
+}
+```
+
+Canonical restart replies:
+
+```json
+{"message_id":"rst-123","accepted":true,"duplicate":false}
+{"message_id":"rst-123","applied":true,"updated":0,"duplicate":false,"error":"","restart":true,"restart_mode":"soft"}
+```
+
 Implemented behavior:
 
 - Nodus publishes `config/ack` after a valid envelope is accepted for
   handling.
 - Duplicate `message_id` values produce `config/ack` with
   `duplicate = true` and `config/result` with `applied = true`,
-  `updated = 0`, and `duplicate = true`.
+  `updated = 0`, and `duplicate = true`. Duplicate restart requests do not
+  reboot the device again.
 - Accepted non-duplicate writes publish `config/result` and a non-retained
   `meta/patch` with `source = "config_set"`.
+- Accepted non-duplicate standalone restart requests publish `config/result`
+  and then reboot after queued MQTT publishes drain.
+- Accepted non-duplicate config writes with `restart = true` publish
+  `config/result`, publish `meta/patch`, then reboot after queued MQTT
+  publishes drain.
+- `restart_mode = "hard"` requests a hard reset. Other values, including
+  omitted `restart_mode`, are treated as `"soft"`. In MQTT profiles, runtime
+  soft restarts are promoted by firmware policy to a hard reset.
 - Accepted non-duplicate `Time.*` writes request a fresh NTP sync after command
   responses and queued MQTT publishes drain.
 - Accepted `Time.*` writes are live-first. Nodus publishes successful

@@ -7,8 +7,6 @@ service logic.
 
 from dataclasses import dataclass
 
-from cpynodus_ii.core.board_profile import selected_board_profile
-
 
 @dataclass(frozen=True)
 class SensorHardwareAdapter:
@@ -107,14 +105,14 @@ def bind_sensor_hardware(
                 phase="bound",
                 interface=sensor_runtime.interface,
                 transport_kind="i2c_fallback",
-                transport_target=fallback_spec.get(
-                    "target", sensor_runtime.transport_target
+                transport_target=_fallback_target(
+                    fallback_spec, sensor_runtime.transport_target
                 ),
                 transport=fallback_transport,
                 i2c_fallbacks=remaining_specs,
                 errors=(
                     "i2c_open_failed:{}".format(_error_text(exc)),
-                    "i2c_fallback:{}".format(fallback_spec.get("target", "")),
+                    "i2c_fallback:{}".format(_fallback_target(fallback_spec, "")),
                 ),
             )
         secondary_transport = None
@@ -209,6 +207,12 @@ def _resolve_pin(board_module, pin_name, error_code, errors):
     return pin
 
 
+_PICO_I2C_PIN_PAIRS = (
+    ("GP1", "GP0"),
+    ("GP3", "GP2"),
+)
+
+
 def _single_i2c_fallback_specs(sensor, board_module, busio_module):
     if str(getattr(sensor, "interface", "") or "") != "i2c":
         return ()
@@ -223,8 +227,7 @@ def _single_i2c_fallback_specs(sensor, board_module, busio_module):
     )
     address = int(getattr(i2c, "address", 0) or 0)
     fallback_specs = []
-    profile = selected_board_profile(board_module=board_module)
-    for bus_index, pins in enumerate(tuple(getattr(profile, "i2c_pins", ()) or ())):
+    for bus_index, pins in enumerate(_board_i2c_pin_pairs(board_module)):
         if len(pins) < 2:
             continue
         scl_name, sda_name = str(pins[0] or ""), str(pins[1] or "")
@@ -235,16 +238,7 @@ def _single_i2c_fallback_specs(sensor, board_module, busio_module):
         if scl is None or sda is None:
             continue
         fallback_specs.append(
-            {
-                "bus": int(bus_index),
-                "scl_pin": scl_name,
-                "sda_pin": sda_name,
-                "scl": scl,
-                "sda": sda,
-                "busio_module": busio_module,
-                "address": address,
-                "target": "i2c:{}@0x{:02x}".format(bus_index, address),
-            }
+            (scl, sda, "i2c:{}@0x{:02x}".format(bus_index, address))
         )
     return tuple(fallback_specs)
 
@@ -253,12 +247,57 @@ def _open_first_i2c_fallback(busio_module, fallback_specs):
     remaining = []
     for index, spec in enumerate(tuple(fallback_specs or ())):
         try:
-            transport = busio_module.I2C(spec.get("scl"), spec.get("sda"))
+            transport = busio_module.I2C(_fallback_scl(spec), _fallback_sda(spec))
             remaining.extend(tuple(fallback_specs or ())[index + 1 :])
             return transport, spec, tuple(remaining)
         except Exception:
             continue
     return None
+
+
+def _board_i2c_pin_pairs(board_module):
+    if _use_pico_i2c_pin_pairs(board_module):
+        return _PICO_I2C_PIN_PAIRS
+    from cpynodus_ii.core.board_profile import selected_board_profile
+
+    profile = selected_board_profile(board_module=board_module)
+    return tuple(getattr(profile, "i2c_pins", ()) or ())
+
+
+def _use_pico_i2c_pin_pairs(board_module):
+    if board_module is None:
+        return True
+    board_id = str(getattr(board_module, "board_id", "") or "").lower()
+    if "xiao" in board_id or ("esp32" in board_id and "s3" in board_id):
+        return False
+    if getattr(board_module, "GP0", None) is not None:
+        return True
+    if getattr(board_module, "GP28", None) is not None:
+        return True
+    has_xiao_pin_shape = (
+        getattr(board_module, "SCL", None) is not None
+        and getattr(board_module, "SDA", None) is not None
+        and getattr(board_module, "D0", None) is not None
+    )
+    return not has_xiao_pin_shape
+
+
+def _fallback_scl(spec):
+    if hasattr(spec, "get"):
+        return spec.get("scl")
+    return spec[0] if len(spec) > 0 else None
+
+
+def _fallback_sda(spec):
+    if hasattr(spec, "get"):
+        return spec.get("sda")
+    return spec[1] if len(spec) > 1 else None
+
+
+def _fallback_target(spec, default=""):
+    if hasattr(spec, "get"):
+        return spec.get("target", default)
+    return spec[2] if len(spec) > 2 else default
 
 
 def _error_text(exc):

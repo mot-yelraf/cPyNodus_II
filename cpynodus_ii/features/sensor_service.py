@@ -584,13 +584,13 @@ def _start_i2c_sensor_service_with_fallback(
         for spec in tuple(getattr(sensor_adapter, "i2c_fallbacks", ()) or ()):
             fallback_transport = None
             try:
-                fallback_transport = spec.get("busio_module").I2C(
-                    spec.get("scl"), spec.get("sda")
+                fallback_transport = _open_i2c_fallback_transport(
+                    spec, primary_transport
                 )
                 fallback_adapter = _FallbackI2CAdapter(fallback_transport)
                 service = _start_i2c_sensor_service(sensor, fallback_adapter, modules)
                 if getattr(service, "phase", "") != "ready":
-                    target = str(spec.get("target", "") or "").strip()
+                    target = _i2c_fallback_target(spec)
                     fallback_errors.append(
                         "i2c_fallback_failed:{}:{}".format(
                             target or "unknown",
@@ -600,7 +600,7 @@ def _start_i2c_sensor_service_with_fallback(
                     _safe_deinit(fallback_transport)
                     continue
                 _safe_deinit(primary_transport)
-                target = str(spec.get("target", "") or "").strip()
+                target = _i2c_fallback_target(spec)
                 return _sensor_service_with_extra_errors(
                     service,
                     (
@@ -611,7 +611,7 @@ def _start_i2c_sensor_service_with_fallback(
             except Exception as fallback_exc:
                 fallback_errors.append(
                     "i2c_fallback_failed:{}:{}".format(
-                        spec.get("target", "unknown"),
+                        _i2c_fallback_target(spec) or "unknown",
                         _exception_error_token("error", fallback_exc),
                     )
                 )
@@ -624,6 +624,35 @@ def _start_i2c_sensor_service_with_fallback(
             exc,
         )
         return _sensor_service_with_extra_errors(service, tuple(fallback_errors))
+
+
+def _open_i2c_fallback_transport(spec, primary_transport):
+    if hasattr(spec, "get"):
+        busio_module = spec.get("busio_module")
+        if busio_module is not None:
+            return busio_module.I2C(spec.get("scl"), spec.get("sda"))
+    transport_class = getattr(primary_transport, "__class__", None)
+    if transport_class is None:
+        raise RuntimeError("i2c_fallback_transport_unavailable")
+    return transport_class(_i2c_fallback_scl(spec), _i2c_fallback_sda(spec))
+
+
+def _i2c_fallback_scl(spec):
+    if hasattr(spec, "get"):
+        return spec.get("scl")
+    return spec[0] if len(spec) > 0 else None
+
+
+def _i2c_fallback_sda(spec):
+    if hasattr(spec, "get"):
+        return spec.get("sda")
+    return spec[1] if len(spec) > 1 else None
+
+
+def _i2c_fallback_target(spec):
+    if hasattr(spec, "get"):
+        return str(spec.get("target", "") or "").strip()
+    return str((spec[2] if len(spec) > 2 else "") or "").strip()
 
 
 def _sensor_service_with_extra_errors(service, extra_errors):

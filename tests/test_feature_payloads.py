@@ -771,6 +771,14 @@ def test_config_and_calibration_payload_helpers_use_compact_contracts():
     config_result = build_config_result_payload(
         "cfg-1", applied=True, updated=2, error=""
     )
+    restart_result = build_config_result_payload(
+        "rst-1",
+        applied=True,
+        updated=0,
+        error="",
+        restart=True,
+        restart_mode="hard",
+    )
     calibration_ack = build_calibration_ack_payload("cal-1", accepted=True)
     calibration_result = build_calibration_result_payload(
         "cal-1", applied=False, error="calibration_not_supported"
@@ -778,6 +786,9 @@ def test_config_and_calibration_payload_helpers_use_compact_contracts():
 
     assert config_ack["accepted"] is True
     assert config_result["updated"] == 2
+    assert "restart" not in config_result
+    assert restart_result["restart"] is True
+    assert restart_result["restart_mode"] == "hard"
     assert calibration_ack["message_id"] == "cal-1"
     assert calibration_result["error"] == "calibration_not_supported"
 

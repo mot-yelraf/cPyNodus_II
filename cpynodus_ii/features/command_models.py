@@ -19,6 +19,8 @@ class DeviceConfigCommand:
     message_id: str
     updates: tuple
     onboard_token: str = ""
+    restart_requested: bool = False
+    restart_mode: str = "soft"
 
 
 @dataclass(frozen=True)
@@ -70,4 +72,5 @@ class CommandResult:
     persistence_mode: str = ""
     requested_state: str = ""
     reboot_requested: bool = False
+    reboot_mode: str = ""
     ntp_resync_requested: bool = False

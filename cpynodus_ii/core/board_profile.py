@@ -1,7 +1,5 @@
 """Define board-specific pin defaults for supported Nodus targets."""
 
-import os
-
 PICO2W_PROFILE = "pico2w"
 XESP32S3_PROFILE = "xesp32s3"
 DEFAULT_PROFILE = PICO2W_PROFILE
@@ -9,6 +7,8 @@ DEFAULT_PROFILE = PICO2W_PROFILE
 
 class SwitchPinProfile:
     """Describe default switch enable/control pins for one channel."""
+
+    __slots__ = ("index", "enable_pin", "control_pin", "label")
 
     def __init__(self, index=0, enable_pin="", control_pin="", label=""):
         self.index = int(index or 0)
@@ -20,6 +20,8 @@ class SwitchPinProfile:
 class SoilChannelProfile:
     """Describe default RS485 UART pins for one soil channel."""
 
+    __slots__ = ("name", "tx_pin", "rx_pin")
+
     def __init__(self, name="", tx_pin="", rx_pin=""):
         self.name = str(name or "")
         self.tx_pin = str(tx_pin or "")
@@ -28,6 +30,18 @@ class SoilChannelProfile:
 
 class BoardProfile:
     """Describe board-specific defaults used during boot and bootstrap."""
+
+    __slots__ = (
+        "key",
+        "display_name",
+        "board_id_tokens",
+        "circuitpython_version",
+        "rw_guard_pin",
+        "factory_reset_pin",
+        "i2c_pins",
+        "switch_pins",
+        "soil_channels",
+    )
 
     def __init__(
         self,
@@ -52,46 +66,46 @@ class BoardProfile:
         self.soil_channels = tuple(soil_channels or ())
 
 
-BOARD_PROFILES = (
-    BoardProfile(
-        key=PICO2W_PROFILE,
-        display_name="Raspberry Pi Pico2 W",
-        board_id_tokens=("raspberry_pi_pico2_w", "pico2_w", "pico2w"),
-        circuitpython_version="9.2.8",
-        rw_guard_pin="GP14",
-        factory_reset_pin="GP17",
-        i2c_pins=(("GP1", "GP0"), ("GP3", "GP2")),
-        switch_pins=(
-            SwitchPinProfile(1, "GP5", "GP28", "Fan"),
-            SwitchPinProfile(2, "GP10", "GP21", "Light"),
+_PROFILE_DATA = (
+    (
+        PICO2W_PROFILE,
+        "Raspberry Pi Pico2 W",
+        ("raspberry_pi_pico2_w", "pico2_w", "pico2w"),
+        "9.2.8",
+        "GP14",
+        "GP17",
+        (("GP1", "GP0"), ("GP3", "GP2")),
+        (
+            (1, "GP5", "GP28", "Fan"),
+            (2, "GP10", "GP21", "Light"),
         ),
-        soil_channels=(
-            SoilChannelProfile("CH1", "GP0", "GP1"),
-            SoilChannelProfile("CH2", "GP4", "GP5"),
+        (
+            ("CH1", "GP0", "GP1"),
+            ("CH2", "GP4", "GP5"),
         ),
     ),
-    BoardProfile(
-        key=XESP32S3_PROFILE,
-        display_name="Seeed Studio XIAO ESP32-S3 Sense",
-        board_id_tokens=(
+    (
+        XESP32S3_PROFILE,
+        "Seeed Studio XIAO ESP32-S3 Sense",
+        (
             "seeed_xiao_esp32_s3_sense",
             "seeed_xiao_esp32s3_sense",
             "xiao_esp32_s3",
             "xiao_esp32s3",
         ),
-        circuitpython_version="10.2.1",
-        rw_guard_pin="D8",
-        factory_reset_pin="",
-        i2c_pins=(("SCL", "SDA"),),
-        switch_pins=(
-            SwitchPinProfile(1, "D0", "D1", "Fan"),
-            SwitchPinProfile(2, "D2", "D3", "Light"),
+        "10.2.1",
+        "D8",
+        "",
+        (("SCL", "SDA"),),
+        (
+            (1, "D0", "D1", "Fan"),
+            (2, "D2", "D3", "Light"),
         ),
-        soil_channels=(),
+        (),
     ),
 )
 
-_PROFILE_BY_KEY = {profile.key: profile for profile in BOARD_PROFILES}
+BOARD_PROFILES = (PICO2W_PROFILE, XESP32S3_PROFILE)
 _PROFILE_ALIASES = {
     "pico": PICO2W_PROFILE,
     "pico2": PICO2W_PROFILE,
@@ -113,7 +127,7 @@ def normalize_board_profile_key(value):
     text = str(value or "").strip().lower().replace("_", "-")
     if not text:
         return ""
-    if text in _PROFILE_BY_KEY:
+    if text == PICO2W_PROFILE or text == XESP32S3_PROFILE:
         return text
     return _PROFILE_ALIASES.get(text, "")
 
@@ -121,21 +135,21 @@ def normalize_board_profile_key(value):
 def get_board_profile(profile_key):
     """Return the configured board profile, defaulting to Pico2 W."""
     key = normalize_board_profile_key(profile_key) or DEFAULT_PROFILE
-    return _PROFILE_BY_KEY.get(key, _PROFILE_BY_KEY[DEFAULT_PROFILE])
+    return _build_board_profile(_profile_data(key) or _profile_data(DEFAULT_PROFILE))
 
 
 def selected_board_profile(board_module=None, profile_key=""):
     """Return the best board profile from explicit, env, or board identity."""
     explicit_key = normalize_board_profile_key(profile_key)
     if explicit_key:
-        return _PROFILE_BY_KEY[explicit_key]
+        return get_board_profile(explicit_key)
 
     env_key = normalize_board_profile_key(_env_profile_key())
     if env_key:
-        return _PROFILE_BY_KEY[env_key]
+        return get_board_profile(env_key)
 
     detected_key = detect_board_profile_key(board_module=board_module)
-    return _PROFILE_BY_KEY.get(detected_key, _PROFILE_BY_KEY[DEFAULT_PROFILE])
+    return get_board_profile(detected_key)
 
 
 def detect_board_profile_key(board_module=None):
@@ -146,10 +160,10 @@ def detect_board_profile_key(board_module=None):
 
     board_id = str(getattr(board_module, "board_id", "") or "").strip().lower()
     normalized_board_id = board_id.replace("-", "_")
-    for profile in BOARD_PROFILES:
-        for token in profile.board_id_tokens:
+    for item in _PROFILE_DATA:
+        for token in item[2]:
             if str(token or "").lower() in normalized_board_id:
-                return profile.key
+                return item[0]
 
     if hasattr(board_module, "GP0") and hasattr(board_module, "GP28"):
         return PICO2W_PROFILE
@@ -185,6 +199,8 @@ def soil_channel_defaults(profile):
 
 def _env_profile_key():
     try:
+        import os
+
         getenv = getattr(os, "getenv", None)
         if callable(getenv):
             return getenv("NODUS_BOARD_PROFILE", "")
@@ -198,3 +214,24 @@ def _try_import_module(module_name):
         return __import__(module_name)
     except ImportError:
         return None
+
+
+def _profile_data(key):
+    for item in _PROFILE_DATA:
+        if item[0] == key:
+            return item
+    return None
+
+
+def _build_board_profile(data):
+    return BoardProfile(
+        key=data[0],
+        display_name=data[1],
+        board_id_tokens=data[2],
+        circuitpython_version=data[3],
+        rw_guard_pin=data[4],
+        factory_reset_pin=data[5],
+        i2c_pins=data[6],
+        switch_pins=tuple(SwitchPinProfile(*item) for item in data[7]),
+        soil_channels=tuple(SoilChannelProfile(*item) for item in data[8]),
+    )
