@@ -449,6 +449,72 @@ def test_process_switch_command_message_accepts_device_style_updates_payload():
     )
 
 
+def test_process_switch_command_message_persists_with_low_stack_writer(
+    monkeypatch,
+    tmp_path,
+):
+    switch_path = tmp_path / "switch.toml"
+    switch_path.write_text(
+        "[Switch]\nSWITCH_1_LAST_STATE = false\n",
+        encoding="utf-8",
+    )
+
+    def fail_generic_persistence(*args, **kwargs):
+        raise AssertionError("switch state should use low-stack persistence")
+
+    monkeypatch.setattr(
+        Settings,
+        "apply_updates_to_directory",
+        fail_generic_persistence,
+    )
+    transport = MQTTTransport("broker.local", 1883)
+    result = process_switch_command_message(
+        transport,
+        _runtime_config(),
+        _switch_service(),
+        topic="nodus/S1-x943fm/config/set",
+        payload_text="ON",
+        settings_root=tmp_path,
+    )
+
+    assert result.phase == "published"
+    assert result.errors == ()
+    assert result.persistence_mode == "persisted"
+    assert "SWITCH_1_LAST_STATE = true" in switch_path.read_text(encoding="utf-8")
+
+
+def test_process_switch_command_message_pystack_persistence_is_volatile(
+    monkeypatch,
+    tmp_path,
+):
+    def raise_pystack(*args, **kwargs):
+        raise RuntimeError("pystack exhausted")
+
+    monkeypatch.setattr(command_intake, "_write_switch_state_file", raise_pystack)
+    transport = MQTTTransport("broker.local", 1883)
+    result = process_switch_command_message(
+        transport,
+        _runtime_config(),
+        _switch_service(),
+        topic="nodus/S1-x943fm/config/set",
+        payload_text='{"message_id":"cfg-stack","state":"ON"}',
+        settings_root=tmp_path,
+    )
+
+    assert result.phase == "published"
+    assert result.published_count == 5
+    assert result.errors == ("switch_state_persist_pystack",)
+    assert result.persistence_mode == "volatile"
+    assert result.message_id == "cfg-stack"
+    assert transport.published_messages[1].payload == {
+        "message_id": "cfg-stack",
+        "applied": True,
+        "updated": 1,
+        "duplicate": False,
+        "error": "",
+    }
+
+
 def test_process_switch_command_message_uses_configured_base_topic():
     transport = MQTTTransport("broker.local", 1883)
     runtime_config = RuntimeConfig(

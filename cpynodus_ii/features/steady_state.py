@@ -7,9 +7,7 @@ bootstrapping.
 
 from dataclasses import dataclass
 
-from cpynodus_ii.features.command_intake import (
-    process_inbound_messages,
-    process_soil_calibration_session,
+from cpynodus_ii.features.command_subscriptions import (
     subscribe_device_runtime_topics,
     subscribe_runtime_topics,
 )
@@ -71,6 +69,19 @@ class _SkippedPublishResult:
     phase: str = "skipped"
     published_count: int = 0
     errors: tuple = ()
+
+
+@dataclass(frozen=True)
+class _SkippedCommandResult:
+    """Represent an idle command session without importing command models."""
+
+    phase: str = "ignored"
+    topic: str = ""
+    command_type: str = ""
+    published_count: int = 0
+    errors: tuple = ()
+    runtime_config: object | None = None
+    message_id: str = ""
 
 
 def run_steady_state_iteration(
@@ -193,13 +204,17 @@ def run_steady_state_iteration(
                 handled_message_id_limit=working_state.handled_message_id_limit,
             )
 
-    command_results = process_inbound_messages(
-        transport,
-        runtime_config,
-        switch_service,
-        handled_message_ids=working_state.handled_message_ids,
-        settings_root=settings_root,
-    )
+    command_results = ()
+    if getattr(transport, "received_messages", ()):
+        from cpynodus_ii.features.command_intake import process_inbound_messages
+
+        command_results = process_inbound_messages(
+            transport,
+            runtime_config,
+            switch_service,
+            handled_message_ids=working_state.handled_message_ids,
+            settings_root=settings_root,
+        )
     updated_runtime_config = runtime_config
     handled_message_ids = list(working_state.handled_message_ids)
     for result in command_results:
@@ -220,7 +235,7 @@ def run_steady_state_iteration(
     errors.extend(switch_meta_result.errors)
     for result in command_results:
         errors.extend(result.errors)
-    calibration_session_result = process_soil_calibration_session(
+    calibration_session_result = _process_soil_calibration_session(
         transport,
         updated_runtime_config,
         sensor_service,
@@ -353,6 +368,31 @@ def _effective_availability_interval_s(runtime_config, state):
 
 def _skipped_publish_result(error):
     return _SkippedPublishResult(errors=(error,))
+
+
+def _process_soil_calibration_session(
+    transport,
+    runtime_config,
+    sensor_service,
+    *,
+    now_monotonic,
+    settings_root=None,
+):
+    if getattr(transport, "_soil_ph_session", None) is None:
+        return _SkippedCommandResult(
+            phase="ignored",
+            command_type="calibration_session",
+            runtime_config=runtime_config,
+        )
+    from cpynodus_ii.features.command_intake import process_soil_calibration_session
+
+    return process_soil_calibration_session(
+        transport,
+        runtime_config,
+        sensor_service,
+        now_monotonic=now_monotonic,
+        settings_root=settings_root,
+    )
 
 
 def _process_log_transfer_session(transport, runtime_config):

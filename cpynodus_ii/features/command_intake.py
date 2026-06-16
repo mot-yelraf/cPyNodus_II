@@ -19,54 +19,29 @@ from cpynodus_ii.features.topics import mqtt_topic
 
 def subscribe_runtime_topics(transport, runtime_config):
     """Subscribe the transport to current runtime command topics."""
-    topics = []
-    device_id = _device_id(runtime_config)
-    if device_id:
-        topics.append(
-            transport.subscribe(mqtt_topic(runtime_config, device_id, "config", "set"))
-        )
-        topics.append(
-            transport.subscribe(
-                mqtt_topic(runtime_config, device_id, "calibration", "set")
-            )
-        )
-        topics.append(
-            transport.subscribe(mqtt_topic(runtime_config, device_id, "fwupdate"))
-        )
-        topics.extend(_subscribe_log_transfer_topics(transport, runtime_config))
-    topics.extend(subscribe_switch_runtime_topics(transport, runtime_config))
-    return tuple(topics)
+    from cpynodus_ii.features.command_subscriptions import (
+        subscribe_runtime_topics as _subscribe_runtime_topics,
+    )
+
+    return _subscribe_runtime_topics(transport, runtime_config)
 
 
 def subscribe_device_runtime_topics(transport, runtime_config):
     """Subscribe the transport to device-level command topics."""
-    topics = []
-    device_id = _device_id(runtime_config)
-    if not device_id:
-        return tuple(topics)
-    topics.append(
-        transport.subscribe(mqtt_topic(runtime_config, device_id, "config", "set"))
+    from cpynodus_ii.features.command_subscriptions import (
+        subscribe_device_runtime_topics as _subscribe_device_runtime_topics,
     )
-    topics.append(
-        transport.subscribe(mqtt_topic(runtime_config, device_id, "calibration", "set"))
-    )
-    topics.append(
-        transport.subscribe(mqtt_topic(runtime_config, device_id, "fwupdate"))
-    )
-    topics.extend(_subscribe_log_transfer_topics(transport, runtime_config))
-    return tuple(topics)
+
+    return _subscribe_device_runtime_topics(transport, runtime_config)
 
 
 def subscribe_switch_runtime_topics(transport, runtime_config):
     """Subscribe the transport to switch channel command topics."""
-    topics = []
-    for channel in runtime_config.switch.channels:
-        topics.append(
-            transport.subscribe(
-                mqtt_topic(runtime_config, channel.channel_id, "config", "set")
-            )
-        )
-    return tuple(topics)
+    from cpynodus_ii.features.command_subscriptions import (
+        subscribe_switch_runtime_topics as _subscribe_switch_runtime_topics,
+    )
+
+    return _subscribe_switch_runtime_topics(transport, runtime_config)
 
 
 def process_inbound_messages(
@@ -530,13 +505,6 @@ def _device_id(runtime_config):
         or runtime_config.switch.device_id
         or runtime_config.network.hostname
     )
-
-
-def _subscribe_log_transfer_topics(transport, runtime_config):
-    device_id = _device_id(runtime_config)
-    if not device_id:
-        return ()
-    return (transport.subscribe(mqtt_topic(runtime_config, device_id, "logs", "get")),)
 
 
 def _restore_received_messages(transport, messages):
@@ -1016,24 +984,161 @@ def _persist_switch_state(runtime_config, command, *, settings_root=None):
     switch_channel = _find_runtime_channel(runtime_config, command.channel_id)
     if switch_channel is None:
         return ()
+    key = "{}_LAST_STATE".format(switch_channel.key)
     try:
-        from cpynodus_ii.core.settings import Settings
-
-        _, _, persistence_errors = Settings.apply_updates_to_directory(
-            settings_root,
-            runtime_config,
-            (
-                {
-                    "section": "Switch",
-                    "key": "{}_LAST_STATE".format(switch_channel.key),
-                    "value": bool(command.desired_state),
-                },
-            ),
-            reload_runtime=False,
+        return _write_switch_state_file(
+            _join_settings_path(settings_root, "switch.toml"),
+            key,
+            bool(command.desired_state),
         )
-        return tuple(persistence_errors)
     except MemoryError:
         return ("switch_state_persist_memory",)
+    except RuntimeError as exc:
+        if "pystack exhausted" in str(exc).lower():
+            return ("switch_state_persist_pystack",)
+        raise
+
+
+def _write_switch_state_file(path, key, state):
+    import os
+
+    path_text = str(path or "")
+    tmp_path = "{}.tmp".format(path_text)
+    backup_path = "{}.bak".format(path_text)
+    key_text = str(key or "").strip().upper()
+    value_text = "true" if state else "false"
+    current_section = ""
+    section_seen = False
+    found = False
+    source = None
+    target = None
+    try:
+        source = open(path_text, "r")
+        target = open(tmp_path, "w")
+        while True:
+            raw_line = source.readline()
+            if raw_line == "":
+                break
+            stripped = str(raw_line or "").split("#", 1)[0].strip()
+            if stripped.startswith("[") and stripped.endswith("]"):
+                if current_section == "Switch" and not found:
+                    target.write("{} = {}\n".format(key_text, value_text))
+                    found = True
+                current_section = stripped[1:-1].strip()
+                if current_section == "Switch":
+                    section_seen = True
+                target.write(raw_line)
+                continue
+            line_key = ""
+            if current_section == "Switch":
+                line_body = str(raw_line or "").split("#", 1)[0]
+                equal_index = line_body.find("=")
+                if equal_index >= 0:
+                    line_key = line_body[:equal_index].strip().upper()
+            if current_section == "Switch" and line_key == key_text:
+                line_end = ""
+                if str(raw_line or "").endswith("\r\n"):
+                    line_end = "\r\n"
+                elif str(raw_line or "").endswith("\n"):
+                    line_end = "\n"
+                target.write(
+                    "{} = {}{}".format(
+                        key_text,
+                        value_text,
+                        line_end,
+                    )
+                )
+                found = True
+                continue
+            target.write(raw_line)
+        if current_section == "Switch" and not found:
+            target.write("{} = {}\n".format(key_text, value_text))
+            found = True
+        if not section_seen:
+            target.write("\n[Switch]\n{} = {}\n".format(key_text, value_text))
+            found = True
+        try:
+            target.flush()
+        except AttributeError:
+            pass
+        try:
+            source.close()
+        except AttributeError:
+            pass
+        source = None
+        try:
+            target.close()
+        except AttributeError:
+            pass
+        target = None
+        if not found:
+            _remove_path(tmp_path, os)
+            return ("switch_state_key_missing",)
+        if _path_size(tmp_path, os) <= 0:
+            _remove_path(tmp_path, os)
+            return ("toml_write_empty_tmp",)
+        if _path_exists(backup_path, os):
+            os.remove(backup_path)
+        if _path_exists(path_text, os):
+            os.rename(path_text, backup_path)
+        os.rename(tmp_path, path_text)
+    except OSError as exc:
+        if source is not None:
+            try:
+                source.close()
+            except AttributeError:
+                pass
+        if target is not None:
+            try:
+                target.close()
+            except AttributeError:
+                pass
+        _remove_path(tmp_path, os)
+        return (_persistence_error(exc),)
+    return ()
+
+
+def _join_settings_path(root, filename):
+    root_text = str(root or ".")
+    if root_text.endswith("/"):
+        return "{}{}".format(root_text, filename)
+    return "{}/{}".format(root_text, filename)
+
+
+def _path_exists(path, os_module):
+    try:
+        os_module.stat(str(path or ""))
+        return True
+    except OSError:
+        return False
+
+
+def _path_size(path, os_module):
+    try:
+        stat_result = os_module.stat(str(path or ""))
+    except OSError:
+        return 0
+    try:
+        return int(stat_result.st_size)
+    except AttributeError:
+        try:
+            return int(stat_result[6])
+        except (IndexError, TypeError, ValueError):
+            return 0
+
+
+def _remove_path(path, os_module):
+    try:
+        os_module.remove(str(path or ""))
+    except OSError:
+        pass
+
+
+def _persistence_error(exc):
+    text = str(exc or "").strip().replace(" ", "_")
+    if not text:
+        return "persistence_error"
+    return "persistence_error:{}".format(text)
 
 
 def _build_config_ack_payload(message_id, *, accepted=True, duplicate=False):

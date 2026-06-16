@@ -23,6 +23,7 @@ def test_app_import_does_not_load_mqtt_or_feature_runtimes():
         blocked = (
             "cpynodus_ii.core.mqtt",
             "cpynodus_ii.core.mqtt_client",
+            "cpynodus_ii.core.mdns_runtime",
             "cpynodus_ii.features.command_intake",
             "cpynodus_ii.features.steady_state",
             "cpynodus_ii.features.switch_service",
@@ -63,6 +64,212 @@ def test_command_intake_import_does_not_load_web_or_hardware_services():
         loaded = [name for name in blocked if name in sys.modules]
         if loaded:
             raise SystemExit("unexpected imports: {}".format(",".join(loaded)))
+        """
+    )
+
+
+def test_steady_state_import_does_not_load_command_intake():
+    _run_import_check(
+        """
+        import sys
+
+        import cpynodus_ii.features.steady_state  # noqa: F401
+
+        blocked = (
+            "cpynodus_ii.features.command_intake",
+            "cpynodus_ii.features.command_models",
+            "cpynodus_ii.features.command_handlers",
+        )
+        loaded = [name for name in blocked if name in sys.modules]
+        if loaded:
+            raise SystemExit("unexpected imports: {}".format(",".join(loaded)))
+        """
+    )
+
+
+def test_idle_steady_state_poll_does_not_load_command_intake():
+    _run_import_check(
+        """
+        import sys
+
+        from cpynodus_ii.core.config import RuntimeConfig
+        from cpynodus_ii.core.mqtt import MQTTTransport
+        from cpynodus_ii.features.steady_state import run_steady_state_iteration
+
+        transport = MQTTTransport("broker.local", 1883)
+        result = run_steady_state_iteration(
+            transport,
+            RuntimeConfig(),
+            None,
+            None,
+            now_monotonic=1.0,
+        )
+        if result.command_results != ():
+            raise SystemExit("unexpected commands: {}".format(result.command_results))
+        if "cpynodus_ii.features.command_intake" in sys.modules:
+            raise SystemExit("command_intake loaded during idle poll")
+        """
+    )
+
+
+def test_mqtt_network_stack_build_does_not_load_mdns_runtime():
+    _run_import_check(
+        """
+        import sys
+
+        from cpynodus_ii.core.network import build_network_stack
+
+        class Network:
+            ssid = "TestWiFi"
+            password = "secretpass"
+            hostname = "co2-pmoopn"
+            ap_ssid = "Nodus_Setup"
+            ap_password = "setup-password"
+            ap_channel = 6
+
+        class RuntimeConfig:
+            ap_mode = False
+            mqtt_enabled = True
+            web_enabled = False
+            ntp_enabled = True
+            network = Network()
+
+        class Radio:
+            connected = True
+            hostname = ""
+            ipv4_address = "10.0.0.236"
+
+            def connect(self, ssid, password):
+                self.connected = True
+
+        class ConnMgr:
+            @staticmethod
+            def get_radio_socketpool(radio):
+                return {"radio": radio}
+
+            @staticmethod
+            def get_radio_ssl_context(radio):
+                return {"radio": radio}
+
+        stack = build_network_stack(
+            RuntimeConfig(),
+            wifi_radio=Radio(),
+            connection_manager_module=ConnMgr,
+        )
+        if stack.phase != "ready":
+            raise SystemExit("unexpected phase: {}".format(stack.phase))
+        if "cpynodus_ii.core.mdns_runtime" in sys.modules:
+            raise SystemExit("mdns runtime loaded during MQTT stack build")
+        """
+    )
+
+
+def test_sensor_service_import_does_not_load_soil_runtime():
+    _run_import_check(
+        """
+        import sys
+
+        import cpynodus_ii.features.sensor_service  # noqa: F401
+
+        if "cpynodus_ii.features.soil_sensor_service" in sys.modules:
+            raise SystemExit("soil runtime loaded during sensor service import")
+        """
+    )
+
+
+def test_i2c_sensor_start_does_not_load_soil_runtime():
+    _run_import_check(
+        """
+        import sys
+
+        from cpynodus_ii.core.config import DetectedSensor, I2CConfig, RuntimeConfig
+        from cpynodus_ii.features.sensor_service import start_sensor_service
+
+        class BME680:
+            def __init__(self, transport, *, address):
+                self.transport = transport
+                self.address = address
+                self.pressure = 1000.0
+
+        class BME680Module:
+            Adafruit_BME680_I2C = BME680
+
+        runtime_config = RuntimeConfig(
+            sensor=DetectedSensor(
+                family="i2c",
+                interface="i2c",
+                device="aqi",
+                sensor_id="aqi-x",
+                i2c=I2CConfig(address=0x77),
+            ),
+        )
+        adapter = type(
+            "Adapter",
+            (),
+            {"phase": "bound", "transport": object(), "errors": ()},
+        )()
+        sensor_runtime = type(
+            "SensorRuntime",
+            (),
+            {"device": "aqi", "interface": "i2c", "errors": ()},
+        )()
+
+        service = start_sensor_service(
+            sensor_runtime,
+            adapter,
+            runtime_config,
+            modules={"adafruit_bme680": BME680Module},
+        )
+        if service.phase != "ready":
+            raise SystemExit("unexpected service phase: {}".format(service.phase))
+        if "cpynodus_ii.features.soil_sensor_service" in sys.modules:
+            raise SystemExit("soil runtime loaded during i2c start")
+        """
+    )
+
+
+def test_modbus_sensor_start_loads_soil_runtime():
+    _run_import_check(
+        """
+        import sys
+
+        from cpynodus_ii.core.config import (
+            DetectedSensor,
+            RuntimeConfig,
+            SoilModbusConfig,
+        )
+        from cpynodus_ii.features.sensor_service import start_sensor_service
+
+        class SoilTransport:
+            def read_registers(self, start, count):
+                return None
+
+        runtime_config = RuntimeConfig(
+            sensor=DetectedSensor(
+                family="soil",
+                interface="modbus_rs485",
+                active_config_file="sensor_soil.toml",
+                device="soil",
+                sensor_id="soil-x",
+                modbus=SoilModbusConfig(address=3),
+            ),
+        )
+        adapter = type(
+            "Adapter",
+            (),
+            {"phase": "bound", "transport": SoilTransport(), "errors": ()},
+        )()
+        sensor_runtime = type(
+            "SensorRuntime",
+            (),
+            {"device": "soil", "interface": "modbus_rs485", "errors": ()},
+        )()
+
+        service = start_sensor_service(sensor_runtime, adapter, runtime_config)
+        if service.phase != "ready":
+            raise SystemExit("unexpected service phase: {}".format(service.phase))
+        if "cpynodus_ii.features.soil_sensor_service" not in sys.modules:
+            raise SystemExit("soil runtime was not loaded for modbus start")
         """
     )
 
