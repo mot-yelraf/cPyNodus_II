@@ -9,6 +9,9 @@ MPY_TARGET_ROOT="$ROOT_DIR/build/firmware/$MPY_TARGET"
 MPY_BUILD_ROOT="$MPY_TARGET_ROOT/cpynodus_ii"
 MPY_LIB_ROOT="$MPY_TARGET_ROOT/lib"
 MPY_VERSION_ARTIFACT="$MPY_BUILD_ROOT/__init__.mpy"
+MPY_BUILD_INFO="$MPY_TARGET_ROOT/BUILD_INFO"
+MPY_TARGET_CIRCUITPY_VERSION="9.2.8"
+MPY_REQUIRED_ABI="mpy v6.3"
 DEPRECATED_MANIFEST="$ROOT_DIR/scripts/deprecated_target_files.txt"
 MPY_REBUILD_DEFERRED=0
 
@@ -45,6 +48,97 @@ get_mpy_artifact_version() {
       saw_version_name=1
     fi
   done < <(strings "$artifact")
+}
+
+set_mpy_target_paths() {
+  case "$MPY_TARGET" in
+    pico2w)
+      MPY_TARGET_CIRCUITPY_VERSION="9.2.8"
+      ;;
+    xesp32s3)
+      MPY_TARGET_CIRCUITPY_VERSION="10.2.1"
+      ;;
+    *)
+      echo "Invalid MPY target '$MPY_TARGET'." >&2
+      exit 2
+      ;;
+  esac
+  MPY_TARGET_ROOT="$ROOT_DIR/build/firmware/$MPY_TARGET"
+  MPY_BUILD_ROOT="$MPY_TARGET_ROOT/cpynodus_ii"
+  MPY_LIB_ROOT="$MPY_TARGET_ROOT/lib"
+  MPY_VERSION_ARTIFACT="$MPY_BUILD_ROOT/__init__.mpy"
+  MPY_BUILD_INFO="$MPY_TARGET_ROOT/BUILD_INFO"
+}
+
+build_info_value() {
+  local key="$1"
+  if [[ ! -f "$MPY_BUILD_INFO" ]]; then
+    return 0
+  fi
+  sed -n "s/^${key}=//p" "$MPY_BUILD_INFO" | head -n 1
+}
+
+mpy_build_info_rebuild_reason() {
+  local value=""
+  local source_version=""
+
+  if [[ ! -f "$MPY_BUILD_INFO" ]]; then
+    echo "missing MPY build metadata: ${MPY_BUILD_INFO#$ROOT_DIR/}"
+    return 0
+  fi
+
+  value="$(build_info_value "format")"
+  if [[ "$value" != "cpynodus-mpy-build-v1" ]]; then
+    echo "invalid MPY build metadata format: ${value:-missing}"
+    return 0
+  fi
+
+  value="$(build_info_value "target")"
+  if [[ "$value" != "$MPY_TARGET" ]]; then
+    echo "MPY build target $value does not match requested target $MPY_TARGET"
+    return 0
+  fi
+
+  value="$(build_info_value "content")"
+  if [[ "$value" != "$CONTENT" ]]; then
+    echo "MPY build content $value does not match requested content $CONTENT"
+    return 0
+  fi
+
+  value="$(build_info_value "circuitpython")"
+  if [[ "$value" != "$MPY_TARGET_CIRCUITPY_VERSION" ]]; then
+    echo "MPY build CircuitPython $value does not match target $MPY_TARGET_CIRCUITPY_VERSION"
+    return 0
+  fi
+
+  value="$(build_info_value "mpy_abi")"
+  if [[ "$value" != "$MPY_REQUIRED_ABI" ]]; then
+    echo "MPY build ABI $value does not match required $MPY_REQUIRED_ABI"
+    return 0
+  fi
+
+  value="$(build_info_value "compiler_version")"
+  if [[ "$value" != *"CircuitPython $MPY_TARGET_CIRCUITPY_VERSION"* ]]; then
+    echo "MPY compiler version does not match target CircuitPython $MPY_TARGET_CIRCUITPY_VERSION"
+    return 0
+  fi
+  if [[ "$value" != *"$MPY_REQUIRED_ABI"* ]]; then
+    echo "MPY compiler version does not report required ABI $MPY_REQUIRED_ABI"
+    return 0
+  fi
+
+  value="$(build_info_value "stage_libs")"
+  if [[ "$value" != "1" ]]; then
+    echo "MPY build metadata reports unstaged libraries"
+    return 0
+  fi
+
+  source_version="$(get_project_version)"
+  value="$(build_info_value "project_version")"
+  if [[ "$source_version" != "unknown-version" && "$value" != "$source_version" ]]; then
+    echo "MPY build metadata version $value does not match source version $source_version"
+    return 0
+  fi
 }
 
 usage() {
@@ -177,10 +271,7 @@ case "$CONTENT" in
 esac
 
 if [[ "$CONTENT" == *"-mpy" ]]; then
-  MPY_TARGET_ROOT="$ROOT_DIR/build/firmware/$MPY_TARGET"
-  MPY_BUILD_ROOT="$MPY_TARGET_ROOT/cpynodus_ii"
-  MPY_LIB_ROOT="$MPY_TARGET_ROOT/lib"
-  MPY_VERSION_ARTIFACT="$MPY_BUILD_ROOT/__init__.mpy"
+  set_mpy_target_paths
 fi
 
 if ! command -v rsync >/dev/null 2>&1; then
@@ -268,6 +359,7 @@ find_mpy_rebuild_reason() {
   local artifact=""
   local source_version=""
   local artifact_version=""
+  local metadata_reason=""
 
   if [[ ! -d "$MPY_BUILD_ROOT" ]]; then
     echo "missing MPY build directory: ${MPY_BUILD_ROOT#$ROOT_DIR/}"
@@ -281,6 +373,12 @@ find_mpy_rebuild_reason() {
 
   if [[ ! -d "$MPY_LIB_ROOT" ]]; then
     echo "missing staged target lib directory: ${MPY_LIB_ROOT#$ROOT_DIR/}"
+    return 0
+  fi
+
+  metadata_reason="$(mpy_build_info_rebuild_reason)"
+  if [[ -n "$metadata_reason" ]]; then
+    echo "$metadata_reason"
     return 0
   fi
 
@@ -339,6 +437,7 @@ validate_mpy_build() {
   local src=""
   local rel_path=""
   local artifact=""
+  local metadata_reason=""
   local missing=0
   local stale=0
   local count=0
@@ -346,6 +445,13 @@ validate_mpy_build() {
   if [[ ! -d "$MPY_BUILD_ROOT" ]]; then
     echo "Missing MPY build directory: $MPY_BUILD_ROOT" >&2
     echo "Compile cpynodus_ii modules before using --content $CONTENT." >&2
+    exit 1
+  fi
+
+  metadata_reason="$(mpy_build_info_rebuild_reason)"
+  if [[ -n "$metadata_reason" ]]; then
+    echo "MPY build metadata does not match --content $CONTENT: $metadata_reason" >&2
+    echo "Run ${MPY_BUILD_SCRIPT#$ROOT_DIR/} --target $MPY_TARGET first." >&2
     exit 1
   fi
 
@@ -638,7 +744,7 @@ run_mpy_sync() {
     rsync "${RSYNC_ARGS[@]}" "${root_def_files[@]}" "$destination"
   fi
 
-  if [[ -d "$MPY_BUILD_ROOT" ]]; then
+  if [[ -d "$MPY_BUILD_ROOT" && $MPY_REBUILD_DEFERRED -eq 0 ]]; then
     remove_mpy_shadow_py_targets "$destination"
 
     rsync "${RSYNC_ARGS[@]}" "$MPY_BUILD_ROOT/" "$destination/cpynodus_ii/"
@@ -646,7 +752,7 @@ run_mpy_sync() {
     echo "Would sync compiled package after MPY build: ${MPY_BUILD_ROOT#$ROOT_DIR/}/ -> $destination/cpynodus_ii/"
   fi
 
-  if [[ -d "$MPY_LIB_ROOT" ]]; then
+  if [[ -d "$MPY_LIB_ROOT" && $MPY_REBUILD_DEFERRED -eq 0 ]]; then
     rsync "${RSYNC_ARGS[@]}" "$MPY_LIB_ROOT/" "$destination/lib/"
   elif [[ $MPY_REBUILD_DEFERRED -eq 1 ]]; then
     echo "Would sync staged target libraries after MPY build: ${MPY_LIB_ROOT#$ROOT_DIR/}/ -> $destination/lib/"

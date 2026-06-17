@@ -8,13 +8,17 @@ REQUIRED_MPY_ABI="mpy v6.3"
 PICO2W_LIB_SOURCE="$ROOT_DIR/../mcu_libs/circuitPython_9.2.8/libs/adafruit-circuitpython-bundle-9.x-mpy-20250314/lib"
 XESP32S3_LIB_SOURCE="$ROOT_DIR/../mcu_libs/circuitPython_10.x.x/adafruit-circuitpython-bundle-10.x-mpy-20260606/lib"
 
-COMPILER="${MPY_CROSS:-}"
+COMPILER=""
+COMPILER_VERSION=""
 TARGET="pico2w"
 TARGET_CIRCUITPY_VERSION="9.2.8"
+TARGET_COMPILER_VERSION_TOKEN="CircuitPython 9.2.8"
+TARGET_COMPILER_ENV="MPY_CROSS_PICO2W"
 TARGET_LIB_SOURCE=""
 TARGET_BUILD_ROOT=""
 PACKAGE_OUT=""
 LIB_OUT=""
+BUILD_INFO=""
 DRY_RUN=0
 CLEAN=0
 PRUNE_STALE=1
@@ -48,8 +52,10 @@ Options:
                       Aliases: pico2w-mpy, xesp32s3-mpy.
                       Default: pico2w.
   --compiler VALUE    Path to a CircuitPython-compatible mpy-cross.
-                      Defaults to $MPY_CROSS when set, then known local
-                      candidates that emit MPY v6.3.
+                      Defaults to target-specific MPY_CROSS_* env vars,
+                      $MPY_CROSS, then known local target candidates.
+                      The compiler must report the target CircuitPython
+                      version and emit MPY v6.3.
   --lib-source VALUE  Override the Adafruit bundle lib/ source for the target.
   --dry-run           Show compile actions without writing artifacts.
   --clean             Remove build/firmware/<target>/ before compiling.
@@ -88,10 +94,14 @@ configure_target() {
   case "$TARGET" in
     pico2w)
       TARGET_CIRCUITPY_VERSION="9.2.8"
+      TARGET_COMPILER_VERSION_TOKEN="CircuitPython 9.2.8"
+      TARGET_COMPILER_ENV="MPY_CROSS_PICO2W"
       TARGET_LIB_SOURCE="${TARGET_LIB_SOURCE:-$PICO2W_LIB_SOURCE}"
       ;;
     xesp32s3)
       TARGET_CIRCUITPY_VERSION="10.2.1"
+      TARGET_COMPILER_VERSION_TOKEN="CircuitPython 10.2.1"
+      TARGET_COMPILER_ENV="MPY_CROSS_XESP32S3"
       TARGET_LIB_SOURCE="${TARGET_LIB_SOURCE:-$XESP32S3_LIB_SOURCE}"
       ;;
   esac
@@ -99,31 +109,62 @@ configure_target() {
   TARGET_BUILD_ROOT="$BUILD_ROOT/$TARGET"
   PACKAGE_OUT="$TARGET_BUILD_ROOT/cpynodus_ii"
   LIB_OUT="$TARGET_BUILD_ROOT/lib"
+  BUILD_INFO="$TARGET_BUILD_ROOT/BUILD_INFO"
 }
 
 find_compiler() {
   local candidate=""
-  local candidates=(
-    "$ROOT_DIR/../mcu_libs/mpy-cross/mpy-cross"
-    "$ROOT_DIR/../mcu_libs/circuitpython/mpy-cross/build/mpy-cross"
-    "$ROOT_DIR/tools/mpy-cross/mpy-cross"
-    "$ROOT_DIR/.venv/bin/mpy-cross"
-    "$ROOT_DIR/.venv/bin/mpy-cross-v6.3"
-  )
+  local candidates=()
+  local command_candidates=()
 
   if [[ -n "$COMPILER" ]]; then
     printf '%s\n' "$COMPILER"
     return 0
   fi
 
+  case "$TARGET" in
+    pico2w)
+      candidates=(
+        "${MPY_CROSS_PICO2W:-}"
+        "${MPY_CROSS_CP928:-}"
+        "${MPY_CROSS:-}"
+        "$ROOT_DIR/../mcu_libs/mpy-cross/mpy-cross"
+        "$ROOT_DIR/../mcu_libs/circuitpython-9.2.8/mpy-cross/build/mpy-cross"
+        "$ROOT_DIR/../mcu_libs/circuitpython_9.2.8/mpy-cross/build/mpy-cross"
+        "$ROOT_DIR/../mcu_libs/circuitPython_9.2.8/mpy-cross/build/mpy-cross"
+        "$ROOT_DIR/../mcu_libs/circuitpython/mpy-cross/build/mpy-cross"
+        "$ROOT_DIR/tools/mpy-cross/pico2w/mpy-cross"
+        "$ROOT_DIR/tools/mpy-cross/9.2.8/mpy-cross"
+      )
+      command_candidates=(mpy-cross-cp928 mpy-cross-v6.3 mpy-cross)
+      ;;
+    xesp32s3)
+      candidates=(
+        "${MPY_CROSS_XESP32S3:-}"
+        "${MPY_CROSS_CP1021:-}"
+        "${MPY_CROSS:-}"
+        "$ROOT_DIR/../mcu_libs/circuitpython-10.2.1/mpy-cross/build/mpy-cross"
+        "$ROOT_DIR/../mcu_libs/circuitpython_10.2.1/mpy-cross/build/mpy-cross"
+        "$ROOT_DIR/../mcu_libs/circuitPython_10.2.1/mpy-cross/build/mpy-cross"
+        "$ROOT_DIR/../mcu_libs/circuitPython_10.x.x/mpy-cross/build/mpy-cross"
+        "$ROOT_DIR/../mcu_libs/mpy-cross-10.2.1/mpy-cross"
+        "$ROOT_DIR/tools/mpy-cross/xesp32s3/mpy-cross"
+        "$ROOT_DIR/tools/mpy-cross/10.2.1/mpy-cross"
+        "$ROOT_DIR/../mcu_libs/circuitpython/mpy-cross/build/mpy-cross"
+      )
+      command_candidates=(mpy-cross-cp1021 circuitpython10-mpy-cross mpy-cross)
+      ;;
+  esac
+
   for candidate in "${candidates[@]}"; do
+    [[ -n "$candidate" ]] || continue
     if [[ -x "$candidate" ]]; then
       printf '%s\n' "$candidate"
       return 0
     fi
   done
 
-  for candidate in mpy-cross-v6.3 circuitpython-mpy-cross mpy-cross; do
+  for candidate in "${command_candidates[@]}"; do
     if command -v "$candidate" >/dev/null 2>&1; then
       command -v "$candidate"
       return 0
@@ -158,9 +199,52 @@ validate_compiler() {
     exit 1
   fi
 
+  if [[ "$version" != *"$TARGET_COMPILER_VERSION_TOKEN"* ]]; then
+    echo "MPY compiler must match CircuitPython $TARGET_CIRCUITPY_VERSION for target $TARGET." >&2
+    echo "Compiler: $compiler" >&2
+    echo "Version: ${version:-unknown}" >&2
+    echo "Set $TARGET_COMPILER_ENV or pass --compiler with the correct mpy-cross." >&2
+    exit 1
+  fi
+
+  COMPILER="$compiler"
+  COMPILER_VERSION="$version"
   echo "Build target: $TARGET (CircuitPython $TARGET_CIRCUITPY_VERSION)"
   echo "Using MPY compiler: $compiler"
   echo "Compiler version: $version"
+}
+
+get_project_version() {
+  local version=""
+  version="$(sed -n 's/^__version__ = "\([^"]*\)"$/\1/p' "$ROOT_DIR/cpynodus_ii/__init__.py" | head -n 1)"
+  printf '%s\n' "${version:-unknown-version}"
+}
+
+write_build_info() {
+  local module_count="$1"
+  local built_at=""
+
+  if [[ $DRY_RUN -eq 1 ]]; then
+    echo "Would write build metadata: ${BUILD_INFO#$ROOT_DIR/}"
+    return 0
+  fi
+
+  built_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  mkdir -p "$TARGET_BUILD_ROOT"
+  {
+    printf 'format=cpynodus-mpy-build-v1\n'
+    printf 'target=%s\n' "$TARGET"
+    printf 'content=%s-mpy\n' "$TARGET"
+    printf 'circuitpython=%s\n' "$TARGET_CIRCUITPY_VERSION"
+    printf 'mpy_abi=%s\n' "$REQUIRED_MPY_ABI"
+    printf 'compiler=%s\n' "$COMPILER"
+    printf 'compiler_version=%s\n' "$COMPILER_VERSION"
+    printf 'lib_source=%s\n' "$TARGET_LIB_SOURCE"
+    printf 'project_version=%s\n' "$(get_project_version)"
+    printf 'module_count=%s\n' "$module_count"
+    printf 'stage_libs=%s\n' "$STAGE_LIBS"
+    printf 'built_at=%s\n' "$built_at"
+  } > "$BUILD_INFO"
 }
 
 compile_package() {
@@ -211,6 +295,8 @@ compile_package() {
   if [[ $STAGE_LIBS -eq 1 ]]; then
     stage_target_libs
   fi
+
+  write_build_info "$count"
 }
 
 prune_stale_artifacts() {

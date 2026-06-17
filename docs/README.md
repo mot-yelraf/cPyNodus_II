@@ -135,11 +135,20 @@ Notes:
   templates, and `cpynodus_ii/`. It does not manage CircuitPython libraries.
 - Target MPY deploys require a complete, current
   `build/firmware/<target>/cpynodus_ii/` tree plus staged
-  `build/firmware/<target>/lib/` dependencies. They sync root startup files,
-  root or target-specific `*.def` templates, compiled `.mpy` files, and the
-  target library tree. Before copying the compiled package, deploy removes
-  matching `cpynodus_ii/*.py` files from the target so CircuitPython imports
-  the `.mpy` modules.
+  `build/firmware/<target>/lib/` dependencies and
+  `build/firmware/<target>/BUILD_INFO` metadata. The metadata records the
+  requested target, CircuitPython version, MPY ABI, compiler path/version, and
+  staged library source. Deploy validates it before syncing so `pico2w-mpy`
+  and `xesp32s3-mpy` cannot accidentally deploy the wrong firmware image.
+- `scripts/nodus_mpy.sh` requires a compiler that reports the matching
+  CircuitPython version and emits `mpy v6.3`: Pico2 W uses CircuitPython
+  `9.2.8`, and XIAO ESP32-S3 uses CircuitPython `10.2.1`. Set
+  `MPY_CROSS_PICO2W` or `MPY_CROSS_XESP32S3`, or pass `--compiler`, when the
+  compiler is outside the standard `~/Projects/mcu_libs` layout.
+- Target MPY deploys sync root startup files, root or target-specific `*.def`
+  templates, compiled `.mpy` files, and the target library tree. Before copying
+  the compiled package, deploy removes matching `cpynodus_ii/*.py` files from
+  the target so CircuitPython imports the `.mpy` modules.
 - MPY deploy can be used on a factory CircuitPython board with no existing Nodus
   firmware. It installs the compiled Nodus package plus the root startup files,
   default TOML templates, and library dependencies needed for first boot.
