@@ -1,13 +1,13 @@
 # cPyNodus_II
 
 `cPyNodus_II` is CircuitPython firmware for the Nodus family of small Wi-Fi
-microcontroller devices. Pico2 W is the validated production target, and Seeed
-Studio XIAO ESP32-S3 support is in bring-up. Nodus devices support sensor-only,
-switch-only, and combined sensor+switch configurations. They can be provisioned
-through AP bootstrap, the local `nodusweb` UI/API, or the Sensorius Add Device
-flow. After provisioning, MQTT-enabled profiles publish telemetry and subscribe
-to control/config topics through a Sensorius, WeeWX, or Home Assistant MQTT
-broker.
+microcontroller devices. Verified targets are Raspberry Pi Pico2 W (`pico2w`)
+on CircuitPython `9.2.8` and Seeed Studio XIAO ESP32-S3 Sense (`xesp32s3`) on
+CircuitPython `10.2.1`. Nodus devices support sensor-only, switch-only, and
+combined sensor+switch configurations. They can be provisioned through AP
+bootstrap, the local `nodusweb` UI/API, or the Sensorius Add Device flow. After
+provisioning, MQTT-enabled profiles publish telemetry and subscribe to
+control/config topics through a Sensorius, WeeWX, or Home Assistant MQTT broker.
 
 Sensorius Automatio Instrumentorum, or Sensorius, is the companion system that monitors and manages deployed Nodus devices. Nodus can also publish Home Assistant MQTT discovery/config topics directly when `ACTIVE_PROFILE = "homeassistant"`.
 
@@ -76,15 +76,18 @@ Nodus is a headless IoT node with the following core responsibilities:
 
 ## Hardware
 
-- Raspberry Pi Pico2 W (validated baseline)
-- Seeed Studio XIAO ESP32-S3 Sense (bring-up target)
+- Raspberry Pi Pico2 W (`pico2w`, verified)
+- Seeed Studio XIAO ESP32-S3 Sense (`xesp32s3`, verified)
 - Optional I2C sensors
 - Optional UART/Modbus soil sensor
 - Optional relay switches
 
 Firmware requirements:
-- Pico2 W: CircuitPython 9.2.8 (tested baseline)
-- XIAO ESP32-S3 Sense: CircuitPython 10.2.1 (bring-up target)
+- Pico2 W / `pico2w`: CircuitPython 9.2.8 (verified)
+- XIAO ESP32-S3 Sense / `xesp32s3`: CircuitPython 10.2.1 (verified)
+
+For factory XIAO setup, see
+[XIAO ESP32-S3 CircuitPython Bring-Up](./xiao_esp32s3_circuitpython_bringup.md).
 
 See `docs/pinout.md` for the Nodus wiring pinout.
 
@@ -622,7 +625,7 @@ Automations are implemented in Sensorius or Home Assistant. Commands are publish
 - **Wi-Fi outage policy**: when station Wi‑Fi drops, Nodus pauses MQTT reconnect attempts and spends up to 15 minutes retrying SSID reassociation before soft rebooting.
 - **MQTT outage policy**: when Wi‑Fi is still up but MQTT is unhealthy, Nodus retries broker recovery for up to 3 minutes, including bounded socket-pool/MQTT rebuild attempts, before soft rebooting.
 - **AP recovery policy**: if startup cannot join the configured station network, Nodus falls back into AP recovery mode and soft reboots again after 10 minutes of idle AP uptime.
-- **Restart policy**: `nodusweb` can use soft reload for ordinary runtime restarts; MQTT profiles and persistent recovery faults use hard reset paths when needed to clear the Pico2 W radio/socket state.
+- **Restart policy**: `nodusweb` can use soft reload for ordinary runtime restarts; MQTT profiles and persistent recovery faults use hard reset paths when needed to clear board radio/socket state, especially on Pico2 W.
 - **Recovery diagnostics**: when the filesystem is writable, formal recovery phase changes and recovery actions are appended to `/_recovery.log` with timestamp, firmware version, and device ID headers. The file is capped at 10 KB for USB-powered postmortems.
 
 ## Web Server
@@ -689,8 +692,9 @@ Automations are implemented in Sensorius or Home Assistant. Commands are publish
 
 ## Development Notes
 
-- Use the board-specific guard pin (`GP14` on Pico2 W, `D8` on XIAO ESP32-S3)
-  to control whether the filesystem is R/W for the app.
+- Use the board-specific guard pin (`GP14` on Pico2 W) to control whether the
+  filesystem is R/W for the app. On XIAO ESP32-S3, firmware currently forces
+  host-edit mode so `/Volumes/CIRCUITPY` remains recoverable.
 - Keep web routes small; heavy handlers can destabilize startup on constrained devices.
 - Add Device flow uses `POST /itaot-init`, then MQTT onboarding topics (`nodus/<device_id>/onboard/hello`, `config/set`, `config/ack`, `config/result`) as the authoritative configuration path.
 - Nodus TOML files are the source of truth for accepted config. Sensorius should use retained `nodus/<device_id>/meta` as the compact startup/reconnect snapshot, retained `nodus/<device_id>/meta/switch` as the switch control-topic map when switch channels are present, then consume `nodus/<device_id>/meta/patch` for accepted steady-state config deltas.

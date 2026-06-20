@@ -155,7 +155,8 @@ Canonical `onboard/hello` payload:
   "device_id": "co2-ykdvea",
   "hostname": "co2-ykdvea",
   "serial": "ykdvea",
-  "type": "pico2w",
+  "type": "nodus",
+  "mcu": "pico2w",
   "version": "v0.26.xxx.x",
   "capabilities": {
     "sensor": true,
@@ -163,6 +164,10 @@ Canonical `onboard/hello` payload:
   }
 }
 ```
+
+In `onboard/hello`, `type` is the device class and should be `nodus`. `mcu` is
+the board target identifier for the running firmware. Verified `mcu` values are
+`pico2w` and `xesp32s3`.
 
 ## Runtime Payloads
 
@@ -226,13 +231,15 @@ topics, and switch presence quickly after connect/reconnect.
 
 The payload must include:
 
-- top-level `schema`, `device_id`, `hostname`, `serial`, `version`, `type`
+- top-level `schema`, `device_id`, `hostname`, `serial`, `version`, `type`,
+  `mcu`
 - `capabilities`
 - `status.heartbeat_topic`
 - `network.ssid`, `network.password`, `network.hostname`, `network.ipv4addr`
 - `profile.active_profile`
 - `mqtt.broker`, `mqtt.broker_ip`, `mqtt.active_broker`, `mqtt.port`,
-  `mqtt.use_tls`, `mqtt.username`, `mqtt.password`, `mqtt.base_topic`
+  `mqtt.use_tls`, `mqtt.base_topic`, and configured `mqtt.username` /
+  `mqtt.password`
 - `fwupdate.schema`, `fwupdate.transport`, `fwupdate.prepare_topic`,
   `fwupdate.ack_topic`, `fwupdate.result_topic`
 - `location_group.location`, `location_group.members`
@@ -241,6 +248,9 @@ The payload must include:
   `sensor.display_metrics`, `sensor.display_styles`
 - `switch.device_id`, `switch.channel_count`, and `switch.meta_topic` when
   switch capability is present
+
+`type` remains the device class (`nodus`). `mcu` is the board target identifier
+for the running firmware. Verified `mcu` values are `pico2w` and `xesp32s3`.
 
 `network.ipv4addr` is the current runtime station IPv4 address from the active
 network stack. It is not a TOML setting and should be treated as volatile
@@ -255,7 +265,7 @@ The startup `meta` payload intentionally does not include
 `switch.channels[*]`. The detailed per-channel switch topic map is published
 separately on retained `nodus/<device_id>/meta/switch`. Switch location also
 lives in retained `meta/switch` to keep the main retained `meta` packet small
-on constrained Pico 2 W MQTT startup paths.
+on constrained board MQTT startup paths, especially Pico 2 W.
 
 The startup `meta` payload also intentionally does not include the log-transfer
 topic map. When `capabilities.log_transfer` is true, Sensorius should use the

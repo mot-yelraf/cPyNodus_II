@@ -99,7 +99,8 @@ Do not merge onboarding protocol state into persistent config schema.
   "device_id": "aqi-x943fm",
   "hostname": "aqi-x943fm",
   "serial": "x943fm",
-  "type": "pico2w",
+  "type": "nodus",
+  "mcu": "pico2w",
   "version": "v0.26.xxx.x",
   "capabilities": {
     "sensor": true,
@@ -107,6 +108,10 @@ Do not merge onboarding protocol state into persistent config schema.
   }
 }
 ```
+
+`type` is the device class and should be `nodus`. `mcu` is the board target
+identifier for the running firmware. Verified `mcu` values are `pico2w` and
+`xesp32s3`.
 
 ## `config/set` Handling Rules
 1. Parse and validate payload schema.

@@ -19,9 +19,11 @@ The original scaffold has grown into a functional firmware runtime:
 
 ## Project intent
 
-`cPyNodus_II` is a fresh CircuitPython 9.2.8 codebase for the Raspberry Pi Pico
-2 W. It is meant to replace the current `cPyNodus` incrementally, not by
-wholesale copying the old implementation.
+`cPyNodus_II` started as a CircuitPython `9.2.8` codebase for Raspberry Pi
+Pico 2 W. The current verified target matrix also includes Seeed Studio XIAO
+ESP32-S3 Sense (`xesp32s3`) on CircuitPython `10.2.1`; use `docs/README.md`
+for the current support contract. The project is meant to replace the current
+`cPyNodus` incrementally, not by wholesale copying the old implementation.
 
 The main motivation is runtime stability, especially around MQTT transport under
 switch-command load.

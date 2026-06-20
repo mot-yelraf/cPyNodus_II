@@ -5,16 +5,18 @@ Guidance for AI coding agents working in this repository.
 ## Project Snapshot
 
 - Project: `cPyNodus_II`
-- Target platform: Raspberry Pi Pico2 W only
-- Runtime: CircuitPython `9.2.8`
+- Target platforms:
+  - `pico2w`: Raspberry Pi Pico2 W with CircuitPython `9.2.8` verified
+  - `xesp32s3`: Seeed Studio XIAO ESP32-S3 Sense with CircuitPython `10.2.1` verified
+- Runtime: target-specific CircuitPython builds listed above
 - Purpose: firmware for Nodus sensor/switch devices with AP onboarding,
   lightweight local web UI, MQTT integration for Sensorius/WeeWX/Home
   Assistant, calibration, log retrieval, OTA prepare/HTTP transfer, and
   constrained-memory recovery behavior.
 
 This is not a general CPython application. Prefer CircuitPython-compatible APIs
-and patterns throughout, and assume Pico2 W heap pressure is a primary design
-constraint.
+and patterns throughout, and assume constrained board heap pressure is a
+primary design constraint.
 
 ## Hard Rules
 
@@ -54,7 +56,7 @@ Before changing behavior, the agent must:
 
 ## Current Repository Shape
 
-- `boot.py`: GP14 filesystem/USB guard, ROFS/RWFS setup
+- `boot.py`: target-specific filesystem/USB guard and ROFS/RWFS setup
 - `code.py`: CircuitPython entrypoint and fatal traceback wrapper
 - `cpynodus_ii/app.py`: main async runtime orchestration, startup, recovery,
   MQTT lifecycle, and steady state
@@ -72,7 +74,7 @@ Before changing behavior, the agent must:
 
 ## Working Constraints
 
-- Keep code lean. Memory is tight on Pico2 W.
+- Keep code lean. Memory is tight on supported CircuitPython boards.
 - Avoid heavy allocations in hot paths and long-lived background state.
 - Prefer simple, explicit code over extra abstraction.
 - Use CircuitPython and `adafruit_*` APIs where appropriate.
@@ -126,10 +128,10 @@ app-level MQTT/socket issues when cleanup can close MQTT, stop services, tear
 down station networking, set the warm-start cleanup marker, and rebuild cleanly
 on the next run.
 
-Hard reset means `microcontroller.reset()`. It is used when the Pico2 W
-radio/socket state may outlive a Python reload, including AP idle timeout,
-Wi-Fi recovery timeout, Wi-Fi after-ready failure, MQTT recovery timeout,
-repeated MQTT connect failures, MQTT memory allocation failures, and repeated
+Hard reset means `microcontroller.reset()`. It is used when board radio/socket
+state may outlive a Python reload, including AP idle timeout, Wi-Fi recovery
+timeout, Wi-Fi after-ready failure, MQTT recovery timeout, repeated MQTT
+connect failures, MQTT memory allocation failures, and repeated
 sensor-not-found errors.
 
 Any change to startup or recovery should include focused tests and a clear

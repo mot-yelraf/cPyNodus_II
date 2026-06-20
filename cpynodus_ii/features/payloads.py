@@ -201,6 +201,22 @@ def build_runtime_meta_payload(
         + [channel.channel_id for channel in switch.channels]
         if member
     ]
+    mqtt_payload = {
+        "broker": runtime_config.mqtt.broker,
+        "broker_ip": runtime_config.mqtt.broker_ip,
+        "active_broker": str(
+            active_broker or runtime_config.mqtt.preferred_host or ""
+        ),
+        "port": runtime_config.mqtt.port,
+        "use_tls": bool(runtime_config.mqtt.use_tls),
+        "base_topic": runtime_config.mqtt.base_topic,
+    }
+    if runtime_config.mqtt.username:
+        mqtt_payload["username"] = runtime_config.mqtt.username
+    if runtime_config.mqtt.password:
+        mqtt_payload["password"] = _obfuscated_password(
+            runtime_config.mqtt.password, runtime_config
+        )
 
     payload = {
         "schema": "nodus-meta/v1",
@@ -208,6 +224,7 @@ def build_runtime_meta_payload(
         "hostname": runtime_config.network.hostname,
         "serial": sensor.serial_number or switch.serial_number,
         "type": "nodus",
+        "mcu": _mcu_board_type(),
         "version": version,
         "capabilities": {
             "sensor": sensor.present,
@@ -231,20 +248,7 @@ def build_runtime_meta_payload(
         "profile": {
             "active_profile": runtime_config.active_profile,
         },
-        "mqtt": {
-            "broker": runtime_config.mqtt.broker,
-            "broker_ip": runtime_config.mqtt.broker_ip,
-            "active_broker": str(
-                active_broker or runtime_config.mqtt.preferred_host or ""
-            ),
-            "port": runtime_config.mqtt.port,
-            "use_tls": bool(runtime_config.mqtt.use_tls),
-            "username": runtime_config.mqtt.username,
-            "password": _obfuscated_password(
-                runtime_config.mqtt.password, runtime_config
-            ),
-            "base_topic": runtime_config.mqtt.base_topic,
-        },
+        "mqtt": mqtt_payload,
         "fwupdate": {
             "schema": "nodus-fwupdate/v1",
             "transport": "http",
@@ -333,6 +337,15 @@ def _obfuscated_password(password, runtime_config):
     )
 
 
+def _mcu_board_type():
+    try:
+        from cpynodus_ii.core.board_profile import selected_board_profile
+
+        return str(getattr(selected_board_profile(), "key", "") or "pico2w")
+    except Exception:
+        return "pico2w"
+
+
 def build_onboarding_hello_payload(runtime_config, onboarding_state, *, version):
     """Build the MQTT onboarding hello payload when bootstrap state exists."""
     state = onboarding_state if isinstance(onboarding_state, dict) else {}
@@ -350,7 +363,8 @@ def build_onboarding_hello_payload(runtime_config, onboarding_state, *, version)
         "device_id": device_id,
         "hostname": runtime_config.network.hostname,
         "serial": serial_number,
-        "type": "pico2w",
+        "type": "nodus",
+        "mcu": _mcu_board_type(),
         "version": version,
         "capabilities": {
             "sensor": bool(sensor.present),

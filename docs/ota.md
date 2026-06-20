@@ -23,14 +23,15 @@ flow that Sensorius should reuse.
 ## Non-Goals
 
 - Updating the CircuitPython UF2 runtime over OTA.
-- Updating the Pico bootloader.
+- Updating board bootloaders or CircuitPython itself.
 - Updating multiple devices concurrently.
 - Using MQTT for file transfer.
 - Replacing AP onboarding or normal TOML-based configuration.
 
 ## Constraints
 
-- Nodus runs CircuitPython `9.2.8` on Pico2 W.
+- OTA package targets are board-specific. Verified targets are `pico2w` on
+  CircuitPython `9.2.8` and `xesp32s3` on CircuitPython `10.2.1`.
 - Heap and filesystem space are tight, so manifests and handlers must be small.
 - OTA requires application-writable filesystem mode. Current `boot.py` enables
   app writes only when `GP14` is held low at boot and otherwise remounts the
@@ -209,6 +210,9 @@ Manifest rules:
 
 - `settings.toml`, `sensor_i2c.toml`, `sensor_soil.toml`, and `switch.toml`
   are preserved unless listed explicitly in `files`.
+- `target.platform` should match the deploy target, currently `pico2w` or
+  `xesp32s3`; `target.circuitpython` should match that target's verified
+  CircuitPython runtime.
 - `delete` is allowed but should be used sparingly and must be tested.
 - The manifest contains both package identity and required current firmware
   version. The current device-side validation binds the package to the MQTT

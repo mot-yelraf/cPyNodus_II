@@ -19,7 +19,8 @@ import usb_cdc
 # ---------- user-configurable pins ----------
 RW_GUARD_PIN_NAME = "GP14"  # default Pico2 W guard, low = app R/W + REPL
 XESP32S3_RW_GUARD_PIN_NAME = "D8"
-ENABLE_USB_DATA_CDC = True  # keep secondary CDC channel behavior unchanged
+XESP32S3_FORCE_EDIT_MODE = True  # temporary bring-up recovery: expose CIRCUITPY
+ENABLE_USB_DATA_CDC = True  # Pico2 W keeps the secondary CDC channel.
 DISABLE_RUNTIME_AUTORELOAD = True
 
 _boot_warnings = []
@@ -72,20 +73,24 @@ def _disable_auto_reload():
     return False
 
 
-def _resolve_rw_guard_pin_name():
+def _is_xesp32s3_board():
     board_id = str(getattr(board, "board_id", "") or "").strip().lower()
     normalized_board_id = board_id.replace("-", "_")
     if (
         "xiao_esp32_s3" in normalized_board_id
         or "xiao_esp32s3" in normalized_board_id
     ):
-        return XESP32S3_RW_GUARD_PIN_NAME
-    if (
+        return True
+    return (
         hasattr(board, "SDA")
         and hasattr(board, "SCL")
         and hasattr(board, "D0")
         and not hasattr(board, "GP0")
-    ):
+    )
+
+
+def _resolve_rw_guard_pin_name():
+    if _is_xesp32s3_board():
         return XESP32S3_RW_GUARD_PIN_NAME
     return RW_GUARD_PIN_NAME
 
@@ -94,12 +99,25 @@ def _resolve_rw_guard_pin_name():
 guard_pin = None
 is_guard_low = False
 active_guard_pin_name = _resolve_rw_guard_pin_name()
+active_is_xesp32s3_board = _is_xesp32s3_board()
+active_usb_data_cdc = ENABLE_USB_DATA_CDC and not active_is_xesp32s3_board
+force_xesp32s3_edit_mode = active_is_xesp32s3_board and XESP32S3_FORCE_EDIT_MODE
 try:
     guard = getattr(board, active_guard_pin_name)
     guard_pin = digitalio.DigitalInOut(guard)
     guard_pin.direction = digitalio.Direction.INPUT
     guard_pin.pull = digitalio.Pull.UP
-    is_guard_low = guard_pin.value is False  # low when grounded
+    guard_is_low = guard_pin.value is False  # low when grounded
+    if force_xesp32s3_edit_mode:
+        if guard_is_low:
+            _warn(
+                "XIAO edit mode forced; ignoring low guard pin {pin}".format(
+                    pin=active_guard_pin_name,
+                )
+            )
+        is_guard_low = False
+    else:
+        is_guard_low = guard_is_low
 except Exception as exc:
     # Fail safe to edit mode so CIRCUITPY remains visible for recovery.
     _warn(
@@ -142,14 +160,14 @@ if is_guard_low:
         storage.disable_usb_drive()
     except Exception as exc:
         _warn("disable_usb_drive failed: {err}".format(err=exc))
-    usb_cdc.enable(console=True, data=ENABLE_USB_DATA_CDC)
+    usb_cdc.enable(console=True, data=active_usb_data_cdc)
     try:
         storage.remount("/", readonly=False)
     except Exception as exc:
         _warn("remount rw failed: {err}".format(err=exc))
 else:
     # Edit mode: expose CIRCUITPY to the host; app should treat FS as read-only.
-    usb_cdc.enable(console=True, data=ENABLE_USB_DATA_CDC)
+    usb_cdc.enable(console=True, data=active_usb_data_cdc)
     try:
         storage.remount("/", readonly=True)
     except Exception as exc:

@@ -114,6 +114,7 @@ configure_target() {
 
 find_compiler() {
   local candidate=""
+  local resolved=""
   local candidates=()
   local command_candidates=()
 
@@ -147,6 +148,7 @@ find_compiler() {
         "$ROOT_DIR/../mcu_libs/circuitpython_10.2.1/mpy-cross/build/mpy-cross"
         "$ROOT_DIR/../mcu_libs/circuitPython_10.2.1/mpy-cross/build/mpy-cross"
         "$ROOT_DIR/../mcu_libs/circuitPython_10.x.x/mpy-cross/build/mpy-cross"
+        "$ROOT_DIR/../mcu_libs/circuitPython_10.x.x/mpy-cross-macos-10.2.1-arm64"
         "$ROOT_DIR/../mcu_libs/mpy-cross-10.2.1/mpy-cross"
         "$ROOT_DIR/tools/mpy-cross/xesp32s3/mpy-cross"
         "$ROOT_DIR/tools/mpy-cross/10.2.1/mpy-cross"
@@ -158,20 +160,34 @@ find_compiler() {
 
   for candidate in "${candidates[@]}"; do
     [[ -n "$candidate" ]] || continue
-    if [[ -x "$candidate" ]]; then
+    if [[ -x "$candidate" ]] && compiler_matches_target "$candidate"; then
       printf '%s\n' "$candidate"
       return 0
     fi
   done
 
   for candidate in "${command_candidates[@]}"; do
-    if command -v "$candidate" >/dev/null 2>&1; then
-      command -v "$candidate"
+    if resolved="$(command -v "$candidate" 2>/dev/null)" \
+      && compiler_matches_target "$resolved"; then
+      printf '%s\n' "$resolved"
       return 0
     fi
   done
 
   return 1
+}
+
+compiler_matches_target() {
+  local compiler="$1"
+  local version=""
+
+  if [[ ! -x "$compiler" ]]; then
+    return 1
+  fi
+
+  version="$("$compiler" --version 2>&1 || true)"
+  [[ "$version" == *"$REQUIRED_MPY_ABI"* ]] \
+    && [[ "$version" == *"$TARGET_COMPILER_VERSION_TOKEN"* ]]
 }
 
 validate_compiler() {
@@ -402,8 +418,8 @@ configure_target
 
 if [[ -z "$COMPILER" ]]; then
   if ! COMPILER="$(find_compiler)"; then
-    echo "Could not find an MPY compiler." >&2
-    echo "Set MPY_CROSS=/path/to/mpy-cross or pass --compiler." >&2
+    echo "Could not find a CircuitPython $TARGET_CIRCUITPY_VERSION MPY compiler." >&2
+    echo "Set $TARGET_COMPILER_ENV=/path/to/mpy-cross, set MPY_CROSS, or pass --compiler." >&2
     exit 1
   fi
 fi

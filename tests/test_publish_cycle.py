@@ -85,6 +85,7 @@ def test_startup_cycle_publishes_heartbeat_meta_sensor_and_switch_topics():
         "nodus/S1-x943fm/availability"
     )
     meta_message = transport.published_messages[0]
+    assert meta_message.payload["mcu"] == "pico2w"
     assert meta_message.payload["network"]["ipv4addr"] == "10.0.0.44"
     assert "state" not in meta_message.payload["status"]
     assert "channels" not in meta_message.payload["switch"]
@@ -643,7 +644,8 @@ def test_startup_cycle_publishes_onboarding_hello_when_state_present():
         "device_id": "aqi-x943fm",
         "hostname": "aqi-x943fm",
         "serial": "x943fm",
-        "type": "pico2w",
+        "type": "nodus",
+        "mcu": "pico2w",
         "version": "v0.26.114.1",
         "capabilities": {"sensor": True, "switch": True},
     }

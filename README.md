@@ -1,6 +1,12 @@
 # cPyNodus_II
 
-`cPyNodus_II` is a fresh CircuitPython 9.2.8 codebase for the Raspberry Pi Pico 2 W.
+`cPyNodus_II` is CircuitPython firmware for Nodus sensor/switch devices on
+verified `pico2w` and `xesp32s3` targets.
+
+Verified target builds:
+
+- `pico2w`: Raspberry Pi Pico 2 W running CircuitPython `9.2.8`
+- `xesp32s3`: Seeed Studio XIAO ESP32-S3 Sense running CircuitPython `10.2.1`
 
 `cPyNodus_II` is based on the earlier `cPyNodus` project. It was produced with
 AI-agent assistance from work previously done in `cPyNodus`, then substantially
@@ -40,7 +46,12 @@ The repository is no longer just a scaffold. Current implemented slices include:
 
 ## Validated now
 
-Validated on a Raspberry Pi Pico 2 W running CircuitPython `9.2.8`:
+Validated on supported target hardware:
+
+- `pico2w`: Raspberry Pi Pico 2 W running CircuitPython `9.2.8`
+- `xesp32s3`: Seeed Studio XIAO ESP32-S3 Sense running CircuitPython `10.2.1`
+
+Validated runtime behavior includes:
 
 - switch-only `sensorius` profile boot and runtime
 - combined sensor + switch `sensorius` profile boot and runtime

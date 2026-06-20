@@ -89,8 +89,8 @@ current contract:
   It is compact and excludes `switch.channels[*]`; detailed switch control
   topics live in retained `meta/switch`. Retained startup identity publishes
   drain before runtime command subscriptions. New compact `meta` payloads
-  expose `switch.meta_topic` and current runtime `network.ipv4addr`; older
-  payloads may still embed `switch.channels`.
+  expose top-level `mcu`, `switch.meta_topic`, and current runtime
+  `network.ipv4addr`; older payloads may still embed `switch.channels`.
 - Current Nodus IPv4 is runtime state only. It is published in retained `meta`
   as `network.ipv4addr` when available and is not persisted in
   `settings.toml`.

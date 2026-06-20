@@ -23,6 +23,7 @@ from cpynodus_ii.features.payloads import (
     build_device_heartbeat_payload,
     build_homeassistant_discovery_plan,
     build_meta_patch_payload,
+    build_onboarding_hello_payload,
     build_runtime_meta_payload,
     build_sensor_availability_payload,
     build_sensor_data_payload,
@@ -161,6 +162,7 @@ def test_runtime_meta_payload_includes_sensor_and_switch_topics():
     )
     assert payload["schema"] == "nodus-meta/v1"
     assert payload["device_id"] == "aqi-x943fm"
+    assert payload["mcu"] == "pico2w"
     assert payload["network"]["ssid"] == "PeaceHill"
     assert payload["network"]["hostname"] == "aqi-x943fm"
     assert payload["network"]["ipv4addr"] == "10.0.0.44"
@@ -206,6 +208,40 @@ def test_runtime_meta_payload_includes_sensor_and_switch_topics():
     assert payload["switch"]["meta_topic"] == "nodus/aqi-x943fm/meta/switch"
     assert "location" not in payload["switch"]
     assert "channels" not in payload["switch"]
+
+
+def test_runtime_meta_payload_uses_selected_board_profile_for_mcu(monkeypatch):
+    monkeypatch.setenv("NODUS_BOARD_PROFILE", "xesp32s3")
+    runtime_config = RuntimeConfig(
+        network=NetworkConfig(hostname="xiao-node"),
+        mqtt=MQTTConfig(base_topic="nodus"),
+        sensor=DetectedSensor(sensor_id="xiao-node"),
+    )
+
+    payload = build_runtime_meta_payload(runtime_config, version="0.1.0")
+
+    assert payload["mcu"] == "xesp32s3"
+
+
+def test_onboarding_hello_payload_reports_device_type_and_mcu(monkeypatch):
+    monkeypatch.setenv("NODUS_BOARD_PROFILE", "xesp32s3")
+    runtime_config = RuntimeConfig(
+        network=NetworkConfig(hostname="xiao-node"),
+        sensor=DetectedSensor(
+            family="i2c",
+            sensor_id="xiao-node",
+            serial_number="abc123",
+        ),
+    )
+
+    payload = build_onboarding_hello_payload(
+        runtime_config,
+        {"onboard_token": "token-123"},
+        version="v0.26.171.2",
+    )
+
+    assert payload["type"] == "nodus"
+    assert payload["mcu"] == "xesp32s3"
 
 
 def test_switch_meta_payload_uses_split_contract_without_pin_fields():
@@ -456,6 +492,8 @@ def test_avpd_switch_runtime_meta_packet_stays_under_single_mss():
         "channel_count": 1,
         "meta_topic": "nodus/avpd-0kl7sx/meta/switch",
     }
+    assert "username" not in payload["mqtt"]
+    assert "password" not in payload["mqtt"]
     assert packet_size <= 1460
 
 

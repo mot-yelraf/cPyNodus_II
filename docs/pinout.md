@@ -52,7 +52,7 @@ pinout for GP/GND/Power details.
 
 ## Seeed Studio XIAO ESP32-S3 Sense
 
-Default bring-up mapping:
+Default verified mapping:
 
 - `SDA` / `D4` / `A4` / GPIO5: I2C SDA
 - `SCL` / `D5` / `A5` / GPIO6: I2C SCL
@@ -60,10 +60,70 @@ Default bring-up mapping:
 - `D1` / `A1` / GPIO2: S1 switch control
 - `D2` / `A2` / GPIO3: S2 ENABLE
 - `D3` / `A3` / GPIO4: S2 switch control
-- `D8` / GPIO7: RW ENABLE, hold LOW at boot for app-writable filesystem
+- `D8` / GPIO7: RW ENABLE reserved. On XIAO ESP32-S3, firmware currently forces
+  host-edit mode and ignores this guard so `/Volumes/CIRCUITPY` remains
+  recoverable.
 - Factory reset input: not assigned by default
 - `TX` / GPIO43 and `RX` / GPIO44: optional manual UART/RS485 use
 
 The XIAO profile factory-probes only the default `SCL`/`SDA` I2C bus. Additional
 analog or digital inputs can be configured manually in TOML when supported by a
 feature adapter.
+
+## XIAO ESP32-S3 Schematic
+
++3V3
+  |
+100nF
+  |
+ GND
+
++3V3 ----- I2C SENSOR VCC
+GND  ----- I2C SENSOR GND
+
+
+                     +3V3
+                       |
+                     4.7kΩ
+                       |
+                       +------------------ SDA BUS ------------------ Sensor SDA
+                       |
+GPIO5 -- 100 to 220Ω --+
+
+                     +3V3
+                       |
+                     4.7kΩ
+                       |
+                       +------------------ SCL BUS ------------------ Sensor SCL
+                       |
+GPIO6 -- 100 to 220Ω --+
+
+GPIO1 / D0 / S1_ENABLE ---- 330Ω–1kΩ ---- S1_ENABLE_OUT
+                                                |
+                                              100kΩ
+                                                |
+                                               GND
+
+GPIO2 / D1 / S1_CONTROL --- 330Ω–1kΩ ---- S1_CONTROL_OUT
+                                                |
+                                              100kΩ
+                                                |
+                                               GND
+
+GPIO3 / D2 / S2_ENABLE ---- 330Ω–1kΩ ---- S2_ENABLE_OUT
+                                                |
+                                              100kΩ
+                                                |
+                                               GND
+
+GPIO4 / D3 / S2_CONTROL --- 330Ω–1kΩ ---- S2_CONTROL_OUT
+                                                |
+                                              100kΩ
+                                                |
+                                               GND
+
+GPIO7 / D8 / RWFS_ENABLE -- 330Ω–1kΩ ---- RWFS_ENABLE_OUT
+                                                |
+                                              100kΩ
+                                                |
+                                               GND

@@ -117,7 +117,8 @@ Sensorius must treat non-200 or malformed response as `INIT_FAILED` and stop pro
   "device_id": "aqi-x943fm",
   "hostname": "aqi-x943fm",
   "serial": "x943fm",
-  "type": "pico2w",
+  "type": "nodus",
+  "mcu": "pico2w",
   "version": "v0.26.xxx.x",
   "capabilities": {
     "sensor": true,
@@ -125,6 +126,10 @@ Sensorius must treat non-200 or malformed response as `INIT_FAILED` and stop pro
   }
 }
 ```
+
+`type` is the device class and should be `nodus`. `mcu` is the board target
+identifier for the running firmware. Verified `mcu` values are `pico2w` and
+`xesp32s3`.
 
 ### `config/set` Payload (accepted shape A: updates list)
 ```json

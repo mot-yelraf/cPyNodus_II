@@ -13,8 +13,8 @@ The architecture is split into three layers:
 
 ## Constraints
 
-- CircuitPython 9.2.8 on Pico2 W is the validated baseline
-- CircuitPython 10.2.1 on Seeed Studio XIAO ESP32-S3 Sense is a bring-up target
+- `pico2w`: Raspberry Pi Pico2 W with CircuitPython 9.2.8 is verified
+- `xesp32s3`: Seeed Studio XIAO ESP32-S3 Sense with CircuitPython 10.2.1 is verified
 - MQTT transport must remain small and measurable
 - Feature code should not own socket lifecycle
 - Hot paths should minimize allocations and long-lived task retention
@@ -61,17 +61,17 @@ The current network startup path is intentional and stability-sensitive:
    attempt.
 9. Keep mDNS out of MQTT profiles. Hostname publishing is limited to
    `nodusweb` and temporary OTA HTTP mode so the long-lived MQTT socket path
-   does not share the constrained Pico2 W radio/socket stack with an mDNS
-   server.
+   does not share constrained board radio/socket state, especially on Pico2 W,
+   with an mDNS server.
 
-This ordering matters on Pico2 W. Socket pools, SSL contexts, mDNS/DNS, and
-MiniMQTT state are tied to the current radio mode. Starting features before the
-network phase is known can leave stale sockets, partial AP/station state, or
-feature-owned network objects that recovery cannot replace cleanly. Keeping
-network ownership in `core.network` lets recovery rebuild socket artifacts,
-reset station mode, manage HTTP-mode mDNS, tear down mDNS, or enter AP mode
-without sensor, switch, web, or calibration code trying to manage the radio
-directly.
+This ordering matters on supported boards, and especially on Pico2 W. Socket
+pools, SSL contexts, mDNS/DNS, and MiniMQTT state are tied to the current radio
+mode. Starting features before the network phase is known can leave stale
+sockets, partial AP/station state, or feature-owned network objects that
+recovery cannot replace cleanly. Keeping network ownership in `core.network`
+lets recovery rebuild socket artifacts, reset station mode, manage HTTP-mode
+mDNS, tear down mDNS, or enter AP mode without sensor, switch, web, or
+calibration code trying to manage the radio directly.
 
 ## Profiles
 
@@ -166,8 +166,8 @@ The soft reload path still matters even with hard resets in the policy. It is
 faster, preserves the ability to log and shut down cleanly, and is appropriate
 when recovery has enough confidence that a clean app reload plus warm-start
 radio cleanup will clear the socket issue. Hard reset is reserved for the cases
-where field behavior suggests the Pico2 W radio/socket state may outlive a
-normal reload.
+where field behavior suggests board radio/socket state may outlive a normal
+reload. This has been especially important on Pico2 W.
 
 ## Developer Note: MQTT-First Onboarding and Runtime Metadata (2026-02-24)
 

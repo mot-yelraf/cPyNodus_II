@@ -7,9 +7,16 @@ stopped:
     import test_i2c_sensor
     records = test_i2c_sensor.run()
 
-The apparatus scans the two Pico2 W Nodus I2C buses:
+The apparatus scans the default Nodus I2C bus for the detected board:
+  - XIAO ESP32-S3 bring-up: SCL=D7 SDA=D4
+
+On Pico2 W it scans both Nodus I2C buses:
   - I2C0: SCL=GP1 SDA=GP0
   - I2C1: SCL=GP3 SDA=GP2
+
+An explicit bus list can be passed for ad-hoc testing:
+
+    records = test_i2c_sensor.run(buses=(("I2C0", "SCL", "SDA"),))
 
 It then tries the supported Nodus I2C sensor drivers at detected addresses and
 prints a compact sampled data set. It does not write files or change settings.
@@ -21,12 +28,13 @@ import time
 import board
 import busio
 
-SCRIPT_VERSION = "i2c_sensor_test_v1_2026-06-15"
+SCRIPT_VERSION = "i2c_sensor_test_v5_2026-06-18"
 
-I2C_BUSES = (
+PICO2W_I2C_BUSES = (
     ("I2C0", "GP1", "GP0"),
     ("I2C1", "GP3", "GP2"),
 )
+XESP32S3_I2C_BUSES = (("I2C0", "D7", "D4"),)
 
 ADDRESS_LABELS = {
     0x10: "lux/veml7700",
@@ -38,19 +46,24 @@ ADDRESS_LABELS = {
 }
 
 
-def run(sample_count=5, sample_interval_s=5.0, warmup_s=2.0):
-    """Scan both Nodus I2C buses and sample all detected Nodus sensor types."""
+def run(sample_count=5, sample_interval_s=5.0, warmup_s=2.0, buses=None):
+    """Scan Nodus I2C buses and sample all detected Nodus sensor types."""
     gc.collect()
     started = time.monotonic()
+    selected_buses = _select_i2c_buses(buses)
     print(
-        "i2c_sensor_test phase=start version={} samples={} interval_s={}".format(
+        "i2c_sensor_test phase=start version={} board={} samples={} "
+        "interval_s={} buses={}".format(
             SCRIPT_VERSION,
+            _board_label(),
             int(sample_count or 0),
             float(sample_interval_s or 0.0),
+            _format_bus_specs(selected_buses),
         )
     )
+    print_pin_diagnostics()
 
-    scans = scan_buses()
+    scans = scan_buses(selected_buses)
     _print_detection_summary(scans)
     sensors = start_detected_sensors(scans)
     if not sensors:
@@ -76,16 +89,18 @@ def run(sample_count=5, sample_interval_s=5.0, warmup_s=2.0):
     return records
 
 
-def scan_buses():
+def scan_buses(buses=None):
     """Return scan results for each configured Nodus I2C bus."""
     scans = []
-    for bus_name, scl_name, sda_name in I2C_BUSES:
+    for bus_name, scl_name, sda_name in _select_i2c_buses(buses):
         bus = None
         addresses = ()
         error = ""
+        line_diag = "unavailable"
         try:
             scl = getattr(board, scl_name)
             sda = getattr(board, sda_name)
+            line_diag = _i2c_line_diagnostics(scl, sda)
             bus = busio.I2C(scl, sda)
             if _lock_i2c(bus, timeout_s=0.5):
                 try:
@@ -100,10 +115,11 @@ def scan_buses():
             _safe_deinit(bus)
 
         print(
-            "scan bus={} scl={} sda={} addrs={} labels={} errors={}".format(
+            "scan bus={} scl={} sda={} lines={} addrs={} labels={} errors={}".format(
                 bus_name,
                 scl_name,
                 sda_name,
+                line_diag,
                 _format_addresses(addresses),
                 _format_address_labels(addresses),
                 error or "none",
@@ -119,6 +135,23 @@ def scan_buses():
             }
         )
     return scans
+
+
+def print_pin_diagnostics():
+    """Print standalone I2C pin levels for board aliases and physical labels."""
+    if not _is_xesp32s3_board():
+        return
+    for name in ("SDA", "SCL", "D4", "D5"):
+        pin = getattr(board, name, None)
+        if pin is None:
+            print("pincheck name={} present=0".format(name))
+            continue
+        print(
+            "pincheck name={} present=1 lines={}".format(
+                name,
+                _single_pin_line_diagnostic(pin),
+            )
+        )
 
 
 def start_detected_sensors(scans):
@@ -322,6 +355,82 @@ def _open_i2c(scan):
     return busio.I2C(scl, sda)
 
 
+def _i2c_line_diagnostics(scl, sda):
+    digitalio = None
+    try:
+        digitalio = __import__("digitalio")
+    except ImportError:
+        return "missing_digitalio"
+    scl_diag = _pin_input_diagnostic(digitalio, scl)
+    sda_diag = _pin_input_diagnostic(digitalio, sda)
+    return "scl={},sda={}".format(scl_diag, sda_diag)
+
+
+def _single_pin_line_diagnostic(pin):
+    try:
+        digitalio = __import__("digitalio")
+    except ImportError:
+        return "missing_digitalio"
+    return _pin_input_diagnostic(digitalio, pin)
+
+
+def _pin_input_diagnostic(digitalio, pin):
+    handle = None
+    try:
+        handle = digitalio.DigitalInOut(pin)
+        direction = getattr(getattr(digitalio, "Direction", None), "INPUT", None)
+        pull_up = getattr(getattr(digitalio, "Pull", None), "UP", None)
+        if direction is not None and hasattr(handle, "direction"):
+            handle.direction = direction
+        floating = _bool_token(getattr(handle, "value", None))
+        if pull_up is not None and hasattr(handle, "pull"):
+            handle.pull = pull_up
+        pulled = _bool_token(getattr(handle, "value", None))
+        return "float:{},pullup:{}".format(floating, pulled)
+    except Exception as exc:
+        return "error:{}:{}".format(type(exc).__name__, _clean_error(exc))
+    finally:
+        _safe_deinit(handle)
+
+
+def _bool_token(value):
+    if value is True:
+        return "high"
+    if value is False:
+        return "low"
+    return "unknown"
+
+
+def _select_i2c_buses(buses=None):
+    if buses:
+        return tuple(buses)
+    if _is_xesp32s3_board():
+        return XESP32S3_I2C_BUSES
+    return PICO2W_I2C_BUSES
+
+
+def _is_xesp32s3_board():
+    board_id = str(getattr(board, "board_id", "") or "").strip().lower()
+    normalized = board_id.replace("-", "_")
+    if "xiao_esp32_s3" in normalized or "xiao_esp32s3" in normalized:
+        return True
+    return (
+        hasattr(board, "SCL")
+        and hasattr(board, "SDA")
+        and hasattr(board, "D0")
+        and not hasattr(board, "GP0")
+    )
+
+
+def _board_label():
+    board_id = str(getattr(board, "board_id", "") or "").strip()
+    if board_id:
+        return board_id
+    if _is_xesp32s3_board():
+        return "xesp32s3"
+    return "unknown"
+
+
 def _sample_sensor(sensor, sample_index):
     values = {}
     errors = ()
@@ -516,6 +625,13 @@ def _format_address_labels(addresses):
         if label:
             labels.append("{}=0x{:02X}".format(label, int(address)))
     return ",".join(labels) if labels else "none"
+
+
+def _format_bus_specs(buses):
+    parts = []
+    for bus_name, scl_name, sda_name in tuple(buses or ()):
+        parts.append("{}:{}:{}".format(bus_name, scl_name, sda_name))
+    return ",".join(parts) if parts else "none"
 
 
 def _format_values(values):
