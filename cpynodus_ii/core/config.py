@@ -399,6 +399,30 @@ class DetectedSensor:
     def present(self):
         return bool(self.family)
 
+    @property
+    def hardware_type(self):
+        """Return the concrete sensor hardware family when it is known."""
+        device = _clean_str(self.device).lower()
+        if device in {"avpd", "apvpd"}:
+            return "BME280"
+        if device == "aqi":
+            return "BME680"
+        if device in {"aht", "apvpd_aht"}:
+            return "AHTx0"
+        if device == "lux":
+            return "VEML7700"
+        if device == "co2":
+            address = 0
+            if self.i2c is not None:
+                try:
+                    address = int(getattr(self.i2c, "address", 0) or 0)
+                except (TypeError, ValueError):
+                    address = 0
+            if address == 0x62:
+                return "SCD4x"
+            return "SCD30"
+        return ""
+
 
 @dataclass
 class SwitchConfig:

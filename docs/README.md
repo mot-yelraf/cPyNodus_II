@@ -257,6 +257,11 @@ In normal mode the device:
 Nodus currently supports these sensor device types: `aht`, `apvpd_aht`, `apvpd`,
 `aqi`, `avpd`, `co2`, `lux`, and `soil`.
 
+These `DEVICE` values remain the logical Nodus sensor IDs used in topics and
+payloads. Sensorius-facing metadata also reports the concrete I2C hardware
+family as `sensor.hardware` when known: `BME280`, `BME680`, `VEML7700`,
+`AHTx0`, `SCD30`, or `SCD4x`.
+
 ### `aht` (AHT10/AHT20)
 
 - `Temperature` (`°C`)

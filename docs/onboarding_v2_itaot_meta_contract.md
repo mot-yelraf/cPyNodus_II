@@ -43,6 +43,7 @@ Example:
   "sensor": {
     "present": true,
     "device": "aqi",
+    "hardware": "BME680",
     "sensor_id": "aqi-x943fm",
     "serial": "x943fm",
     "location": "Greenhouse",
@@ -90,6 +91,9 @@ Example:
    - Current contract returns `{}` and does not advertise TOML fetch endpoints.
 6. `sensor`:
    - Includes display metric labels and calibration status for UI.
+   - `device` remains the logical Nodus sensor ID such as `aqi` or `co2`.
+   - `hardware` reports the concrete sensor family when known, such as
+     `BME680`, `SCD30`, or `SCD4x`.
 7. `switch.channels`:
    - Includes channel label/id/current state per enabled channel.
 8. `location_group`:

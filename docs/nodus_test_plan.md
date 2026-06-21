@@ -162,7 +162,8 @@ Steps:
 Pass criteria:
 
 - `onboard/hello` contains the expected `onboard_token`, `device_id`,
-  `hostname`, `serial`, `type`, `version`, and `capabilities`.
+  `hostname`, `serial`, `type`, `version`, `capabilities`, and compact
+  `sensor` block.
 - `config/ack.accepted == true`.
 - `config/result.applied == true`.
 - retained `meta` is present after onboarding success.

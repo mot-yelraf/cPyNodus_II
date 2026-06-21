@@ -123,13 +123,20 @@ Sensorius must treat non-200 or malformed response as `INIT_FAILED` and stop pro
   "capabilities": {
     "sensor": true,
     "switch": true
+  },
+  "sensor": {
+    "present": true,
+    "device": "aqi",
+    "hardware": "BME680"
   }
 }
 ```
 
 `type` is the device class and should be `nodus`. `mcu` is the board target
 identifier for the running firmware. Verified `mcu` values are `pico2w` and
-`xesp32s3`.
+`xesp32s3`. The `sensor` block is a compact onboarding hint. It does not repeat
+the sensor identity because top-level `device_id` already identifies the
+onboarding device.
 
 ### `config/set` Payload (accepted shape A: updates list)
 ```json
@@ -242,8 +249,11 @@ startup snapshot. It includes:
 1. `network`, `profile`, and `mqtt` shadow fields for Sensorius TOML materialization.
 2. `sensor.display_metrics` for Sensorius TOML `[Display]` materialization.
 3. `sensor.display_styles` for Sensorius TOML `[Display.Style]` materialization.
-4. `switch.device_id`, `switch.channel_count`, and `switch.meta_topic` when switch channels are present. Switch location is carried by retained `meta/switch`.
-5. `location_group` grouping metadata.
+4. `sensor.hardware` for the concrete sensor family, for example `BME280`,
+   `BME680`, `VEML7700`, `AHTx0`, `SCD30`, or `SCD4x`. Logical sensor IDs
+   remain `avpd`, `apvpd`, `aqi`, `aht`, `co2`, and `lux`.
+5. `switch.device_id`, `switch.channel_count`, and `switch.meta_topic` when switch channels are present. Switch location is carried by retained `meta/switch`.
+6. `location_group` grouping metadata.
 
 Password fields in `meta` must be `obf1:` obfuscated, not plaintext.
 

@@ -35,6 +35,11 @@ Supported I2C `DEVICE` values:
 - `co2`: SCD30/SCD4x CO2
 - `lux`: VEML7700 light
 
+The `DEVICE` value remains the logical Nodus sensor ID used in topics and
+payloads. MQTT retained `meta` and `/itaot-meta` also report the concrete
+hardware family as `sensor.hardware` when known, for example `BME280`,
+`BME680`, `VEML7700`, `AHTx0`, `SCD30`, or `SCD4x`.
+
 For single I2C sensors, `[I2Cbus]` is the preferred runtime bus. If the
 configured bus cannot be opened, or the driver reports no sensor at the
 configured address, Nodus tries the other board-profile I2C bus with the same

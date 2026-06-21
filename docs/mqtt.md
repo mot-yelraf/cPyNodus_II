@@ -20,7 +20,8 @@ wins.
 - OTA prepare uses `nodus/<device_id>/fwupdate`; files move over HTTP after
   Nodus reboots into temporary OTA mode.
 - Nodus publishes retained compact `nodus/<device_id>/meta` on
-  connect/reconnect.
+  connect/reconnect. The `sensor.hardware` field reports the concrete sensor
+  family when known while logical device IDs remain unchanged.
 - Nodus publishes retained `nodus/<device_id>/meta/switch` in the startup
   identity publish batch when switch channels are present.
 - Nodus publishes non-retained `nodus/<device_id>/meta/patch` after accepted

@@ -225,6 +225,7 @@ def test_build_itaot_meta_payload_includes_sensor_switch_identity_and_state():
     assert payload["device"]["capabilities"] == {"sensor": True, "switch": True}
     assert payload["sensor"]["present"] is True
     assert payload["sensor"]["display_metrics"] == ["CO2", "Temperature"]
+    assert payload["sensor"]["hardware"] == "SCD4x"
     assert payload["sensor"]["calibration"]["calibrated"] is True
     assert payload["switch"]["present"] is True
     assert payload["switch"]["channels"][0]["state"] is True

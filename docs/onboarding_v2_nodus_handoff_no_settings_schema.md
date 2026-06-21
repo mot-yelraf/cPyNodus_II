@@ -105,13 +105,20 @@ Do not merge onboarding protocol state into persistent config schema.
   "capabilities": {
     "sensor": true,
     "switch": true
+  },
+  "sensor": {
+    "present": true,
+    "device": "aqi",
+    "hardware": "BME680"
   }
 }
 ```
 
 `type` is the device class and should be `nodus`. `mcu` is the board target
 identifier for the running firmware. Verified `mcu` values are `pico2w` and
-`xesp32s3`.
+`xesp32s3`. The `sensor` block is a compact onboarding hint. It does not repeat
+the sensor identity because top-level `device_id` already identifies the
+onboarding device.
 
 ## `config/set` Handling Rules
 1. Parse and validate payload schema.

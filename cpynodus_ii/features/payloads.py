@@ -266,7 +266,7 @@ def build_runtime_meta_payload(
     }
 
     if sensor.present:
-        payload["sensor"] = {
+        sensor_payload = {
             "sensor_id": sensor.sensor_id,
             "location": sensor.location,
             "display_metrics": _display_metrics_for_meta(sensor),
@@ -277,6 +277,10 @@ def build_runtime_meta_payload(
                 runtime_config, sensor.sensor_id, "availability"
             ),
         }
+        hardware = str(getattr(sensor, "hardware_type", "") or "").strip()
+        if hardware:
+            sensor_payload["hardware"] = hardware
+        payload["sensor"] = sensor_payload
 
     if switch.present:
         channels = []
@@ -357,6 +361,12 @@ def build_onboarding_hello_payload(runtime_config, onboarding_state, *, version)
     switch = runtime_config.switch
     device_id = sensor.sensor_id or switch.device_id or runtime_config.network.hostname
     serial_number = sensor.serial_number or switch.serial_number
+    sensor_payload = {"present": bool(sensor.present)}
+    if sensor.present:
+        sensor_payload["device"] = sensor.device
+        hardware = str(getattr(sensor, "hardware_type", "") or "").strip()
+        if hardware:
+            sensor_payload["hardware"] = hardware
 
     return {
         "onboard_token": onboard_token,
@@ -370,6 +380,7 @@ def build_onboarding_hello_payload(runtime_config, onboarding_state, *, version)
             "sensor": bool(sensor.present),
             "switch": bool(switch.present),
         },
+        "sensor": sensor_payload,
     }
 
 

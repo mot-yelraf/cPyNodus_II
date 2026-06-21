@@ -648,6 +648,11 @@ def test_startup_cycle_publishes_onboarding_hello_when_state_present():
         "mcu": "pico2w",
         "version": "v0.26.114.1",
         "capabilities": {"sensor": True, "switch": True},
+        "sensor": {
+            "present": True,
+            "device": "aqi",
+            "hardware": "BME680",
+        },
     }
 
 

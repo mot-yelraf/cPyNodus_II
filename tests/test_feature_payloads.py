@@ -7,6 +7,7 @@ from cpynodus_ii.core.config import (
     DetectedSensor,
     DisplayConfig,
     HomeAssistantConfig,
+    I2CConfig,
     MQTTConfig,
     NetworkConfig,
     RuntimeConfig,
@@ -202,12 +203,40 @@ def test_runtime_meta_payload_includes_sensor_and_switch_topics():
         "Rel-Humidity",
     ]
     assert payload["sensor"]["display_styles"] == ["graph24hr", "graph24hr", "gauge"]
+    assert payload["sensor"]["hardware"] == "BME680"
     assert payload["sensor"]["data_topic"] == "nodus/aqi-x943fm/data"
     assert payload["sensor"]["event_topic"] == "nodus/aqi-x943fm/event"
     assert payload["switch"]["channel_count"] == 1
     assert payload["switch"]["meta_topic"] == "nodus/aqi-x943fm/meta/switch"
     assert "location" not in payload["switch"]
     assert "channels" not in payload["switch"]
+
+
+def test_runtime_meta_payload_distinguishes_co2_hardware_family():
+    scd4x_config = RuntimeConfig(
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            device="co2",
+            sensor_id="co2-scd4x",
+            i2c=I2CConfig(address=0x62),
+        )
+    )
+    scd30_config = RuntimeConfig(
+        sensor=DetectedSensor(
+            family="i2c",
+            interface="i2c",
+            device="co2",
+            sensor_id="co2-scd30",
+            i2c=I2CConfig(address=0x61),
+        )
+    )
+
+    scd4x = build_runtime_meta_payload(scd4x_config, version="0.1.0")
+    scd30 = build_runtime_meta_payload(scd30_config, version="0.1.0")
+
+    assert scd4x["sensor"]["hardware"] == "SCD4x"
+    assert scd30["sensor"]["hardware"] == "SCD30"
 
 
 def test_runtime_meta_payload_uses_selected_board_profile_for_mcu(monkeypatch):
@@ -229,8 +258,11 @@ def test_onboarding_hello_payload_reports_device_type_and_mcu(monkeypatch):
         network=NetworkConfig(hostname="xiao-node"),
         sensor=DetectedSensor(
             family="i2c",
+            interface="i2c",
+            device="co2",
             sensor_id="xiao-node",
             serial_number="abc123",
+            i2c=I2CConfig(address=0x62),
         ),
     )
 
@@ -242,6 +274,31 @@ def test_onboarding_hello_payload_reports_device_type_and_mcu(monkeypatch):
 
     assert payload["type"] == "nodus"
     assert payload["mcu"] == "xesp32s3"
+    assert payload["sensor"] == {
+        "present": True,
+        "device": "co2",
+        "hardware": "SCD4x",
+    }
+
+
+def test_onboarding_hello_payload_reports_absent_sensor_without_duplicate_id():
+    runtime_config = RuntimeConfig(
+        network=NetworkConfig(hostname="switch-node"),
+        switch=SwitchConfig(
+            present=True,
+            device_id="switch-node",
+            serial_number="abc123",
+        ),
+    )
+
+    payload = build_onboarding_hello_payload(
+        runtime_config,
+        {"onboard_token": "token-123"},
+        version="v0.26.172.2",
+    )
+
+    assert payload["device_id"] == "switch-node"
+    assert payload["sensor"] == {"present": False}
 
 
 def test_switch_meta_payload_uses_split_contract_without_pin_fields():
@@ -492,6 +549,7 @@ def test_avpd_switch_runtime_meta_packet_stays_under_single_mss():
         "channel_count": 1,
         "meta_topic": "nodus/avpd-0kl7sx/meta/switch",
     }
+    assert payload["sensor"]["hardware"] == "BME280"
     assert "username" not in payload["mqtt"]
     assert "password" not in payload["mqtt"]
     assert packet_size <= 1460
