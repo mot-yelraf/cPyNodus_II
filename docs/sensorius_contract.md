@@ -262,9 +262,10 @@ The payload must include:
 for the running firmware. Verified `mcu` values are `pico2w` and `xesp32s3`.
 
 `sensor.hardware` is the concrete sensor hardware family when known. Current
-values are `BME280`, `BME680`, `VEML7700`, `AHTx0`, `SCD30`, and `SCD4x`.
-Logical sensor device IDs remain unchanged: `avpd`, `apvpd`, `aqi`, `aht`,
-`co2`, and `lux`.
+I2C values are `BME280`, `BME680`, `VEML7700`, `AHTx0`, `SCD30`, and `SCD4x`.
+Soil sensors report the configured `SOIL_VARIANT`, such as `canonical`,
+`soil_2in1`, `soil_4in1`, or `soil_7in1`. Logical sensor device IDs remain
+unchanged: `avpd`, `apvpd`, `aqi`, `aht`, `co2`, `lux`, and `soil`.
 
 `network.ipv4addr` is the current runtime station IPv4 address from the active
 network stack. It is not a TOML setting and should be treated as volatile

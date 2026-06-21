@@ -38,7 +38,9 @@ Supported I2C `DEVICE` values:
 The `DEVICE` value remains the logical Nodus sensor ID used in topics and
 payloads. MQTT retained `meta` and `/itaot-meta` also report the concrete
 hardware family as `sensor.hardware` when known, for example `BME280`,
-`BME680`, `VEML7700`, `AHTx0`, `SCD30`, or `SCD4x`.
+`BME680`, `VEML7700`, `AHTx0`, `SCD30`, or `SCD4x`. Soil sensors report the
+configured `SOIL_VARIANT`, for example `canonical`, `soil_2in1`, `soil_4in1`,
+or `soil_7in1`.
 
 For single I2C sensors, `[I2Cbus]` is the preferred runtime bus. If the
 configured bus cannot be opened, or the driver reports no sensor at the

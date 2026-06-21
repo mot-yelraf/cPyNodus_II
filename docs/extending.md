@@ -37,7 +37,7 @@ Adafruit and community CircuitPython drivers fit this pattern.
    The `DEVICE` value is the internal sensor type key. Existing examples are
    `aht`, `apvpd_aht`, `aqi`, `co2`, `lux`, `avpd`, `apvpd`, and `soil`.
    Retained `meta` and `/itaot-meta` may also expose a concrete hardware family
-   through `sensor.hardware`; update `DetectedSensor.hardware_type` when a new
+   through `sensor.hardware`; update `DetectedSensor.hardware` when a new
    logical device needs to report a Sensorius-visible hardware type.
 
    Use a short lowercase name, for example:

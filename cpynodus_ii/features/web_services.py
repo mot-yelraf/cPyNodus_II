@@ -913,7 +913,7 @@ def build_itaot_meta_payload(
         "display_metrics": list(_display_metrics_for_sensor(sensor)),
         "calibration": _calibration_status(sensor),
     }
-    hardware = str(getattr(sensor, "hardware_type", "") or "").strip()
+    hardware = str(getattr(sensor, "hardware", "") or "").strip()
     if sensor.present and hardware:
         sensor_block["hardware"] = hardware
     if not sensor.present:

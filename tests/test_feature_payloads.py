@@ -11,6 +11,7 @@ from cpynodus_ii.core.config import (
     MQTTConfig,
     NetworkConfig,
     RuntimeConfig,
+    SoilModbusConfig,
     SwitchChannelConfig,
     SwitchConfig,
 )
@@ -239,6 +240,22 @@ def test_runtime_meta_payload_distinguishes_co2_hardware_family():
     assert scd30["sensor"]["hardware"] == "SCD30"
 
 
+def test_runtime_meta_payload_reports_soil_variant_as_hardware():
+    runtime_config = RuntimeConfig(
+        sensor=DetectedSensor(
+            family="soil",
+            interface="modbus_rs485",
+            device="soil",
+            sensor_id="soil-bed-a",
+            modbus=SoilModbusConfig(variant="soil_7in1"),
+        )
+    )
+
+    payload = build_runtime_meta_payload(runtime_config, version="0.1.0")
+
+    assert payload["sensor"]["hardware"] == "soil_7in1"
+
+
 def test_runtime_meta_payload_uses_selected_board_profile_for_mcu(monkeypatch):
     monkeypatch.setenv("NODUS_BOARD_PROFILE", "xesp32s3")
     runtime_config = RuntimeConfig(
@@ -278,6 +295,32 @@ def test_onboarding_hello_payload_reports_device_type_and_mcu(monkeypatch):
         "present": True,
         "device": "co2",
         "hardware": "SCD4x",
+    }
+
+
+def test_onboarding_hello_payload_reports_soil_variant_as_hardware():
+    runtime_config = RuntimeConfig(
+        network=NetworkConfig(hostname="soil-bed-a"),
+        sensor=DetectedSensor(
+            family="soil",
+            interface="modbus_rs485",
+            device="soil",
+            sensor_id="soil-bed-a",
+            serial_number="abc123",
+            modbus=SoilModbusConfig(variant="soil_7in1"),
+        ),
+    )
+
+    payload = build_onboarding_hello_payload(
+        runtime_config,
+        {"onboard_token": "token-123"},
+        version="v0.26.172.3",
+    )
+
+    assert payload["sensor"] == {
+        "present": True,
+        "device": "soil",
+        "hardware": "soil_7in1",
     }
 
 

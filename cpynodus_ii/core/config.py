@@ -400,9 +400,14 @@ class DetectedSensor:
         return bool(self.family)
 
     @property
-    def hardware_type(self):
+    def hardware(self):
         """Return the concrete sensor hardware family when it is known."""
         device = _clean_str(self.device).lower()
+        if device == "soil":
+            modbus = getattr(self, "modbus", None)
+            if modbus is not None:
+                return _clean_str(getattr(modbus, "variant", ""))
+            return ""
         if device in {"avpd", "apvpd"}:
             return "BME280"
         if device == "aqi":

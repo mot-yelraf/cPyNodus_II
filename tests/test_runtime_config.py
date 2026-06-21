@@ -371,6 +371,7 @@ def test_settings_from_directory_prefers_soil_sensor_file_when_soil_config_is_ac
     assert runtime_config.sensor.modbus.timeout_s == 0.5
     assert runtime_config.sensor.modbus.address == 3
     assert runtime_config.sensor.modbus.variant == "soil_7in1"
+    assert runtime_config.sensor.hardware == "soil_7in1"
     assert len(runtime_config.sensor.modbus.channels) == 1
     assert runtime_config.sensor.modbus.channels[0].name == "CH1"
     assert runtime_config.sensor.soil_registers is not None

@@ -277,7 +277,7 @@ def build_runtime_meta_payload(
                 runtime_config, sensor.sensor_id, "availability"
             ),
         }
-        hardware = str(getattr(sensor, "hardware_type", "") or "").strip()
+        hardware = str(getattr(sensor, "hardware", "") or "").strip()
         if hardware:
             sensor_payload["hardware"] = hardware
         payload["sensor"] = sensor_payload
@@ -364,7 +364,7 @@ def build_onboarding_hello_payload(runtime_config, onboarding_state, *, version)
     sensor_payload = {"present": bool(sensor.present)}
     if sensor.present:
         sensor_payload["device"] = sensor.device
-        hardware = str(getattr(sensor, "hardware_type", "") or "").strip()
+        hardware = str(getattr(sensor, "hardware", "") or "").strip()
         if hardware:
             sensor_payload["hardware"] = hardware
 
