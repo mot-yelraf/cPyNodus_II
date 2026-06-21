@@ -19,7 +19,6 @@ import usb_cdc
 # ---------- user-configurable pins ----------
 RW_GUARD_PIN_NAME = "GP14"  # default Pico2 W guard, low = app R/W + REPL
 XESP32S3_RW_GUARD_PIN_NAME = "D8"
-XESP32S3_FORCE_EDIT_MODE = True  # temporary bring-up recovery: expose CIRCUITPY
 ENABLE_USB_DATA_CDC = True  # Pico2 W keeps the secondary CDC channel.
 DISABLE_RUNTIME_AUTORELOAD = True
 
@@ -101,23 +100,12 @@ is_guard_low = False
 active_guard_pin_name = _resolve_rw_guard_pin_name()
 active_is_xesp32s3_board = _is_xesp32s3_board()
 active_usb_data_cdc = ENABLE_USB_DATA_CDC and not active_is_xesp32s3_board
-force_xesp32s3_edit_mode = active_is_xesp32s3_board and XESP32S3_FORCE_EDIT_MODE
 try:
     guard = getattr(board, active_guard_pin_name)
     guard_pin = digitalio.DigitalInOut(guard)
     guard_pin.direction = digitalio.Direction.INPUT
     guard_pin.pull = digitalio.Pull.UP
-    guard_is_low = guard_pin.value is False  # low when grounded
-    if force_xesp32s3_edit_mode:
-        if guard_is_low:
-            _warn(
-                "XIAO edit mode forced; ignoring low guard pin {pin}".format(
-                    pin=active_guard_pin_name,
-                )
-            )
-        is_guard_low = False
-    else:
-        is_guard_low = guard_is_low
+    is_guard_low = guard_pin.value is False  # low when grounded
 except Exception as exc:
     # Fail safe to edit mode so CIRCUITPY remains visible for recovery.
     _warn(

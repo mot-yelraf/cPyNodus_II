@@ -34,8 +34,9 @@ flow that Sensorius should reuse.
   CircuitPython `9.2.8` and `xesp32s3` on CircuitPython `10.2.1`.
 - Heap and filesystem space are tight, so manifests and handlers must be small.
 - OTA requires application-writable filesystem mode. Current `boot.py` enables
-  app writes only when `GP14` is held low at boot and otherwise remounts the
-  filesystem read-only.
+  app writes when the board-specific RW guard is held low at boot (`GP14` on
+  Pico2 W, `D8` on XIAO ESP32-S3) and otherwise remounts the filesystem
+  read-only.
 - OTA file upload uses 1024-byte HTTP chunks by default. The legacy whole-file
   `/ota/file` endpoint remains for small/debug transfers, but chunked transfer
   is the normal path because larger files can fail full-body allocation on

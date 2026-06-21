@@ -99,7 +99,6 @@ def test_boot_uses_pico_guard_pin_without_board_profile_import(monkeypatch):
 
     assert blocker.hit is False
     assert result["active_guard_pin_name"] == "GP14"
-    assert result["force_xesp32s3_edit_mode"] is False
     assert result["active_usb_data_cdc"] is True
     assert state["pins"] == ["pin-gp14"]
     assert state["usb_enable"] == [(True, True)]
@@ -123,7 +122,6 @@ def test_boot_honors_pico_grounded_guard(monkeypatch):
 
     assert blocker.hit is False
     assert result["active_guard_pin_name"] == "GP14"
-    assert result["force_xesp32s3_edit_mode"] is False
     assert result["is_guard_low"] is True
     assert state["disable_usb_drive"] == 1
     assert state["usb_enable"] == [(True, True)]
@@ -144,14 +142,13 @@ def test_boot_uses_xiao_guard_pin_without_board_profile_import(monkeypatch):
 
     assert blocker.hit is False
     assert result["active_guard_pin_name"] == "D8"
-    assert result["force_xesp32s3_edit_mode"] is True
     assert result["active_usb_data_cdc"] is False
     assert state["pins"] == ["pin-d8"]
     assert state["usb_enable"] == [(True, False)]
     assert state["remounts"] == [("/", True)]
 
 
-def test_boot_forces_xiao_edit_mode_when_guard_reads_low(monkeypatch):
+def test_boot_honors_xiao_grounded_guard(monkeypatch):
     board_module = _module(
         "board",
         board_id="seeed_xiao_esp32_s3_sense",
@@ -169,9 +166,8 @@ def test_boot_forces_xiao_edit_mode_when_guard_reads_low(monkeypatch):
 
     assert blocker.hit is False
     assert result["active_guard_pin_name"] == "D8"
-    assert result["force_xesp32s3_edit_mode"] is True
-    assert result["is_guard_low"] is False
-    assert result["desired_nvm_flag"] == 0
-    assert state["disable_usb_drive"] == 0
+    assert result["is_guard_low"] is True
+    assert result["desired_nvm_flag"] == 1
+    assert state["disable_usb_drive"] == 1
     assert state["usb_enable"] == [(True, False)]
-    assert state["remounts"] == [("/", True)]
+    assert state["remounts"] == [("/", False)]

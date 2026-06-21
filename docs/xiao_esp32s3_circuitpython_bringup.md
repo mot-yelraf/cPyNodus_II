@@ -233,10 +233,10 @@ After deploy:
 1. Eject `/Volumes/CIRCUITPY` cleanly in Finder or with `diskutil`.
 2. Unplug and reconnect USB.
 3. The board should run `boot.py`, then `code.py`.
-4. On XIAO ESP32-S3, firmware currently forces host-edit mode and ignores the
-   XIAO RW guard so `/Volumes/CIRCUITPY` remains visible for recovery.
-5. Do not rely on `D8` for XIAO RWFS mode until the guard pin is reassigned or
-   the temporary recovery patch is removed.
+4. On XIAO ESP32-S3, leave `D8` ungrounded for host-edit mode so
+   `/Volumes/CIRCUITPY` remains visible.
+5. Ground `D8` only when you want app-writable RWFS mode. In RWFS mode,
+   `boot.py` intentionally disables USB mass storage.
 
 ## Troubleshooting
 
@@ -253,8 +253,7 @@ After deploy:
 
 The device mounts, then disappears after Nodus deploy:
 
-- Confirm the deployed `boot.py` still has the temporary XIAO forced edit-mode
-  recovery patch. Without that patch, a grounded RW guard can make `boot.py`
+- Confirm `D8` is not grounded. A grounded XIAO RW guard makes `boot.py`
   disable USB mass storage intentionally.
 
 Deploy refuses `xesp32s3-mpy`:

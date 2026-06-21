@@ -692,9 +692,8 @@ Automations are implemented in Sensorius or Home Assistant. Commands are publish
 
 ## Development Notes
 
-- Use the board-specific guard pin (`GP14` on Pico2 W) to control whether the
-  filesystem is R/W for the app. On XIAO ESP32-S3, firmware currently forces
-  host-edit mode so `/Volumes/CIRCUITPY` remains recoverable.
+- Use the board-specific guard pin (`GP14` on Pico2 W, `D8` on XIAO ESP32-S3)
+  to control whether the filesystem is R/W for the app.
 - Keep web routes small; heavy handlers can destabilize startup on constrained devices.
 - Add Device flow uses `POST /itaot-init`, then MQTT onboarding topics (`nodus/<device_id>/onboard/hello`, `config/set`, `config/ack`, `config/result`) as the authoritative configuration path.
 - Nodus TOML files are the source of truth for accepted config. Sensorius should use retained `nodus/<device_id>/meta` as the compact startup/reconnect snapshot, retained `nodus/<device_id>/meta/switch` as the switch control-topic map when switch channels are present, then consume `nodus/<device_id>/meta/patch` for accepted steady-state config deltas.

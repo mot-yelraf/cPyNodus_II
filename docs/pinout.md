@@ -60,9 +60,7 @@ Default verified mapping:
 - `D1` / `A1` / GPIO2: S1 switch control
 - `D2` / `A2` / GPIO3: S2 ENABLE
 - `D3` / `A3` / GPIO4: S2 switch control
-- `D8` / GPIO7: RW ENABLE reserved. On XIAO ESP32-S3, firmware currently forces
-  host-edit mode and ignores this guard so `/Volumes/CIRCUITPY` remains
-  recoverable.
+- `D8` / GPIO7: RW ENABLE, hold LOW at boot for app-writable filesystem
 - Factory reset input: not assigned by default
 - `TX` / GPIO43 and `RX` / GPIO44: optional manual UART/RS485 use
 
