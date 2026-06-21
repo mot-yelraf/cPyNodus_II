@@ -1,10 +1,12 @@
-"""Low-stack device location config handling."""
+"""Low-stack device display config handling."""
 
 from cpynodus_ii.features.command_models import CommandResult
 from cpynodus_ii.features.topics import mqtt_topic
 
+_DISPLAY_SECTIONS = ("Display", "Display.Style")
 
-def process_device_location_config_message(
+
+def process_device_display_config_message(
     transport,
     runtime_config,
     *,
@@ -13,15 +15,16 @@ def process_device_location_config_message(
     handled_message_ids=(),
     settings_root=None,
 ):
-    """Handle simple location updates without the full config stack."""
+    """Handle simple Display.* config updates without the full config stack."""
     device_id = _device_id(runtime_config)
     if not (
         device_id
+        and runtime_config.sensor.present
         and topic == mqtt_topic(runtime_config, device_id, "config", "set")
     ):
         return None
 
-    parsed = _parse_location_config(runtime_config, payload_text)
+    parsed = _parse_display_config(payload_text)
     if parsed is None:
         return None
     message_id, updates, onboard_token = parsed
@@ -74,7 +77,7 @@ def process_device_location_config_message(
             duplicate=True,
         )
 
-    updated_runtime_config = _location_runtime_config(runtime_config, updates)
+    updated_runtime_config = _display_runtime_config(runtime_config, updates)
     _publish_config_result(
         transport,
         result_topic,
@@ -97,7 +100,7 @@ def process_device_location_config_message(
         ),
         retain=False,
     )
-    persistence_errors = _persist_location_updates_fast(
+    persistence_errors = _persist_display_updates_fast(
         updated_runtime_config,
         updates,
         settings_root=settings_root,
@@ -115,12 +118,7 @@ def process_device_location_config_message(
     )
 
 
-def process_switch_location_config_message(*args, **kwargs):
-    """Compatibility wrapper for switch-only location updates."""
-    return process_device_location_config_message(*args, **kwargs)
-
-
-def _parse_location_config(runtime_config, payload_text):
+def _parse_display_config(payload_text):
     try:
         import json
 
@@ -129,20 +127,22 @@ def _parse_location_config(runtime_config, payload_text):
         return None
     if not isinstance(payload, dict):
         return None
+    if bool(payload.get("restart", False)):
+        return None
     message_id = str(payload.get("message_id", "") or "").strip()
     if not message_id:
         return None
     body = payload.get("payload") or {}
     if not isinstance(body, dict):
         return None
-    updates = _location_updates_from_body(runtime_config, body)
+    updates = _display_updates_from_body(body)
     if updates is None:
         return None
     onboard_token = str(payload.get("onboard_token", "") or "").strip()
     return message_id, tuple(updates), onboard_token
 
 
-def _location_updates_from_body(runtime_config, body):
+def _display_updates_from_body(body):
     raw_updates = []
     updates = body.get("updates")
     if isinstance(updates, list):
@@ -161,103 +161,109 @@ def _location_updates_from_body(runtime_config, body):
         if not isinstance(settings, dict):
             return None
         for section, values in settings.items():
+            section_text = str(section or "").strip()
+            if section_text not in _DISPLAY_SECTIONS:
+                return None
             if not isinstance(values, dict):
                 return None
             for key, value in values.items():
-                raw_updates.append(
-                    (
-                        str(section or "").strip(),
-                        str(key or "").strip().upper(),
-                        value,
-                    )
-                )
+                key_text = str(key or "").strip()
+                if section_text == "Display" and key_text == "Style":
+                    if not isinstance(value, dict):
+                        return None
+                    for style_key, style_value in value.items():
+                        raw_updates.append(
+                            (
+                                "Display.Style",
+                                str(style_key or "").strip().upper(),
+                                style_value,
+                            )
+                        )
+                    continue
+                raw_updates.append((section_text, key_text.upper(), value))
 
     normalized = []
-    seen = set()
+    seen = []
     for section, key, value in raw_updates:
-        update = _normalize_location_update(runtime_config, section, key, value)
-        if update is None:
+        if section not in _DISPLAY_SECTIONS or not _display_metric_index(key):
             return None
-        target = (update["section"], update["key"])
+        target = (section, key)
         if target in seen:
             return None
-        seen.add(target)
-        normalized.append(update)
+        seen.append(target)
+        normalized.append(
+            {
+                "section": section,
+                "key": key,
+                "value": str(value or "").strip(),
+            }
+        )
     return normalized
 
 
-def _normalize_location_update(runtime_config, section, key, value):
-    if section == "Sensor" and key == "LOCATION":
-        if runtime_config.sensor.present:
-            return {
-                "section": "Sensor",
-                "key": "LOCATION",
-                "value": str(value or "").strip(),
-            }
-        if runtime_config.switch.present:
-            return {
-                "section": "Switch",
-                "key": "SWITCH_LOCATION",
-                "value": str(value or "").strip(),
-            }
-    if (
-        section == "Switch"
-        and key == "SWITCH_LOCATION"
-        and runtime_config.switch.present
-    ):
-        return {
-            "section": "Switch",
-            "key": "SWITCH_LOCATION",
-            "value": str(value or "").strip(),
-        }
-    return None
+def _display_runtime_config(runtime_config, updates):
+    display = runtime_config.sensor.display
+    metrics = _six_slots(getattr(display, "metrics", ()))
+    styles = _six_slots(getattr(display, "styles", ()))
+    for update in updates:
+        key = str(update.get("key", "") or "").strip().upper()
+        index = _display_metric_index(key)
+        if not index:
+            continue
+        value = str(update.get("value", "") or "").strip()
+        if update.get("section") == "Display":
+            metrics[index - 1] = value
+        elif update.get("section") == "Display.Style":
+            styles[index - 1] = value
+    display.metrics = tuple(metrics)
+    display.styles = tuple(styles)
+    return runtime_config
 
 
-def _persist_location_updates_fast(runtime_config, updates, *, settings_root=None):
+def _six_slots(values):
+    slots = [str(value or "").strip() for value in tuple(values or ())]
+    while len(slots) < 6:
+        slots.append("")
+    return slots[:6]
+
+
+def _persist_display_updates_fast(runtime_config, updates, *, settings_root=None):
     if settings_root is None:
         return ()
-    grouped = {}
-    for update in updates:
-        filename = _target_file_for_location_update(runtime_config, update)
-        if not filename:
-            return ("location_target_missing",)
-        grouped.setdefault(filename, []).append(update)
+    filename = _target_sensor_config_file(runtime_config)
+    if not filename:
+        return ("display_target_missing",)
     try:
-        for filename, file_updates in grouped.items():
-            errors = _write_location_file(
-                _join_settings_path(settings_root, filename),
-                file_updates,
-            )
-            if errors:
-                return errors
+        return _write_display_file(
+            _join_settings_path(settings_root, filename),
+            updates,
+        )
     except MemoryError:
-        return ("location_persist_memory",)
+        return ("display_persist_memory",)
     except RuntimeError as exc:
         if "pystack exhausted" in str(exc).lower():
-            return ("location_persist_pystack",)
+            return ("display_persist_pystack",)
         raise
-    return ()
 
 
-def _target_file_for_location_update(runtime_config, update):
-    if update["section"] == "Switch":
-        return "switch.toml"
-    if update["section"] == "Sensor":
-        filename = str(runtime_config.sensor.active_config_file or "").strip()
-        if filename:
-            return filename
-        if runtime_config.sensor.family == "soil":
-            return "sensor_soil.toml"
-        return "sensor_i2c.toml"
-    return ""
+def _target_sensor_config_file(runtime_config):
+    filename = str(getattr(runtime_config.sensor, "active_config_file", "") or "")
+    filename = filename.strip()
+    if filename:
+        return filename
+    family = str(getattr(runtime_config.sensor, "family", "") or "").strip().lower()
+    device = str(getattr(runtime_config.sensor, "device", "") or "").strip().lower()
+    if family == "soil" or device == "soil":
+        return "sensor_soil.toml"
+    return "sensor_i2c.toml"
 
 
-def _write_location_file(path, updates):
+def _write_display_file(path, updates):
     import os
 
-    targets = _location_patch_targets(updates)
+    targets = _display_patch_targets(updates)
     if not targets:
-        return ("location_key_missing",)
+        return ("display_key_missing",)
 
     path_text = str(path or "")
     tmp_path = "{}.tmp".format(path_text)
@@ -276,26 +282,30 @@ def _write_location_file(path, updates):
                 break
             stripped = str(raw_line or "").strip()
             if stripped.startswith("[") and stripped.endswith("]"):
-                _append_missing_location_targets(
-                    target,
-                    current_section,
-                    targets,
-                    found,
-                )
+                if current_section in _DISPLAY_SECTIONS:
+                    _append_missing_display_targets(
+                        target,
+                        current_section,
+                        targets,
+                        found,
+                    )
                 current_section = stripped[1:-1].strip()
-                if current_section not in sections_seen:
+                if (
+                    current_section in _DISPLAY_SECTIONS
+                    and current_section not in sections_seen
+                ):
                     sections_seen.append(current_section)
                 target.write(raw_line)
                 continue
             line_key = ""
-            if _section_has_missing_targets(current_section, targets, found):
+            if current_section in _DISPLAY_SECTIONS:
                 line_body = str(raw_line or "").split("#", 1)[0]
                 equal_index = line_body.find("=")
                 if equal_index >= 0:
                     line_key = line_body[:equal_index].strip().upper()
             replacement = ""
-            if line_key:
-                replacement = _replacement_location_line(
+            if current_section in _DISPLAY_SECTIONS and line_key:
+                replacement = _replacement_display_line(
                     current_section,
                     line_key,
                     raw_line,
@@ -303,12 +313,14 @@ def _write_location_file(path, updates):
                     found,
                 )
             target.write(replacement if replacement else raw_line)
-        _append_missing_location_targets(target, current_section, targets, found)
-        for section in _location_target_sections(targets, found):
-            if section not in sections_seen:
-                target.write("\n[{}]\n".format(section))
-                sections_seen.append(section)
-            _append_missing_location_targets(target, section, targets, found)
+        if current_section in _DISPLAY_SECTIONS:
+            _append_missing_display_targets(target, current_section, targets, found)
+        for section in _DISPLAY_SECTIONS:
+            if _section_has_missing_targets(section, targets, found):
+                if section not in sections_seen:
+                    target.write("\n[{}]\n".format(section))
+                    sections_seen.append(section)
+                _append_missing_display_targets(target, section, targets, found)
         try:
             target.flush()
         except AttributeError:
@@ -325,7 +337,7 @@ def _write_location_file(path, updates):
         target = None
         if not _all_found(found):
             _remove_tmp(tmp_path)
-            return ("location_key_missing",)
+            return ("display_key_missing",)
         if _path_size(tmp_path) <= 0:
             _remove_tmp(tmp_path)
             return ("toml_write_empty_tmp",)
@@ -356,16 +368,13 @@ def _write_location_file(path, updates):
     return ()
 
 
-def _location_patch_targets(updates):
+def _display_patch_targets(updates):
     targets = []
     seen = []
     for update in updates:
         section = str(update.get("section", "") or "").strip()
         key = str(update.get("key", "") or "").strip().upper()
-        if not (
-            (section == "Sensor" and key == "LOCATION")
-            or (section == "Switch" and key == "SWITCH_LOCATION")
-        ):
+        if section not in _DISPLAY_SECTIONS or not _display_metric_index(key):
             return ()
         target = (section, key)
         if target in seen:
@@ -375,7 +384,7 @@ def _location_patch_targets(updates):
     return tuple(targets)
 
 
-def _append_missing_location_targets(handle, section, targets, found):
+def _append_missing_display_targets(handle, section, targets, found):
     for index, target in enumerate(targets):
         if found[index]:
             continue
@@ -383,17 +392,6 @@ def _append_missing_location_targets(handle, section, targets, found):
             continue
         handle.write("{} = {}\n".format(target[1], target[2]))
         found[index] = True
-
-
-def _location_target_sections(targets, found):
-    sections = []
-    for index, target in enumerate(targets):
-        if found[index]:
-            continue
-        section = target[0]
-        if section not in sections:
-            sections.append(section)
-    return tuple(sections)
 
 
 def _section_has_missing_targets(section, targets, found):
@@ -405,7 +403,7 @@ def _section_has_missing_targets(section, targets, found):
     return False
 
 
-def _replacement_location_line(section, key, raw_line, targets, found):
+def _replacement_display_line(section, key, raw_line, targets, found):
     key_upper = str(key or "").strip().upper()
     for index, target in enumerate(targets):
         if found[index]:
@@ -416,13 +414,46 @@ def _replacement_location_line(section, key, raw_line, targets, found):
     return ""
 
 
-def _location_runtime_config(runtime_config, updates):
-    for update in updates:
-        if update["section"] == "Sensor":
-            runtime_config.sensor.location = str(update.get("value", "") or "").strip()
-        elif update["section"] == "Switch":
-            runtime_config.switch.location = str(update.get("value", "") or "").strip()
-    return runtime_config
+def _display_metric_index(key_upper):
+    if not key_upper.startswith("METRIC_"):
+        return 0
+    try:
+        index = int(key_upper.split("_", 1)[1])
+    except Exception:
+        return 0
+    if 1 <= index <= 6:
+        return index
+    return 0
+
+
+def _all_found(found):
+    for item in found:
+        if not item:
+            return False
+    return True
+
+
+def _format_toml_scalar(value):
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int) and not isinstance(value, bool):
+        return str(value)
+    if isinstance(value, float):
+        text = repr(float(value))
+        if "." not in text and "e" not in text.lower():
+            text += ".0"
+        return text
+    text = str(value or "")
+    return '"{}"'.format(text.replace("\\", "\\\\").replace('"', '\\"'))
+
+
+def _line_ending(raw_line):
+    text = str(raw_line or "")
+    if text.endswith("\r\n"):
+        return "\r\n"
+    if text.endswith("\n"):
+        return "\n"
+    return ""
 
 
 def _publish_config_ack(
@@ -501,33 +532,26 @@ def _build_meta_patch_payload(runtime_config, *, source, message_id, updates):
     }
 
 
-def _format_toml_scalar(value):
-    text = str(value or "")
-    return '"{}"'.format(text.replace("\\", "\\\\").replace('"', '\\"'))
-
-
-def _line_ending(raw_line):
-    text = str(raw_line or "")
-    if text.endswith("\r\n"):
-        return "\r\n"
-    if text.endswith("\n"):
-        return "\n"
-    return ""
-
-
 def _validate_onboarding_token_fast(settings_root, onboard_token):
     if settings_root is None:
         return ""
     state_path = _join_settings_path(settings_root, "onboarding_state.json")
     if _path_size(state_path) <= 0:
         return ""
+    handle = None
     try:
         import json
 
-        with open(state_path, "r", encoding="utf-8") as handle:
-            state = json.load(handle)
+        handle = open(state_path, "r")
+        state = json.load(handle)
     except Exception:
         return ""
+    finally:
+        if handle is not None:
+            try:
+                handle.close()
+            except AttributeError:
+                pass
     if not isinstance(state, dict):
         return ""
     expected = str(state.get("onboard_token", "") or "").strip()
@@ -581,13 +605,6 @@ def _path_size(path):
         return os.stat(path)[6]
     except OSError:
         return -1
-
-
-def _all_found(found):
-    for item in found:
-        if not item:
-            return False
-    return True
 
 
 def _remove_tmp(path):

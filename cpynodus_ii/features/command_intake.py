@@ -141,6 +141,39 @@ def process_inbound_messages(
             results.append(fast_result)
             continue
 
+        fast_result = None
+        if _should_try_display_config_fast_path(
+            message.topic,
+            runtime_config,
+            message.payload_text,
+        ):
+            try:
+                fast_result = _process_display_config_message(
+                    transport,
+                    runtime_config,
+                    topic=message.topic,
+                    payload_text=message.payload_text,
+                    handled_message_ids=handled_message_ids,
+                    settings_root=settings_root,
+                )
+            except MemoryError:
+                _restore_received_messages(transport, messages[index + 1 :])
+                results.append(
+                    _publish_minimal_config_failure(
+                        transport,
+                        runtime_config,
+                        topic=message.topic,
+                        payload_text=message.payload_text,
+                        error="display_config_handler_memory",
+                    )
+                )
+                return tuple(results)
+        if fast_result is not None:
+            if fast_result.runtime_config is not None:
+                runtime_config = fast_result.runtime_config
+            results.append(fast_result)
+            continue
+
         config_schema_error = _device_config_fast_schema_error(
             message.topic, runtime_config, message.payload_text
         )
@@ -575,6 +608,35 @@ def _process_time_config_message(
     )
 
 
+def _process_display_config_message(
+    transport,
+    runtime_config,
+    *,
+    topic,
+    payload_text,
+    handled_message_ids=(),
+    settings_root=None,
+):
+    try:
+        import gc
+
+        gc.collect()
+    except Exception:
+        pass
+    from cpynodus_ii.features.display_config import (
+        process_device_display_config_message,
+    )
+
+    return process_device_display_config_message(
+        transport,
+        runtime_config,
+        topic=topic,
+        payload_text=payload_text,
+        handled_message_ids=handled_message_ids,
+        settings_root=settings_root,
+    )
+
+
 def _process_calibration_apply_message(
     transport,
     runtime_config,
@@ -664,6 +726,14 @@ def _should_try_time_config_fast_path(topic, runtime_config, payload_text):
     return _payload_may_update_time(payload_text)
 
 
+def _should_try_display_config_fast_path(topic, runtime_config, payload_text):
+    if not _is_location_config_topic(topic, runtime_config):
+        return False
+    if not runtime_config.sensor.present:
+        return False
+    return _payload_may_update_display(payload_text)
+
+
 def _device_config_fast_schema_error(topic, runtime_config, payload_text):
     if not _is_location_config_topic(topic, runtime_config):
         return ""
@@ -704,6 +774,14 @@ def _payload_may_update_time(payload_text):
         or "TZ_NAME" in upper
         or "NTP_SERVER" in upper
     )
+
+
+def _payload_may_update_display(payload_text):
+    text = str(payload_text or "").strip()
+    if not text:
+        return False
+    upper = text.upper()
+    return "DISPLAY" in upper and "METRIC_" in upper
 
 
 def _should_try_calibration_apply_fast_path(topic, runtime_config, payload_text):

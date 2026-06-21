@@ -111,6 +111,14 @@ current contract:
 - Accepted device `Time.*` config writes are applied live before best-effort
   TOML persistence, so persistence stack or memory failures are reported in
   serial logs as volatile without turning the MQTT command result into failure.
+- Accepted device `Display.METRIC_*` and `Display.Style.METRIC_*` config writes
+  are applied live before best-effort sensor TOML persistence, so persistence
+  stack or memory failures are reported in serial logs as volatile without
+  turning the MQTT command result into failure.
+- Accepted device `Sensor.LOCATION` and `Switch.SWITCH_LOCATION` config writes
+  are applied live before best-effort TOML persistence, so persistence stack or
+  memory failures are reported in serial logs as volatile without turning the
+  MQTT command result into failure.
 - Switch config uses channel-scoped `config/set`, `config/ack`,
   `config/result`, retained `state`, and `meta/patch`. Nodus does not clear
   switch `config/set`; Sensorius owns any retained command cleanup.

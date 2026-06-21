@@ -464,6 +464,17 @@ Implemented behavior:
   persistence fails from constrained-memory or Python-stack pressure, the
   command remains MQTT-visible as applied and serial logging reports
   `persistence_mode = "volatile"`.
+- Accepted `Display.METRIC_1` through `Display.METRIC_6` and
+  `Display.Style.METRIC_1` through `Display.Style.METRIC_6` writes are also
+  live-first. Nodus publishes successful `config/result` and `meta/patch`
+  before best-effort sensor TOML persistence; if persistence fails from
+  constrained-memory or Python-stack pressure, the command remains MQTT-visible
+  as applied and serial logging reports `persistence_mode = "volatile"`.
+- Accepted `Sensor.LOCATION` and `Switch.SWITCH_LOCATION` writes are
+  live-first. Nodus publishes successful `config/result` and `meta/patch`
+  before best-effort TOML persistence; if persistence fails from
+  constrained-memory or Python-stack pressure, the command remains MQTT-visible
+  as applied and serial logging reports `persistence_mode = "volatile"`.
 - Switch-only devices accept `Sensor.LOCATION` as a device-location alias and
   persist it as `Switch.SWITCH_LOCATION`.
 - Failed validation or rejected writes publish `config/result` with

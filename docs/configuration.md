@@ -207,6 +207,21 @@ rendered page:
   `Network.HTTPPORT`, `Network.AP_CHANNEL`, `[MQTT]`, `[Profile]`, and
   `[HomeAssistant]`
 
+Runtime MQTT `Display.*` writes use a low-stack handler for
+`Display.METRIC_1` through `Display.METRIC_6` and `Display.Style.METRIC_1`
+through `Display.Style.METRIC_6`. Nodus applies the live display setting and
+publishes successful `config/result` plus `meta/patch` before attempting TOML
+persistence. If persistence fails from memory or Python-stack pressure, the
+live change remains active until reboot and the serial command log reports
+`persistence_mode=volatile`.
+
+Runtime MQTT `Sensor.LOCATION` and `Switch.SWITCH_LOCATION` writes use the same
+live-first pattern. Nodus updates the runtime location and publishes successful
+`config/result` plus `meta/patch` before best-effort TOML persistence. If
+persistence fails from memory or Python-stack pressure, the location remains
+active until reboot and the serial command log reports
+`persistence_mode=volatile`.
+
 `AP_SSID` and `AP_PASSWORD` are read from `[Network]` for AP mode but are not
 currently accepted by the web config classifier.
 

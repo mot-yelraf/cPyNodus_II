@@ -635,6 +635,75 @@ def test_time_fast_config_does_not_load_heavy_command_handlers():
     )
 
 
+def test_display_fast_config_does_not_load_heavy_command_handlers():
+    _run_import_check(
+        """
+        import sys
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+
+        from cpynodus_ii.core.config import DetectedSensor, DisplayConfig, RuntimeConfig
+        from cpynodus_ii.core.mqtt import MQTTTransport
+        from cpynodus_ii.features.command_intake import process_inbound_messages
+
+        runtime_config = RuntimeConfig(
+            sensor=DetectedSensor(
+                family="i2c",
+                interface="i2c",
+                active_config_file="sensor_i2c.toml",
+                device="co2",
+                sensor_id="co2-x",
+                display=DisplayConfig(metrics=("CO2",), styles=("Graph24hr",)),
+            ),
+        )
+        transport = MQTTTransport("broker.local", 1883)
+        transport.receive(
+            "nodus/co2-x/config/set",
+            (
+                '{"message_id":"cfg-display","payload":{"updates":['
+                '{"section":"Display","key":"METRIC_1","value":"Temperature_F"}'
+                ']}}'
+            ),
+        )
+
+        with TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "sensor_i2c.toml").write_text(
+                (
+                    '[Sensor]\\nDEVICE = "co2"\\n'
+                    '[Display]\\nMETRIC_1 = "CO2"\\n'
+                    '[Display.Style]\\nMETRIC_1 = "Graph24hr"\\n'
+                ),
+                encoding="utf-8",
+            )
+            results = process_inbound_messages(
+                transport,
+                runtime_config,
+                None,
+                settings_root=tmpdir,
+            )
+            sensor_text = Path(tmpdir, "sensor_i2c.toml").read_text(
+                encoding="utf-8"
+            )
+
+        if len(results) != 1 or results[0].phase != "published":
+            raise SystemExit("unexpected display result: {}".format(results))
+        if 'METRIC_1 = "Temperature_F"' not in sensor_text:
+            raise SystemExit("display config was not persisted")
+
+        blocked = (
+            "cpynodus_ii.core.settings",
+            "cpynodus_ii.features.command_handlers",
+            "cpynodus_ii.features.payloads",
+            "cpynodus_ii.features.runtime_config_update",
+            "cpynodus_ii.ota.state",
+        )
+        loaded = [name for name in blocked if name in sys.modules]
+        if loaded:
+            raise SystemExit("unexpected imports: {}".format(",".join(loaded)))
+        """
+    )
+
+
 def test_calibration_fast_apply_does_not_load_heavy_command_handlers():
     _run_import_check(
         """

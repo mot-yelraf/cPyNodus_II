@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import cpynodus_ii.features.command_intake as command_intake
 from cpynodus_ii.core.config import (
     DetectedSensor,
+    DisplayConfig,
     MQTTConfig,
     RuntimeConfig,
     SensorCalibration,
@@ -104,6 +105,24 @@ def _sensor_switch_runtime_config():
             sensor_id="co2-ykdvea",
             serial_number="ykdvea",
             location="OfficeTest",
+            display=DisplayConfig(
+                metrics=(
+                    "CO2",
+                    "Temperature",
+                    "Rel-Humidity",
+                    "Ambient VPD",
+                    "Dew Point Deficit",
+                    "DewVPD Risk",
+                ),
+                styles=(
+                    "Graph24hr",
+                    "Graph24hr",
+                    "Graph24hr",
+                    "Graph24hr",
+                    "Graph24hr",
+                    "Graph24hr",
+                ),
+            ),
         ),
         switch=SwitchConfig(
             present=True,
@@ -658,6 +677,87 @@ def test_process_inbound_messages_fast_switch_location_persists():
     ]
 
 
+def test_process_inbound_messages_fast_switch_location_appends_missing_key():
+    transport = MQTTTransport("broker.local", 1883)
+    with TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        original_text = '[Switch]\nSWITCH_1_LABEL = "Pump"\n'
+        (root / "switch.toml").write_text(original_text, encoding="utf-8")
+        transport.receive(
+            "nodus/switch-x943fm/config/set",
+            (
+                '{"message_id":"cfg-loc-add","payload":{"updates":['
+                '{"section":"Switch","key":"SWITCH_LOCATION","value":"Bench"}'
+                "]}}"
+            ),
+        )
+
+        results = process_inbound_messages(
+            transport,
+            _runtime_config(),
+            _switch_service(),
+            settings_root=tmpdir,
+        )
+        switch_text = (root / "switch.toml").read_text(encoding="utf-8")
+        backup_text = (root / "switch.toml.bak").read_text(encoding="utf-8")
+
+    assert len(results) == 1
+    assert results[0].phase == "published"
+    assert results[0].persistence_mode == "persisted"
+    assert results[0].runtime_config.switch.location == "Bench"
+    assert backup_text == original_text
+    assert 'SWITCH_1_LABEL = "Pump"' in switch_text
+    assert 'SWITCH_LOCATION = "Bench"' in switch_text
+
+
+def test_process_inbound_messages_fast_switch_location_pystack_is_volatile(
+    monkeypatch,
+    tmp_path,
+):
+    from cpynodus_ii.features import switch_location_config
+
+    transport = MQTTTransport("broker.local", 1883)
+    (tmp_path / "switch.toml").write_text(
+        '[Switch]\nSWITCH_LOCATION = "TestSwitch"\n',
+        encoding="utf-8",
+    )
+
+    def raise_pystack(*args, **kwargs):
+        raise RuntimeError("pystack exhausted")
+
+    monkeypatch.setattr(switch_location_config, "_write_location_file", raise_pystack)
+    transport.receive(
+        "nodus/switch-x943fm/config/set",
+        (
+            '{"message_id":"cfg-loc-stack","payload":{"updates":['
+            '{"section":"Switch","key":"SWITCH_LOCATION","value":"Switch#1"}'
+            "]}}"
+        ),
+    )
+
+    results = process_inbound_messages(
+        transport,
+        _runtime_config(),
+        _switch_service(),
+        settings_root=tmp_path,
+    )
+
+    assert len(results) == 1
+    assert results[0].phase == "published"
+    assert results[0].published_count == 3
+    assert results[0].errors == ("location_persist_pystack",)
+    assert results[0].persistence_mode == "volatile"
+    assert results[0].runtime_config.switch.location == "Switch#1"
+    assert transport.published_messages[1].payload == {
+        "message_id": "cfg-loc-stack",
+        "applied": True,
+        "updated": 1,
+        "duplicate": False,
+        "error": "",
+    }
+    assert transport.published_messages[2].topic == "nodus/switch-x943fm/meta/patch"
+
+
 def test_process_inbound_messages_fast_switch_location_validates_onboarding_token():
     transport = MQTTTransport("broker.local", 1883)
     with TemporaryDirectory() as tmpdir:
@@ -1130,6 +1230,136 @@ def test_process_inbound_messages_fast_time_config_pystack_is_volatile(
     assert results[0].runtime_config.time.tz == "America/Denver"
     assert transport.published_messages[1].payload == {
         "message_id": "cfg-time-stack",
+        "applied": True,
+        "updated": 1,
+        "duplicate": False,
+        "error": "",
+    }
+    assert transport.published_messages[2].topic == "nodus/co2-ykdvea/meta/patch"
+
+
+def test_process_inbound_messages_fast_display_config_persists(
+    monkeypatch,
+    tmp_path,
+):
+    def fail_generic_persistence(*args, **kwargs):
+        raise AssertionError("display config should use low-stack persistence")
+
+    monkeypatch.setattr(
+        Settings,
+        "apply_updates_to_directory",
+        fail_generic_persistence,
+    )
+    transport = MQTTTransport("broker.local", 1883)
+    runtime_config = _sensor_switch_runtime_config()
+    sensor_path = tmp_path / "sensor_i2c.toml"
+    original_text = (
+        '[Sensor]\nDEVICE = "co2"\n'
+        "[Display]\n"
+        'METRIC_1 = "CO2"\n'
+        'METRIC_6 = "DewVPD Risk"\n'
+        "[Display.Style]\n"
+        'METRIC_6 = "Graph24hr"\n'
+    )
+    sensor_path.write_text(original_text, encoding="utf-8")
+    transport.receive(
+        "nodus/co2-ykdvea/config/set",
+        (
+            '{"message_id":"cfg-display","payload":{"updates":['
+            '{"section":"Display","key":"METRIC_6","value":"Temperature_F",'
+            '"name":"sensor_i2c.toml"},'
+            '{"section":"Display.Style","key":"METRIC_6","value":"Gauge",'
+            '"name":"sensor_i2c.toml"}'
+            ']},"restart":false}'
+        ),
+    )
+
+    results = process_inbound_messages(
+        transport,
+        runtime_config,
+        _sensor_switch_service(),
+        settings_root=tmp_path,
+    )
+    sensor_text = sensor_path.read_text(encoding="utf-8")
+    backup_text = (tmp_path / "sensor_i2c.toml.bak").read_text(encoding="utf-8")
+
+    assert len(results) == 1
+    assert results[0].phase == "published"
+    assert results[0].published_count == 3
+    assert results[0].errors == ()
+    assert results[0].persistence_mode == "persisted"
+    assert results[0].runtime_config.sensor.display.metrics[5] == "Temperature_F"
+    assert results[0].runtime_config.sensor.display.styles[5] == "Gauge"
+    assert 'METRIC_6 = "Temperature_F"' in sensor_text
+    assert 'METRIC_6 = "Gauge"' in sensor_text
+    assert backup_text == original_text
+    assert [message.topic for message in transport.published_messages] == [
+        "nodus/co2-ykdvea/config/ack",
+        "nodus/co2-ykdvea/config/result",
+        "nodus/co2-ykdvea/meta/patch",
+    ]
+    assert transport.published_messages[1].payload == {
+        "message_id": "cfg-display",
+        "applied": True,
+        "updated": 2,
+        "duplicate": False,
+        "error": "",
+    }
+    assert transport.published_messages[2].payload["updates"] == [
+        {
+            "section": "Display",
+            "key": "METRIC_6",
+            "value": "Temperature_F",
+        },
+        {
+            "section": "Display.Style",
+            "key": "METRIC_6",
+            "value": "Gauge",
+        },
+    ]
+
+
+def test_process_inbound_messages_fast_display_config_pystack_is_volatile(
+    monkeypatch,
+    tmp_path,
+):
+    from cpynodus_ii.features import display_config
+
+    transport = MQTTTransport("broker.local", 1883)
+    runtime_config = _sensor_switch_runtime_config()
+    (tmp_path / "sensor_i2c.toml").write_text(
+        '[Display]\nMETRIC_6 = "DewVPD Risk"\n',
+        encoding="utf-8",
+    )
+
+    def raise_pystack(*args, **kwargs):
+        raise RuntimeError("pystack exhausted")
+
+    monkeypatch.setattr(display_config, "_write_display_file", raise_pystack)
+    transport.receive(
+        "nodus/co2-ykdvea/config/set",
+        (
+            '{"message_id":"cfg-display-stack","payload":{"updates":['
+            '{"section":"Display","key":"METRIC_6","value":"Temperature_F"}'
+            "]}}"
+        ),
+    )
+
+    results = process_inbound_messages(
+        transport,
+        runtime_config,
+        _sensor_switch_service(),
+        settings_root=tmp_path,
+    )
+
+    assert len(results) == 1
+    assert results[0].phase == "published"
+    assert results[0].published_count == 3
+    assert results[0].errors == ("display_persist_pystack",)
+    assert results[0].persistence_mode == "volatile"
+    assert results[0].runtime_config.sensor.display.metrics[5] == "Temperature_F"
+    assert transport.published_messages[1].payload == {
+        "message_id": "cfg-display-stack",
         "applied": True,
         "updated": 1,
         "duplicate": False,
