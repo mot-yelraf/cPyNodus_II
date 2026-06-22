@@ -300,6 +300,7 @@ class _ScanHintThenSuccessRadio:
 class _ScanShouldStopAfterTargetRadio:
     def __init__(self):
         self.stop_scan_calls = 0
+        self.mac_address = b"\xde\xad\xbe\xef\x00\x01"
 
     def start_scanning_networks(self):
         yield _FakeScanNetwork(
@@ -1052,7 +1053,7 @@ def test_station_scan_stops_after_target_ssid_is_found(capsys):
     assert network_module._station_hint_channel(hint) == 6
     assert radio.stop_scan_calls == 1
     output = capsys.readouterr().out
-    assert "network scan phase=begin ssid=PeaceHill" in output
+    assert "network scan phase=begin ssid=PeaceHill mac=de:ad:be:ef:00:01" in output
     assert "network scan phase=end ssid=PeaceHill result=found count=1" in output
 
 

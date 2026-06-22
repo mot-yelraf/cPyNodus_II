@@ -1503,7 +1503,9 @@ def _scan_for_station_ssid(wifi_radio, ssid, *, log_start_monotonic=None):
     best_hint = None
     status = "active"
     _network_log(
-        "network scan phase=begin ssid={}".format(ssid),
+        "network scan phase=begin ssid={} mac={}".format(
+            ssid, _mac_address_text(wifi_radio)
+        ),
         start_monotonic=log_start_monotonic,
     )
     try:
@@ -1589,6 +1591,24 @@ def _bssid_text(value):
     if value:
         return str(value)
     return "none"
+
+
+def _mac_address_text(wifi_radio):
+    mac = _safe_radio_attr(wifi_radio, "mac_address")
+    try:
+        return "%02x:%02x:%02x:%02x:%02x:%02x" % (
+            mac[0],
+            mac[1],
+            mac[2],
+            mac[3],
+            mac[4],
+            mac[5],
+        )
+    except Exception:
+        pass
+    if mac:
+        return str(mac)
+    return "unknown"
 
 
 def _call_radio_method(wifi_radio, name):
