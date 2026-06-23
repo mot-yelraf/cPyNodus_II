@@ -103,7 +103,39 @@ used by the CLI.
 ## Package Tool
 
 The command line tool lives under `scripts/` with tests under `tests/`.
-The tag-range package shape is:
+OTA packages are built from committed Git history, not from whichever files
+are currently copied to a device. The baseline tag for the 2026-06-23
+hardware-verified OTA state is `OTA-Verified---baseline`, the Git-safe spelling
+of "OTA-Verified - baseline". After deployed devices are confirmed to be
+running that baseline, create each future release tag on the commit to deploy
+and build the package from the baseline or previous deployed release tag to the
+new tag.
+
+Typical tag workflow:
+
+```text
+git tag --list "OTA-Verified---baseline"
+git tag -a v0.26.174.1 -m "Nodus firmware v0.26.174.1"
+git push origin OTA-Verified---baseline v0.26.174.1
+```
+
+Build the OTA package from the exact tag range the device is expected to move
+through. For example, to update a device already on the verified baseline to
+`v0.26.174.1`:
+
+```text
+python scripts/nodus_ota.py package \
+  --from OTA-Verified---baseline \
+  --to v0.26.174.1 \
+  --out build/ota/OTA-Verified---baseline_to_v0.26.174.1
+```
+
+The resulting `manifest.json` records `from_tag`, `to_tag`, package id, file
+hashes, and the firmware version read from `cpynodus_ii/__init__.py` at the
+`--from` tag. Sensorius should use that manifest data to match the selected
+package to the retained device version before initiating OTA.
+
+The generic tag-range package shape is:
 
 ```text
 nodus-ota package --from tagA --to tagB --out build/ota/tagA_tagB
@@ -144,7 +176,7 @@ begin/file/commit handling, verification/apply timing, and reboot scheduling.
 Recommended push command for current hardware testing:
 
 ```text
-python scripts/nodus_ota.py push build/ota/<package> \
+python scripts/nodus_ota.py push build/ota/OTA-Verified---baseline_to_v0.26.174.1 \
   --prepare \
   --broker <mqtt-broker-host-or-ip> \
   --username <mqtt-user> \

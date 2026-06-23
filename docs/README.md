@@ -166,6 +166,23 @@ Notes:
 - Use `--prune-deprecated` to remove only the target paths listed in `scripts/deprecated_target_files.txt`.
 - Deploy removes target `_reboot.log` and `_recovery.log` by default so old postmortem records do not survive firmware updates; use `--keep-reboot-log` to preserve them.
 
+## OTA package tags
+
+After devices are deployed and confirmed on the hardware-verified OTA baseline,
+use the repo tag `OTA-Verified---baseline` as the starting point for tag-range
+OTA packages. Future OTA releases should be tagged on committed firmware
+history, then packaged with:
+
+```text
+python scripts/nodus_ota.py package \
+  --from OTA-Verified---baseline \
+  --to <release-tag> \
+  --out build/ota/OTA-Verified---baseline_to_<release-tag>
+```
+
+See [OTA](./ota.md) for the full tag workflow, manifest expectations, and
+MQTT-prepare plus HTTP-transfer push command.
+
 ## Boot Flow
 
 1. `boot.py` configures USB/FS access based on a guard pin.
