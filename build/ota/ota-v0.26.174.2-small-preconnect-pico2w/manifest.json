@@ -1,5 +1,5 @@
 {
-  "created_at": "2026-06-23T16:25:53Z",
+  "created_at": "2026-06-23T16:43:28Z",
   "delete": [],
   "files": [
     {
@@ -8,9 +8,19 @@
       "size": 71
     },
     {
-      "path": "cpynodus_ii/app.mpy",
-      "sha256": "e78e4e1780e9256fe71c40e61eaccc95b5bf485233486b64b279e45e3e6a6ee9",
-      "size": 52291
+      "path": "cpynodus_ii/core/ntp.mpy",
+      "sha256": "c8b8e58ecd7e1ca97f801421323bb9b032db5fe83cc1cae4e819f74646c6de64",
+      "size": 3180
+    },
+    {
+      "path": "cpynodus_ii/features/switch_service.mpy",
+      "sha256": "4a43990c6d80c94014469bb7e4693568eebb6ff2bf0d6ce435d3bb009bbc8212",
+      "size": 1670
+    },
+    {
+      "path": "cpynodus_ii/hardware/switch_adapter.mpy",
+      "sha256": "0def7884085b10f855a70e5e6755665054bd0b21f6c0962846fd973fa221e2d2",
+      "size": 1402
     },
     {
       "path": "cpynodus_ii/ota/runtime.mpy",
@@ -19,7 +29,7 @@
     }
   ],
   "from_tag": "v0.26.174.1",
-  "package_id": "ota-v0.26.174.2-ota-wifi-preconnect-xesp32s3",
+  "package_id": "ota-v0.26.174.2-small-preconnect-pico2w",
   "post_apply": {
     "reboot": true,
     "reboot_delay_s": 5,
@@ -35,10 +45,10 @@
     "version": "v0.26.174.1"
   },
   "schema": "nodus-ota/v1",
-  "source": "build/firmware/xesp32s3",
+  "source": "build/firmware/pico2w",
   "target": {
-    "circuitpython": "10.2.1",
-    "platform": "xesp32s3"
+    "circuitpython": "9.2.8",
+    "platform": "pico2w"
   },
   "to_tag": "v0.26.174.2"
 }

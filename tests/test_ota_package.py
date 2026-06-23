@@ -349,7 +349,7 @@ def test_push_ota_package_sends_begin_files_and_commit(tmp_path):
     )
     assert opener.requests[3][0].headers["X-nodus-file-path"] == "ota_test.py"
     assert logs[:3] == [
-        "status http://10.0.0.213:8000",
+        "status http://10.0.0.213:8000 attempt=1",
         "begin package=ota-tagA-to-tagB files=1",
         "file ota_test.py bytes=22 chunk=1024",
     ]
@@ -407,7 +407,125 @@ def test_nodus_ota_cli_push_defaults_to_300_second_timeout(tmp_path, monkeypatch
     )
 
     assert exit_code == 0
-    assert [timeout for _request, timeout in opener.requests] == [300.0] * 6
+    assert [timeout for _request, timeout in opener.requests] == [
+        5.0,
+        300.0,
+        300.0,
+        300.0,
+        300.0,
+        300.0,
+    ]
+
+
+def test_nodus_ota_cli_prepare_push_defaults_to_ready_polling(tmp_path, monkeypatch):
+    package = _write_test_package(tmp_path / "package")
+    opener = _FakeOtaOpener(package_id="ota-tagA-to-tagB")
+    mqtt_client = _FakeMqttClient()
+    sleeps = []
+    monkeypatch.setattr(ota_package, "urlopen", opener)
+    monkeypatch.setattr(ota_package, "_paho_client_factory", lambda: mqtt_client)
+    monkeypatch.setattr(ota_package.time, "sleep", lambda value: sleeps.append(value))
+
+    exit_code = ota_package.main(
+        [
+            "push",
+            str(package),
+            "--prepare",
+            "--broker",
+            "10.0.0.220",
+            "--device-id",
+            "aht-yuk0nv",
+            "--device",
+            "http://10.0.0.213:8000",
+        ]
+    )
+
+    assert exit_code == 0
+    assert sleeps == []
+    assert opener.requests[0][0].full_url == "http://10.0.0.213:8000/ota/status"
+
+
+def test_push_ota_package_waits_for_status_reachable(tmp_path, monkeypatch):
+    package = _write_test_package(tmp_path / "package")
+    opener = _DelayedStatusOpener(package_id="ota-tagA-to-tagB", failures=2)
+    sleeps = []
+    logs = []
+    monkeypatch.setattr(ota_package.time, "sleep", lambda value: sleeps.append(value))
+
+    result = push_ota_package(
+        package,
+        "http://10.0.0.213:8000",
+        timeout_s=300,
+        opener=opener,
+        log_fn=logs.append,
+        ready_interval_s=1.5,
+    )
+
+    assert result["package_id"] == "ota-tagA-to-tagB"
+    assert sleeps == [1.5, 1.5]
+    assert logs[:5] == [
+        "status http://10.0.0.213:8000 attempt=1",
+        "status retry reason=http_unreachable:[Errno 61] Connection refused",
+        "status http://10.0.0.213:8000 attempt=2",
+        "status retry reason=http_unreachable:[Errno 61] Connection refused",
+        "status http://10.0.0.213:8000 attempt=3",
+    ]
+
+
+def test_push_ota_package_retries_lost_file_end_response(tmp_path, monkeypatch):
+    package = _write_test_package(tmp_path / "package")
+    opener = _FileEndResetOpener(package_id="ota-tagA-to-tagB")
+    sleeps = []
+    logs = []
+    monkeypatch.setattr(ota_package.time, "sleep", lambda value: sleeps.append(value))
+
+    result = push_ota_package(
+        package,
+        "http://10.0.0.213:8000",
+        opener=opener,
+        log_fn=logs.append,
+    )
+
+    assert result["package_id"] == "ota-tagA-to-tagB"
+    assert sleeps == [2.0]
+    assert logs[4] == (
+        "file end ota_test.py retry attempt=2 "
+        "reason=http_failed:[Errno 54] Connection reset by peer"
+    )
+    file_end_requests = [
+        request.full_url
+        for request, _timeout in opener.requests
+        if request.full_url.endswith("/ota/file/end?path=ota_test.py")
+    ]
+    assert file_end_requests == [
+        "http://10.0.0.213:8000/ota/file/end?path=ota_test.py",
+        "http://10.0.0.213:8000/ota/file/end?path=ota_test.py",
+    ]
+
+
+def test_push_ota_package_restarts_file_after_size_mismatch(tmp_path):
+    package = _write_test_package(tmp_path / "package")
+    opener = _FileEndMismatchOpener(package_id="ota-tagA-to-tagB")
+    logs = []
+
+    result = push_ota_package(
+        package,
+        "http://10.0.0.213:8000",
+        opener=opener,
+        log_fn=logs.append,
+    )
+
+    assert result["package_id"] == "ota-tagA-to-tagB"
+    assert "file retry ota_test.py reason=file_size_mismatch" in logs
+    file_begin_requests = [
+        request.full_url
+        for request, _timeout in opener.requests
+        if request.full_url.endswith("/ota/file/begin?path=ota_test.py")
+    ]
+    assert file_begin_requests == [
+        "http://10.0.0.213:8000/ota/file/begin?path=ota_test.py",
+        "http://10.0.0.213:8000/ota/file/begin?path=ota_test.py",
+    ]
 
 
 def test_normalize_manifest_path_rejects_path_traversal():
@@ -510,6 +628,57 @@ class _FakeOtaOpener:
                 }
             )
         return _FakeResponse({"accepted": False, "error": "unexpected_request"})
+
+
+class _DelayedStatusOpener(_FakeOtaOpener):
+    def __init__(self, *, package_id, failures):
+        super().__init__(package_id=package_id)
+        self.failures = int(failures)
+
+    def __call__(self, request, timeout):
+        if request.full_url.endswith("/ota/status") and self.failures > 0:
+            self.failures -= 1
+            self.requests.append((request, timeout))
+            raise ota_package.URLError(OSError(61, "Connection refused"))
+        return super().__call__(request, timeout)
+
+
+class _FileEndResetOpener(_FakeOtaOpener):
+    def __init__(self, *, package_id):
+        super().__init__(package_id=package_id)
+        self.failed_file_end = False
+
+    def __call__(self, request, timeout):
+        if (
+            request.full_url.endswith("/ota/file/end?path=ota_test.py")
+            and not self.failed_file_end
+        ):
+            self.failed_file_end = True
+            self.requests.append((request, timeout))
+            raise OSError(54, "Connection reset by peer")
+        return super().__call__(request, timeout)
+
+
+class _FileEndMismatchOpener(_FakeOtaOpener):
+    def __init__(self, *, package_id):
+        super().__init__(package_id=package_id)
+        self.failed_file_end = False
+
+    def __call__(self, request, timeout):
+        if (
+            request.full_url.endswith("/ota/file/end?path=ota_test.py")
+            and not self.failed_file_end
+        ):
+            self.failed_file_end = True
+            self.requests.append((request, timeout))
+            return _FakeResponse(
+                {
+                    "accepted": False,
+                    "phase": "staging",
+                    "error": "file_size_mismatch",
+                }
+            )
+        return super().__call__(request, timeout)
 
 
 class _FakePublishInfo:

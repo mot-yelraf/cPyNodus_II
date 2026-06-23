@@ -242,6 +242,8 @@ def push_ota_package(
     opener=None,
     log_fn=None,
     chunk_size=1024,
+    ready_timeout_s=60,
+    ready_interval_s=2,
 ):
     """Transfer an OTA package to one Nodus temporary OTA HTTP endpoint."""
     package_path = Path(package_dir)
@@ -250,19 +252,15 @@ def push_ota_package(
     http = opener or urlopen
     package_started = time.monotonic()
     total_bytes = _manifest_total_bytes(manifest)
-    _log(log_fn, "status {}".format(base_url))
-    status = _request_json(http, "GET", "{}/ota/status".format(base_url), timeout_s)
-    if status.get("phase") != "ready":
-        raise OTATransferError(
-            "device_not_ready:phase={}".format(status.get("phase", ""))
-        )
-    if status.get("package_id") and status.get("package_id") != manifest["package_id"]:
-        raise OTATransferError(
-            "device_package_mismatch:{}!={}".format(
-                status.get("package_id", ""),
-                manifest["package_id"],
-            )
-        )
+    status = _wait_for_ota_ready(
+        http,
+        base_url,
+        manifest,
+        timeout_s,
+        ready_timeout_s,
+        ready_interval_s,
+        log_fn=log_fn,
+    )
 
     _log(
         log_fn,
@@ -321,9 +319,27 @@ def push_ota_package(
                 headers={"X-Nodus-File-Path": path},
             )
         if result.get("accepted") is not True:
-            raise OTATransferError(
-                "file_rejected:{}:{}".format(path, result.get("error", ""))
-            )
+            if chunk_bytes > 0 and _file_retryable_rejection(result):
+                _log(
+                    log_fn,
+                    "file retry {} reason={}".format(
+                        path,
+                        result.get("error", ""),
+                    ),
+                )
+                result = _push_file_chunks(
+                    http,
+                    base_url,
+                    path,
+                    payload,
+                    timeout_s,
+                    chunk_bytes,
+                    log_fn=log_fn,
+                )
+            if result.get("accepted") is not True:
+                raise OTATransferError(
+                    "file_rejected:{}:{}".format(path, result.get("error", ""))
+                )
         file_elapsed = time.monotonic() - file_started
         _log(
             log_fn,
@@ -434,14 +450,66 @@ def _push_file_chunks(
                 _bytes_per_second(offset, elapsed),
             ),
         )
-    return _request_json(
+    return _request_json_with_retries(
         http,
         "POST",
         "{}/ota/file/end?path={}".format(base_url, encoded_path),
         timeout_s,
         payload={},
         headers={"X-Nodus-File-Path": path},
+        retries=2,
+        retry_delay_s=2,
+        log_fn=log_fn,
+        label="file end {}".format(path),
     )
+
+
+def _file_retryable_rejection(result):
+    return str(result.get("error", "") or "") in {
+        "file_size_mismatch",
+        "sha256_mismatch",
+        "staged_file_missing",
+    }
+
+
+def _request_json_with_retries(
+    opener,
+    method,
+    url,
+    timeout_s,
+    *,
+    payload=None,
+    body=None,
+    content_type="application/json",
+    headers=None,
+    retries=0,
+    retry_delay_s=1,
+    log_fn=None,
+    label="request",
+):
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            return _request_json(
+                opener,
+                method,
+                url,
+                timeout_s,
+                payload=payload,
+                body=body,
+                content_type=content_type,
+                headers=headers,
+            )
+        except OTATransferError as exc:
+            error = str(exc)
+            if attempt > int(retries or 0) or not _ota_status_error_retryable(error):
+                raise
+            _log(
+                log_fn,
+                "{} retry attempt={} reason={}".format(label, attempt + 1, error),
+            )
+            time.sleep(max(0.0, float(retry_delay_s or 0.0)))
 
 
 def _manifest_total_bytes(manifest):
@@ -568,7 +636,9 @@ def main(argv=None):
     push_parser.add_argument("--username", default="")
     push_parser.add_argument("--password", default="")
     push_parser.add_argument("--message-id", default="")
-    push_parser.add_argument("--wait-after-prepare", type=float, default=8.0)
+    push_parser.add_argument("--wait-after-prepare", type=float, default=0.0)
+    push_parser.add_argument("--ready-timeout", type=float, default=60.0)
+    push_parser.add_argument("--ready-interval", type=float, default=2.0)
     push_parser.add_argument("--chunk-size", type=int, default=1024)
     args = parser.parse_args(argv)
     log = timestamp_logger()
@@ -647,6 +717,8 @@ def main(argv=None):
                 args.device,
                 timeout_s=args.timeout,
                 chunk_size=args.chunk_size,
+                ready_timeout_s=args.ready_timeout,
+                ready_interval_s=args.ready_interval,
                 log_fn=log,
             )
         except OTATransferError as exc:
@@ -691,6 +763,60 @@ def _read_manifest(package_path):
     if not isinstance(manifest.get("files", ()), list):
         raise OTATransferError("manifest_files_invalid")
     return manifest
+
+
+def _wait_for_ota_ready(
+    http,
+    base_url,
+    manifest,
+    timeout_s,
+    ready_timeout_s,
+    ready_interval_s,
+    *,
+    log_fn=None,
+):
+    deadline = time.monotonic() + max(0.0, float(ready_timeout_s or 0.0))
+    interval = max(0.1, float(ready_interval_s or 0.0))
+    status_url = "{}/ota/status".format(base_url)
+    last_error = ""
+    attempt = 0
+    while True:
+        attempt += 1
+        _log(log_fn, "status {} attempt={}".format(base_url, attempt))
+        try:
+            status = _request_json(
+                http,
+                "GET",
+                status_url,
+                min(float(timeout_s or 10), 5.0),
+            )
+        except OTATransferError as exc:
+            last_error = str(exc)
+            if not _ota_status_error_retryable(last_error):
+                raise
+            status = None
+        if status is not None:
+            device_package = status.get("package_id")
+            if device_package and device_package != manifest["package_id"]:
+                raise OTATransferError(
+                    "device_package_mismatch:{}!={}".format(
+                        device_package,
+                        manifest["package_id"],
+                    )
+                )
+            phase = str(status.get("phase", "") or "")
+            if phase == "ready":
+                return status
+            last_error = "device_not_ready:phase={}".format(phase)
+        if time.monotonic() >= deadline:
+            raise OTATransferError("device_ready_timeout:{}".format(last_error))
+        _log(log_fn, "status retry reason={}".format(last_error or "unknown"))
+        time.sleep(interval)
+
+
+def _ota_status_error_retryable(error):
+    text = str(error or "")
+    return text.startswith("http_unreachable:") or text.startswith("http_failed:")
 
 
 def _normalize_device_url(device_url):
