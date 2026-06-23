@@ -1,10 +1,10 @@
 # Over-the-Air Updates
 
-This document describes the current Nodus over-the-air update implementation
-and the remaining hardening plan. The target production flow is
-Sensorius-driven, one physical Nodus device at a time. The host-side command
-line tool is available now and uses the same MQTT prepare plus HTTP transfer
-flow that Sensorius should reuse.
+This document describes the current Nodus over-the-air update implementation,
+the verified hardware baseline, and the remaining hardening plan. The target
+production flow is Sensorius-driven, one physical Nodus device at a time. The
+host-side command line tool is available now and uses the same MQTT prepare
+plus HTTP transfer flow that Sensorius should reuse.
 
 ## Goals
 
@@ -33,6 +33,9 @@ flow that Sensorius should reuse.
 - OTA package targets are board-specific. Verified targets are `pico2w` on
   CircuitPython `9.2.8` and `xesp32s3` on CircuitPython `10.2.1`.
 - Heap and filesystem space are tight, so manifests and handlers must be small.
+  Pico2 W testing has shown an out-of-memory condition when attempting to OTA a
+  very large `cpynodus_ii/app.mpy`; keep package slices small and characterize
+  large runtime-module updates before field use.
 - OTA requires application-writable filesystem mode. Current `boot.py` enables
   app writes when the board-specific RW guard is held low at boot (`GP14` on
   Pico2 W, `D8` on XIAO ESP32-S3) and otherwise remounts the filesystem
@@ -49,6 +52,23 @@ flow that Sensorius should reuse.
   HTTP OTA server without MQTT, sensor loops, switch loops, or the full UI.
 - Configuration files remain device-local state and should not be replaced by
   default templates unless explicitly requested by the package manifest.
+
+## Hardware Verification Status
+
+Baseline OTA verification is complete as of 2026-06-23 on both supported
+targets:
+
+- `pico2w`: Raspberry Pi Pico2 W on CircuitPython `9.2.8`
+- `xesp32s3`: Seeed Studio XIAO ESP32-S3 Sense on CircuitPython `10.2.1`
+
+The verified baseline covers MQTT prepare, reboot into temporary OTA mode,
+chunked HTTP transfer, commit/apply, reboot back into the prior runtime, and
+post-update completion reporting for bounded package sizes. Pico2 W testing
+also exposed an out-of-memory condition when updating with a very large
+`cpynodus_ii/app.mpy`, so large-package behavior is not part of the baseline.
+Remaining hardware work is fault injection, profile/device matrix soak testing,
+filesystem-space limits, large-package limits, and post-update boot-health
+rollback.
 
 ## High-Level Architecture
 
@@ -433,9 +453,12 @@ Do not include Wi-Fi or MQTT credentials in OTA packages.
    - Use HTTP transfer after an OTA prepare command.
    - Record progress and final result.
 8. Hardware soak tests.
-   - Update sensor-only, switch-only, and sensor+switch devices.
-   - Test interrupted upload, bad SHA-256, bad version, full filesystem,
-     failed first boot, and normal recovery to the prior profile.
+   - Baseline OTA prepare, transfer, commit, reboot, and post-update reporting
+     are verified on `pico2w` and `xesp32s3`.
+   - Remaining soak work: update sensor-only, switch-only, and sensor+switch
+     devices across supported profiles.
+   - Remaining fault work: interrupted upload, bad SHA-256, bad version, full
+     filesystem, failed first boot, and normal recovery to the prior profile.
 
 ## Test Plan
 
@@ -454,22 +477,28 @@ Host tests:
 
 Hardware tests:
 
-- update from one firmware tag to the next on a writable Nodus filesystem;
-- confirm OTA is rejected or unavailable when `GP14` has not put the app
-  filesystem in RWFS mode;
-- update while the prior profile is `sensorius`;
-- update while the prior profile is `homeassistant`;
-- update a switch-only device and verify `switch.toml` remains the runtime
-  switch gate;
-- interrupt power during upload and confirm the device returns to the prior
-  profile;
-- interrupt power after apply and confirm rollback or successful completion;
-- confirm MQTT is offline during OTA and resumes after reboot;
-- confirm retained `meta.version` matches the updated firmware version;
-- capture heap checkpoints during OTA mode startup, manifest parse, each file
-  upload, and apply.
-- capture CLI timing summary and serial timing for file verify and commit
-  verify/apply phases.
+- baseline verified on 2026-06-23: update from one firmware version to the next
+  on writable `pico2w` and `xesp32s3` Nodus filesystems;
+- baseline verified on 2026-06-23: MQTT prepare enters temporary OTA mode,
+  package bytes move over chunked HTTP, commit applies the update, and the
+  device reboots back to normal runtime with a completion report;
+- remaining: confirm OTA is rejected or unavailable when the app filesystem is
+  not in RWFS mode;
+- remaining: update while the prior profile is `sensorius`;
+- remaining: update while the prior profile is `homeassistant`;
+- remaining: update a switch-only device and verify `switch.toml` remains the
+  runtime switch gate;
+- remaining: interrupt power during upload and confirm the device returns to
+  the prior profile;
+- remaining: interrupt power after apply and confirm rollback or successful
+  completion;
+- remaining: confirm MQTT is offline during OTA and resumes after reboot;
+- remaining: confirm retained `meta.version` matches the updated firmware
+  version;
+- remaining: capture heap checkpoints during OTA mode startup, manifest parse,
+  each file upload, and apply;
+- remaining: capture CLI timing summary and serial timing for file verify and
+  commit verify/apply phases.
 
 ## Historical Characterization
 
@@ -497,6 +526,12 @@ cpynodus_ii/ota/runtime.py               4,125 B   18s
 Commit took about 102 seconds for this package. This is acceptable for early
 field testing, but larger packages should keep using the 300-second CLI timeout
 and should be characterized before broad deployment.
+
+Later Pico2 W testing also showed an out-of-memory condition while attempting
+to update with a very large `cpynodus_ii/app.mpy`. Treat that as a current
+package-sizing limit: prefer smaller OTA slices, avoid bundling large compiled
+runtime modules into one update unless specifically testing that path, and keep
+large-package validation separate from the baseline success criteria above.
 
 ## Open Decisions
 
