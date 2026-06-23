@@ -8,6 +8,7 @@ after a successful commit and reboot.
 
 import asyncio
 import gc
+import time
 from dataclasses import dataclass, replace
 
 from cpynodus_ii.core.network import build_network_stack
@@ -38,6 +39,7 @@ async def run_ota_mode(
     server_module=None,
     reboot_callback=None,
     log_fn=None,
+    log_start_monotonic=None,
     sleep_fn=None,
     idle_s=0,
 ):
@@ -49,6 +51,11 @@ async def run_ota_mode(
     verification, backup, apply, and reboot scheduling.
     """
     state = ota_state if isinstance(ota_state, FwUpdateState) else FwUpdateState()
+    network_log_start = (
+        log_start_monotonic
+        if log_start_monotonic is not None
+        else time.monotonic()
+    )
     _log(
         log_fn,
         "ota",
@@ -60,7 +67,12 @@ async def run_ota_mode(
     )
     _log_memory(log_fn, "startup")
     try:
-        network_stack = network_builder(runtime_config, mdns_mode="ota")
+        network_stack = network_builder(
+            runtime_config,
+            mdns_mode="ota",
+            preconnect_scan=True,
+            log_start_monotonic=network_log_start,
+        )
     except TypeError:
         network_stack = network_builder(runtime_config)
     _log(

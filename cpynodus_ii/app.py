@@ -2775,6 +2775,7 @@ async def main(*, startup_plan_override=None):
                 message,
                 start_monotonic=start_monotonic,
             ),
+            log_start_monotonic=start_monotonic,
             reboot_callback=lambda: _hard_reboot(
                 reason="ota:applied_pending_boot",
                 start_monotonic=start_monotonic,
