@@ -867,7 +867,10 @@ def _file_size_sha256(path):
                 hasher.update(chunk)
     except OSError:
         return -1, ""
-    return size, hasher.hexdigest()
+    digest = _hasher_hexdigest(hasher)
+    if not digest:
+        return -1, ""
+    return size, digest
 
 
 def _copy_file(src_path, dst_path):
@@ -962,8 +965,38 @@ def _hashlib_sha256(data):
     hasher = _new_sha256_hasher()
     if hasher is not None:
         hasher.update(data)
-        return hasher.hexdigest()
+        return _hasher_hexdigest(hasher)
     return None
+
+
+def _hasher_hexdigest(hasher):
+    hexdigest = getattr(hasher, "hexdigest", None)
+    if callable(hexdigest):
+        try:
+            return str(hexdigest())
+        except Exception:
+            pass
+    digest = getattr(hasher, "digest", None)
+    if callable(digest):
+        try:
+            return _bytes_to_hex(digest())
+        except Exception:
+            pass
+    return ""
+
+
+def _bytes_to_hex(data):
+    hex_method = getattr(data, "hex", None)
+    if callable(hex_method):
+        try:
+            return str(hex_method())
+        except Exception:
+            pass
+    chars = "0123456789abcdef"
+    return "".join(
+        "{}{}".format(chars[(int(byte) >> 4) & 0x0F], chars[int(byte) & 0x0F])
+        for byte in bytes(data or b"")
+    )
 
 
 def _new_sha256_hasher():

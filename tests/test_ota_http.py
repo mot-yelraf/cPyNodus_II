@@ -459,6 +459,33 @@ def test_ota_sha256_helper_uses_hashlib_new_when_sha256_attr_missing(monkeypatch
     assert ota_http._sha256_hex(b"abc") == hashlib.sha256(b"abc").hexdigest()
 
 
+def test_ota_sha256_helper_accepts_digest_only_hash_object(monkeypatch, tmp_path):
+    class _DigestOnlyHasher:
+        def __init__(self):
+            self.payload = b""
+
+        def update(self, payload):
+            self.payload += payload
+
+        def digest(self):
+            return hashlib.sha256(self.payload).digest()
+
+    class _FakeHashlib:
+        @staticmethod
+        def sha256():
+            return _DigestOnlyHasher()
+
+    staged = tmp_path / "staged.mpy"
+    staged.write_bytes(b"abc")
+    monkeypatch.setattr(ota_http, "hashlib", _FakeHashlib)
+
+    assert ota_http._sha256_hex(b"abc") == hashlib.sha256(b"abc").hexdigest()
+    assert ota_http._file_size_sha256(str(staged)) == (
+        3,
+        hashlib.sha256(b"abc").hexdigest(),
+    )
+
+
 def test_ota_sha256_helper_has_pure_python_fallback(monkeypatch):
     class _FakeHashlib:
         pass
