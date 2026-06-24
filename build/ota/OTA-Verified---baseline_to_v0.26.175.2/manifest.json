@@ -1,0 +1,43 @@
+{
+  "created_at": "2026-06-24T13:24:57Z",
+  "delete": [],
+  "files": [
+    {
+      "path": "cpynodus_ii/__init__.py",
+      "sha256": "433d3bb4e4993bc2dfe9eda94794796670b91bc1901e81c65a7e666cd0dea214",
+      "size": 273
+    },
+    {
+      "path": "cpynodus_ii/ota/http.py",
+      "sha256": "21ba178d1b0c19a612cbd2420791dd1a13fa3a2b8c2183f28224d2067c9bc878",
+      "size": 41879
+    },
+    {
+      "path": "cpynodus_ii/ota/runtime.py",
+      "sha256": "2c315880fa18daa6123094bc52543085625aa05b8c042c799253443347e13024",
+      "size": 6803
+    }
+  ],
+  "from_tag": "OTA-Verified---baseline",
+  "package_id": "ota-OTA-Verified---baseline-to-v0.26.175.2",
+  "post_apply": {
+    "reboot": true,
+    "reboot_delay_s": 5,
+    "resume_profile": "previous"
+  },
+  "preserve": [
+    "settings.toml",
+    "sensor_i2c.toml",
+    "sensor_soil.toml",
+    "switch.toml"
+  ],
+  "requires": {
+    "version": "v0.26.174.2"
+  },
+  "schema": "nodus-ota/v1",
+  "target": {
+    "circuitpython": "9.2.8",
+    "platform": "pico2w"
+  },
+  "to_tag": "v0.26.175.2"
+}
