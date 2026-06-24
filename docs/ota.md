@@ -54,6 +54,10 @@ plus HTTP transfer flow that Sensorius should reuse.
 - MQTT-enabled profiles intentionally skip the normal-mode web server today.
   OTA therefore needs a temporary runtime path that brings up Wi-Fi and a small
   HTTP OTA server without MQTT, sensor loops, switch loops, or the full UI.
+- Temporary OTA mode attempts Wi-Fi join more aggressively than normal startup.
+  If it still cannot reach station-ready networking or cannot start the OTA
+  HTTP server, it marks the handoff state aborted and reboots back to normal
+  runtime instead of remaining in HTTP-unavailable OTA mode.
 - Configuration files remain device-local state and should not be replaced by
   default templates unless explicitly requested by the package manifest.
 

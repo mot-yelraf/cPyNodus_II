@@ -50,6 +50,7 @@ def test_run_ota_mode_marks_state_ready_and_skips_feature_startup(tmp_path):
     assert state.prior_profile == "homeassistant"
     assert len(network_builder_kwargs) == 1
     assert network_builder_kwargs[0]["mdns_mode"] == "ota"
+    assert network_builder_kwargs[0]["max_attempts"] == 7
     assert network_builder_kwargs[0]["preconnect_scan"] is True
     assert isinstance(network_builder_kwargs[0]["log_start_monotonic"], float)
     assert [prefix for prefix, _message in logs].count("ota") == 4
@@ -86,7 +87,92 @@ def test_run_ota_mode_passes_supplied_network_log_start(tmp_path):
     assert network_builder_kwargs == [
         {
             "mdns_mode": "ota",
+            "max_attempts": 7,
             "preconnect_scan": True,
             "log_start_monotonic": 123.0,
         }
     ]
+
+
+def test_run_ota_mode_aborts_and_reboots_when_network_unavailable(tmp_path):
+    logs = []
+    rebooted = []
+
+    def _network_builder(runtime_config, **kwargs):
+        return SimpleNamespace(
+            phase="error",
+            ssid=runtime_config.network.ssid,
+            ip_address="",
+            socket_pool=None,
+            errors=("network_connect_failed",),
+        )
+
+    result = asyncio.run(
+        run_ota_mode(
+            RuntimeConfig(),
+            FwUpdateState(
+                prior_profile="sensorius",
+                package_id="ota-tagA-to-tagB",
+                phase="requested",
+            ),
+            settings_root=tmp_path,
+            network_builder=_network_builder,
+            server_module=_FakeServerModule,
+            reboot_callback=lambda: rebooted.append(True),
+            log_fn=lambda prefix, message: logs.append((prefix, message)),
+            idle_s=0,
+        )
+    )
+
+    state = load_ota_state(str(tmp_path / "_ota" / "state.json"))
+
+    assert result.phase == "aborted"
+    assert result.network_phase == "error"
+    assert result.http_phase == ""
+    assert result.errors == ("network_connect_failed",)
+    assert state.phase == "aborted"
+    assert state.error == "ota_network_unavailable"
+    assert rebooted == [True]
+    assert any(
+        "phase=aborted error=ota_network_unavailable" in message
+        for _prefix, message in logs
+    )
+
+
+def test_run_ota_mode_aborts_and_reboots_when_http_unavailable(tmp_path):
+    rebooted = []
+
+    def _network_builder(runtime_config, **kwargs):
+        return SimpleNamespace(
+            phase="ready",
+            ssid=runtime_config.network.ssid,
+            ip_address="10.0.0.213",
+            socket_pool=None,
+            errors=(),
+        )
+
+    result = asyncio.run(
+        run_ota_mode(
+            RuntimeConfig(),
+            FwUpdateState(
+                prior_profile="sensorius",
+                package_id="ota-tagA-to-tagB",
+                phase="requested",
+            ),
+            settings_root=tmp_path,
+            network_builder=_network_builder,
+            server_module=_FakeServerModule,
+            reboot_callback=lambda: rebooted.append(True),
+            idle_s=0,
+        )
+    )
+
+    state = load_ota_state(str(tmp_path / "_ota" / "state.json"))
+
+    assert result.phase == "aborted"
+    assert result.network_phase == "ready"
+    assert result.http_phase == "unavailable"
+    assert result.errors == ("ota_socket_pool_unavailable",)
+    assert state.phase == "aborted"
+    assert state.error == "ota_http_unavailable"
+    assert rebooted == [True]

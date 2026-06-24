@@ -15,6 +15,8 @@ from cpynodus_ii.core.network import build_network_stack
 from cpynodus_ii.ota.http import OtaHttpController
 from cpynodus_ii.ota.state import FwUpdateState, save_ota_state
 
+OTA_NETWORK_CONNECT_ATTEMPTS = 7
+
 
 @dataclass(frozen=True)
 class OtaModeResult:
@@ -70,6 +72,7 @@ async def run_ota_mode(
         network_stack = network_builder(
             runtime_config,
             mdns_mode="ota",
+            max_attempts=OTA_NETWORK_CONNECT_ATTEMPTS,
             preconnect_scan=True,
             log_start_monotonic=network_log_start,
         )
@@ -84,6 +87,15 @@ async def run_ota_mode(
             getattr(network_stack, "ip_address", "") or "none",
         ),
     )
+    if getattr(network_stack, "phase", "") != "ready":
+        return _abort_ota_startup(
+            state,
+            settings_root,
+            "ota_network_unavailable",
+            network_stack=network_stack,
+            reboot_callback=reboot_callback,
+            log_fn=log_fn,
+        )
     ready_state = replace(state, phase="ready")
     save_ota_state(ready_state, _ota_state_path(settings_root))
     _log_memory(log_fn, "ready")
@@ -106,6 +118,17 @@ async def run_ota_mode(
             ",".join(http.errors) if http.errors else "none",
         ),
     )
+    if http.phase != "ready":
+        return _abort_ota_startup(
+            ready_state,
+            settings_root,
+            "ota_http_unavailable",
+            network_stack=network_stack,
+            http_phase=http.phase,
+            http_errors=tuple(http.errors),
+            reboot_callback=reboot_callback,
+            log_fn=log_fn,
+        )
     _log(
         log_fn,
         "ota",
@@ -134,7 +157,40 @@ async def run_ota_mode(
         network_phase=getattr(network_stack, "phase", "") or "",
         ip_address=getattr(network_stack, "ip_address", "") or "",
         http_phase=http.phase,
-        errors=tuple(getattr(network_stack, "errors", ()) or ()) + tuple(http.errors),
+        errors=tuple(getattr(network_stack, "errors", ()) or ())
+        + tuple(http.errors),
+    )
+
+
+def _abort_ota_startup(
+    state,
+    settings_root,
+    error,
+    *,
+    network_stack,
+    http_phase="",
+    http_errors=(),
+    reboot_callback=None,
+    log_fn=None,
+):
+    aborted_state = replace(state, phase="aborted", error=str(error or "ota_failed"))
+    save_ota_state(aborted_state, _ota_state_path(settings_root))
+    _log(
+        log_fn,
+        "ota",
+        "phase=aborted error={} action=reboot".format(aborted_state.error),
+    )
+    if callable(reboot_callback):
+        reboot_callback()
+    return OtaModeResult(
+        phase="aborted",
+        package_id=aborted_state.package_id,
+        prior_profile=aborted_state.prior_profile,
+        network_phase=getattr(network_stack, "phase", "") or "",
+        ip_address=getattr(network_stack, "ip_address", "") or "",
+        http_phase=http_phase,
+        errors=tuple(getattr(network_stack, "errors", ()) or ())
+        + tuple(http_errors),
     )
 
 
