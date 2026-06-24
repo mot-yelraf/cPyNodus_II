@@ -7,6 +7,7 @@ allocations, verifies SHA256 while streaming from disk, backs up live files,
 applies staged files, and schedules the final reboot.
 """
 
+import gc
 import hashlib
 import json
 import os
@@ -23,6 +24,73 @@ _HTTP_STATUS = {
     501: "Not Implemented",
     503: "Service Unavailable",
 }
+_SHA256_UNAVAILABLE_SIZE = -2
+_SHA256_K = (
+    0x428A2F98,
+    0x71374491,
+    0xB5C0FBCF,
+    0xE9B5DBA5,
+    0x3956C25B,
+    0x59F111F1,
+    0x923F82A4,
+    0xAB1C5ED5,
+    0xD807AA98,
+    0x12835B01,
+    0x243185BE,
+    0x550C7DC3,
+    0x72BE5D74,
+    0x80DEB1FE,
+    0x9BDC06A7,
+    0xC19BF174,
+    0xE49B69C1,
+    0xEFBE4786,
+    0x0FC19DC6,
+    0x240CA1CC,
+    0x2DE92C6F,
+    0x4A7484AA,
+    0x5CB0A9DC,
+    0x76F988DA,
+    0x983E5152,
+    0xA831C66D,
+    0xB00327C8,
+    0xBF597FC7,
+    0xC6E00BF3,
+    0xD5A79147,
+    0x06CA6351,
+    0x14292967,
+    0x27B70A85,
+    0x2E1B2138,
+    0x4D2C6DFC,
+    0x53380D13,
+    0x650A7354,
+    0x766A0ABB,
+    0x81C2C92E,
+    0x92722C85,
+    0xA2BFE8A1,
+    0xA81A664B,
+    0xC24B8B70,
+    0xC76C51A3,
+    0xD192E819,
+    0xD6990624,
+    0xF40E3585,
+    0x106AA070,
+    0x19A4C116,
+    0x1E376C08,
+    0x2748774C,
+    0x34B0BCB5,
+    0x391C0CB3,
+    0x4ED8AA4A,
+    0x5B9CCA4F,
+    0x682E6FF3,
+    0x748F82EE,
+    0x78A5636F,
+    0x84C87814,
+    0x8CC70208,
+    0x90BEFFFA,
+    0xA4506CEB,
+    0xBEF9A3F7,
+    0xC67178F2,
+)
 
 
 class OtaHttpController:
@@ -179,6 +247,7 @@ class OtaHttpController:
 
         @route("/ota/begin", methods=["POST"])
         def _begin(request):
+            _collect_garbage()
             manifest = _parse_json_body(request)
             if manifest is None:
                 return self._json_response(
@@ -187,6 +256,7 @@ class OtaHttpController:
                     status_code=400,
                 )
             payload, status_code = self._handle_begin(manifest)
+            _collect_garbage()
             return self._json_response(request, payload, status_code=status_code)
 
         @route("/ota/file", methods=["PUT"])
@@ -218,6 +288,12 @@ class OtaHttpController:
                 offset = _request_int_arg(request, "offset", -1)
                 body = _request_body_bytes(request)
                 payload, status_code = self._handle_file_chunk(path, offset, body)
+                try:
+                    request.body = b""
+                except Exception:
+                    pass
+                del body
+                _collect_garbage()
                 return self._json_response(request, payload, status_code=status_code)
             except Exception as exc:
                 self._log("chunk exception error={}".format(_exception_text(exc)))
@@ -229,13 +305,25 @@ class OtaHttpController:
 
         @route("/ota/file/end", methods=["POST"])
         def _file_end(request):
-            path = _request_path_arg(request)
-            payload, status_code = self._handle_file_end(path)
-            return self._json_response(request, payload, status_code=status_code)
+            try:
+                _collect_garbage()
+                path = _request_path_arg(request)
+                payload, status_code = self._handle_file_end(path)
+                _collect_garbage()
+                return self._json_response(request, payload, status_code=status_code)
+            except Exception as exc:
+                self._log("file end exception error={}".format(_exception_text(exc)))
+                return self._json_response(
+                    request,
+                    _error_payload("file_end_handler_exception", "staging"),
+                    status_code=500,
+                )
 
         @route("/ota/commit", methods=["POST"])
         def _commit(request):
+            _collect_garbage()
             payload, status_code = self._handle_commit()
+            _collect_garbage()
             return self._json_response(request, payload, status_code=status_code)
 
         @route("/ota/abort", methods=["POST"])
@@ -263,6 +351,7 @@ class OtaHttpController:
             )
 
     def _handle_begin(self, manifest):
+        _collect_garbage()
         state = load_ota_state(_ota_state_path(self.settings_root)) or self.ota_state
         error = _validate_manifest_for_begin(manifest, state)
         if error:
@@ -283,6 +372,7 @@ class OtaHttpController:
                 len(manifest.get("files", ()) or ()),
             )
         )
+        _collect_garbage()
         return (
             {
                 "accepted": True,
@@ -404,6 +494,7 @@ class OtaHttpController:
                 handle.write(body)
         except OSError:
             return _error_payload("chunk_stage_failed", "staging"), 503
+        _collect_garbage()
         return (
             {
                 "accepted": True,
@@ -416,6 +507,7 @@ class OtaHttpController:
         )
 
     def _handle_file_end(self, path):
+        _collect_garbage()
         state = load_ota_state(_ota_state_path(self.settings_root)) or self.ota_state
         if getattr(state, "phase", "") != "staging":
             return _error_payload("ota_not_staging", getattr(state, "phase", "")), 400
@@ -434,6 +526,8 @@ class OtaHttpController:
         verify_elapsed = self._elapsed_s(verify_started)
         expected_size = int(entry.get("size", -1) or -1)
         expected_sha = str(entry.get("sha256", "") or "")
+        if size == _SHA256_UNAVAILABLE_SIZE:
+            return _error_payload("sha256_unavailable", "staging"), 503
         if size < 0:
             return _error_payload("staged_file_missing", "staging"), 400
         if size != expected_size:
@@ -447,6 +541,7 @@ class OtaHttpController:
                 verify_elapsed,
             )
         )
+        _collect_garbage()
         return (
             {
                 "accepted": True,
@@ -459,6 +554,7 @@ class OtaHttpController:
         )
 
     def _handle_commit(self):
+        _collect_garbage()
         state = load_ota_state(_ota_state_path(self.settings_root)) or self.ota_state
         if getattr(state, "phase", "") != "staging":
             self._log("commit rejected error=ota_not_staging")
@@ -468,6 +564,7 @@ class OtaHttpController:
             self._log("commit rejected error=manifest_missing")
             return _error_payload("manifest_missing", "staging"), 400
         verify_started = self._monotonic()
+        _collect_garbage()
         error = _verify_staged_manifest_files(self.settings_root, manifest)
         verify_elapsed = self._elapsed_s(verify_started)
         if error:
@@ -475,12 +572,14 @@ class OtaHttpController:
             return _error_payload(error, "staging"), 400
         self._log("commit verify complete elapsed_s={:.1f}".format(verify_elapsed))
         apply_started = self._monotonic()
+        _collect_garbage()
         error = _apply_staged_manifest_files(self.settings_root, manifest)
         apply_elapsed = self._elapsed_s(apply_started)
         if error:
             self._log("commit rejected error={}".format(error))
             return _error_payload(error, "staging"), 503
         self._log("commit apply complete elapsed_s={:.1f}".format(apply_elapsed))
+        _collect_garbage()
         _remove_tree(_ota_stage_path(self.settings_root))
         _remove_ota_tmp_files(self.settings_root)
         applied_state = FwUpdateState(
@@ -753,6 +852,8 @@ def _verify_staged_manifest_files(root, manifest):
             return "manifest_file_path_invalid"
         staged_path = _join_root(root, "_ota/stage/{}".format(safe_path))
         size, actual_sha = _file_size_sha256(staged_path)
+        if size == _SHA256_UNAVAILABLE_SIZE:
+            return "sha256_unavailable"
         if size < 0:
             return "staged_file_missing"
         expected_size = int(entry.get("size", -1) or -1)
@@ -852,10 +953,7 @@ def _file_size(path):
 def _file_size_sha256(path):
     hasher = _new_sha256_hasher()
     if hasher is None:
-        payload = _read_binary_file(path)
-        if payload is None:
-            return -1, ""
-        return len(payload), _sha256_fallback(payload).hex()
+        return _SHA256_UNAVAILABLE_SIZE, ""
     size = 0
     try:
         with open(path, "rb") as handle:
@@ -869,7 +967,7 @@ def _file_size_sha256(path):
         return -1, ""
     digest = _hasher_hexdigest(hasher)
     if not digest:
-        return -1, ""
+        return _SHA256_UNAVAILABLE_SIZE, ""
     return size, digest
 
 
@@ -954,11 +1052,18 @@ def _exception_text(exc):
     return "{}:{}".format(type(exc).__name__, exc)
 
 
+def _collect_garbage():
+    try:
+        gc.collect()
+    except Exception:
+        pass
+
+
 def _sha256_hex(data):
     digest = _hashlib_sha256(data)
     if digest is not None:
         return digest
-    return _sha256_fallback(data).hex()
+    return ""
 
 
 def _hashlib_sha256(data):
@@ -1012,159 +1117,125 @@ def _new_sha256_hasher():
             return new_hash("sha256")
         except Exception:
             pass
-    return None
+    try:
+        return _StreamingSha256()
+    except Exception:
+        return None
 
 
-def _sha256_fallback(data):
-    payload = bytes(data or b"")
-    length_bits = (len(payload) * 8) & 0xFFFFFFFFFFFFFFFF
-    payload += b"\x80"
-    while (len(payload) % 64) != 56:
-        payload += b"\x00"
-    payload += bytes(
-        (
-            (length_bits >> 56) & 0xFF,
-            (length_bits >> 48) & 0xFF,
-            (length_bits >> 40) & 0xFF,
-            (length_bits >> 32) & 0xFF,
-            (length_bits >> 24) & 0xFF,
-            (length_bits >> 16) & 0xFF,
-            (length_bits >> 8) & 0xFF,
-            length_bits & 0xFF,
-        )
-    )
-    h = [
-        0x6A09E667,
-        0xBB67AE85,
-        0x3C6EF372,
-        0xA54FF53A,
-        0x510E527F,
-        0x9B05688C,
-        0x1F83D9AB,
-        0x5BE0CD19,
-    ]
-    k = (
-        0x428A2F98,
-        0x71374491,
-        0xB5C0FBCF,
-        0xE9B5DBA5,
-        0x3956C25B,
-        0x59F111F1,
-        0x923F82A4,
-        0xAB1C5ED5,
-        0xD807AA98,
-        0x12835B01,
-        0x243185BE,
-        0x550C7DC3,
-        0x72BE5D74,
-        0x80DEB1FE,
-        0x9BDC06A7,
-        0xC19BF174,
-        0xE49B69C1,
-        0xEFBE4786,
-        0x0FC19DC6,
-        0x240CA1CC,
-        0x2DE92C6F,
-        0x4A7484AA,
-        0x5CB0A9DC,
-        0x76F988DA,
-        0x983E5152,
-        0xA831C66D,
-        0xB00327C8,
-        0xBF597FC7,
-        0xC6E00BF3,
-        0xD5A79147,
-        0x06CA6351,
-        0x14292967,
-        0x27B70A85,
-        0x2E1B2138,
-        0x4D2C6DFC,
-        0x53380D13,
-        0x650A7354,
-        0x766A0ABB,
-        0x81C2C92E,
-        0x92722C85,
-        0xA2BFE8A1,
-        0xA81A664B,
-        0xC24B8B70,
-        0xC76C51A3,
-        0xD192E819,
-        0xD6990624,
-        0xF40E3585,
-        0x106AA070,
-        0x19A4C116,
-        0x1E376C08,
-        0x2748774C,
-        0x34B0BCB5,
-        0x391C0CB3,
-        0x4ED8AA4A,
-        0x5B9CCA4F,
-        0x682E6FF3,
-        0x748F82EE,
-        0x78A5636F,
-        0x84C87814,
-        0x8CC70208,
-        0x90BEFFFA,
-        0xA4506CEB,
-        0xBEF9A3F7,
-        0xC67178F2,
-    )
-    mask = 0xFFFFFFFF
-    for offset in range(0, len(payload), 64):
-        block = payload[offset : offset + 64]
-        w = [0] * 64
-        for i in range(16):
-            j = i * 4
-            w[i] = (
-                (block[j] << 24)
-                | (block[j + 1] << 16)
-                | (block[j + 2] << 8)
-                | block[j + 3]
-            )
-        for i in range(16, 64):
-            s0 = _rotr(w[i - 15], 7) ^ _rotr(w[i - 15], 18) ^ (w[i - 15] >> 3)
-            s1 = _rotr(w[i - 2], 17) ^ _rotr(w[i - 2], 19) ^ (w[i - 2] >> 10)
-            w[i] = (w[i - 16] + s0 + w[i - 7] + s1) & mask
-        a, b, c, d, e, f, g, hh = h
-        for i in range(64):
-            s1 = _rotr(e, 6) ^ _rotr(e, 11) ^ _rotr(e, 25)
-            ch = (e & f) ^ ((~e) & g)
-            temp1 = (hh + s1 + ch + k[i] + w[i]) & mask
-            s0 = _rotr(a, 2) ^ _rotr(a, 13) ^ _rotr(a, 22)
-            maj = (a & b) ^ (a & c) ^ (b & c)
-            temp2 = (s0 + maj) & mask
-            hh = g
-            g = f
-            f = e
-            e = (d + temp1) & mask
-            d = c
-            c = b
-            b = a
-            a = (temp1 + temp2) & mask
-        h = [
-            (h[0] + a) & mask,
-            (h[1] + b) & mask,
-            (h[2] + c) & mask,
-            (h[3] + d) & mask,
-            (h[4] + e) & mask,
-            (h[5] + f) & mask,
-            (h[6] + g) & mask,
-            (h[7] + hh) & mask,
+class _StreamingSha256:
+    def __init__(self):
+        self._h = [
+            0x6A09E667,
+            0xBB67AE85,
+            0x3C6EF372,
+            0xA54FF53A,
+            0x510E527F,
+            0x9B05688C,
+            0x1F83D9AB,
+            0x5BE0CD19,
         ]
-    return bytes(
-        byte
-        for word in h
-        for byte in (
-            (word >> 24) & 0xFF,
-            (word >> 16) & 0xFF,
-            (word >> 8) & 0xFF,
-            word & 0xFF,
+        self._buffer = b""
+        self._count = 0
+
+    def update(self, data):
+        payload = bytes(data or b"")
+        self._count += len(payload)
+        if self._buffer:
+            payload = self._buffer + payload
+            self._buffer = b""
+        offset = 0
+        payload_len = len(payload)
+        while payload_len - offset >= 64:
+            _sha256_process_block(self._h, payload[offset : offset + 64])
+            offset += 64
+        if offset < payload_len:
+            self._buffer = payload[offset:]
+
+    def digest(self):
+        h = list(self._h)
+        length_bits = (int(self._count) * 8) & 0xFFFFFFFFFFFFFFFF
+        payload = self._buffer + b"\x80"
+        pad_len = (56 - (len(payload) % 64)) % 64
+        payload += b"\x00" * pad_len
+        payload += bytes(
+            (
+                (length_bits >> 56) & 0xFF,
+                (length_bits >> 48) & 0xFF,
+                (length_bits >> 40) & 0xFF,
+                (length_bits >> 32) & 0xFF,
+                (length_bits >> 24) & 0xFF,
+                (length_bits >> 16) & 0xFF,
+                (length_bits >> 8) & 0xFF,
+                length_bits & 0xFF,
+            )
         )
-    )
+        offset = 0
+        while offset < len(payload):
+            _sha256_process_block(h, payload[offset : offset + 64])
+            offset += 64
+        return bytes(
+            byte
+            for word in h
+            for byte in (
+                (word >> 24) & 0xFF,
+                (word >> 16) & 0xFF,
+                (word >> 8) & 0xFF,
+                word & 0xFF,
+            )
+        )
+
+    def hexdigest(self):
+        return _bytes_to_hex(self.digest())
 
 
-def _rotr(value, bits):
-    return ((value >> bits) | (value << (32 - bits))) & 0xFFFFFFFF
+def _sha256_process_block(h, block):
+    mask = 0xFFFFFFFF
+    w = [0] * 64
+    for i in range(16):
+        j = i * 4
+        w[i] = (
+            (int(block[j]) << 24)
+            | (int(block[j + 1]) << 16)
+            | (int(block[j + 2]) << 8)
+            | int(block[j + 3])
+        )
+    for i in range(16, 64):
+        s0 = _sha256_rotr(w[i - 15], 7) ^ _sha256_rotr(w[i - 15], 18) ^ (
+            w[i - 15] >> 3
+        )
+        s1 = _sha256_rotr(w[i - 2], 17) ^ _sha256_rotr(w[i - 2], 19) ^ (
+            w[i - 2] >> 10
+        )
+        w[i] = (w[i - 16] + s0 + w[i - 7] + s1) & mask
+    a, b, c, d, e, f, g, hh = h
+    for i in range(64):
+        s1 = _sha256_rotr(e, 6) ^ _sha256_rotr(e, 11) ^ _sha256_rotr(e, 25)
+        ch = (e & f) ^ ((~e) & g)
+        temp1 = (hh + s1 + ch + _SHA256_K[i] + w[i]) & mask
+        s0 = _sha256_rotr(a, 2) ^ _sha256_rotr(a, 13) ^ _sha256_rotr(a, 22)
+        maj = (a & b) ^ (a & c) ^ (b & c)
+        temp2 = (s0 + maj) & mask
+        hh = g
+        g = f
+        f = e
+        e = (d + temp1) & mask
+        d = c
+        c = b
+        b = a
+        a = (temp1 + temp2) & mask
+    h[0] = (h[0] + a) & mask
+    h[1] = (h[1] + b) & mask
+    h[2] = (h[2] + c) & mask
+    h[3] = (h[3] + d) & mask
+    h[4] = (h[4] + e) & mask
+    h[5] = (h[5] + f) & mask
+    h[6] = (h[6] + g) & mask
+    h[7] = (h[7] + hh) & mask
+
+
+def _sha256_rotr(value, bits):
+    return ((int(value) >> bits) | (int(value) << (32 - bits))) & 0xFFFFFFFF
 
 
 def _ota_state_path(root):

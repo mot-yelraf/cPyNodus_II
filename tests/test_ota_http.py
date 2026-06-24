@@ -478,6 +478,11 @@ def test_ota_sha256_helper_accepts_digest_only_hash_object(monkeypatch, tmp_path
     staged = tmp_path / "staged.mpy"
     staged.write_bytes(b"abc")
     monkeypatch.setattr(ota_http, "hashlib", _FakeHashlib)
+    monkeypatch.setattr(
+        ota_http,
+        "_read_binary_file",
+        lambda _path: (_ for _ in ()).throw(AssertionError("full-file read")),
+    )
 
     assert ota_http._sha256_hex(b"abc") == hashlib.sha256(b"abc").hexdigest()
     assert ota_http._file_size_sha256(str(staged)) == (
@@ -486,13 +491,87 @@ def test_ota_sha256_helper_accepts_digest_only_hash_object(monkeypatch, tmp_path
     )
 
 
-def test_ota_sha256_helper_has_pure_python_fallback(monkeypatch):
+def test_ota_sha256_helper_streams_when_hashlib_sha256_is_unavailable(
+    monkeypatch,
+    tmp_path,
+):
     class _FakeHashlib:
         pass
 
+    staged = tmp_path / "staged.mpy"
+    staged.write_bytes(b"abc" * 2048)
     monkeypatch.setattr(ota_http, "hashlib", _FakeHashlib)
+    monkeypatch.setattr(
+        ota_http,
+        "_read_binary_file",
+        lambda _path: (_ for _ in ()).throw(AssertionError("full-file read")),
+    )
 
     assert ota_http._sha256_hex(b"abc") == hashlib.sha256(b"abc").hexdigest()
+    assert ota_http._file_size_sha256("staged.mpy") == (
+        -1,
+        "",
+    )
+    assert ota_http._file_size_sha256(str(staged)) == (
+        6144,
+        hashlib.sha256(b"abc" * 2048).hexdigest(),
+    )
+
+
+def test_ota_file_end_uses_streaming_fallback_when_hashlib_sha256_is_unavailable(
+    tmp_path,
+    monkeypatch,
+):
+    controller = _controller(tmp_path)
+    begin_handler = controller.server.routes[("/ota/begin", ("POST",))]
+    file_end = controller.server.routes[("/ota/file/end", ("POST",))]
+    payload = b"large staged payload"
+    manifest = {
+        "schema": "nodus-ota/v1",
+        "package_id": "ota-tagA-to-tagB",
+        "files": [
+            {
+                "path": "cpynodus_ii/app.mpy",
+                "size": len(payload),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }
+        ],
+    }
+    staged_path = tmp_path / "_ota" / "stage" / "cpynodus_ii" / "app.mpy"
+
+    begin_handler(_FakeRequest(json.dumps(manifest).encode("utf-8")))
+    staged_path.parent.mkdir(parents=True)
+    staged_path.write_bytes(payload)
+    monkeypatch.setattr(ota_http, "hashlib", type("_FakeHashlib", (), {}))
+    monkeypatch.setattr(
+        ota_http,
+        "_read_binary_file",
+        lambda _path: (_ for _ in ()).throw(AssertionError("full-file read")),
+    )
+    response = file_end(
+        _FakeRequest(query_params={"path": "cpynodus_ii/app.mpy"})
+    )
+
+    assert response.status == (200, "OK")
+    assert response.body["accepted"] is True
+    assert response.body["sha256"] == hashlib.sha256(payload).hexdigest()
+
+
+def test_ota_file_end_route_returns_error_when_handler_raises(tmp_path, monkeypatch):
+    logs = []
+    controller = _controller(tmp_path, log_fn=lambda module, msg: logs.append(msg))
+    file_end = controller.server.routes[("/ota/file/end", ("POST",))]
+
+    def _raise(_path):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(controller, "_handle_file_end", _raise)
+    response = file_end(_FakeRequest(query_params={"path": "cpynodus_ii/app.mpy"}))
+
+    assert response.status == (500, "Internal Server Error")
+    assert response.body["accepted"] is False
+    assert response.body["error"] == "file_end_handler_exception"
+    assert "file end exception error=RuntimeError:boom" in logs
 
 
 def test_ota_file_rejects_path_not_in_manifest(tmp_path):
@@ -711,6 +790,43 @@ def test_ota_commit_rejects_tampered_staged_file(tmp_path):
     assert response.status == (400, "Bad Request")
     assert response.body["accepted"] is False
     assert response.body["error"] == "staged_file_sha256_mismatch"
+
+
+def test_ota_commit_uses_streaming_fallback_when_hashlib_sha256_is_unavailable(
+    tmp_path,
+    monkeypatch,
+):
+    controller = _controller(tmp_path)
+    begin_handler = controller.server.routes[("/ota/begin", ("POST",))]
+    commit_handler = controller.server.routes[("/ota/commit", ("POST",))]
+    payload = b"large staged payload"
+    manifest = {
+        "schema": "nodus-ota/v1",
+        "package_id": "ota-tagA-to-tagB",
+        "files": [
+            {
+                "path": "cpynodus_ii/app.mpy",
+                "size": len(payload),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }
+        ],
+    }
+    staged_path = tmp_path / "_ota" / "stage" / "cpynodus_ii" / "app.mpy"
+
+    begin_handler(_FakeRequest(json.dumps(manifest).encode("utf-8")))
+    staged_path.parent.mkdir(parents=True)
+    staged_path.write_bytes(payload)
+    monkeypatch.setattr(ota_http, "hashlib", type("_FakeHashlib", (), {}))
+    monkeypatch.setattr(
+        ota_http,
+        "_read_binary_file",
+        lambda _path: (_ for _ in ()).throw(AssertionError("full-file read")),
+    )
+    response = commit_handler(_FakeRequest())
+
+    assert response.status == (200, "OK")
+    assert response.body["accepted"] is True
+    assert response.body["phase"] == "applied_pending_boot"
 
 
 def test_ota_commit_rejects_when_not_staging(tmp_path):

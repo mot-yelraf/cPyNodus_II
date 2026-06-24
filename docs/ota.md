@@ -44,6 +44,10 @@ plus HTTP transfer flow that Sensorius should reuse.
   `/ota/file` endpoint remains for small/debug transfers, but chunked transfer
   is the normal path because larger files can fail full-body allocation on
   CircuitPython.
+- OTA SHA-256 verification streams staged files from disk. It uses the
+  built-in CircuitPython `hashlib` when available and falls back to a bounded
+  in-module streaming SHA-256 implementation; it must not read a staged file
+  into memory just to compute the digest.
 - The CLI default per-request timeout is 300 seconds. Large commits can take
   over a minute because Nodus verifies staged files and backs up/replaces live
   files on CircuitPython storage.
