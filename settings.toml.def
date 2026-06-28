@@ -13,6 +13,7 @@ ACTIVE_PROFILE = "nodusweb"   # nodusweb | sensorius | weewx | homeassistant
 [MQTT]
 BROKER = ""
 BROKER_IP = ""
+BROKER_IP_ALT = ""
 PORT = 1883
 USE_TLS = false
 BASE_TOPIC = "nodus"

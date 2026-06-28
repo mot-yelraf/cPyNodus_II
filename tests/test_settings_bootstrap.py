@@ -147,6 +147,13 @@ def _copy_defs(tmpdir_path):
         (tmpdir_path / name).write_text((root / name).read_text(), encoding="utf-8")
 
 
+def _display_metrics(sensor_doc):
+    return tuple(
+        sensor_doc["Display"].get("METRIC_{}".format(index), "")
+        for index in range(1, 7)
+    )
+
+
 def test_make_serial_number_returns_six_lowercase_alnum_chars():
     serial = Settings.make_serial_number()
 
@@ -193,6 +200,14 @@ def test_factory_bootstrap_creates_i2c_sensor_and_switch_tomls_with_seeded_ids()
     assert sensor_doc["I2Cbus"]["I2C_SCL"] == "GP3"
     assert sensor_doc["I2Cbus"]["I2C_SDA"] == "GP2"
     assert sensor_doc["I2Cbus"]["I2C_ADDR"] == 0x61
+    assert _display_metrics(sensor_doc) == (
+        "Temperature_F",
+        "Rel-Humidity",
+        "Ambient VPD",
+        "Temperature",
+        "Dew Point",
+        "CO2",
+    )
     assert switch_section["DEVICE_SERIAL_NUM"] == serial
     assert switch_section["SWITCH_DEVICE_ID"] == "switch-{}".format(serial)
     assert switch_section["SWITCH_1_CHANNEL_ID"] == "S1-{}".format(serial)
@@ -460,6 +475,14 @@ def test_factory_bootstrap_writes_dual_i2c_sections_for_apvpd():
     assert sensor_doc["I2Cbus"]["Plant"]["I2C_SCL"] == "GP3"
     assert sensor_doc["I2Cbus"]["Plant"]["I2C_SDA"] == "GP2"
     assert sensor_doc["I2Cbus"]["Plant"]["I2C_ADDR"] == 0x76
+    assert _display_metrics(sensor_doc) == (
+        "Temperature_F",
+        "Rel-Humidity",
+        "Ambient VPD",
+        "Plant Temperature_F",
+        "Plant Rel-Humidity",
+        "Plant VPD",
+    )
 
 
 def test_factory_bootstrap_writes_dual_i2c_sections_for_apvpd_aht():
@@ -489,7 +512,14 @@ def test_factory_bootstrap_writes_dual_i2c_sections_for_apvpd_aht():
     assert sensor_doc["Sensor"]["DEVICE"] == "apvpd_aht"
     assert sensor_doc["I2Cbus"]["I2C_ADDR"] == 0x38
     assert sensor_doc["I2Cbus"]["Plant"]["I2C_ADDR"] == 0x38
-    assert sensor_doc["Display"]["METRIC_4"] == "Plant VPD"
+    assert _display_metrics(sensor_doc) == (
+        "Temperature_F",
+        "Rel-Humidity",
+        "Ambient VPD",
+        "Plant Temperature_F",
+        "Plant Rel-Humidity",
+        "Plant VPD",
+    )
 
 
 def test_write_toml_file_preserves_template_section_and_key_order():
@@ -548,6 +578,7 @@ def test_apply_updates_preserves_template_order_in_settings_file():
     assert (
         text.index('BROKER = "samhain.local"')
         < text.index('BROKER_IP = ""')
+        < text.index('BROKER_IP_ALT = ""')
         < text.index("PORT = 1883")
     )
 

@@ -211,6 +211,8 @@ def build_runtime_meta_payload(
         "use_tls": bool(runtime_config.mqtt.use_tls),
         "base_topic": runtime_config.mqtt.base_topic,
     }
+    if runtime_config.mqtt.broker_ip_alt:
+        mqtt_payload["broker_ip_alt"] = runtime_config.mqtt.broker_ip_alt
     if runtime_config.mqtt.username:
         mqtt_payload["username"] = runtime_config.mqtt.username
     if runtime_config.mqtt.password:

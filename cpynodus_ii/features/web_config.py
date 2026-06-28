@@ -91,6 +91,7 @@ def classify_web_update(update):
     if section == "MQTT" and key_upper in {
         "BROKER",
         "BROKER_IP",
+        "BROKER_IP_ALT",
         "PORT",
         "USE_TLS",
         "BASE_TOPIC",

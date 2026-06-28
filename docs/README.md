@@ -674,14 +674,22 @@ Automations are implemented in Sensorius or Home Assistant. Commands are publish
 - Home Assistant discovery is published under `[HomeAssistant].DISCOVERY_PREFIX` when `ACTIVE_PROFILE = "homeassistant"`.
 - Shared MQTT topics use `[MQTT].BASE_TOPIC`, defaulting to `nodus`.
 - Switch control is handled via channel `config/set` topics; events and state are published to `/event` and `/state`.
-- MQTT connects to broker IP literals only. Startup uses configured
-  `MQTT.BROKER_IP` directly and skips runtime DNS when it is present. If
-  `BROKER_IP` is absent and the filesystem is writable, startup resolves the
-  configured broker hostname and persists the result in `settings.toml`; ROFS
-  deployments should include a manually configured `BROKER_IP`.
+- MQTT connects to broker IP literals only. Startup and MQTT recovery rebuilds
+  resolve configured `MQTT.BROKER` when possible, use the first two unique
+  resolved addresses as runtime MQTT targets, and do not open extra broker
+  verification sockets. The normal MQTT preflight/connect path remains the
+  reachability check. On RWFS, after MQTT connects successfully, Nodus makes a
+  best-effort scalar TOML update for the runtime broker IP targets. If only one
+  address is returned, any configured `BROKER_IP_ALT` is kept as a runtime
+  failover target. If resolution fails, Nodus keeps any existing broker IP
+  targets.
 - Device mDNS does not change MQTT broker target selection. `MQTT.BROKER`
-  remains the canonical broker hostname, while `MQTT.BROKER_IP` is the connect
-  target used by MiniMQTT.
+  remains the canonical broker hostname, while `MQTT.BROKER_IP` and
+  `MQTT.BROKER_IP_ALT` are ordered IP targets.
+- Pico 2 W CircuitPython hostname resolution may return only one address for a
+  multi-interface broker host. Sensorius/onboarding must provision
+  `MQTT.BROKER_IP_ALT` explicitly when secondary-interface MQTT failover is
+  required.
 - Retained `nodus/<device_id>/meta` includes the current runtime Nodus station
   IPv4 as `network.ipv4addr` when available. This value is not persisted in
   `settings.toml` and can change after DHCP lease changes or reconnects.

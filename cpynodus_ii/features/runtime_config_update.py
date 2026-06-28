@@ -97,6 +97,11 @@ def apply_runtime_config_update(runtime_config, section, key, value):
             runtime_config,
             mqtt=replace(runtime_config.mqtt, broker_ip=str(value or "").strip()),
         )
+    if section == "MQTT" and key_upper == "BROKER_IP_ALT":
+        return replace(
+            runtime_config,
+            mqtt=replace(runtime_config.mqtt, broker_ip_alt=str(value or "").strip()),
+        )
     if section == "MQTT" and key_upper == "PORT":
         return replace(
             runtime_config,

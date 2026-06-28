@@ -145,6 +145,7 @@ def build_setup_payload(runtime_config, *, version):
         "mqtt": {
             "broker": runtime_config.mqtt.broker,
             "broker_ip": runtime_config.mqtt.broker_ip,
+            "broker_ip_alt": runtime_config.mqtt.broker_ip_alt,
             "port": runtime_config.mqtt.port,
             "base_topic": runtime_config.mqtt.base_topic,
         },

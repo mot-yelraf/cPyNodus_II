@@ -54,6 +54,7 @@ def _run_direct_tests():
         test_poll_mqtt_client_records_last_loop_diagnostics,
         test_build_mqtt_client_adapter_is_unavailable_without_socket_pool,
         test_connect_mqtt_client_uses_broker_ip_when_hostname_is_configured,
+        test_connect_mqtt_client_falls_back_to_broker_ip_alt,
         test_connect_mqtt_client_does_not_resolve_hostname_when_broker_ip_exists,
         test_build_mqtt_client_adapter_requires_ip_target,
         test_preflight_mqtt_broker_can_resolve_explicit_hostname,
@@ -1723,6 +1724,37 @@ def test_connect_mqtt_client_uses_broker_ip_when_hostname_is_configured():
     assert transport.connected is True
     assert connect_result.adapter.active_broker == "10.0.0.4"
     assert connect_result.adapter.client.kwargs["broker"] == "10.0.0.4"
+
+
+def test_connect_mqtt_client_falls_back_to_broker_ip_alt():
+    runtime_config = RuntimeConfig(
+        active_profile="sensorius",
+        mqtt=MQTTConfig(
+            broker="ha.local",
+            broker_ip="10.0.0.4",
+            broker_ip_alt="10.0.0.5",
+            port=1883,
+        ),
+    )
+    transport = MQTTTransport("ha.local", 1883)
+    transport.mark_connect_requested()
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=object(),
+        modules={"mqtt_cls": _FakeMQTTClient},
+    )
+    original_failures = set(_FakeMQTTClient.fail_connect_for)
+    _FakeMQTTClient.fail_connect_for = {"10.0.0.4"}
+    try:
+        connect_result = connect_mqtt_client(adapter, transport)
+    finally:
+        _FakeMQTTClient.fail_connect_for = original_failures
+
+    assert adapter.broker_targets == ("10.0.0.4", "10.0.0.5")
+    assert connect_result.phase == "connected"
+    assert transport.connected is True
+    assert connect_result.adapter.active_broker == "10.0.0.5"
+    assert connect_result.adapter.client.kwargs["broker"] == "10.0.0.5"
 
 
 def test_connect_mqtt_client_does_not_resolve_hostname_when_broker_ip_exists():

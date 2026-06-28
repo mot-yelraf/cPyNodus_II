@@ -122,6 +122,7 @@ The shared MQTT connection is configured in `[MQTT]`:
 
 - `BROKER`
 - `BROKER_IP`
+- `BROKER_IP_ALT`
 - `PORT`
 - `USE_TLS`
 - `BASE_TOPIC`
@@ -129,12 +130,25 @@ The shared MQTT connection is configured in `[MQTT]`:
 - `PASSWORD`
 
 `BROKER` is the canonical broker hostname from Sensorius. MQTT connections use
-IP literals only. During startup, Nodus uses a configured `BROKER_IP` directly
-and skips hostname resolution. If `BROKER_IP` is absent, Nodus resolves `BROKER`
-and writes the resolved address to `BROKER_IP` when the filesystem is writable.
-If the filesystem is read-only, set `BROKER_IP` manually before deployment.
-Read-only runtimes only attempt a volatile hostname resolution when `BROKER_IP`
-is absent, and cannot persist it.
+IP literals only. During startup and MQTT recovery rebuilds, Nodus attempts to
+resolve `BROKER`; on success it stores the first unique resolved address as
+`BROKER_IP` and the second unique resolved address, when present, as
+`BROKER_IP_ALT` for the current boot. Broker refresh does not open extra TCP
+verification sockets before the normal MQTT path. On RWFS, after MQTT connects
+successfully, Nodus makes a best-effort scalar TOML update for the runtime
+`BROKER_IP` and non-empty `BROKER_IP_ALT` values. Persistent `BROKER_IP` and
+`BROKER_IP_ALT` values can also come from provisioning, onboarding, or explicit
+config writes. If resolution returns only one address and `BROKER_IP_ALT` is
+already configured, Nodus keeps that alternate as a runtime failover target. If
+resolution fails, Nodus keeps any existing `BROKER_IP` and `BROKER_IP_ALT`
+values as MiniMQTT targets.
+
+On the Pico 2 W CircuitPython runtime, `socketpool.getaddrinfo()` may expose
+only one resolved address for a hostname, even when the broker host advertises
+multiple interfaces over mDNS. Do not rely on `BROKER` resolution to discover a
+secondary interface automatically. When dual-interface broker failover is
+required, provisioning or Sensorius onboarding must write both `BROKER_IP` and
+`BROKER_IP_ALT`; Nodus will then use them as ordered MQTT connection targets.
 
 The same settings rewrite obfuscates any plaintext passwords that were manually
 entered in `settings.toml`.

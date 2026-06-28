@@ -19,6 +19,7 @@ _ITAOT_ALLOWED_KEYS = (
     ("Network", "HOSTNAME"),
     ("MQTT", "BROKER"),
     ("MQTT", "BROKER_IP"),
+    ("MQTT", "BROKER_IP_ALT"),
     ("MQTT", "PORT"),
     ("MQTT", "USERNAME"),
     ("MQTT", "PASSWORD"),
@@ -131,6 +132,7 @@ def normalize_itaot_init_payload(payload):
     hostname = _clean_str(document.get("hostname", ""))
     broker_host = _clean_str(mqtt_doc.get("broker_host", ""))
     broker_ip = _clean_str(mqtt_doc.get("broker_ip", ""))
+    broker_ip_alt = _clean_str(mqtt_doc.get("broker_ip_alt", ""))
     broker_port = _coerce_port(mqtt_doc.get("broker_port", 0))
     mqtt_username = _clean_str(mqtt_doc.get("username", ""))
     mqtt_password = _clean_str(mqtt_doc.get("password", ""))
@@ -178,6 +180,7 @@ def normalize_itaot_init_payload(payload):
         "mqtt": {
             "broker_host": broker_host,
             "broker_ip": broker_ip,
+            "broker_ip_alt": broker_ip_alt,
             "broker_port": broker_port,
             "username": mqtt_username,
             "password": mqtt_password,
@@ -228,6 +231,14 @@ def build_itaot_init_updates(normalized_payload):
     if mqtt_doc.get("broker_ip"):
         updates.append(
             {"section": "MQTT", "key": "BROKER_IP", "value": mqtt_doc.get("broker_ip")}
+        )
+    if mqtt_doc.get("broker_ip_alt"):
+        updates.append(
+            {
+                "section": "MQTT",
+                "key": "BROKER_IP_ALT",
+                "value": mqtt_doc.get("broker_ip_alt"),
+            }
         )
     if mqtt_doc.get("username"):
         updates.append(

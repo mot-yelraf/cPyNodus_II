@@ -71,6 +71,7 @@ def test_settings_from_directory_loads_switch_only_runtime_config():
     assert runtime_config.network.http_port == 8000
     assert runtime_config.mqtt.broker == "sensoria-hub-0.local"
     assert runtime_config.mqtt.broker_ip == "10.0.0.246"
+    assert runtime_config.mqtt.broker_ip_alt == ""
     assert runtime_config.mqtt.port == 1883
     assert runtime_config.mqtt.preferred_host == "10.0.0.246"
     assert runtime_config.mqtt.connection_targets == (
@@ -84,6 +85,30 @@ def test_settings_from_directory_loads_switch_only_runtime_config():
     assert runtime_config.switch.serial_number == "w9umh8"
     assert runtime_config.switch.location == "TestSwitch"
     assert runtime_config.switch.channel_count == 1
+
+
+def test_mqtt_config_uses_primary_then_alt_connection_targets():
+    with TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        (tmpdir_path / "settings.toml").write_text(
+            (
+                '[Profile]\nACTIVE_PROFILE = "sensorius"\n'
+                "[MQTT]\n"
+                'BROKER = "samhain.local"\n'
+                'BROKER_IP = "10.0.0.248"\n'
+                'BROKER_IP_ALT = "10.0.0.220"\n'
+                "PORT = 1883\n"
+            ),
+            encoding="utf-8",
+        )
+
+        runtime_config = Settings.from_directory(tmpdir_path).runtime_config()
+
+    assert runtime_config.mqtt.broker == "samhain.local"
+    assert runtime_config.mqtt.broker_ip == "10.0.0.248"
+    assert runtime_config.mqtt.broker_ip_alt == "10.0.0.220"
+    assert runtime_config.mqtt.preferred_host == "10.0.0.248"
+    assert runtime_config.mqtt.connection_targets == ("10.0.0.248", "10.0.0.220")
 
 
 def test_settings_from_directory_loads_sensor_switch_runtime_config():

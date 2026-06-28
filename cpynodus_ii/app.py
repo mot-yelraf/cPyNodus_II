@@ -1901,27 +1901,38 @@ def _recover_mqtt_subscription_failure(
     return rebuilt_adapter
 
 
-def _resolve_broker_ip_from_hostname(runtime_config, network_stack):
-    """Resolve configured MQTT broker hostname to an IP literal."""
+def _resolve_broker_ips_from_hostname(runtime_config, network_stack):
+    """Resolve configured MQTT broker hostname to up to two IP literals."""
     broker = str(getattr(runtime_config.mqtt, "broker", "") or "").strip()
     if not broker:
-        return "", ()
+        return (), ()
     if _looks_like_ip_literal(broker):
-        return broker, ()
+        return (broker,), ()
     socket_pool = getattr(network_stack, "socket_pool", None)
     if socket_pool is None:
-        return "", ("mqtt_resolve_failed:{}:socket_pool_unavailable".format(broker),)
+        return (), ("mqtt_resolve_failed:{}:socket_pool_unavailable".format(broker),)
     getaddrinfo = getattr(socket_pool, "getaddrinfo", None)
     if not callable(getaddrinfo):
-        return "", ("mqtt_resolve_failed:{}:getaddrinfo_unavailable".format(broker),)
+        return (), ("mqtt_resolve_failed:{}:getaddrinfo_unavailable".format(broker),)
     try:
         resolved = getaddrinfo(broker, runtime_config.mqtt.port)
     except Exception as exc:
-        return "", ("mqtt_resolve_failed:{}:{}".format(broker, exc),)
-    resolved_ip = _ip_from_getaddrinfo_result(resolved)
-    if not resolved_ip:
-        return "", ("mqtt_resolve_failed:{}:empty_result".format(broker),)
-    return resolved_ip, ()
+        return (), ("mqtt_resolve_failed:{}:{}".format(broker, exc),)
+    resolved_ips = _ips_from_getaddrinfo_result(resolved)
+    if not resolved_ips:
+        return (), ("mqtt_resolve_failed:{}:empty_result".format(broker),)
+    return resolved_ips, ()
+
+
+def _resolve_broker_ip_from_hostname(runtime_config, network_stack):
+    """Resolve configured MQTT broker hostname to the primary IP literal."""
+    resolved_ips, errors = _resolve_broker_ips_from_hostname(
+        runtime_config,
+        network_stack,
+    )
+    if not resolved_ips:
+        return "", errors
+    return resolved_ips[0], errors
 
 
 def _refresh_broker_ip_from_hostname(
@@ -1930,51 +1941,157 @@ def _refresh_broker_ip_from_hostname(
     *,
     settings_root=None,
 ):
-    """Refresh MQTT.BROKER_IP from MQTT.BROKER before MQTT connects."""
-    resolved_ip, errors = _resolve_broker_ip_from_hostname(
+    """Refresh runtime MQTT.BROKER_IP values before MQTT connects."""
+    resolved_ips, errors = _resolve_broker_ips_from_hostname(
         runtime_config,
         network_stack,
     )
     if errors:
         return runtime_config, "error", tuple(errors)
-    if not resolved_ip:
+    if not resolved_ips:
         return runtime_config, "skipped", ()
+    resolved_ip = str(resolved_ips[0] or "").strip()
+    resolved_ip_alt = ""
+    if len(resolved_ips) > 1:
+        resolved_ip_alt = str(resolved_ips[1] or "").strip()
+    else:
+        resolved_ip_alt = str(
+            getattr(runtime_config.mqtt, "broker_ip_alt", "") or ""
+        ).strip()
     current_ip = str(getattr(runtime_config.mqtt, "broker_ip", "") or "").strip()
-    if current_ip == resolved_ip:
+    current_ip_alt = str(
+        getattr(runtime_config.mqtt, "broker_ip_alt", "") or ""
+    ).strip()
+    if current_ip == resolved_ip and current_ip_alt == resolved_ip_alt:
         return runtime_config, "unchanged", ()
     resolved_runtime = replace(
         runtime_config,
-        mqtt=replace(runtime_config.mqtt, broker_ip=resolved_ip),
+        mqtt=replace(
+            runtime_config.mqtt,
+            broker_ip=resolved_ip,
+            broker_ip_alt=resolved_ip_alt,
+        ),
     )
-    if not settings_root:
-        return resolved_runtime, "resolved_volatile", ()
-    updated_runtime, applied_updates, write_errors = (
-        Settings.apply_updates_to_directory(
-            settings_root,
-            runtime_config,
-            ({"section": "MQTT", "key": "BROKER_IP", "value": resolved_ip},),
-            reload_runtime=True,
-        )
-    )
-    if write_errors:
-        return resolved_runtime, "error", tuple(write_errors)
-    if applied_updates:
-        return updated_runtime, "persisted", ()
     return resolved_runtime, "resolved_volatile", ()
 
 
 def _broker_ip_refresh_needed(runtime_config, *, settings_root=None):
-    """Return True when no literal MQTT broker IP is configured yet."""
-    return not bool(str(getattr(runtime_config.mqtt, "broker_ip", "") or "").strip())
+    """Return True when MQTT.BROKER can refresh the literal broker IP."""
+    broker = str(getattr(runtime_config.mqtt, "broker", "") or "").strip()
+    return bool(broker)
+
+
+def _refresh_broker_ip_for_mqtt(
+    runtime_config,
+    network_stack,
+    *,
+    settings_root=None,
+    start_monotonic=None,
+):
+    """Refresh MQTT broker IPs and report whether the active target changed."""
+    if not _broker_ip_refresh_needed(runtime_config, settings_root=settings_root):
+        return runtime_config, False
+    previous_targets = tuple(getattr(runtime_config.mqtt, "connection_targets", ()))
+    runtime_config, broker_ip_phase, broker_ip_errors = (
+        _refresh_broker_ip_from_hostname(
+            runtime_config,
+            network_stack,
+            settings_root=settings_root,
+        )
+    )
+    if broker_ip_phase != "skipped":
+        _print_log(
+            "mqtt",
+            "broker_ip phase={} host={} ip={} alt={} errors={}".format(
+                broker_ip_phase,
+                runtime_config.mqtt.broker or "none",
+                runtime_config.mqtt.broker_ip or "none",
+                runtime_config.mqtt.broker_ip_alt or "none",
+                ",".join(broker_ip_errors) if broker_ip_errors else "none",
+            ),
+            start_monotonic=start_monotonic,
+        )
+    current_targets = tuple(getattr(runtime_config.mqtt, "connection_targets", ()))
+    return runtime_config, bool(current_targets and current_targets != previous_targets)
+
+
+def _persist_broker_ip_after_mqtt_connect(
+    runtime_config,
+    *,
+    settings_root=None,
+    start_monotonic=None,
+):
+    """Persist resolved broker IPs after MQTT has connected successfully."""
+    if settings_root is None:
+        return False
+    broker_ip = str(getattr(runtime_config.mqtt, "broker_ip", "") or "").strip()
+    if not broker_ip:
+        return False
+    updates = (
+        {
+            "section": "MQTT",
+            "key": "BROKER_IP",
+            "value": broker_ip,
+        },
+    )
+    broker_ip_alt = str(
+        getattr(runtime_config.mqtt, "broker_ip_alt", "") or ""
+    ).strip()
+    if broker_ip_alt:
+        updates = updates + (
+            {
+                "section": "MQTT",
+                "key": "BROKER_IP_ALT",
+                "value": broker_ip_alt,
+            },
+        )
+    _persisted_config, persisted_updates, persistence_errors = (
+        Settings.apply_updates_to_directory(
+            settings_root,
+            runtime_config,
+            updates,
+            reload_runtime=False,
+        )
+    )
+    _ = _persisted_config
+    phase = "persisted" if persisted_updates and not persistence_errors else "volatile"
+    _print_log(
+        "mqtt",
+        "broker_ip_persist phase={} ip={} alt={} errors={}".format(
+            phase,
+            broker_ip,
+            broker_ip_alt or "none",
+            ",".join(persistence_errors) if persistence_errors else "none",
+        ),
+        start_monotonic=start_monotonic,
+    )
+    return bool(persisted_updates and not persistence_errors)
 
 
 def _ip_from_getaddrinfo_result(resolved):
-    try:
-        first = resolved[0]
-        sockaddr = first[-1]
-        return str(sockaddr[0] or "").strip()
-    except Exception:
+    ips = _ips_from_getaddrinfo_result(resolved)
+    if not ips:
         return ""
+    return ips[0]
+
+
+def _ips_from_getaddrinfo_result(resolved):
+    ips = []
+    try:
+        for item in resolved or ():
+            try:
+                sockaddr = item[-1]
+                ip = str(sockaddr[0] or "").strip()
+            except Exception:
+                continue
+            if not ip or not _looks_like_ip_literal(ip) or ip in ips:
+                continue
+            ips.append(ip)
+            if len(ips) >= 2:
+                break
+        return tuple(ips)
+    except Exception:
+        return ()
 
 
 def _should_fallback_to_ap(runtime_config, network_stack):
@@ -2804,28 +2921,16 @@ async def main(*, startup_plan_override=None):
         runtime_config,
         startup_plan_override=startup_plan_override,
     )
-    if plan.mqtt_enabled and _broker_ip_refresh_needed(
-        runtime_config,
-        settings_root=writable_settings_root,
-    ):
-        runtime_config, broker_ip_phase, broker_ip_errors = (
-            _refresh_broker_ip_from_hostname(
-                runtime_config,
-                network_stack,
-                settings_root=writable_settings_root,
-            )
+    broker_ip_persist_pending = False
+    if plan.mqtt_enabled:
+        runtime_config, _broker_ip_changed = _refresh_broker_ip_for_mqtt(
+            runtime_config,
+            network_stack,
+            settings_root=writable_settings_root,
+            start_monotonic=start_monotonic,
         )
-        if broker_ip_phase != "skipped":
-            _print_log(
-                "mqtt",
-                "broker_ip phase={} host={} ip={} errors={}".format(
-                    broker_ip_phase,
-                    runtime_config.mqtt.broker or "none",
-                    runtime_config.mqtt.broker_ip or "none",
-                    ",".join(broker_ip_errors) if broker_ip_errors else "none",
-                ),
-                start_monotonic=start_monotonic,
-            )
+        if _broker_ip_changed and writable_settings_root is not None:
+            broker_ip_persist_pending = True
     if plan.mqtt_enabled:
         from cpynodus_ii.features.steady_state import (
             SteadyState,
@@ -3284,6 +3389,34 @@ async def main(*, startup_plan_override=None):
                         fs_writable=fs_writable,
                         device_id=_runtime_device_id(runtime_config),
                     )
+                    if plan.mqtt_enabled:
+                        runtime_config, broker_ip_changed = (
+                            _refresh_broker_ip_for_mqtt(
+                                runtime_config,
+                                network_stack,
+                                settings_root=writable_settings_root,
+                                start_monotonic=start_monotonic,
+                            )
+                        )
+                        if broker_ip_changed and writable_settings_root is not None:
+                            broker_ip_persist_pending = True
+                        if broker_ip_changed:
+                            close_result = close_mqtt_client(mqtt_adapter, transport)
+                            if close_result.errors:
+                                _print_log(
+                                    "recovery",
+                                    "mqtt close errors={}".format(
+                                        ",".join(close_result.errors)
+                                    ),
+                                    start_monotonic=start_monotonic,
+                                )
+                            mqtt_adapter = build_mqtt_client_adapter(
+                                runtime_config,
+                                socket_pool=network_stack.socket_pool,
+                                ssl_context=network_stack.ssl_context,
+                            )
+                            if _mqtt_client_init_memory_failed(mqtt_adapter.errors):
+                                _collect_garbage()
                 else:
                     signature = network_error_signature(
                         network_stack,
@@ -3564,6 +3697,16 @@ async def main(*, startup_plan_override=None):
                             network_stack = refresh_network_socket_artifacts(
                                 network_stack
                             )
+                        runtime_config, broker_ip_changed = (
+                            _refresh_broker_ip_for_mqtt(
+                                runtime_config,
+                                network_stack,
+                                settings_root=writable_settings_root,
+                                start_monotonic=start_monotonic,
+                            )
+                        )
+                        if broker_ip_changed and writable_settings_root is not None:
+                            broker_ip_persist_pending = True
                         mqtt_adapter = build_mqtt_client_adapter(
                             runtime_config,
                             socket_pool=network_stack.socket_pool,
@@ -3810,30 +3953,16 @@ async def main(*, startup_plan_override=None):
                 )
             ):
                 if mqtt_adapter.phase != "ready":
-                    if _broker_ip_refresh_needed(
-                        runtime_config,
-                        settings_root=None,
-                    ):
-                        runtime_config, broker_ip_phase, broker_ip_errors = (
-                            _refresh_broker_ip_from_hostname(
-                                runtime_config,
-                                network_stack,
-                                settings_root=writable_settings_root,
-                            )
+                    runtime_config, broker_ip_changed = (
+                        _refresh_broker_ip_for_mqtt(
+                            runtime_config,
+                            network_stack,
+                            settings_root=writable_settings_root,
+                            start_monotonic=start_monotonic,
                         )
-                        if broker_ip_phase != "skipped":
-                            _print_log(
-                                "mqtt",
-                                "broker_ip phase={} host={} ip={} errors={}".format(
-                                    broker_ip_phase,
-                                    runtime_config.mqtt.broker or "none",
-                                    runtime_config.mqtt.broker_ip or "none",
-                                    ",".join(broker_ip_errors)
-                                    if broker_ip_errors
-                                    else "none",
-                                ),
-                                start_monotonic=start_monotonic,
-                            )
+                    )
+                    if broker_ip_changed and writable_settings_root is not None:
+                        broker_ip_persist_pending = True
                     if mqtt_client_memory_failure_count > 0:
                         _collect_garbage()
                     mqtt_adapter = build_mqtt_client_adapter(
@@ -4084,6 +4213,16 @@ async def main(*, startup_plan_override=None):
                             start_monotonic=start_monotonic,
                         )
                         network_stack = refresh_network_socket_artifacts(network_stack)
+                    runtime_config, broker_ip_changed = (
+                        _refresh_broker_ip_for_mqtt(
+                            runtime_config,
+                            network_stack,
+                            settings_root=writable_settings_root,
+                            start_monotonic=start_monotonic,
+                        )
+                    )
+                    if broker_ip_changed and writable_settings_root is not None:
+                        broker_ip_persist_pending = True
                     mqtt_adapter = build_mqtt_client_adapter(
                         runtime_config,
                         socket_pool=network_stack.socket_pool,
@@ -4375,6 +4514,14 @@ async def main(*, startup_plan_override=None):
                             start_monotonic=start_monotonic,
                         )
                         network_stack = refresh_network_socket_artifacts(network_stack)
+                    runtime_config, broker_ip_changed = _refresh_broker_ip_for_mqtt(
+                        runtime_config,
+                        network_stack,
+                        settings_root=writable_settings_root,
+                        start_monotonic=start_monotonic,
+                    )
+                    if broker_ip_changed and writable_settings_root is not None:
+                        broker_ip_persist_pending = True
                     mqtt_adapter = build_mqtt_client_adapter(
                         runtime_config,
                         socket_pool=network_stack.socket_pool,
@@ -4817,6 +4964,13 @@ async def main(*, startup_plan_override=None):
                         _collect_garbage()
                         await asyncio.sleep(0.05)
                         continue
+                    if broker_ip_persist_pending and sync_result.phase != "error":
+                        _persist_broker_ip_after_mqtt_connect(
+                            runtime_config,
+                            settings_root=writable_settings_root,
+                            start_monotonic=start_monotonic,
+                        )
+                        broker_ip_persist_pending = False
                     _collect_garbage()
                     _log_memory_checkpoint(start_monotonic, "post_mqtt_connect")
                 elif connect_phase == "error":

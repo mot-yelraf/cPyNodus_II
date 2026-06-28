@@ -119,6 +119,7 @@ def test_runtime_meta_payload_includes_sensor_and_switch_topics():
         mqtt=MQTTConfig(
             broker="broker.local",
             broker_ip="10.0.0.20",
+            broker_ip_alt="10.0.0.21",
             port=1885,
             use_tls=True,
             base_topic="nodus",
@@ -188,6 +189,7 @@ def test_runtime_meta_payload_includes_sensor_and_switch_topics():
     }
     assert payload["mqtt"]["broker"] == "broker.local"
     assert payload["mqtt"]["broker_ip"] == "10.0.0.20"
+    assert payload["mqtt"]["broker_ip_alt"] == "10.0.0.21"
     assert payload["mqtt"]["active_broker"] == "sensoria-hub-0.local"
     assert payload["mqtt"]["port"] == 1885
     assert payload["mqtt"]["use_tls"] is True
