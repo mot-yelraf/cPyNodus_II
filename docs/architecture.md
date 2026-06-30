@@ -51,17 +51,15 @@ The current network startup path is intentional and stability-sensitive:
    startup uses a preconnect scan and targeted connect hints when possible.
 5. Fall back to AP recovery before starting feature services when station join
    fails.
-6. Resolve `MQTT.BROKER_IP` and `MQTT.BROKER_IP_ALT` from `MQTT.BROKER` when
-   MQTT is enabled, before the MQTT adapter is built. A successful resolution
-   uses the first two unique addresses as ordered runtime targets without
-   opening extra broker verification sockets. The normal MQTT preflight/connect
-   path is the reachability check. On RWFS, after MQTT connects successfully,
-   Nodus makes a best-effort scalar TOML update for the runtime broker IP
-   targets. If only one address resolves, any configured alternate is kept as a
-   runtime failover target; a failed resolution keeps any existing broker IP
-   targets as MiniMQTT targets. On Pico 2 W CircuitPython, hostname resolution
-   may expose only one address for a multi-interface broker host; provisioning
-   must supply `BROKER_IP_ALT` when secondary-interface failover is required.
+6. Resolve `MQTT.BROKER_IP` from `MQTT.BROKER` when MQTT is enabled, before the
+   MQTT adapter is built. A successful resolution uses the first unique address
+   as the runtime target without opening extra broker verification sockets. The
+   normal MQTT preflight/connect path is the reachability check. On RWFS, after
+   MQTT connects successfully, Nodus makes a best-effort scalar TOML update for
+   the runtime `BROKER_IP`. A failed resolution keeps any existing broker IP
+   target as the MiniMQTT target. On Pico 2 W CircuitPython, hostname
+   resolution may expose only one address for a multi-interface broker host;
+   current firmware does not keep a configured alternate broker target.
 7. Create the MQTT adapter from the network stack's current socket pool and SSL
    context, then run MQTT preflight/probe logic before MiniMQTT owns the socket.
 8. Start sensor, switch, web, NTP, and MQTT loops from that single startup

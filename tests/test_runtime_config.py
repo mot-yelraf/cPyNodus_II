@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from cpynodus_ii.core.config import DetectedSensor, RuntimeConfig, TimeConfig
 from cpynodus_ii.core.obfuscation import encode_password
 from cpynodus_ii.core.settings import Settings
+from cpynodus_ii.features.runtime_config_update import apply_runtime_config_updates
 
 
 def _digitalio_probe_module(pin_values):
@@ -71,7 +72,6 @@ def test_settings_from_directory_loads_switch_only_runtime_config():
     assert runtime_config.network.http_port == 8000
     assert runtime_config.mqtt.broker == "sensoria-hub-0.local"
     assert runtime_config.mqtt.broker_ip == "10.0.0.246"
-    assert runtime_config.mqtt.broker_ip_alt == ""
     assert runtime_config.mqtt.port == 1883
     assert runtime_config.mqtt.preferred_host == "10.0.0.246"
     assert runtime_config.mqtt.connection_targets == (
@@ -87,7 +87,7 @@ def test_settings_from_directory_loads_switch_only_runtime_config():
     assert runtime_config.switch.channel_count == 1
 
 
-def test_mqtt_config_uses_primary_then_alt_connection_targets():
+def test_mqtt_config_ignores_stale_broker_ip_alt_key():
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         (tmpdir_path / "settings.toml").write_text(
@@ -106,9 +106,42 @@ def test_mqtt_config_uses_primary_then_alt_connection_targets():
 
     assert runtime_config.mqtt.broker == "samhain.local"
     assert runtime_config.mqtt.broker_ip == "10.0.0.248"
-    assert runtime_config.mqtt.broker_ip_alt == "10.0.0.220"
     assert runtime_config.mqtt.preferred_host == "10.0.0.248"
-    assert runtime_config.mqtt.connection_targets == ("10.0.0.248", "10.0.0.220")
+    assert runtime_config.mqtt.connection_targets == ("10.0.0.248",)
+
+
+def test_runtime_config_update_ignores_broker_ip_alt_writes():
+    with TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        (tmpdir_path / "settings.toml").write_text(
+            (
+                '[Profile]\nACTIVE_PROFILE = "sensorius"\n'
+                "[MQTT]\n"
+                'BROKER = "samhain.local"\n'
+                'BROKER_IP = "10.0.0.248"\n'
+                "PORT = 1883\n"
+            ),
+            encoding="utf-8",
+        )
+        runtime_config = Settings.from_directory(tmpdir_path).runtime_config()
+
+        updated, applied, errors = apply_runtime_config_updates(
+            runtime_config,
+            (
+                {
+                    "section": "MQTT",
+                    "key": "BROKER_IP_ALT",
+                    "value": "10.0.0.220",
+                },
+            ),
+            settings_root=tmpdir_path,
+        )
+        text = (tmpdir_path / "settings.toml").read_text(encoding="utf-8")
+
+    assert updated is runtime_config
+    assert applied == ()
+    assert errors == ()
+    assert "BROKER_IP_ALT" not in text
 
 
 def test_settings_from_directory_loads_sensor_switch_runtime_config():

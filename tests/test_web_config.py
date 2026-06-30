@@ -132,7 +132,7 @@ def test_apply_web_config_updates_persists_restart_fields_without_live_change():
             (
                 {"section": "Network", "key": "SSID", "value": "NewWiFi"},
                 {"section": "MQTT", "key": "BROKER", "value": "new-broker.local"},
-                {"section": "MQTT", "key": "BROKER_IP_ALT", "value": "10.0.0.220"},
+                {"section": "MQTT", "key": "BROKER_IP", "value": "10.0.0.248"},
             ),
             settings_root=tmpdir_path,
         )
@@ -145,7 +145,7 @@ def test_apply_web_config_updates_persists_restart_fields_without_live_change():
     assert result.runtime_config.mqtt.broker == runtime_config.mqtt.broker
     assert persisted.network.ssid == "NewWiFi"
     assert persisted.mqtt.broker == "new-broker.local"
-    assert persisted.mqtt.broker_ip_alt == "10.0.0.220"
+    assert persisted.mqtt.broker_ip == "10.0.0.248"
 
 
 def test_apply_web_switch_override_updates_runtime_last_state():

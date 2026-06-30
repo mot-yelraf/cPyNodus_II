@@ -578,7 +578,6 @@ def test_apply_updates_preserves_template_order_in_settings_file():
     assert (
         text.index('BROKER = "samhain.local"')
         < text.index('BROKER_IP = ""')
-        < text.index('BROKER_IP_ALT = ""')
         < text.index("PORT = 1883")
     )
 

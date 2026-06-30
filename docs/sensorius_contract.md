@@ -39,7 +39,6 @@ Canonical `/itaot-init` request:
   "mqtt": {
     "broker_host": "samhain.local",
     "broker_ip": "10.0.0.248",
-    "broker_ip_alt": "10.0.0.220",
     "broker_port": 1883
   },
   "time": {
@@ -68,11 +67,9 @@ Bootstrap rules:
 - Keep onboarding protocol state out of normal TOML config schema.
 - If `mqtt.active_profile` is omitted and `mqtt.broker_host` is present,
   infer `ACTIVE_PROFILE = "sensorius"`.
-- `mqtt.broker_ip` and `mqtt.broker_ip_alt` are optional, but Sensorius should
-  send both when the broker host has distinct primary and secondary interface
-  addresses. Pico 2 W CircuitPython hostname resolution may return only one
-  address for `mqtt.broker_host`, so Nodus cannot reliably discover the
-  alternate by itself.
+- `mqtt.broker_ip` is optional. `mqtt.broker_host` remains the source of truth;
+  Nodus refreshes `BROKER_IP` from the resolver during startup and MQTT
+  recovery, then persists the refreshed IP after MQTT connects successfully.
 - Sensorius sends available hub `[Time]` values in `time`; Nodus persists
   supported keys when present.
 - Current firmware stores the bootstrap token in `onboarding_state.json`,
@@ -254,8 +251,8 @@ The payload must include:
 - `network.ssid`, `network.password`, `network.hostname`, `network.ipv4addr`
 - `profile.active_profile`
 - `mqtt.broker`, `mqtt.broker_ip`, `mqtt.active_broker`, `mqtt.port`,
-  `mqtt.use_tls`, `mqtt.base_topic`, optional `mqtt.broker_ip_alt`, and
-  configured `mqtt.username` / `mqtt.password`
+  `mqtt.use_tls`, `mqtt.base_topic`, and configured `mqtt.username` /
+  `mqtt.password`
 - `fwupdate.schema`, `fwupdate.transport`, `fwupdate.prepare_topic`,
   `fwupdate.ack_topic`, `fwupdate.result_topic`
 - `location_group.location`, `location_group.members`

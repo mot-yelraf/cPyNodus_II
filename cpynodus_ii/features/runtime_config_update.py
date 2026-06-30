@@ -12,6 +12,8 @@ def apply_runtime_config_updates(runtime_config, updates, *, settings_root=None)
     for update in updates:
         section = str(update.get("section", "") or "").strip()
         key = str(update.get("key", "") or "").strip()
+        if section == "MQTT" and key.upper() == "BROKER_IP_ALT":
+            continue
         if (
             section == "Sensor"
             and key.upper() == "LOCATION"
@@ -96,11 +98,6 @@ def apply_runtime_config_update(runtime_config, section, key, value):
         return replace(
             runtime_config,
             mqtt=replace(runtime_config.mqtt, broker_ip=str(value or "").strip()),
-        )
-    if section == "MQTT" and key_upper == "BROKER_IP_ALT":
-        return replace(
-            runtime_config,
-            mqtt=replace(runtime_config.mqtt, broker_ip_alt=str(value or "").strip()),
         )
     if section == "MQTT" and key_upper == "PORT":
         return replace(

@@ -1901,38 +1901,27 @@ def _recover_mqtt_subscription_failure(
     return rebuilt_adapter
 
 
-def _resolve_broker_ips_from_hostname(runtime_config, network_stack):
-    """Resolve configured MQTT broker hostname to up to two IP literals."""
+def _resolve_broker_ip_from_hostname(runtime_config, network_stack):
+    """Resolve configured MQTT broker hostname to the primary IP literal."""
     broker = str(getattr(runtime_config.mqtt, "broker", "") or "").strip()
     if not broker:
-        return (), ()
+        return "", ()
     if _looks_like_ip_literal(broker):
-        return (broker,), ()
+        return broker, ()
     socket_pool = getattr(network_stack, "socket_pool", None)
     if socket_pool is None:
-        return (), ("mqtt_resolve_failed:{}:socket_pool_unavailable".format(broker),)
+        return "", ("mqtt_resolve_failed:{}:socket_pool_unavailable".format(broker),)
     getaddrinfo = getattr(socket_pool, "getaddrinfo", None)
     if not callable(getaddrinfo):
-        return (), ("mqtt_resolve_failed:{}:getaddrinfo_unavailable".format(broker),)
+        return "", ("mqtt_resolve_failed:{}:getaddrinfo_unavailable".format(broker),)
     try:
         resolved = getaddrinfo(broker, runtime_config.mqtt.port)
     except Exception as exc:
-        return (), ("mqtt_resolve_failed:{}:{}".format(broker, exc),)
-    resolved_ips = _ips_from_getaddrinfo_result(resolved)
-    if not resolved_ips:
-        return (), ("mqtt_resolve_failed:{}:empty_result".format(broker),)
-    return resolved_ips, ()
-
-
-def _resolve_broker_ip_from_hostname(runtime_config, network_stack):
-    """Resolve configured MQTT broker hostname to the primary IP literal."""
-    resolved_ips, errors = _resolve_broker_ips_from_hostname(
-        runtime_config,
-        network_stack,
-    )
-    if not resolved_ips:
-        return "", errors
-    return resolved_ips[0], errors
+        return "", ("mqtt_resolve_failed:{}:{}".format(broker, exc),)
+    resolved_ip = _ip_from_getaddrinfo_result(resolved)
+    if not resolved_ip:
+        return "", ("mqtt_resolve_failed:{}:empty_result".format(broker),)
+    return resolved_ip, ()
 
 
 def _refresh_broker_ip_from_hostname(
@@ -1941,35 +1930,24 @@ def _refresh_broker_ip_from_hostname(
     *,
     settings_root=None,
 ):
-    """Refresh runtime MQTT.BROKER_IP values before MQTT connects."""
-    resolved_ips, errors = _resolve_broker_ips_from_hostname(
+    """Refresh runtime MQTT.BROKER_IP before MQTT connects."""
+    resolved_ip, errors = _resolve_broker_ip_from_hostname(
         runtime_config,
         network_stack,
     )
     if errors:
         return runtime_config, "error", tuple(errors)
-    if not resolved_ips:
+    if not resolved_ip:
         return runtime_config, "skipped", ()
-    resolved_ip = str(resolved_ips[0] or "").strip()
-    resolved_ip_alt = ""
-    if len(resolved_ips) > 1:
-        resolved_ip_alt = str(resolved_ips[1] or "").strip()
-    else:
-        resolved_ip_alt = str(
-            getattr(runtime_config.mqtt, "broker_ip_alt", "") or ""
-        ).strip()
+    resolved_ip = str(resolved_ip or "").strip()
     current_ip = str(getattr(runtime_config.mqtt, "broker_ip", "") or "").strip()
-    current_ip_alt = str(
-        getattr(runtime_config.mqtt, "broker_ip_alt", "") or ""
-    ).strip()
-    if current_ip == resolved_ip and current_ip_alt == resolved_ip_alt:
+    if current_ip == resolved_ip:
         return runtime_config, "unchanged", ()
     resolved_runtime = replace(
         runtime_config,
         mqtt=replace(
             runtime_config.mqtt,
             broker_ip=resolved_ip,
-            broker_ip_alt=resolved_ip_alt,
         ),
     )
     return resolved_runtime, "resolved_volatile", ()
@@ -2002,11 +1980,10 @@ def _refresh_broker_ip_for_mqtt(
     if broker_ip_phase != "skipped":
         _print_log(
             "mqtt",
-            "broker_ip phase={} host={} ip={} alt={} errors={}".format(
+            "broker_ip phase={} host={} ip={} errors={}".format(
                 broker_ip_phase,
                 runtime_config.mqtt.broker or "none",
                 runtime_config.mqtt.broker_ip or "none",
-                runtime_config.mqtt.broker_ip_alt or "none",
                 ",".join(broker_ip_errors) if broker_ip_errors else "none",
             ),
             start_monotonic=start_monotonic,
@@ -2034,17 +2011,6 @@ def _persist_broker_ip_after_mqtt_connect(
             "value": broker_ip,
         },
     )
-    broker_ip_alt = str(
-        getattr(runtime_config.mqtt, "broker_ip_alt", "") or ""
-    ).strip()
-    if broker_ip_alt:
-        updates = updates + (
-            {
-                "section": "MQTT",
-                "key": "BROKER_IP_ALT",
-                "value": broker_ip_alt,
-            },
-        )
     _persisted_config, persisted_updates, persistence_errors = (
         Settings.apply_updates_to_directory(
             settings_root,
@@ -2057,10 +2023,9 @@ def _persist_broker_ip_after_mqtt_connect(
     phase = "persisted" if persisted_updates and not persistence_errors else "volatile"
     _print_log(
         "mqtt",
-        "broker_ip_persist phase={} ip={} alt={} errors={}".format(
+        "broker_ip_persist phase={} ip={} errors={}".format(
             phase,
             broker_ip,
-            broker_ip_alt or "none",
             ",".join(persistence_errors) if persistence_errors else "none",
         ),
         start_monotonic=start_monotonic,
@@ -2069,14 +2034,6 @@ def _persist_broker_ip_after_mqtt_connect(
 
 
 def _ip_from_getaddrinfo_result(resolved):
-    ips = _ips_from_getaddrinfo_result(resolved)
-    if not ips:
-        return ""
-    return ips[0]
-
-
-def _ips_from_getaddrinfo_result(resolved):
-    ips = []
     try:
         for item in resolved or ():
             try:
@@ -2084,14 +2041,12 @@ def _ips_from_getaddrinfo_result(resolved):
                 ip = str(sockaddr[0] or "").strip()
             except Exception:
                 continue
-            if not ip or not _looks_like_ip_literal(ip) or ip in ips:
+            if not ip or not _looks_like_ip_literal(ip):
                 continue
-            ips.append(ip)
-            if len(ips) >= 2:
-                break
-        return tuple(ips)
+            return ip
     except Exception:
-        return ()
+        pass
+    return ""
 
 
 def _should_fallback_to_ap(runtime_config, network_stack):

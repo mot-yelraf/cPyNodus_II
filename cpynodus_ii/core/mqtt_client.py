@@ -185,14 +185,6 @@ def connect_mqtt_client(adapter, transport, *, preflight=True):
             errors=(error,),
         )
 
-    if len(targets) > 1:
-        return _connect_mqtt_client_with_fallback(
-            adapter,
-            transport,
-            targets,
-            preflight=preflight,
-        )
-
     broker = targets[0]
     error, resolved_ip = _resolve_broker_target(adapter, broker)
     if preflight and error:
@@ -231,95 +223,6 @@ def connect_mqtt_client(adapter, transport, *, preflight=True):
             adapter=adapter,
             errors=(error,) + close_errors,
         )
-
-
-def _connect_mqtt_client_with_fallback(adapter, transport, targets, *, preflight=True):
-    errors = []
-    active_adapter = adapter
-    connected = False
-    resolved_ip = ""
-    for index, broker in enumerate(targets):
-        resolve_error, resolved_ip = _resolve_broker_target(active_adapter, broker)
-        if preflight and resolve_error:
-            errors.append(resolve_error)
-            transport.mark_disconnected(reason=resolve_error)
-            continue
-        if index > 0:
-            try:
-                client = _instantiate_client(
-                    adapter.client_class,
-                    dict(adapter.client_kwargs or {}),
-                    broker,
-                )
-            except Exception as exc:
-                errors.append("mqtt_client_init_failed:{}".format(exc))
-                continue
-            active_adapter = MQTTClientAdapter(
-                phase=adapter.phase,
-                driver_kind=adapter.driver_kind,
-                broker=adapter.broker,
-                port=adapter.port,
-                broker_targets=adapter.broker_targets,
-                active_broker=broker,
-                resolved_broker_ip=resolved_ip,
-                client=client,
-                client_class=adapter.client_class,
-                client_kwargs=dict(adapter.client_kwargs or {}),
-                socket_compat_enabled=adapter.socket_compat_enabled,
-                flexible_callback_enabled=adapter.flexible_callback_enabled,
-                published_index=adapter.published_index,
-                subscription_index=adapter.subscription_index,
-                errors=adapter.errors,
-            )
-        raw_result = _connect_mqtt_client_raw(
-            active_adapter,
-            transport,
-            broker,
-            resolved_ip,
-        )
-        if raw_result is not None:
-            if raw_result.phase == "connected":
-                active_adapter = raw_result.adapter
-                connected = True
-                break
-            errors.extend(raw_result.errors)
-            continue
-
-        _bind_on_message(
-            active_adapter.client,
-            transport,
-            flexible=active_adapter.flexible_callback_enabled,
-        )
-        try:
-            active_adapter.client.connect()
-            _set_minimqtt_runtime_socket_timeout(
-                active_adapter.client,
-                MQTT_POLL_SOCKET_TIMEOUT_S,
-            )
-            if active_adapter.socket_compat_enabled:
-                _ensure_minimqtt_socket_compat(active_adapter.client)
-            transport.mark_connected()
-            connected = True
-            break
-        except Exception as exc:
-            error = "mqtt_connect_failed:{}:{}".format(broker, exc)
-            errors.append(error)
-            close_errors = _force_close_mqtt_client_socket(active_adapter.client)[1]
-            errors.extend(close_errors)
-            transport.mark_disconnected(reason=error)
-
-    if not connected:
-        return MQTTClientSyncResult(
-            phase="error",
-            adapter=active_adapter,
-            errors=tuple(errors) or ("mqtt_connect_failed",),
-        )
-
-    return MQTTClientSyncResult(
-        phase="connected",
-        adapter=_mqtt_connected_adapter(active_adapter, resolved_ip),
-        errors=(),
-    )
 
 
 def _mqtt_connect_success_result(adapter, resolved_ip):

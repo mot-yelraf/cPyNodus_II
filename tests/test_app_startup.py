@@ -30,7 +30,7 @@ from cpynodus_ii.app import (
     _recovery_reconnect_delay_s,
     _refresh_broker_ip_from_hostname,
     _reset_mqtt_preflight_connect_delay,
-    _resolve_broker_ips_from_hostname,
+    _resolve_broker_ip_from_hostname,
     _resolve_startup_plan,
     _restart_sensor_stack,
     _runtime_device_id,
@@ -237,7 +237,6 @@ def test_refresh_broker_ip_uses_runtime_resolution_on_startup(tmp_path):
     assert phase == "resolved_volatile"
     assert errors == ()
     assert updated_runtime.mqtt.broker_ip == "10.0.0.248"
-    assert updated_runtime.mqtt.broker_ip_alt == ""
     assert 'BROKER_IP = ""' in text
     assert "BROKER_IP_ALT" not in text
     assert socket_pool.connects == []
@@ -281,12 +280,11 @@ def test_refresh_broker_ip_updates_changed_hostname_resolution(tmp_path):
     assert phase == "resolved_volatile"
     assert errors == ()
     assert updated_runtime.mqtt.broker_ip == "10.0.0.220"
-    assert updated_runtime.mqtt.broker_ip_alt == ""
     assert 'BROKER_IP = "10.0.0.248"' in text
     assert "BROKER_IP_ALT" not in text
 
 
-def test_refresh_broker_ip_skips_probe_for_unchanged_primary_without_alt(tmp_path):
+def test_refresh_broker_ip_skips_probe_for_unchanged_primary(tmp_path):
     (tmp_path / "settings.toml").write_text(
         "[Network]\n"
         'SSID = "PeaceHill"\n'
@@ -297,7 +295,6 @@ def test_refresh_broker_ip_skips_probe_for_unchanged_primary_without_alt(tmp_pat
         "[MQTT]\n"
         'BROKER = "samhain.local"\n'
         'BROKER_IP = "10.0.0.248"\n'
-        'BROKER_IP_ALT = ""\n'
         "PORT = 1883\n",
         encoding="utf-8",
     )
@@ -330,10 +327,9 @@ def test_refresh_broker_ip_skips_probe_for_unchanged_primary_without_alt(tmp_pat
     assert errors == ()
     assert updated_runtime is runtime_config
     assert updated_runtime.mqtt.broker_ip == "10.0.0.248"
-    assert updated_runtime.mqtt.broker_ip_alt == ""
     assert socket_pool.connects == []
     assert 'BROKER_IP = "10.0.0.248"' in text
-    assert 'BROKER_IP_ALT = ""' in text
+    assert "BROKER_IP_ALT" not in text
 
 
 def test_refresh_broker_ip_updates_changed_hostname_without_tcp_verification(tmp_path):
@@ -347,7 +343,6 @@ def test_refresh_broker_ip_updates_changed_hostname_without_tcp_verification(tmp
         "[MQTT]\n"
         'BROKER = "samhain.local"\n'
         'BROKER_IP = "10.0.0.248"\n'
-        'BROKER_IP_ALT = ""\n'
         "PORT = 1883\n",
         encoding="utf-8",
     )
@@ -381,7 +376,7 @@ def test_refresh_broker_ip_updates_changed_hostname_without_tcp_verification(tmp
     assert socket_pool.connects == []
 
 
-def test_resolve_broker_ips_from_hostname_dedupes_and_limits_to_two():
+def test_resolve_broker_ip_from_hostname_uses_first_unique_address():
     class _ResolveDuplicatePool:
         def getaddrinfo(self, host, port):
             assert host == "samhain.local"
@@ -397,16 +392,16 @@ def test_resolve_broker_ips_from_hostname_dedupes_and_limits_to_two():
         mqtt=MQTTConfig(broker="samhain.local", port=1883),
     )
 
-    resolved_ips, errors = _resolve_broker_ips_from_hostname(
+    resolved_ip, errors = _resolve_broker_ip_from_hostname(
         runtime_config,
         SimpleNamespace(socket_pool=_ResolveDuplicatePool()),
     )
 
     assert errors == ()
-    assert resolved_ips == ("10.0.0.248", "10.0.0.220")
+    assert resolved_ip == "10.0.0.248"
 
 
-def test_refresh_broker_ip_uses_primary_and_alt_from_hostname_at_runtime(tmp_path):
+def test_refresh_broker_ip_uses_first_hostname_resolution_at_runtime(tmp_path):
     (tmp_path / "settings.toml").write_text(
         "[Network]\n"
         'SSID = "PeaceHill"\n'
@@ -417,7 +412,6 @@ def test_refresh_broker_ip_uses_primary_and_alt_from_hostname_at_runtime(tmp_pat
         "[MQTT]\n"
         'BROKER = "samhain.local"\n'
         'BROKER_IP = ""\n'
-        'BROKER_IP_ALT = ""\n'
         "PORT = 1883\n",
         encoding="utf-8",
     )
@@ -441,107 +435,9 @@ def test_refresh_broker_ip_uses_primary_and_alt_from_hostname_at_runtime(tmp_pat
     assert phase == "resolved_volatile"
     assert errors == ()
     assert updated_runtime.mqtt.broker_ip == "10.0.0.248"
-    assert updated_runtime.mqtt.broker_ip_alt == "10.0.0.220"
-    assert updated_runtime.mqtt.connection_targets == ("10.0.0.248", "10.0.0.220")
+    assert updated_runtime.mqtt.connection_targets == ("10.0.0.248",)
     assert 'BROKER_IP = ""' in text
-    assert 'BROKER_IP_ALT = ""' in text
-
-
-def test_refresh_broker_ip_keeps_existing_alt_when_not_returned_by_hostname(tmp_path):
-    (tmp_path / "settings.toml").write_text(
-        "[Network]\n"
-        'SSID = "PeaceHill"\n'
-        'PASSWORD = "plain-wifi"\n'
-        'HOSTNAME = "co2-29j39c"\n'
-        "[Profile]\n"
-        'ACTIVE_PROFILE = "sensorius"\n'
-        "[MQTT]\n"
-        'BROKER = "samhain.local"\n'
-        'BROKER_IP = "10.0.0.248"\n'
-        'BROKER_IP_ALT = "10.0.0.220"\n'
-        "PORT = 1883\n",
-        encoding="utf-8",
-    )
-    runtime_config = RuntimeConfig(
-        active_profile="sensorius",
-        network=NetworkConfig(
-            ssid="PeaceHill",
-            password="plain-wifi",
-            hostname="co2-29j39c",
-        ),
-        mqtt=MQTTConfig(
-            broker="samhain.local",
-            broker_ip="10.0.0.248",
-            broker_ip_alt="10.0.0.220",
-            port=1883,
-        ),
-    )
-
-    socket_pool = _BrokerResolvePool(("10.0.0.248",))
-
-    updated_runtime, phase, errors = _refresh_broker_ip_from_hostname(
-        runtime_config,
-        _ready_network_stack(socket_pool),
-        settings_root=tmp_path,
-    )
-
-    text = (tmp_path / "settings.toml").read_text(encoding="utf-8")
-    assert phase == "unchanged"
-    assert errors == ()
-    assert updated_runtime.mqtt.broker_ip == "10.0.0.248"
-    assert updated_runtime.mqtt.broker_ip_alt == "10.0.0.220"
-    assert updated_runtime.mqtt.connection_targets == ("10.0.0.248", "10.0.0.220")
-    assert socket_pool.connects == []
-    assert 'BROKER_IP = "10.0.0.248"' in text
-    assert 'BROKER_IP_ALT = "10.0.0.220"' in text
-
-
-def test_refresh_broker_ip_preserves_existing_alt_without_tcp_verification(tmp_path):
-    (tmp_path / "settings.toml").write_text(
-        "[Network]\n"
-        'SSID = "PeaceHill"\n'
-        'PASSWORD = "plain-wifi"\n'
-        'HOSTNAME = "co2-29j39c"\n'
-        "[Profile]\n"
-        'ACTIVE_PROFILE = "sensorius"\n'
-        "[MQTT]\n"
-        'BROKER = "samhain.local"\n'
-        'BROKER_IP = "10.0.0.248"\n'
-        'BROKER_IP_ALT = "10.0.0.220"\n'
-        "PORT = 1883\n",
-        encoding="utf-8",
-    )
-    runtime_config = RuntimeConfig(
-        active_profile="sensorius",
-        network=NetworkConfig(
-            ssid="PeaceHill",
-            password="plain-wifi",
-            hostname="co2-29j39c",
-        ),
-        mqtt=MQTTConfig(
-            broker="samhain.local",
-            broker_ip="10.0.0.248",
-            broker_ip_alt="10.0.0.220",
-            port=1883,
-        ),
-    )
-    socket_pool = _BrokerResolvePool(("10.0.0.248",))
-
-    updated_runtime, phase, errors = _refresh_broker_ip_from_hostname(
-        runtime_config,
-        _ready_network_stack(socket_pool),
-        settings_root=tmp_path,
-    )
-
-    text = (tmp_path / "settings.toml").read_text(encoding="utf-8")
-    assert phase == "unchanged"
-    assert errors == ()
-    assert updated_runtime.mqtt.broker_ip == "10.0.0.248"
-    assert updated_runtime.mqtt.broker_ip_alt == "10.0.0.220"
-    assert updated_runtime.mqtt.connection_targets == ("10.0.0.248", "10.0.0.220")
-    assert socket_pool.connects == []
-    assert 'BROKER_IP = "10.0.0.248"' in text
-    assert 'BROKER_IP_ALT = "10.0.0.220"' in text
+    assert "BROKER_IP_ALT" not in text
 
 
 def test_mqtt_rebuild_verification_uses_recent_success_in_initial_recovery():
@@ -575,7 +471,6 @@ def test_refresh_broker_ip_uses_volatile_resolution_without_settings_root():
     assert phase == "resolved_volatile"
     assert errors == ()
     assert updated_runtime.mqtt.broker_ip == "10.0.0.248"
-    assert updated_runtime.mqtt.broker_ip_alt == ""
 
 
 def test_refresh_broker_ip_keeps_configured_ip_when_hostname_resolution_fails():
@@ -685,7 +580,6 @@ def test_refresh_broker_ip_for_mqtt_reports_changed_target(tmp_path):
     text = (tmp_path / "settings.toml").read_text(encoding="utf-8")
     assert changed is True
     assert updated_runtime.mqtt.broker_ip == "10.0.0.220"
-    assert updated_runtime.mqtt.broker_ip_alt == ""
     assert 'BROKER_IP = "10.0.0.248"' in text
     assert "BROKER_IP_ALT" not in text
 
@@ -701,7 +595,6 @@ def test_persist_broker_ip_after_mqtt_connect_writes_primary(tmp_path):
         "[MQTT]\n"
         'BROKER = "samhain.local"\n'
         'BROKER_IP = ""\n'
-        'BROKER_IP_ALT = ""\n'
         "PORT = 1883\n",
         encoding="utf-8",
     )
@@ -727,48 +620,7 @@ def test_persist_broker_ip_after_mqtt_connect_writes_primary(tmp_path):
     text = (tmp_path / "settings.toml").read_text(encoding="utf-8")
     assert persisted is True
     assert 'BROKER_IP = "10.0.0.248"' in text
-    assert 'BROKER_IP_ALT = ""' in text
-
-
-def test_persist_broker_ip_after_mqtt_connect_writes_alt(tmp_path):
-    (tmp_path / "settings.toml").write_text(
-        "[Network]\n"
-        'SSID = "PeaceHill"\n'
-        'PASSWORD = "plain-wifi"\n'
-        'HOSTNAME = "co2-29j39c"\n'
-        "[Profile]\n"
-        'ACTIVE_PROFILE = "sensorius"\n'
-        "[MQTT]\n"
-        'BROKER = "samhain.local"\n'
-        'BROKER_IP = ""\n'
-        'BROKER_IP_ALT = ""\n'
-        "PORT = 1883\n",
-        encoding="utf-8",
-    )
-    runtime_config = RuntimeConfig(
-        active_profile="sensorius",
-        network=NetworkConfig(
-            ssid="PeaceHill",
-            password="plain-wifi",
-            hostname="co2-29j39c",
-        ),
-        mqtt=MQTTConfig(
-            broker="samhain.local",
-            broker_ip="10.0.0.248",
-            broker_ip_alt="10.0.0.220",
-            port=1883,
-        ),
-    )
-
-    persisted = _persist_broker_ip_after_mqtt_connect(
-        runtime_config,
-        settings_root=tmp_path,
-    )
-
-    text = (tmp_path / "settings.toml").read_text(encoding="utf-8")
-    assert persisted is True
-    assert 'BROKER_IP = "10.0.0.248"' in text
-    assert 'BROKER_IP_ALT = "10.0.0.220"' in text
+    assert "BROKER_IP_ALT" not in text
 
 
 def test_persist_broker_ip_after_mqtt_connect_skips_without_settings_root():

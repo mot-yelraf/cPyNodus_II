@@ -97,16 +97,15 @@ current contract:
   `settings.toml`.
 - Broker host resolution updates runtime targets before MQTT connects:
   `MQTT.BROKER` remains the canonical broker hostname, while
-  `MQTT.BROKER_IP` and `MQTT.BROKER_IP_ALT` are ordered IP targets. Hostname
-  refresh does not open extra verification sockets before the normal MQTT
-  preflight/connect path. On RWFS, after MQTT connects successfully, Nodus makes
-  a best-effort scalar TOML update for the runtime broker IP targets.
+  `MQTT.BROKER_IP` is the current resolved IP target. Hostname refresh does not
+  open extra verification sockets before the normal MQTT preflight/connect path.
+  On RWFS, after MQTT connects successfully, Nodus makes a best-effort scalar
+  TOML update for `MQTT.BROKER_IP`.
 - On Pico 2 W CircuitPython, hostname lookup can return only one address from
   the underlying resolver. A broker hostname such as `samhain.local` should not
-  be expected to populate both broker interfaces automatically; provisioning
-  must supply `MQTT.BROKER_IP_ALT` when a secondary target is required. When an
-  alternate is configured but not returned by hostname lookup, Nodus keeps it as
-  a runtime failover target.
+  be expected to expose both broker interfaces automatically. Current firmware
+  does not keep or try a configured alternate broker target; stale
+  `BROKER_IP_ALT` keys are ignored.
 - Log-transfer topics are deterministic from the device id and are not embedded
   in retained startup `meta`; use the topic family listed above when
   `capabilities.log_transfer` is true.

@@ -51,7 +51,6 @@ def test_apply_itaot_init_payload_persists_existing_settings_fields_only():
                 "mqtt": {
                     "broker_host": "sensorius-broker.local",
                     "broker_ip": "10.0.0.248",
-                    "broker_ip_alt": "10.0.0.220",
                     "broker_port": 1883,
                 },
             },
@@ -72,7 +71,6 @@ def test_apply_itaot_init_payload_persists_existing_settings_fields_only():
     assert settings.network.hostname == "co2-w9umh8"
     assert settings.mqtt.broker == "sensorius-broker.local"
     assert settings.mqtt.broker_ip == "10.0.0.248"
-    assert settings.mqtt.broker_ip_alt == "10.0.0.220"
     assert settings.mqtt.port == 1883
     assert onboarding_state["onboard_token"] == "token-123"
     assert onboarding_state["active_profile"] == "sensorius"

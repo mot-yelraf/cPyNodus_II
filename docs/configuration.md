@@ -122,7 +122,6 @@ The shared MQTT connection is configured in `[MQTT]`:
 
 - `BROKER`
 - `BROKER_IP`
-- `BROKER_IP_ALT`
 - `PORT`
 - `USE_TLS`
 - `BASE_TOPIC`
@@ -132,23 +131,20 @@ The shared MQTT connection is configured in `[MQTT]`:
 `BROKER` is the canonical broker hostname from Sensorius. MQTT connections use
 IP literals only. During startup and MQTT recovery rebuilds, Nodus attempts to
 resolve `BROKER`; on success it stores the first unique resolved address as
-`BROKER_IP` and the second unique resolved address, when present, as
-`BROKER_IP_ALT` for the current boot. Broker refresh does not open extra TCP
+`BROKER_IP` for the current boot. Broker refresh does not open extra TCP
 verification sockets before the normal MQTT path. On RWFS, after MQTT connects
 successfully, Nodus makes a best-effort scalar TOML update for the runtime
-`BROKER_IP` and non-empty `BROKER_IP_ALT` values. Persistent `BROKER_IP` and
-`BROKER_IP_ALT` values can also come from provisioning, onboarding, or explicit
-config writes. If resolution returns only one address and `BROKER_IP_ALT` is
-already configured, Nodus keeps that alternate as a runtime failover target. If
-resolution fails, Nodus keeps any existing `BROKER_IP` and `BROKER_IP_ALT`
-values as MiniMQTT targets.
+`BROKER_IP` value. Persistent `BROKER_IP` can also come from provisioning,
+onboarding, explicit config writes, or a prior successful broker refresh. If
+resolution fails, Nodus keeps any existing `BROKER_IP` value as the MiniMQTT
+target.
 
 On the Pico 2 W CircuitPython runtime, `socketpool.getaddrinfo()` may expose
 only one resolved address for a hostname, even when the broker host advertises
-multiple interfaces over mDNS. Do not rely on `BROKER` resolution to discover a
-secondary interface automatically. When dual-interface broker failover is
-required, provisioning or Sensorius onboarding must write both `BROKER_IP` and
-`BROKER_IP_ALT`; Nodus will then use them as ordered MQTT connection targets.
+multiple interfaces over mDNS. Nodus uses the resolver-provided address as the
+source of truth for `BROKER_IP`; it does not maintain an alternate broker IP
+target. Existing deployed `BROKER_IP_ALT` keys are ignored by current runtime
+code.
 
 The same settings rewrite obfuscates any plaintext passwords that were manually
 entered in `settings.toml`.

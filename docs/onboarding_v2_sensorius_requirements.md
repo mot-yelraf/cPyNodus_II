@@ -56,7 +56,6 @@ Sensorius -> User: Device onboarded
   "mqtt": {
     "broker_host": "sensorius-broker.local",
     "broker_ip": "10.0.0.248",
-    "broker_ip_alt": "10.0.0.220",
     "broker_port": 1883
   }
 }
@@ -72,16 +71,13 @@ Sensorius -> User: Device onboarded
 
 ### Optional MQTT Fields
 1. `mqtt.broker_ip`
-2. `mqtt.broker_ip_alt`
 
 Notes:
 1. This flat top-level JSON shape is the canonical Sensorius request for Onboarding V2.
 2. Sensorius does not need to send `mqtt.active_profile`; Nodus will infer `sensorius` when broker coordinates are present.
-3. Sensorius should send both `mqtt.broker_ip` and `mqtt.broker_ip_alt` when
-   the broker host has distinct primary and secondary interface addresses.
-   Pico 2 W CircuitPython hostname resolution may return only one address for
-   `mqtt.broker_host`, so Nodus cannot reliably discover the alternate by
-   itself.
+3. Pico 2 W CircuitPython hostname resolution may return only one address for
+   `mqtt.broker_host`; current firmware uses the first resolved address and does
+   not keep an alternate broker target.
 4. Nodus may continue accepting older wrapped compatibility shapes, but Sensorius should send the flat shape above.
 
 ### Expected Success Response (example)

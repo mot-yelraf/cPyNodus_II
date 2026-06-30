@@ -260,7 +260,6 @@ class MQTTConfig:
 
     broker: str = ""
     broker_ip: str = ""
-    broker_ip_alt: str = ""
     port: int = 1883
     use_tls: bool = False
     base_topic: str = "nodus"
@@ -270,7 +269,6 @@ class MQTTConfig:
     def __post_init__(self):
         _raw_setattr(self, "broker", _clean_str(self.broker))
         _raw_setattr(self, "broker_ip", _clean_str(self.broker_ip))
-        _raw_setattr(self, "broker_ip_alt", _clean_str(self.broker_ip_alt))
         _raw_setattr(self, "port", int(self.port or 1883))
         _raw_setattr(self, "use_tls", bool(self.use_tls))
         _raw_setattr(self, "base_topic", _clean_str(self.base_topic) or "nodus")
@@ -279,15 +277,13 @@ class MQTTConfig:
 
     @property
     def preferred_host(self):
-        return self.broker_ip or self.broker_ip_alt or self.broker
+        return self.broker_ip or self.broker
 
     @property
     def connection_targets(self):
         targets = []
         if self.broker_ip:
             targets.append(self.broker_ip)
-        if self.broker_ip_alt and self.broker_ip_alt not in targets:
-            targets.append(self.broker_ip_alt)
         if _looks_like_ip_literal(self.broker) and self.broker not in targets:
             targets.append(self.broker)
         return tuple(targets)

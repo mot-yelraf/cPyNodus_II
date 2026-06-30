@@ -1031,7 +1031,6 @@ class Settings:
             mqtt=MQTTConfig(
                 broker=mqtt_doc.get("BROKER", ""),
                 broker_ip=mqtt_doc.get("BROKER_IP", ""),
-                broker_ip_alt=mqtt_doc.get("BROKER_IP_ALT", ""),
                 port=mqtt_doc.get("PORT", 1883),
                 use_tls=mqtt_doc.get("USE_TLS", False),
                 base_topic=mqtt_doc.get("BASE_TOPIC", "nodus"),
