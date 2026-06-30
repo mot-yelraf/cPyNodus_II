@@ -8,7 +8,7 @@ stopped:
     records = test_i2c_sensor.run()
 
 The apparatus scans the default Nodus I2C bus for the detected board:
-  - XIAO ESP32-S3 bring-up: SCL=D7 SDA=D4
+  - XIAO ESP32-S3 bring-up: SCL=D5 SDA=D4
 
 On Pico2 W it scans both Nodus I2C buses:
   - I2C0: SCL=GP1 SDA=GP0
@@ -28,13 +28,13 @@ import time
 import board
 import busio
 
-SCRIPT_VERSION = "i2c_sensor_test_v5_2026-06-18"
+SCRIPT_VERSION = "i2c_sensor_test_v6_2026-06-30"
 
 PICO2W_I2C_BUSES = (
     ("I2C0", "GP1", "GP0"),
     ("I2C1", "GP3", "GP2"),
 )
-XESP32S3_I2C_BUSES = (("I2C0", "D7", "D4"),)
+XESP32S3_I2C_BUSES = (("I2C0", "D5", "D4"),)
 
 ADDRESS_LABELS = {
     0x10: "lux/veml7700",
