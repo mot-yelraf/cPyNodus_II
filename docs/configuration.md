@@ -238,10 +238,11 @@ currently accepted by the web config classifier.
 Calibration offsets in `[Calibration.System]` and `[Calibration.Device]` are additive corrections.
 For example, a `CO2_OFFSET = -400.0` reduces the live measured `CO2` value by `400 ppm` before publish.
 `Calibration.Device.ALTITUDE_METERS` is device setup calibration, not an additive metric offset.
-When set to a non-zero meters value, BME280 devices use it to normalize the
-published `Baro-Pressure` from station pressure to sea-level pressure. BME680
-drivers use it to calibrate altitude through sea-level pressure, and
-SCD30/SCD4x drivers use it for CO2 altitude compensation at driver startup.
+When set to a non-zero meters value, BME280 and BME680 devices use it to
+normalize the published `Baro-Pressure` from station pressure to sea-level
+pressure. BME680 also seeds driver sea-level pressure at startup, and
+SCD30/SCD4x drivers use the value for CO2 altitude compensation at driver
+startup.
 
 Corner case:
 

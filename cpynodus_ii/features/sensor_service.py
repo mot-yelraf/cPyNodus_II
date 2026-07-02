@@ -134,9 +134,7 @@ def _read_ready_sensor_snapshot(sensor_service, runtime_config, sensor):
                 "Temperature": _maybe_round(temp_c, 2),
                 "Rel-Humidity": _maybe_round(rh_pct, 0),
                 "Baro-Pressure": _maybe_round(
-                    _scale_pressure_hpa(
-                        getattr(sensor_service.driver, "pressure", None)
-                    ),
+                    _bme_baro_pressure_hpa(sensor_service.driver, sensor),
                     0,
                 ),
                 "Gas": _maybe_round(gas_ohms, 0),
@@ -243,7 +241,7 @@ def _read_ready_sensor_snapshot(sensor_service, runtime_config, sensor):
                 "Temperature": _maybe_round(temp_c, 2),
                 "Rel-Humidity": _maybe_round(rh_pct, 0),
                 "Baro-Pressure": _maybe_round(
-                    _bme280_baro_pressure_hpa(ambient_driver, sensor),
+                    _bme_baro_pressure_hpa(ambient_driver, sensor),
                     None,
                 ),
             }
@@ -269,7 +267,7 @@ def _read_ready_sensor_snapshot(sensor_service, runtime_config, sensor):
                             0,
                         ),
                         "Plant Baro-Pressure": _maybe_round(
-                            _bme280_baro_pressure_hpa(driver.plant, sensor),
+                            _bme_baro_pressure_hpa(driver.plant, sensor),
                             None,
                         ),
                     }
@@ -656,8 +654,8 @@ def _apply_bme_altitude(driver, sensor):
         return False
 
 
-def _bme280_baro_pressure_hpa(driver, sensor):
-    """Return BME280 sea-level pressure from station pressure and altitude."""
+def _bme_baro_pressure_hpa(driver, sensor):
+    """Return BME sea-level pressure from station pressure and altitude."""
     try:
         pressure = getattr(driver, "pressure", None)
     except Exception:

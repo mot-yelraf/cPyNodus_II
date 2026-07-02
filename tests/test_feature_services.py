@@ -276,7 +276,7 @@ def test_sensor_service_applies_altitude_for_bme680_startup():
     assert abs(sensor_service.driver.sea_level_pressure - expected) < 0.001
 
 
-def test_sensor_service_keeps_bme680_pressure_reading_with_altitude():
+def test_sensor_service_reports_bme680_baro_pressure_from_altitude():
     runtime_config = RuntimeConfig(
         sensor=DetectedSensor(
             family="i2c",
@@ -291,14 +291,20 @@ def test_sensor_service_keeps_bme680_pressure_reading_with_altitude():
     sensor_service = SimpleNamespace(
         phase="ready",
         driver_kind="adafruit_bme680",
-        driver=_FakeBME680(SimpleNamespace(), address=0x77),
+        driver=SimpleNamespace(
+            temperature=24.5,
+            humidity=55.25,
+            pressure=818.2,
+            gas=12345.0,
+        ),
         errors=(),
     )
 
     snapshot = read_sensor_snapshot(sensor_service, runtime_config)
 
     assert snapshot.phase == "ready"
-    assert snapshot.metrics["Baro-Pressure"] == 1008.0
+    assert snapshot.metrics["Baro-Pressure"] != 818.2
+    assert snapshot.metrics["Baro-Pressure"] == 1015.0
 
 
 def test_sensor_service_reports_missing_i2c_sensor_at_startup():
