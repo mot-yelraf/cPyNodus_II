@@ -98,7 +98,7 @@ See `docs/pinout.md` for the Nodus wiring pinout.
 3. Use `docs/pinout.md` as guidance to connect sensors, switches, the RW enable pin, and factory reset input.
 4. Reboot the device and allow about a minute for it to self-configure. On a
    clean deploy, Nodus creates `settings.toml` and the detected live sensor and
-   switch TOML files from the deployed `*.def` templates.
+   switch TOML files from the deployed `boards/` templates.
 5. Edit the relevant files for your Nodus:
    - `settings.toml` (configure Wi-Fi, profile, MQTT, Home Assistant, and time)
    - `sensor_i2c.toml`
@@ -134,7 +134,7 @@ Notes:
 - The script excludes development files (`tests/`, `docs/`, `.git/`, caches, etc.).
 - `--content` options are `full` (default), `runtime`, `pico2w-mpy`, or
   `xesp32s3-mpy`. `mpy` remains a compatibility alias for `pico2w-mpy`.
-- `runtime` syncs `boot.py`, `code.py`, `dataclasses.py`, root `*.def`
+- `runtime` syncs `boot.py`, `code.py`, `dataclasses.py`, board TOML
   templates, and `cpynodus_ii/`. It does not manage CircuitPython libraries.
 - Target MPY deploys require a complete, current
   `build/firmware/<target>/cpynodus_ii/` tree plus staged
@@ -148,13 +148,13 @@ Notes:
   `9.2.8`, and XIAO ESP32-S3 uses CircuitPython `10.2.1`. Set
   `MPY_CROSS_PICO2W` or `MPY_CROSS_XESP32S3`, or pass `--compiler`, when the
   compiler is outside the standard `~/Projects/mcu_libs` layout.
-- Target MPY deploys sync root startup files, root or target-specific `*.def`
-  templates, compiled `.mpy` files, and the target library tree. Before copying
+- Target MPY deploys sync root startup files, board TOML templates, compiled
+  `.mpy` files, and the target library tree. Before copying
   the compiled package, deploy removes matching `cpynodus_ii/*.py` files from
   the target so CircuitPython imports the `.mpy` modules.
 - MPY deploy can be used on a factory CircuitPython board with no existing Nodus
   firmware. It installs the compiled Nodus package plus the root startup files,
-  default TOML templates, and library dependencies needed for first boot.
+  `boards/` TOML templates, and library dependencies needed for first boot.
 - Active target TOML files such as `settings.toml`, `sensor_i2c.toml`,
   `sensor_soil.toml`, and `switch.toml` are not part of `runtime` or MPY
   deploy content and remain intact.
@@ -634,7 +634,7 @@ are `SWITCH_1_ENABLE_PIN=D0`, `SWITCH_1_PIN=D1`,
 `switch.toml` and at least one populated, grounded `SWITCH_N_ENABLE_PIN` are
 the primary gate for switch-enabled operation on normal boots.
 
-- During factory bootstrap, when no live TOML files exist yet, Nodus probes the switch enable pins and creates/populates `switch.toml` from `switch.toml.def` for grounded channels.
+- During factory bootstrap, when no live TOML files exist yet, Nodus probes the switch enable pins and creates/populates `switch.toml` from the detected board's `switch.toml.def` for grounded channels.
 - On later normal boots, Nodus expects `switch.toml` to already exist for switch-enabled devices.
 - If `switch.toml` exists but a channel has no `SWITCH_N_ENABLE_PIN`, or its
   configured enable pin is not grounded, that channel is ignored. If no

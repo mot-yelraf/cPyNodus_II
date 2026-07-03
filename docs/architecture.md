@@ -108,7 +108,7 @@ calibration code trying to manage the radio directly.
 ## Current Feature Slices
 
 - Factory bootstrap creates `settings.toml` plus only the detected live sensor
-  and switch TOML files from root `*.def` templates.
+  and switch TOML files from the deployed `boards/` templates.
 - I2C sensors support `aht`, `apvpd_aht`, `apvpd`, `aqi`, `avpd`, `co2`, and
   `lux`.
 - Soil sensors use `sensor_soil.toml` and support one or two RS485 channels

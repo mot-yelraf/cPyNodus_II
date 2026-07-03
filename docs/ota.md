@@ -203,6 +203,7 @@ The package command should:
 - require both tags to exist;
 - derive changed files with Git, using `tagA..tagB`;
 - include only deployable firmware paths by default;
+- include board TOML templates under `boards/`;
 - exclude development-only paths such as `.git/`, `tests/`, `docs/`,
   `__pycache__/`, and host build output;
 - support explicit include/exclude overrides for recovery testing;

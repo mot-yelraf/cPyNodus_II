@@ -138,13 +138,25 @@ class _ProbeSoilUART:
 
 def _copy_defs(tmpdir_path):
     root = Path(__file__).resolve().parents[1]
-    for name in (
-        "settings.toml.def",
-        "sensor_i2c.toml.def",
-        "sensor_soil.toml.def",
-        "switch.toml.def",
-    ):
-        (tmpdir_path / name).write_text((root / name).read_text(), encoding="utf-8")
+    shared_dir = tmpdir_path / "boards"
+    pico_dir = shared_dir / "pico2w" / "templates"
+    shared_dir.mkdir(parents=True, exist_ok=True)
+    pico_dir.mkdir(parents=True, exist_ok=True)
+    (shared_dir / "settings.toml.def").write_text(
+        (root / "boards" / "settings.toml.def").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    for name in ("sensor_i2c.toml.def", "sensor_soil.toml.def", "switch.toml.def"):
+        (pico_dir / name).write_text(
+            (root / "boards" / "pico2w" / "templates" / name).read_text(
+                encoding="utf-8"
+            ),
+            encoding="utf-8",
+        )
+
+
+def _settings_def_path(tmpdir_path):
+    return tmpdir_path / "boards" / "settings.toml.def"
 
 
 def _display_metrics(sensor_doc):
@@ -213,6 +225,51 @@ def test_factory_bootstrap_creates_i2c_sensor_and_switch_tomls_with_seeded_ids()
     assert switch_section["SWITCH_1_CHANNEL_ID"] == "S1-{}".format(serial)
     assert switch_section["SWITCH_2_CHANNEL_ID"] == "S2-{}".format(serial)
     assert settings_doc["Network"]["HOSTNAME"] == "co2-{}".format(serial)
+
+
+def test_factory_bootstrap_prefers_detected_board_template_over_legacy_root_def():
+    with TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        root = Path(__file__).resolve().parents[1]
+        xiao_dir = tmpdir_path / "boards" / "xesp32s3" / "templates"
+        xiao_dir.mkdir(parents=True)
+        (xiao_dir / "sensor_i2c.toml.def").write_text(
+            (
+                root
+                / "boards"
+                / "xesp32s3"
+                / "templates"
+                / "sensor_i2c.toml.def"
+            ).read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        (tmpdir_path / "sensor_i2c.toml.def").write_text(
+            (
+                root
+                / "boards"
+                / "pico2w"
+                / "templates"
+                / "sensor_i2c.toml.def"
+            ).read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+
+        created = Settings._ensure_file_from_def(
+            tmpdir_path,
+            Settings.SENSOR_I2C_DEF_FILE,
+            Settings.SENSOR_I2C_FILE,
+            board_module=SimpleNamespace(
+                board_id="seeed_xiao_esp32_s3_sense",
+                SDA="SDA",
+                SCL="SCL",
+                D0="D0",
+            ),
+        )
+        sensor_doc = Settings._read_toml_file(tmpdir_path / "sensor_i2c.toml")
+
+    assert created is True
+    assert sensor_doc["I2Cbus"]["I2C_SCL"] == "SCL"
+    assert sensor_doc["I2Cbus"]["I2C_SDA"] == "SDA"
 
 
 def test_factory_bootstrap_creates_soil_toml_without_i2c_toml():
@@ -526,7 +583,7 @@ def test_write_toml_file_preserves_template_section_and_key_order():
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         _copy_defs(tmpdir_path)
-        document = Settings._read_toml_file(tmpdir_path / "settings.toml.def")
+        document = Settings._read_toml_file(_settings_def_path(tmpdir_path))
         document["Network"]["HOSTNAME"] = "apvpd-uv9he6"
 
         Settings._write_toml_file(tmpdir_path / "settings.toml", document)
@@ -554,7 +611,7 @@ def test_apply_updates_preserves_template_order_in_settings_file():
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         _copy_defs(tmpdir_path)
-        document = Settings._read_toml_file(tmpdir_path / "settings.toml.def")
+        document = Settings._read_toml_file(_settings_def_path(tmpdir_path))
         Settings._write_toml_file(tmpdir_path / "settings.toml", document)
         runtime_config = Settings.from_directory(tmpdir_path).runtime_config()
 
@@ -617,7 +674,7 @@ def test_write_toml_file_obfuscates_settings_password_fields():
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         _copy_defs(tmpdir_path)
-        document = Settings._read_toml_file(tmpdir_path / "settings.toml.def")
+        document = Settings._read_toml_file(_settings_def_path(tmpdir_path))
         document["Network"]["HOSTNAME"] = "apvpd-uv9he6"
         document["Network"]["PASSWORD"] = "wifi-secret"
         document["Network"]["AP_PASSWORD"] = "ap-secret"

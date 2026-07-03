@@ -1,6 +1,7 @@
 # Configuration
 
-Configuration is stored as TOML files at the project root. Defaults are provided as `.def` templates.
+Live configuration is stored as TOML files at the project root. Defaults are
+provided as `.def` templates under `boards/`.
 
 ## Files
 
@@ -52,18 +53,21 @@ is intentionally moved. Dual `apvpd` and `apvpd_aht` devices keep explicit
 
 ## Templates
 
-Copy the templates and edit them:
+Copy the matching deployed templates and edit the live root files:
 
-- `settings.toml.def` -> `settings.toml`
-- `sensor_i2c.toml.def` -> `sensor_i2c.toml`
-- `sensor_soil.toml.def` -> `sensor_soil.toml`
-- `switch.toml.def` -> `switch.toml`
+- `boards/settings.toml.def` -> `settings.toml`
+- `boards/pico2w/templates/sensor_i2c.toml.def` -> `sensor_i2c.toml`
+- `boards/pico2w/templates/sensor_soil.toml.def` -> `sensor_soil.toml`
+- `boards/pico2w/templates/switch.toml.def` -> `switch.toml`
+
+For XIAO ESP32-S3, use the matching `boards/xesp32s3/templates/` files.
 
 On a clean factory deploy, Nodus uses the deployed `*.toml.def` files as
-first-boot templates. Normal runtime deploys use the root templates. Target MPY
-deploys may replace pin-sensitive templates with board-specific defaults, for
-example XIAO ESP32-S3 `SCL`/`SDA` I2C and `D0`-`D3` switch defaults. Nodus
-creates `settings.toml` and then creates only the live sensor and switch TOML
+first-boot templates. `settings.toml.def` is shared under `boards/`; sensor and
+switch templates live under `boards/<target>/templates/`, currently `pico2w`
+and `xesp32s3`. Nodus prefers the detected board's templates, then the shared
+`boards/` template, then any legacy root template left from older deployments.
+It creates `settings.toml` and then creates only the live sensor and switch TOML
 files needed for the detected hardware.
 
 ## Switch bootstrap behavior

@@ -52,6 +52,7 @@ ROOT_DEPLOYABLE = {
     "switch.toml.def",
 }
 DEPLOYABLE_PREFIXES = (
+    "boards/",
     "cpynodus_ii/",
 )
 

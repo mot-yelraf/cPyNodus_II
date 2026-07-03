@@ -49,10 +49,11 @@ Adafruit and community CircuitPython drivers fit this pattern.
    LOCATION = "Classroom"
    ```
 
-3. Add the sensor settings to `sensor_i2c.toml.def`.
+3. Add the sensor settings to the board-specific `sensor_i2c.toml.def`.
 
    Most I2C sensors need only the existing `[Sensor]`, `[I2Cbus]`,
-   `[Calibration]`, and `[Display]` sections. Set an example address and
+   `[Calibration]`, and `[Display]` sections in
+   `boards/<target>/templates/sensor_i2c.toml.def`. Set an example address and
    useful display metrics:
 
    ```toml
@@ -157,7 +158,8 @@ disable it.
 
 For another Modbus sensor:
 
-1. Add or extend the relevant sections in `sensor_soil.toml.def`.
+1. Add or extend the relevant sections in
+   `boards/<target>/templates/sensor_soil.toml.def`.
 2. Load those fields in `Settings._detect_sensor()`.
 3. Check required UART settings in `plan_sensor_initialization()`.
 4. Bind the UART in `sensor_adapter.py` or reuse the existing Modbus binding.
@@ -182,8 +184,8 @@ Update `docs/configuration.md` whenever you add or change:
 
 Also update the relevant template:
 
-- I2C sensors: `sensor_i2c.toml.def`
-- soil/Modbus sensors: `sensor_soil.toml.def`
+- I2C sensors: `boards/<target>/templates/sensor_i2c.toml.def`
+- soil/Modbus sensors: `boards/<target>/templates/sensor_soil.toml.def`
 
 ## Add a New Switch or Relay Type
 
@@ -193,7 +195,7 @@ binding lives in `cpynodus_ii/hardware/switch_adapter.py`.
 
 For a new switch behavior:
 
-1. Add any needed settings to `switch.toml.def`.
+1. Add any needed settings to `boards/<target>/templates/switch.toml.def`.
 2. Load them in `cpynodus_ii/core/settings.py`.
 3. Implement control/state behavior in the switch service or adapter.
 4. Update MQTT payload or discovery behavior if the public contract changes.

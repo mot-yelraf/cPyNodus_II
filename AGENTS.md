@@ -141,10 +141,10 @@ hardware validation note when behavior touches RF, sockets, or reboot depth.
 
 Default config templates:
 
-- `settings.toml.def` -> `settings.toml`
-- `sensor_i2c.toml.def` -> `sensor_i2c.toml`
-- `sensor_soil.toml.def` -> `sensor_soil.toml`
-- `switch.toml.def` -> `switch.toml`
+- `boards/settings.toml.def` -> `settings.toml`
+- `boards/<target>/templates/sensor_i2c.toml.def` -> `sensor_i2c.toml`
+- `boards/<target>/templates/sensor_soil.toml.def` -> `sensor_soil.toml`
+- `boards/<target>/templates/switch.toml.def` -> `switch.toml`
 
 When changing config schema or adding settings:
 
@@ -155,8 +155,8 @@ When changing config schema or adding settings:
 
 When adding a sensor:
 
-- Add any needed config keys to `sensor_i2c.toml.def` or
-  `sensor_soil.toml.def`.
+- Add any needed config keys to the relevant board-specific
+  `sensor_i2c.toml.def` or `sensor_soil.toml.def`.
 - Update config loading in `cpynodus_ii/core/settings.py` and config models in
   `cpynodus_ii/core/config.py` when needed.
 - Implement startup/read behavior in `cpynodus_ii/features/sensor_service.py`
@@ -168,7 +168,7 @@ When adding a sensor:
 When adding or changing switches:
 
 - Keep `switch.toml` as the normal-runtime switch gate.
-- Add any needed config keys to `switch.toml.def`.
+- Add any needed config keys to the relevant board-specific `switch.toml.def`.
 - Implement control/state behavior in `cpynodus_ii/features/switch_service.py`
   and GPIO binding in `cpynodus_ii/hardware/switch_adapter.py`.
 - Update MQTT payload/discovery behavior only deliberately, with

@@ -124,6 +124,31 @@ def test_build_ota_package_includes_root_runtime_file(tmp_path):
     ) == "VALUE = 1\n"
 
 
+def test_build_ota_package_includes_board_templates_and_root_def_deletes(tmp_path):
+    repo = _init_repo(tmp_path / "repo")
+    _write(repo / "cpynodus_ii" / "__init__.py", '__version__ = "v0.26.123.8"\n')
+    _write(repo / "settings.toml.def", "[Network]\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "tag a")
+    _git(repo, "tag", "tagA")
+
+    (repo / "settings.toml.def").unlink()
+    template_path = "boards/pico2w/templates/sensor_i2c.toml.def"
+    template_payload = "[Sensor]\nDEVICE = \"\"\n"
+    _write(repo / template_path, template_payload)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "tag b")
+    _git(repo, "tag", "tagB")
+
+    manifest = build_ota_package(repo, "tagA", "tagB", tmp_path / "package")
+
+    assert [entry["path"] for entry in manifest["files"]] == [template_path]
+    assert manifest["delete"] == ["settings.toml.def"]
+    assert (tmp_path / "package" / "files" / template_path).read_text(
+        encoding="utf-8"
+    ) == template_payload
+
+
 def test_build_ota_package_rejects_missing_tag(tmp_path):
     repo = _init_repo(tmp_path / "repo")
     _write(repo / "cpynodus_ii" / "__init__.py", '__version__ = "v0.26.123.3"\n')

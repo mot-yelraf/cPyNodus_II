@@ -16,3 +16,9 @@ __pycache__
 docs
 specs
 tests
+
+# Legacy root TOML templates replaced by boards/ template layout
+settings.toml.def
+sensor_i2c.toml.def
+sensor_soil.toml.def
+switch.toml.def

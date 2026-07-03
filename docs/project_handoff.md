@@ -163,7 +163,7 @@ The `runtime` deploy mode should sync:
 - `boot.py`
 - `code.py`
 - `cpynodus_ii/`
-- root `*.def` files
+- `boards/` TOML templates
 
 ## Coverage guidance
 

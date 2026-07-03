@@ -203,6 +203,8 @@ class Settings:
     SENSOR_I2C_FILE = "sensor_i2c.toml"
     SENSOR_SOIL_FILE = "sensor_soil.toml"
     SWITCH_FILE = "switch.toml"
+    BOARD_TEMPLATE_ROOT = "boards"
+    BOARD_TEMPLATE_DIR = "templates"
     SETTINGS_DEF_FILE = "settings.toml.def"
     SENSOR_I2C_DEF_FILE = "sensor_i2c.toml.def"
     SENSOR_SOIL_DEF_FILE = "sensor_soil.toml.def"
@@ -327,7 +329,12 @@ class Settings:
     ):
         """Create first-boot TOML files and seed IDs for detected hardware."""
         root_path = str(root or ".")
-        cls._ensure_file_from_def(root_path, cls.SETTINGS_DEF_FILE, cls.SETTINGS_FILE)
+        cls._ensure_file_from_def(
+            root_path,
+            cls.SETTINGS_DEF_FILE,
+            cls.SETTINGS_FILE,
+            board_module=board_module,
+        )
 
         is_first_bootstrap = not any(
             _path_exists(_join_path(root_path, path))
@@ -341,16 +348,25 @@ class Settings:
                 busio_module=busio_module,
             )
             if detected_device == "soil":
-                cls._bootstrap_soil_sensor(root_path, interfaces)
+                cls._bootstrap_soil_sensor(
+                    root_path, interfaces, board_module=board_module
+                )
             elif detected_device:
-                cls._bootstrap_i2c_sensor(root_path, detected_device, interfaces)
+                cls._bootstrap_i2c_sensor(
+                    root_path,
+                    detected_device,
+                    interfaces,
+                    board_module=board_module,
+                )
 
             active_switches = cls._detect_factory_switch_channels(
                 board_module=board_module,
                 digitalio_module=digitalio_module,
             )
             if active_switches:
-                cls._bootstrap_switch(root_path, active_switches)
+                cls._bootstrap_switch(
+                    root_path, active_switches, board_module=board_module
+                )
 
         cls._ensure_seeded_ids_and_hostname(root_path)
         return cls.from_directory(root_path).runtime_config()
@@ -366,19 +382,27 @@ class Settings:
         return True
 
     @classmethod
-    def _ensure_file_from_def(cls, root, def_name, live_name):
+    def _ensure_file_from_def(cls, root, def_name, live_name, *, board_module=None):
         live_path = _join_path(root, live_name)
         if _path_exists(live_path):
             return False
-        def_path = _join_path(root, def_name)
-        if not _path_exists(def_path):
-            return False
-        cls._write_toml_file(live_path, cls._read_toml_file(def_path))
-        return True
+        for def_path in cls._template_path_candidates(
+            root, def_name, board_module=board_module
+        ):
+            if not _path_exists(def_path):
+                continue
+            cls._write_toml_file(live_path, cls._read_toml_file(def_path))
+            return True
+        return False
 
     @classmethod
-    def _bootstrap_i2c_sensor(cls, root, device, interfaces):
-        cls._ensure_file_from_def(root, cls.SENSOR_I2C_DEF_FILE, cls.SENSOR_I2C_FILE)
+    def _bootstrap_i2c_sensor(cls, root, device, interfaces, *, board_module=None):
+        cls._ensure_file_from_def(
+            root,
+            cls.SENSOR_I2C_DEF_FILE,
+            cls.SENSOR_I2C_FILE,
+            board_module=board_module,
+        )
         path = _join_path(root, cls.SENSOR_I2C_FILE)
         document = cls._read_toml_file(path)
         sensor_doc = document.setdefault("Sensor", {})
@@ -427,8 +451,13 @@ class Settings:
             target_doc["I2C_ADDR"] = int(i2c.get("addr", 0))
 
     @classmethod
-    def _bootstrap_soil_sensor(cls, root, interfaces):
-        cls._ensure_file_from_def(root, cls.SENSOR_SOIL_DEF_FILE, cls.SENSOR_SOIL_FILE)
+    def _bootstrap_soil_sensor(cls, root, interfaces, *, board_module=None):
+        cls._ensure_file_from_def(
+            root,
+            cls.SENSOR_SOIL_DEF_FILE,
+            cls.SENSOR_SOIL_FILE,
+            board_module=board_module,
+        )
         path = _join_path(root, cls.SENSOR_SOIL_FILE)
         document = cls._read_toml_file(path)
         sensor_doc = document.setdefault("Sensor", {})
@@ -482,8 +511,13 @@ class Settings:
         cls._write_toml_file(path, document)
 
     @classmethod
-    def _bootstrap_switch(cls, root, active_channels):
-        cls._ensure_file_from_def(root, cls.SWITCH_DEF_FILE, cls.SWITCH_FILE)
+    def _bootstrap_switch(cls, root, active_channels, *, board_module=None):
+        cls._ensure_file_from_def(
+            root,
+            cls.SWITCH_DEF_FILE,
+            cls.SWITCH_FILE,
+            board_module=board_module,
+        )
         path = _join_path(root, cls.SWITCH_FILE)
         document = cls._read_toml_file(path)
         switch_doc = document.setdefault("Switch", {})
@@ -1660,9 +1694,43 @@ class Settings:
             return ""
         path_text = str(path or "")
         if "/" not in path_text:
-            return template_name
-        parent = path_text.rsplit("/", 1)[0]
-        return _join_path(parent, template_name)
+            parent = "."
+        else:
+            parent = path_text.rsplit("/", 1)[0]
+        for candidate in cls._template_path_candidates(parent, template_name):
+            if _path_exists(candidate):
+                return candidate
+        return ""
+
+    @classmethod
+    def _template_path_candidates(cls, root, def_name, *, board_module=None):
+        profile_key = cls._template_board_profile_key(board_module)
+        candidates = (
+            _join_path(
+                _join_path(
+                    _join_path(root, cls.BOARD_TEMPLATE_ROOT),
+                    profile_key,
+                ),
+                "{}/{}".format(cls.BOARD_TEMPLATE_DIR, def_name),
+            ),
+            _join_path(_join_path(root, cls.BOARD_TEMPLATE_ROOT), def_name),
+            _join_path(root, def_name),
+        )
+        unique = []
+        for candidate in candidates:
+            if candidate not in unique:
+                unique.append(candidate)
+        return tuple(unique)
+
+    @classmethod
+    def _template_board_profile_key(cls, board_module=None):
+        probe_board = board_module
+        if probe_board is None:
+            probe_board = cls._try_import_module("board")
+        if _use_pico_factory_defaults(probe_board):
+            return "pico2w"
+        profile = _factory_board_profile(probe_board)
+        return str(getattr(profile, "key", "") or "pico2w")
 
     def active_profile(self):
         return self._runtime_config.active_profile

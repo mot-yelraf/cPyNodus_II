@@ -158,10 +158,10 @@ Options:
   --mode VALUE        `auto` (default), `drive`, or `staging`.
   --content VALUE     `full` (default), `runtime`, `pico2w-mpy`, or
                       `xesp32s3-mpy`. `mpy` remains a `pico2w-mpy` alias.
-                      `runtime` syncs boot/code, package files, root
-                      `*.def`, removing target cpynodus_ii/*.mpy first.
-                      Target MPY content syncs root `*.py`, root or
-                      target-specific `*.def`, staged target `lib/`, and
+                      `runtime` syncs boot/code, package files, board
+                      TOML templates, removing target cpynodus_ii/*.mpy first.
+                      Target MPY content syncs root `*.py`, board TOML
+                      templates, staged target `lib/`, and
                       compiled build/firmware/<target>/cpynodus_ii/*.mpy,
                       removing matching target cpynodus_ii/*.py first. It runs
                       scripts/nodus_mpy.sh first when artifacts are stale.
@@ -657,7 +657,6 @@ remove_runtime_shadow_mpy_targets() {
 run_runtime_sync() {
   local destination="$1"
   local root_runtime_files=()
-  local root_def_files=()
   local f
 
   for f in \
@@ -669,13 +668,7 @@ run_runtime_sync() {
     fi
   done
 
-  shopt -s nullglob
-  for f in "$ROOT_DIR"/*.def; do
-    root_def_files+=("$f")
-  done
-  shopt -u nullglob
-
-  if [[ ${#root_runtime_files[@]} -eq 0 && ${#root_def_files[@]} -eq 0 && ! -d "$ROOT_DIR/cpynodus_ii" ]]; then
+  if [[ ${#root_runtime_files[@]} -eq 0 && ! -d "$ROOT_DIR/boards" && ! -d "$ROOT_DIR/cpynodus_ii" ]]; then
     echo "No runtime deployable files found in $ROOT_DIR" >&2
     exit 1
   fi
@@ -684,8 +677,8 @@ run_runtime_sync() {
     rsync "${RSYNC_ARGS[@]}" "${root_runtime_files[@]}" "$destination"
   fi
 
-  if [[ ${#root_def_files[@]} -gt 0 ]]; then
-    rsync "${RSYNC_ARGS[@]}" "${root_def_files[@]}" "$destination"
+  if [[ -d "$ROOT_DIR/boards" ]]; then
+    rsync "${RSYNC_ARGS[@]}" "$ROOT_DIR/boards/" "$destination/boards/"
   fi
 
   if [[ -d "$ROOT_DIR/cpynodus_ii" ]]; then
@@ -698,10 +691,7 @@ run_runtime_sync() {
 run_mpy_sync() {
   local destination="$1"
   local root_runtime_files=()
-  local root_def_files=()
   local f
-  local override=""
-  local name=""
 
   run_mpy_build_if_needed
   if [[ $MPY_REBUILD_DEFERRED -eq 0 ]]; then
@@ -719,19 +709,7 @@ run_mpy_sync() {
     fi
   done
 
-  shopt -s nullglob
-  for f in "$ROOT_DIR"/*.def; do
-    name="$(basename "$f")"
-    override="$ROOT_DIR/boards/$MPY_TARGET/templates/$name"
-    if [[ -f "$override" ]]; then
-      root_def_files+=("$override")
-    else
-      root_def_files+=("$f")
-    fi
-  done
-  shopt -u nullglob
-
-  if [[ ${#root_runtime_files[@]} -eq 0 && ${#root_def_files[@]} -eq 0 && ! -d "$MPY_BUILD_ROOT" && ! -d "$MPY_LIB_ROOT" ]]; then
+  if [[ ${#root_runtime_files[@]} -eq 0 && ! -d "$ROOT_DIR/boards" && ! -d "$MPY_BUILD_ROOT" && ! -d "$MPY_LIB_ROOT" ]]; then
     echo "No MPY deployable files found in $ROOT_DIR" >&2
     exit 1
   fi
@@ -740,8 +718,8 @@ run_mpy_sync() {
     rsync "${RSYNC_ARGS[@]}" "${root_runtime_files[@]}" "$destination"
   fi
 
-  if [[ ${#root_def_files[@]} -gt 0 ]]; then
-    rsync "${RSYNC_ARGS[@]}" "${root_def_files[@]}" "$destination"
+  if [[ -d "$ROOT_DIR/boards" ]]; then
+    rsync "${RSYNC_ARGS[@]}" "$ROOT_DIR/boards/" "$destination/boards/"
   fi
 
   if [[ -d "$MPY_BUILD_ROOT" && $MPY_REBUILD_DEFERRED -eq 0 ]]; then

@@ -12,6 +12,13 @@ from cpynodus_ii.features.command_intake import (
 )
 
 
+def _repo_template_path(name):
+    repo_root = Path(__file__).resolve().parents[1]
+    if name == Settings.SETTINGS_DEF_FILE:
+        return repo_root / "boards" / name
+    return repo_root / "boards" / "pico2w" / "templates" / name
+
+
 def test_device_config_message_persists_settings_toml_and_reloads_runtime_config():
     docs_root = Path(__file__).resolve().parents[1] / "docs" / "switch_only"
     with TemporaryDirectory() as tmpdir:
@@ -197,9 +204,8 @@ def test_calibration_message_reports_pystack_persistence_failure(monkeypatch):
 def test_soil_ph_calibration_persists_without_recursive_toml_dump(monkeypatch):
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
-        repo_root = Path(__file__).resolve().parents[1]
         for name in ("settings.toml.def", "sensor_soil.toml.def"):
-            source = repo_root / name
+            source = _repo_template_path(name)
             target = tmpdir_path / name.replace(".def", "")
             target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
         soil_path = tmpdir_path / Settings.SENSOR_SOIL_FILE
@@ -241,9 +247,8 @@ def test_soil_ph_calibration_persists_without_recursive_toml_dump(monkeypatch):
 def test_soil_npk_target_persists_without_runtime_reload(monkeypatch):
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
-        repo_root = Path(__file__).resolve().parents[1]
         for name in ("settings.toml.def", "sensor_soil.toml.def"):
-            source = repo_root / name
+            source = _repo_template_path(name)
             target = tmpdir_path / name.replace(".def", "")
             target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
         soil_path = tmpdir_path / Settings.SENSOR_SOIL_FILE
