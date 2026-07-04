@@ -553,6 +553,29 @@ def test_push_ota_package_restarts_file_after_size_mismatch(tmp_path):
     ]
 
 
+def test_push_ota_package_aborts_after_file_end_invalid_json_response(tmp_path):
+    package = _write_test_package(tmp_path / "package")
+    opener = _FileEndInvalidJsonOpener(package_id="ota-tagA-to-tagB")
+    logs = []
+
+    with pytest.raises(OTATransferError, match="http_invalid_json"):
+        push_ota_package(
+            package,
+            "http://10.0.0.213:8000",
+            opener=opener,
+            log_fn=logs.append,
+        )
+
+    abort_requests = [
+        request.full_url
+        for request, _timeout in opener.requests
+        if request.full_url.endswith("/ota/abort")
+    ]
+    assert abort_requests == ["http://10.0.0.213:8000/ota/abort"]
+    assert "abort reason=transfer_failed" in logs
+    assert "abort complete phase=aborted" in logs
+
+
 def test_normalize_manifest_path_rejects_path_traversal():
     with pytest.raises(OTAPackageError, match="unsafe_package_path"):
         normalize_manifest_path("../settings.toml")
@@ -619,6 +642,20 @@ class _FakeResponse:
         return json.dumps(self.payload).encode("utf-8")
 
 
+class _RawResponse:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+    def read(self):
+        return self.payload
+
+
 class _FakeOtaOpener:
     def __init__(self, *, package_id):
         self.package_id = package_id
@@ -652,6 +689,8 @@ class _FakeOtaOpener:
                     "reboot_delay_s": 5,
                 }
             )
+        if url.endswith("/ota/abort"):
+            return _FakeResponse({"accepted": True, "phase": "aborted"})
         return _FakeResponse({"accepted": False, "error": "unexpected_request"})
 
 
@@ -703,6 +742,14 @@ class _FileEndMismatchOpener(_FakeOtaOpener):
                     "error": "file_size_mismatch",
                 }
             )
+        return super().__call__(request, timeout)
+
+
+class _FileEndInvalidJsonOpener(_FakeOtaOpener):
+    def __call__(self, request, timeout):
+        if request.full_url.endswith("/ota/file/end?path=ota_test.py"):
+            self.requests.append((request, timeout))
+            return _RawResponse(b"not-json")
         return super().__call__(request, timeout)
 
 

@@ -13,7 +13,12 @@ import json
 import os
 import time
 
-from cpynodus_ii.ota.state import FwUpdateState, load_ota_state, save_ota_state
+from cpynodus_ii.ota.state import (
+    FwUpdateState,
+    clear_ota_state,
+    load_ota_state,
+    save_ota_state,
+)
 
 _HTTP_STATUS = {
     200: "OK",
@@ -250,10 +255,12 @@ class OtaHttpController:
             _collect_garbage()
             manifest = _parse_json_body(request)
             if manifest is None:
+                self._log("begin rejected error=invalid_json action=abort")
+                payload, status_code = self._abort_transfer("invalid_json")
                 return self._json_response(
                     request,
-                    _error_payload("invalid_json", "ready"),
-                    status_code=400,
+                    payload,
+                    status_code=status_code,
                 )
             payload, status_code = self._handle_begin(manifest)
             _collect_garbage()
@@ -332,21 +339,23 @@ class OtaHttpController:
                 load_ota_state(_ota_state_path(self.settings_root))
                 or self.ota_state
             )
-            aborted = FwUpdateState(
-                prior_profile=getattr(state, "prior_profile", "") or "",
-                package_id=getattr(state, "package_id", "") or "",
-                phase="aborted",
-            )
-            _remove_tree(_ota_stage_path(self.settings_root))
-            _remove_ota_tmp_files(self.settings_root)
-            save_ota_state(aborted, _ota_state_path(self.settings_root))
-            self.ota_state = aborted
+            phase = str(getattr(state, "phase", "") or "")
+            if phase in {"applied_pending_boot", "applied"}:
+                return self._json_response(
+                    request,
+                    _error_payload("ota_apply_already_pending", phase),
+                    status_code=409,
+                )
+            aborted = self._abort_transfer_state(state, "client_abort")
+            self._schedule_reboot()
             return self._json_response(
                 request,
                 {
                     "accepted": True,
                     "phase": "aborted",
                     "package_id": aborted.package_id,
+                    "rebooting": bool(self.reboot_callback is not None),
+                    "reboot_delay_s": self.reboot_delay_s,
                 },
             )
 
@@ -355,8 +364,8 @@ class OtaHttpController:
         state = load_ota_state(_ota_state_path(self.settings_root)) or self.ota_state
         error = _validate_manifest_for_begin(manifest, state)
         if error:
-            self._log("begin rejected error={}".format(error))
-            return _error_payload(error, getattr(state, "phase", "ready")), 400
+            self._log("begin rejected error={} action=abort".format(error))
+            return self._abort_transfer(error)
         next_state = FwUpdateState(
             prior_profile=getattr(state, "prior_profile", "") or "",
             package_id=str(manifest.get("package_id", "") or ""),
@@ -382,6 +391,30 @@ class OtaHttpController:
             },
             200,
         )
+
+    def _abort_transfer(self, error):
+        state = load_ota_state(_ota_state_path(self.settings_root)) or self.ota_state
+        self._abort_transfer_state(state, error)
+        return _error_payload(error, "aborted"), 400
+
+    def _abort_transfer_state(self, state, error):
+        aborted = FwUpdateState(
+            prior_profile=getattr(state, "prior_profile", "") or "",
+            package_id=getattr(state, "package_id", "") or "",
+            phase="aborted",
+            error=str(error or "ota_aborted"),
+        )
+        _remove_tree(_ota_stage_path(self.settings_root))
+        _remove_ota_tmp_files(self.settings_root)
+        clear_ota_state(_ota_state_path(self.settings_root))
+        self.ota_state = aborted
+        self._log(
+            "transfer aborted package={} error={} state=cleared".format(
+                aborted.package_id or "none",
+                aborted.error or "ota_aborted",
+            )
+        )
+        return aborted
 
     def _handle_file(self, path, body):
         state = load_ota_state(_ota_state_path(self.settings_root)) or self.ota_state

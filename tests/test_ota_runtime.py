@@ -130,11 +130,11 @@ def test_run_ota_mode_aborts_and_reboots_when_network_unavailable(tmp_path):
     assert result.network_phase == "error"
     assert result.http_phase == ""
     assert result.errors == ("network_connect_failed",)
-    assert state.phase == "aborted"
-    assert state.error == "ota_network_unavailable"
+    assert state is None
     assert rebooted == [True]
     assert any(
-        "phase=aborted error=ota_network_unavailable" in message
+        "phase=aborted error=ota_network_unavailable action=reboot state=cleared"
+        in message
         for _prefix, message in logs
     )
 
@@ -173,6 +173,5 @@ def test_run_ota_mode_aborts_and_reboots_when_http_unavailable(tmp_path):
     assert result.network_phase == "ready"
     assert result.http_phase == "unavailable"
     assert result.errors == ("ota_socket_pool_unavailable",)
-    assert state.phase == "aborted"
-    assert state.error == "ota_http_unavailable"
+    assert state is None
     assert rebooted == [True]

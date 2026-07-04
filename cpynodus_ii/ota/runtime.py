@@ -13,7 +13,7 @@ from dataclasses import dataclass, replace
 
 from cpynodus_ii.core.network import build_network_stack
 from cpynodus_ii.ota.http import OtaHttpController
-from cpynodus_ii.ota.state import FwUpdateState, save_ota_state
+from cpynodus_ii.ota.state import FwUpdateState, clear_ota_state, save_ota_state
 
 OTA_NETWORK_CONNECT_ATTEMPTS = 7
 
@@ -174,11 +174,13 @@ def _abort_ota_startup(
     log_fn=None,
 ):
     aborted_state = replace(state, phase="aborted", error=str(error or "ota_failed"))
-    save_ota_state(aborted_state, _ota_state_path(settings_root))
+    clear_ota_state(_ota_state_path(settings_root))
     _log(
         log_fn,
         "ota",
-        "phase=aborted error={} action=reboot".format(aborted_state.error),
+        "phase=aborted error={} action=reboot state=cleared".format(
+            aborted_state.error
+        ),
     )
     if callable(reboot_callback):
         reboot_callback()

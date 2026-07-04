@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import cpynodus_ii.app as app_module
 from cpynodus_ii.app import (
     _broker_ip_refresh_needed,
+    _clear_terminal_startup_ota_state,
     _defer_switch_subscriptions_until_after_startup_publish,
     _increase_mqtt_preflight_connect_delay,
     _is_mqtt_subscription_failure,
@@ -1606,6 +1607,43 @@ def test_mark_ota_applied_after_boot_skips_write_on_rofs(tmp_path):
 
     assert result is pending
     assert _load_startup_ota_state(tmp_path) is None
+
+
+def test_clear_terminal_startup_ota_state_removes_invalid_state(tmp_path):
+    save_ota_state(
+        FwUpdateState(package_id="ota-tagA-to-tagB", phase="invalid"),
+        _ota_state_path(tmp_path),
+    )
+    state = _load_startup_ota_state(tmp_path)
+
+    result = _clear_terminal_startup_ota_state(state, tmp_path, True)
+
+    assert result is None
+    assert _load_startup_ota_state(tmp_path) is None
+
+
+def test_clear_terminal_startup_ota_state_removes_interrupted_staging(tmp_path):
+    save_ota_state(
+        FwUpdateState(package_id="ota-tagA-to-tagB", phase="staging"),
+        _ota_state_path(tmp_path),
+    )
+    state = _load_startup_ota_state(tmp_path)
+
+    result = _clear_terminal_startup_ota_state(state, tmp_path, True)
+
+    assert result is None
+    assert _load_startup_ota_state(tmp_path) is None
+
+
+def test_clear_terminal_startup_ota_state_preserves_requested_state(tmp_path):
+    requested = FwUpdateState(package_id="ota-tagA-to-tagB", phase="requested")
+    save_ota_state(requested, _ota_state_path(tmp_path))
+    state = _load_startup_ota_state(tmp_path)
+
+    result = _clear_terminal_startup_ota_state(state, tmp_path, True)
+
+    assert result == requested
+    assert _load_startup_ota_state(tmp_path) == requested
 
 
 def test_should_fallback_to_ap_when_nodusweb_has_no_ssid():

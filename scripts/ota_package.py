@@ -262,72 +262,44 @@ def push_ota_package(
         ready_interval_s,
         log_fn=log_fn,
     )
-
-    _log(
-        log_fn,
-        "begin package={} files={}".format(
-            manifest["package_id"],
-            len(manifest.get("files", ()) or ()),
-        ),
-    )
-    begin = _request_json(
-        http,
-        "POST",
-        "{}/ota/begin".format(base_url),
-        timeout_s,
-        payload=manifest,
-    )
-    if begin.get("accepted") is not True:
-        raise OTATransferError("begin_rejected:{}".format(begin.get("error", "")))
-
-    for entry in manifest.get("files", ()) or ():
-        path = normalize_manifest_path(entry.get("path", ""))
-        file_path = package_path / "files" / Path(path)
-        if not file_path.exists():
-            raise OTATransferError("package_file_missing:{}".format(path))
-        payload = file_path.read_bytes()
-        expected_size = int(entry.get("size", -1) or -1)
-        expected_sha = str(entry.get("sha256", "") or "")
-        actual_sha = hashlib.sha256(payload).hexdigest()
-        if len(payload) != expected_size:
-            raise OTATransferError("package_file_size_mismatch:{}".format(path))
-        if actual_sha != expected_sha:
-            raise OTATransferError("package_file_sha256_mismatch:{}".format(path))
-        chunk_bytes = int(chunk_size or 0)
-        file_started = time.monotonic()
+    try:
         _log(
             log_fn,
-            "file {} bytes={} chunk={}".format(path, len(payload), chunk_bytes),
+            "begin package={} files={}".format(
+                manifest["package_id"],
+                len(manifest.get("files", ()) or ()),
+            ),
         )
-        if chunk_bytes > 0:
-            result = _push_file_chunks(
-                http,
-                base_url,
-                path,
-                payload,
-                timeout_s,
-                chunk_bytes,
-                log_fn=log_fn,
+        begin = _request_json(
+            http,
+            "POST",
+            "{}/ota/begin".format(base_url),
+            timeout_s,
+            payload=manifest,
+        )
+        if begin.get("accepted") is not True:
+            raise OTATransferError("begin_rejected:{}".format(begin.get("error", "")))
+
+        for entry in manifest.get("files", ()) or ():
+            path = normalize_manifest_path(entry.get("path", ""))
+            file_path = package_path / "files" / Path(path)
+            if not file_path.exists():
+                raise OTATransferError("package_file_missing:{}".format(path))
+            payload = file_path.read_bytes()
+            expected_size = int(entry.get("size", -1) or -1)
+            expected_sha = str(entry.get("sha256", "") or "")
+            actual_sha = hashlib.sha256(payload).hexdigest()
+            if len(payload) != expected_size:
+                raise OTATransferError("package_file_size_mismatch:{}".format(path))
+            if actual_sha != expected_sha:
+                raise OTATransferError("package_file_sha256_mismatch:{}".format(path))
+            chunk_bytes = int(chunk_size or 0)
+            file_started = time.monotonic()
+            _log(
+                log_fn,
+                "file {} bytes={} chunk={}".format(path, len(payload), chunk_bytes),
             )
-        else:
-            result = _request_json(
-                http,
-                "PUT",
-                "{}/ota/file?path={}".format(base_url, quote(path, safe="/")),
-                timeout_s,
-                body=payload,
-                content_type="application/octet-stream",
-                headers={"X-Nodus-File-Path": path},
-            )
-        if result.get("accepted") is not True:
-            if chunk_bytes > 0 and _file_retryable_rejection(result):
-                _log(
-                    log_fn,
-                    "file retry {} reason={}".format(
-                        path,
-                        result.get("error", ""),
-                    ),
-                )
+            if chunk_bytes > 0:
                 result = _push_file_chunks(
                     http,
                     base_url,
@@ -337,31 +309,62 @@ def push_ota_package(
                     chunk_bytes,
                     log_fn=log_fn,
                 )
-            if result.get("accepted") is not True:
-                raise OTATransferError(
-                    "file_rejected:{}:{}".format(path, result.get("error", ""))
+            else:
+                result = _request_json(
+                    http,
+                    "PUT",
+                    "{}/ota/file?path={}".format(base_url, quote(path, safe="/")),
+                    timeout_s,
+                    body=payload,
+                    content_type="application/octet-stream",
+                    headers={"X-Nodus-File-Path": path},
                 )
-        file_elapsed = time.monotonic() - file_started
-        _log(
-            log_fn,
-            "file accepted {} elapsed_s={:.1f} rate_Bps={:.0f}".format(
-                path,
-                file_elapsed,
-                _bytes_per_second(len(payload), file_elapsed),
-            ),
-        )
+            if result.get("accepted") is not True:
+                if chunk_bytes > 0 and _file_retryable_rejection(result):
+                    _log(
+                        log_fn,
+                        "file retry {} reason={}".format(
+                            path,
+                            result.get("error", ""),
+                        ),
+                    )
+                    result = _push_file_chunks(
+                        http,
+                        base_url,
+                        path,
+                        payload,
+                        timeout_s,
+                        chunk_bytes,
+                        log_fn=log_fn,
+                    )
+                if result.get("accepted") is not True:
+                    raise OTATransferError(
+                        "file_rejected:{}:{}".format(path, result.get("error", ""))
+                    )
+            file_elapsed = time.monotonic() - file_started
+            _log(
+                log_fn,
+                "file accepted {} elapsed_s={:.1f} rate_Bps={:.0f}".format(
+                    path,
+                    file_elapsed,
+                    _bytes_per_second(len(payload), file_elapsed),
+                ),
+            )
 
-    _log(log_fn, "commit")
-    commit_started = time.monotonic()
-    commit = _request_json(
-        http,
-        "POST",
-        "{}/ota/commit".format(base_url),
-        timeout_s,
-        payload={},
-    )
-    if commit.get("accepted") is not True:
-        raise OTATransferError("commit_rejected:{}".format(commit.get("error", "")))
+        _log(log_fn, "commit")
+        commit_started = time.monotonic()
+        commit = _request_json(
+            http,
+            "POST",
+            "{}/ota/commit".format(base_url),
+            timeout_s,
+            payload={},
+        )
+        if commit.get("accepted") is not True:
+            raise OTATransferError("commit_rejected:{}".format(commit.get("error", "")))
+    except OTATransferError:
+        _abort_ota_transfer(http, base_url, timeout_s, log_fn=log_fn)
+        raise
     commit_elapsed = time.monotonic() - commit_started
     _log(
         log_fn,
@@ -395,6 +398,25 @@ def push_ota_package(
         "commit_s": commit_elapsed,
         "package_id": manifest["package_id"],
     }
+
+
+def _abort_ota_transfer(http, base_url, timeout_s, *, log_fn=None):
+    _log(log_fn, "abort reason=transfer_failed")
+    try:
+        response = _request_json(
+            http,
+            "POST",
+            "{}/ota/abort".format(base_url),
+            timeout_s,
+            payload={},
+        )
+    except OTATransferError as exc:
+        _log(log_fn, "abort failed reason={}".format(exc))
+        return
+    if response.get("accepted") is not True:
+        _log(log_fn, "abort rejected reason={}".format(response.get("error", "")))
+        return
+    _log(log_fn, "abort complete phase={}".format(response.get("phase", "")))
 
 
 def _push_file_chunks(

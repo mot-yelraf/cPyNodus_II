@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from cpynodus_ii.core.config import RuntimeConfig
 from cpynodus_ii.ota import http as ota_http
 from cpynodus_ii.ota.http import OtaHttpController
-from cpynodus_ii.ota.state import FwUpdateState, load_ota_state
+from cpynodus_ii.ota.state import FwUpdateState, load_ota_state, save_ota_state
 
 
 class _FakeRequest:
@@ -131,6 +131,7 @@ def test_ota_begin_validates_manifest_and_marks_staging(tmp_path):
 def test_ota_begin_rejects_package_mismatch(tmp_path):
     controller = _controller(tmp_path)
     handler = controller.server.routes[("/ota/begin", ("POST",))]
+    save_ota_state(controller.ota_state, str(tmp_path / "_ota" / "state.json"))
     manifest = {
         "schema": "nodus-ota/v1",
         "package_id": "ota-other",
@@ -138,15 +139,43 @@ def test_ota_begin_rejects_package_mismatch(tmp_path):
     }
 
     response = handler(_FakeRequest(json.dumps(manifest).encode("utf-8")))
+    state = load_ota_state(str(tmp_path / "_ota" / "state.json"))
 
     assert response.status == (400, "Bad Request")
     assert response.body["accepted"] is False
+    assert response.body["phase"] == "aborted"
     assert response.body["error"] == "package_id_mismatch"
+    assert state is None
+    assert controller.ota_state.phase == "aborted"
+
+
+def test_ota_begin_invalid_json_clears_state(tmp_path):
+    controller = _controller(tmp_path)
+    handler = controller.server.routes[("/ota/begin", ("POST",))]
+    save_ota_state(controller.ota_state, str(tmp_path / "_ota" / "state.json"))
+
+    response = handler(_FakeRequest(b"{bad json"))
+    state = load_ota_state(str(tmp_path / "_ota" / "state.json"))
+
+    assert response.status == (400, "Bad Request")
+    assert response.body["accepted"] is False
+    assert response.body["phase"] == "aborted"
+    assert response.body["error"] == "invalid_json"
+    assert state is None
+    assert controller.ota_state.phase == "aborted"
 
 
 def test_ota_abort_marks_state_aborted(tmp_path):
-    controller = _controller(tmp_path)
+    rebooted = []
+    fake_time = _FakeTime()
+    controller = _controller(
+        tmp_path,
+        reboot_callback=lambda: rebooted.append(True),
+        reboot_delay_s=5,
+        time_module=fake_time,
+    )
     handler = controller.server.routes[("/ota/abort", ("POST",))]
+    save_ota_state(controller.ota_state, str(tmp_path / "_ota" / "state.json"))
     staged_path = tmp_path / "_ota" / "stage" / "ota_test.py"
     staged_path.parent.mkdir(parents=True)
     staged_path.write_bytes(b"staged payload\n")
@@ -156,8 +185,38 @@ def test_ota_abort_marks_state_aborted(tmp_path):
 
     assert response.body["accepted"] is True
     assert response.body["phase"] == "aborted"
-    assert state.phase == "aborted"
+    assert state is None
+    assert controller.ota_state.phase == "aborted"
     assert not (tmp_path / "_ota" / "stage").exists()
+    assert response.body["rebooting"] is True
+    assert response.body["reboot_delay_s"] == 5
+    controller.poll()
+    assert rebooted == []
+
+    fake_time.now = 5.0
+    controller.poll()
+
+    assert rebooted == [True]
+
+
+def test_ota_abort_rejects_after_commit_applied_pending_boot(tmp_path):
+    controller = _controller(tmp_path)
+    handler = controller.server.routes[("/ota/abort", ("POST",))]
+    pending = FwUpdateState(
+        prior_profile="homeassistant",
+        package_id="ota-tagA-to-tagB",
+        phase="applied_pending_boot",
+    )
+    save_ota_state(pending, str(tmp_path / "_ota" / "state.json"))
+
+    response = handler(_FakeRequest())
+    state = load_ota_state(str(tmp_path / "_ota" / "state.json"))
+
+    assert response.status == (409, "Conflict")
+    assert response.body["accepted"] is False
+    assert response.body["phase"] == "applied_pending_boot"
+    assert response.body["error"] == "ota_apply_already_pending"
+    assert state == pending
 
 
 def test_ota_begin_clears_previous_workspace_files(tmp_path):

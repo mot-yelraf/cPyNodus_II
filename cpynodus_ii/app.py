@@ -32,7 +32,12 @@ from cpynodus_ii.core.recovery import (
     advance_recovery_state,
 )
 from cpynodus_ii.core.settings import Settings
-from cpynodus_ii.ota.state import FwUpdateState, load_ota_state, save_ota_state
+from cpynodus_ii.ota.state import (
+    FwUpdateState,
+    clear_ota_state,
+    load_ota_state,
+    save_ota_state,
+)
 
 MQTT_REBUILD_VERIFY_WINDOW_S = 90.0
 MQTT_REBUILD_VERIFY_PHASE_S = 10.0
@@ -2796,6 +2801,19 @@ def _mark_ota_applied_after_boot(ota_state, settings_root, fs_writable):
     return save_ota_state(applied_state, _ota_state_path(settings_root))
 
 
+def _clear_terminal_startup_ota_state(ota_state, settings_root, fs_writable):
+    """Clear terminal OTA handoff state so normal startup can continue."""
+    if fs_writable is not True or ota_state is None or not settings_root:
+        return ota_state
+    if getattr(ota_state, "mode", "") != "ota":
+        return ota_state
+    phase = str(getattr(ota_state, "phase", "") or "")
+    if phase not in {"invalid", "aborted", "staging"}:
+        return ota_state
+    clear_ota_state(_ota_state_path(settings_root))
+    return None
+
+
 async def main(*, startup_plan_override=None):
     """Run the current scaffold runtime."""
     start_monotonic = time.monotonic()
@@ -2834,6 +2852,21 @@ async def main(*, startup_plan_override=None):
         writable_settings_root,
         fs_writable,
     )
+    loaded_ota_state = ota_state
+    ota_state = _clear_terminal_startup_ota_state(
+        ota_state,
+        writable_settings_root,
+        fs_writable,
+    )
+    if loaded_ota_state is not None and ota_state is None:
+        _print_log(
+            "ota",
+            "phase=startup_state_cleared prior_phase={} error={}".format(
+                getattr(loaded_ota_state, "phase", "") or "none",
+                getattr(loaded_ota_state, "error", "") or "none",
+            ),
+            start_monotonic=start_monotonic,
+        )
     if _should_enter_ota_mode(ota_state, fs_writable):
         from cpynodus_ii.ota.runtime import run_ota_mode
 

@@ -56,8 +56,8 @@ plus HTTP transfer flow that Sensorius should reuse.
   HTTP OTA server without MQTT, sensor loops, switch loops, or the full UI.
 - Temporary OTA mode attempts Wi-Fi join more aggressively than normal startup.
   If it still cannot reach station-ready networking or cannot start the OTA
-  HTTP server, it marks the handoff state aborted and reboots back to normal
-  runtime instead of remaining in HTTP-unavailable OTA mode.
+  HTTP server, it clears the handoff state and reboots back to normal runtime
+  instead of remaining in HTTP-unavailable OTA mode.
 - Configuration files remain device-local state and should not be replaced by
   default templates unless explicitly requested by the package manifest.
 
@@ -301,6 +301,11 @@ is set. This mode:
 5. Apply or reject exactly one update session.
 6. Reboot back into the prior active profile after success or rollback.
 
+If the transfer is explicitly aborted, `/ota/begin` receives invalid JSON or a
+rejected manifest, or OTA startup cannot reach network/HTTP readiness, Nodus
+removes `/_ota/state.json` so the next reboot resumes normal runtime. A retry
+requires a fresh MQTT prepare command.
+
 The OTA intent should live outside the normal public config schema, for
 example `/_ota/state.json`, so ordinary configuration remains stable. Keep this
 file small and rewrite it atomically where possible.
@@ -415,7 +420,8 @@ Rollback behavior:
 
 - restore files from `/_ota/backup/`;
 - clear partial staged files;
-- restore `prior_profile`;
+- remove `/_ota/state.json` for failed or aborted updates so normal startup
+  resumes the configured profile;
 - reboot;
 - expose rollback reason in `/ota/status`, serial logs, reboot logs, and later
   Sensorius metadata.
