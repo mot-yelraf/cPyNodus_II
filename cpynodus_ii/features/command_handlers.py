@@ -1712,10 +1712,16 @@ def _extract_calibration_updates(body):
             if not section:
                 continue
             for key, value in values.items():
+                key_text = str(key or "").strip()
+                if (
+                    section == "Calibration.Device"
+                    and key_text.upper() == "SOIL_TEMP_MOIST_VAL"
+                ):
+                    key_text = "SOIL_MOIST_CAL_VAL"
                 updates.append(
                     {
                         "section": section,
-                        "key": str(key or "").strip(),
+                        "key": key_text,
                         "value": value,
                     }
                 )
@@ -1743,7 +1749,16 @@ def _normalize_calibration_key(key):
     if "." in text:
         parts = text.split(".")
         if len(parts) >= 3:
-            return ".".join(parts[:-1]), parts[-1]
+            section = ".".join(parts[:-1])
+            key = parts[-1]
+            if (
+                section == "Calibration.Device"
+                and key.upper() == "SOIL_TEMP_MOIST_VAL"
+            ):
+                key = "SOIL_MOIST_CAL_VAL"
+            return section, key
     if text == "soil_ph_offset":
         return "Calibration.Device", "SOIL_PH_CAL_VAL"
+    if text == "soil_moisture_offset":
+        return "Calibration.Device", "SOIL_MOIST_CAL_VAL"
     return "", ""

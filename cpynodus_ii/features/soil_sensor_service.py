@@ -198,7 +198,7 @@ def _read_soil_metrics(transport, sensor, channel=None):
                     scales.moisture,
                     None,
                 ),
-                getattr(calibration, "soil_temp_moist_val", 0.0),
+                getattr(calibration, "soil_moist_cal_val", 0.0),
             ),
             0,
         ),

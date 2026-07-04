@@ -15,7 +15,8 @@ _KEY_ATTRS = {
     "APVPD_RH_CAL_VAL": "apvpd_rh_cal_val",
     "ALTITUDE_METERS": "altitude_meters",
     "SOIL_TEMP_CAL_VAL": "soil_temp_cal_val",
-    "SOIL_TEMP_MOIST_VAL": "soil_temp_moist_val",
+    "SOIL_MOIST_CAL_VAL": "soil_moist_cal_val",
+    "SOIL_TEMP_MOIST_VAL": "soil_moist_cal_val",
     "SOIL_PH_CAL_VAL": "soil_ph_cal_val",
     "SOIL_EC_CAL_VAL": "soil_ec_cal_val",
 }

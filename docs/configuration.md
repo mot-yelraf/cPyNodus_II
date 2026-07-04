@@ -248,6 +248,18 @@ pressure. BME680 also seeds driver sea-level pressure at startup, and
 SCD30/SCD4x drivers use the value for CO2 altitude compensation at driver
 startup.
 
+Soil sensor `[Calibration.Device]` keys are:
+
+- `SOIL_TEMP_CAL_VAL`
+- `SOIL_MOIST_CAL_VAL`
+- `SOIL_PH_CAL_VAL`
+- `SOIL_EC_CAL_VAL`
+
+`SOIL_MOIST_CAL_VAL` is the canonical soil moisture additive offset. Older
+deployed files that still contain `SOIL_TEMP_MOIST_VAL` are read as a legacy
+alias, but new templates and MQTT calibration patches use
+`SOIL_MOIST_CAL_VAL`.
+
 Corner case:
 
 - The normal-mode setup UI is available only when `ACTIVE_PROFILE = "nodusweb"`.

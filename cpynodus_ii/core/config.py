@@ -191,7 +191,7 @@ class SensorCalibration:
     apvpd_rh_cal_val: float = 0.0
     altitude_meters: float = 0.0
     soil_temp_cal_val: float = 0.0
-    soil_temp_moist_val: float = 0.0
+    soil_moist_cal_val: float = 0.0
     soil_ph_cal_val: float = 0.0
     soil_ec_cal_val: float = 0.0
 
@@ -207,11 +207,18 @@ class SensorCalibration:
         _raw_setattr(self, "apvpd_rh_cal_val", float(self.apvpd_rh_cal_val or 0.0))
         _raw_setattr(self, "altitude_meters", float(self.altitude_meters or 0.0))
         _raw_setattr(self, "soil_temp_cal_val", float(self.soil_temp_cal_val or 0.0))
-        _raw_setattr(
-            self, "soil_temp_moist_val", float(self.soil_temp_moist_val or 0.0)
-        )
+        _raw_setattr(self, "soil_moist_cal_val", float(self.soil_moist_cal_val or 0.0))
         _raw_setattr(self, "soil_ph_cal_val", float(self.soil_ph_cal_val or 0.0))
         _raw_setattr(self, "soil_ec_cal_val", float(self.soil_ec_cal_val or 0.0))
+
+    @property
+    def soil_temp_moist_val(self):
+        """Legacy alias for the soil moisture calibration offset."""
+        return self.soil_moist_cal_val
+
+    @soil_temp_moist_val.setter
+    def soil_temp_moist_val(self, value):
+        _raw_setattr(self, "soil_moist_cal_val", float(value or 0.0))
 
 
 @dataclass

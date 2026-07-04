@@ -861,7 +861,7 @@ def _calibration_status(sensor):
             "apvpd_temp_cal_val",
             "apvpd_rh_cal_val",
             "soil_temp_cal_val",
-            "soil_temp_moist_val",
+            "soil_moist_cal_val",
             "soil_ph_cal_val",
             "soil_ec_cal_val",
         ):

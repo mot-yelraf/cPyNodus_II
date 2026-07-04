@@ -1751,7 +1751,7 @@ def test_sensor_service_applies_soil_calibration_offsets():
             ),
             calibration_device=SensorCalibration(
                 soil_temp_cal_val=1.25,
-                soil_temp_moist_val=-3.0,
+                soil_moist_cal_val=-3.0,
                 soil_ph_cal_val=0.2,
                 soil_ec_cal_val=4.5,
             ),

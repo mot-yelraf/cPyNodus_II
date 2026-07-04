@@ -578,6 +578,11 @@ Implemented behavior:
 - `action = "apply"`, `"set"`, or `"update"` writes accepted calibration
   values, publishes `calibration/result`, and publishes non-retained
   `meta/patch` with `source = "calibration_set"`.
+- Soil moisture calibration uses
+  `Calibration.Device.SOIL_MOIST_CAL_VAL`. The short alias
+  `soil_moisture_offset` maps to that key. Current firmware still accepts the
+  legacy `Calibration.Device.SOIL_TEMP_MOIST_VAL` key for deployed files and
+  older publishers, but Sensorius should publish the canonical key or alias.
 - `Calibration.Device.ALTITUDE_METERS` accepts meters for BME280 and BME680
   published barometric-pressure normalization and SCD30/SCD4x CO2 altitude
   compensation. BME680 also applies the value at driver startup to seed

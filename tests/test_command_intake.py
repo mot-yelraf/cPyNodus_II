@@ -1412,6 +1412,25 @@ def test_parse_calibration_command_accepts_apply_payload():
     assert command.updates[0]["key"] == "RH_OFFSET"
 
 
+def test_parse_calibration_command_accepts_soil_moisture_alias():
+    command = parse_calibration_command(
+        (
+            '{"message_id":"cal-moist","action":"apply","payload":{"offsets":['
+            '{"key":"soil_moisture_offset","value":20.0}'
+            "]}}"
+        )
+    )
+
+    assert command.message_id == "cal-moist"
+    assert command.updates == (
+        {
+            "section": "Calibration.Device",
+            "key": "SOIL_MOIST_CAL_VAL",
+            "value": 20.0,
+        },
+    )
+
+
 def test_process_calibration_message_publishes_result_and_meta_patch():
     transport = MQTTTransport("broker.local", 1883)
 
@@ -1571,6 +1590,55 @@ def test_process_inbound_messages_fast_calibration_split_offsets_persist():
             "section": "Calibration.Device",
             "key": "ALTITUDE_METERS",
             "value": 1783.0,
+        },
+    ]
+
+
+def test_process_inbound_messages_fast_soil_moisture_alias_persists_canonical_key():
+    transport = MQTTTransport("broker.local", 1883)
+    with TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        (root / Settings.SENSOR_SOIL_FILE).write_text(
+            (
+                "[Calibration.Device]\n"
+                "SOIL_TEMP_CAL_VAL = 0.0\n"
+                "SOIL_MOIST_CAL_VAL = 0.0\n"
+                "SOIL_PH_CAL_VAL = 0.0\n"
+                "SOIL_EC_CAL_VAL = 0.0\n"
+            ),
+            encoding="utf-8",
+        )
+        runtime_config = _soil_runtime_config()
+        transport.receive(
+            "nodus/soil-abc123/calibration/set",
+            (
+                '{"message_id":"cal-moist","action":"apply","payload":{"offsets":['
+                '{"key":"soil_moisture_offset","value":20.0}'
+                "]}}"
+            ),
+        )
+
+        results = process_inbound_messages(
+            transport,
+            runtime_config,
+            _sensor_switch_service(),
+            settings_root=tmpdir,
+        )
+        soil_doc = Settings._read_toml_file(root / Settings.SENSOR_SOIL_FILE)
+
+    assert len(results) == 1
+    assert results[0].phase == "published"
+    assert results[0].requested_state == "offset_fast:applied"
+    calibration = results[0].runtime_config.sensor.calibration_device
+    assert calibration.soil_moist_cal_val == 20.0
+    assert soil_doc["Calibration"]["Device"]["SOIL_MOIST_CAL_VAL"] == 20.0
+    assert transport.published_messages[1].payload["applied"] is True
+    assert transport.published_messages[1].payload["updated"] == 1
+    assert transport.published_messages[2].payload["updates"] == [
+        {
+            "section": "Calibration.Device",
+            "key": "SOIL_MOIST_CAL_VAL",
+            "value": 20.0,
         },
     ]
 

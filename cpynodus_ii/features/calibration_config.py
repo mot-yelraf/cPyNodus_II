@@ -166,6 +166,11 @@ def _calibration_updates_from_body(body):
                 target_section = section
                 if target_section == "Calibration.System" and key == "ALTITUDE_METERS":
                     target_section = "Calibration.Device"
+                if (
+                    target_section == "Calibration.Device"
+                    and key == "SOIL_TEMP_MOIST_VAL"
+                ):
+                    key = "SOIL_MOIST_CAL_VAL"
                 if not _supported_calibration_key(target_section, key):
                     return None
                 updates.append(
@@ -244,8 +249,8 @@ def _set_calibration_value(calibration, key, value):
         calibration.altitude_meters = value
     elif key == "SOIL_TEMP_CAL_VAL":
         calibration.soil_temp_cal_val = value
-    elif key == "SOIL_TEMP_MOIST_VAL":
-        calibration.soil_temp_moist_val = value
+    elif key in {"SOIL_MOIST_CAL_VAL", "SOIL_TEMP_MOIST_VAL"}:
+        calibration.soil_moist_cal_val = value
     elif key == "SOIL_PH_CAL_VAL":
         calibration.soil_ph_cal_val = value
     elif key == "SOIL_EC_CAL_VAL":
@@ -256,12 +261,16 @@ def _normalize_calibration_key(key):
     text = str(key or "").strip()
     if text == "soil_ph_offset":
         return "Calibration.Device", "SOIL_PH_CAL_VAL"
+    if text == "soil_moisture_offset":
+        return "Calibration.Device", "SOIL_MOIST_CAL_VAL"
     parts = text.split(".")
     if len(parts) >= 3:
         section = ".".join(parts[:-1])
         key = parts[-1].upper()
         if section == "Calibration.System" and key == "ALTITUDE_METERS":
             return "Calibration.Device", key
+        if section == "Calibration.Device" and key == "SOIL_TEMP_MOIST_VAL":
+            return section, "SOIL_MOIST_CAL_VAL"
         return section, key
     return "", ""
 

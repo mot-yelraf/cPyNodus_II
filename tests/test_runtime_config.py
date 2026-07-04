@@ -406,6 +406,7 @@ def test_settings_from_directory_prefers_soil_sensor_file_when_soil_config_is_ac
                 "K_SCALE = 7.0\n"
                 "[NPK]\nN_TARGET = 100.0\nP_TARGET = 55.0\n"
                 "K_TARGET = 130.0\n"
+                "[Calibration.Device]\nSOIL_MOIST_CAL_VAL = 7.5\n"
             ),
             encoding="utf-8",
         )
@@ -448,6 +449,25 @@ def test_settings_from_directory_prefers_soil_sensor_file_when_soil_config_is_ac
     assert runtime_config.sensor.soil_npk.n_target == 100.0
     assert runtime_config.sensor.soil_npk.p_target == 55.0
     assert runtime_config.sensor.soil_npk.k_target == 130.0
+    assert runtime_config.sensor.calibration_device.soil_moist_cal_val == 7.5
+
+
+def test_settings_from_directory_loads_legacy_soil_moisture_calibration_key():
+    with TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        (tmpdir_path / "settings.toml").write_text("", encoding="utf-8")
+        (tmpdir_path / "sensor_soil.toml").write_text(
+            (
+                '[Sensor]\nDEVICE = "soil"\nSENSOR_ID = "soil-1"\n'
+                "[Calibration.Device]\nSOIL_TEMP_MOIST_VAL = 6.25\n"
+            ),
+            encoding="utf-8",
+        )
+
+        runtime_config = Settings.from_directory(tmpdir_path).runtime_config()
+
+    assert runtime_config.sensor.calibration_device.soil_moist_cal_val == 6.25
+    assert runtime_config.sensor.calibration_device.soil_temp_moist_val == 6.25
 
 
 def test_settings_from_directory_loads_dual_soil_modbus_channels():

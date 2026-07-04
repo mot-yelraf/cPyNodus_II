@@ -12,6 +12,7 @@ _SUPPORTED_KEYS = (
     "APVPD_RH_CAL_VAL",
     "ALTITUDE_METERS",
     "SOIL_TEMP_CAL_VAL",
+    "SOIL_MOIST_CAL_VAL",
     "SOIL_TEMP_MOIST_VAL",
     "SOIL_PH_CAL_VAL",
     "SOIL_EC_CAL_VAL",
@@ -134,12 +135,16 @@ def _normalize_calibration_key(key):
     text = str(key or "").strip()
     if text == "soil_ph_offset":
         return "Calibration.Device", "SOIL_PH_CAL_VAL"
+    if text == "soil_moisture_offset":
+        return "Calibration.Device", "SOIL_MOIST_CAL_VAL"
     parts = text.split(".")
     if len(parts) >= 3:
         section = ".".join(parts[:-1])
         key = parts[-1].upper()
         if section == "Calibration.System" and key == "ALTITUDE_METERS":
             return "Calibration.Device", key
+        if section == "Calibration.Device" and key == "SOIL_TEMP_MOIST_VAL":
+            return section, "SOIL_MOIST_CAL_VAL"
         return section, key
     return "", ""
 

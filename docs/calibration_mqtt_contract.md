@@ -143,8 +143,13 @@ Behavior:
 - BME680 also applies `ALTITUDE_METERS` at driver startup to seed sea-level
   pressure; SCD30/SCD4x `ALTITUDE_METERS` is applied at driver startup and
   therefore requires restart/reinitialization to affect the driver
-- `offsets[].key` also accepts the short alias `soil_ph_offset`, which maps to
-  `Calibration.Device.SOIL_PH_CAL_VAL`
+- `offsets[].key` also accepts short aliases:
+  - `soil_ph_offset` maps to `Calibration.Device.SOIL_PH_CAL_VAL`
+  - `soil_moisture_offset` maps to `Calibration.Device.SOIL_MOIST_CAL_VAL`
+- Soil moisture calibration uses `Calibration.Device.SOIL_MOIST_CAL_VAL`.
+  Legacy `Calibration.Device.SOIL_TEMP_MOIST_VAL` is still accepted by current
+  firmware for deployed files and older publishers, but new commands should use
+  `SOIL_MOIST_CAL_VAL` or `soil_moisture_offset`.
 
 ## Action: Status
 

@@ -1207,8 +1207,11 @@ class Settings:
                     soil_temp_cal_val=float(
                         soil_device_cal_doc.get("SOIL_TEMP_CAL_VAL", 0.0)
                     ),
-                    soil_temp_moist_val=float(
-                        soil_device_cal_doc.get("SOIL_TEMP_MOIST_VAL", 0.0)
+                    soil_moist_cal_val=float(
+                        soil_device_cal_doc.get(
+                            "SOIL_MOIST_CAL_VAL",
+                            soil_device_cal_doc.get("SOIL_TEMP_MOIST_VAL", 0.0),
+                        )
                     ),
                     soil_ph_cal_val=float(
                         soil_device_cal_doc.get("SOIL_PH_CAL_VAL", 0.0)

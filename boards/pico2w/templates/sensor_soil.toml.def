@@ -11,7 +11,7 @@ CALIB_STATUS = "Not Calibrated"
 
 [Calibration.Device]
 SOIL_TEMP_CAL_VAL = 0.0
-SOIL_TEMP_MOIST_VAL = 0.0
+SOIL_MOIST_CAL_VAL = 0.0
 SOIL_PH_CAL_VAL = 0.0
 SOIL_EC_CAL_VAL = 0.0
 
