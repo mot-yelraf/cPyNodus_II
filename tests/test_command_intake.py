@@ -1368,6 +1368,128 @@ def test_process_inbound_messages_fast_display_config_pystack_is_volatile(
     assert transport.published_messages[2].topic == "nodus/co2-ykdvea/meta/patch"
 
 
+def test_process_inbound_messages_fast_switch_label_config_persists(
+    monkeypatch,
+    tmp_path,
+):
+    def fail_generic_persistence(*args, **kwargs):
+        raise AssertionError("switch label config should use low-stack persistence")
+
+    monkeypatch.setattr(
+        Settings,
+        "apply_updates_to_directory",
+        fail_generic_persistence,
+    )
+    transport = MQTTTransport("broker.local", 1883)
+    runtime_config = _sensor_switch_runtime_config()
+    switch_path = tmp_path / "switch.toml"
+    original_text = (
+        "[Switch]\n"
+        'SWITCH_1_LABEL = "Fan"\n'
+        'SWITCH_2_LABEL = "Humidifier"\n'
+    )
+    switch_path.write_text(original_text, encoding="utf-8")
+    transport.receive(
+        "nodus/co2-ykdvea/config/set",
+        (
+            '{"message_id":"cfg-switch-label","payload":{"updates":['
+            '{"section":"Switch","key":"SWITCH_2_LABEL","value":"AC",'
+            '"name":"switch.toml"}'
+            ']},"restart":false}'
+        ),
+    )
+
+    results = process_inbound_messages(
+        transport,
+        runtime_config,
+        _sensor_switch_service(),
+        settings_root=tmp_path,
+    )
+    switch_text = switch_path.read_text(encoding="utf-8")
+    backup_text = (tmp_path / "switch.toml.bak").read_text(encoding="utf-8")
+
+    assert len(results) == 1
+    assert results[0].phase == "published"
+    assert results[0].published_count == 3
+    assert results[0].errors == ()
+    assert results[0].persistence_mode == "persisted"
+    assert results[0].runtime_config.switch.channels[1].label == "AC"
+    assert 'SWITCH_2_LABEL = "AC"' in switch_text
+    assert backup_text == original_text
+    assert [message.topic for message in transport.published_messages] == [
+        "nodus/co2-ykdvea/config/ack",
+        "nodus/co2-ykdvea/config/result",
+        "nodus/co2-ykdvea/meta/patch",
+    ]
+    assert transport.published_messages[1].payload == {
+        "message_id": "cfg-switch-label",
+        "applied": True,
+        "updated": 1,
+        "duplicate": False,
+        "error": "",
+    }
+    assert transport.published_messages[2].payload["updates"] == [
+        {
+            "section": "Switch",
+            "key": "SWITCH_2_LABEL",
+            "value": "AC",
+        },
+    ]
+
+
+def test_process_inbound_messages_fast_switch_label_config_pystack_is_volatile(
+    monkeypatch,
+    tmp_path,
+):
+    from cpynodus_ii.features import switch_label_config
+
+    transport = MQTTTransport("broker.local", 1883)
+    runtime_config = _sensor_switch_runtime_config()
+    (tmp_path / "switch.toml").write_text(
+        '[Switch]\nSWITCH_2_LABEL = "Humidifier"\n',
+        encoding="utf-8",
+    )
+
+    def raise_pystack(*args, **kwargs):
+        raise RuntimeError("pystack exhausted")
+
+    monkeypatch.setattr(
+        switch_label_config,
+        "_write_switch_label_file",
+        raise_pystack,
+    )
+    transport.receive(
+        "nodus/co2-ykdvea/config/set",
+        (
+            '{"message_id":"cfg-switch-label-stack","payload":{"updates":['
+            '{"section":"Switch","key":"SWITCH_2_LABEL","value":"AC"}'
+            "]}}"
+        ),
+    )
+
+    results = process_inbound_messages(
+        transport,
+        runtime_config,
+        _sensor_switch_service(),
+        settings_root=tmp_path,
+    )
+
+    assert len(results) == 1
+    assert results[0].phase == "published"
+    assert results[0].published_count == 3
+    assert results[0].errors == ("switch_label_persist_pystack",)
+    assert results[0].persistence_mode == "volatile"
+    assert results[0].runtime_config.switch.channels[1].label == "AC"
+    assert transport.published_messages[1].payload == {
+        "message_id": "cfg-switch-label-stack",
+        "applied": True,
+        "updated": 1,
+        "duplicate": False,
+        "error": "",
+    }
+    assert transport.published_messages[2].topic == "nodus/co2-ykdvea/meta/patch"
+
+
 def test_process_device_config_message_applies_soil_npk_target_update():
     transport = MQTTTransport("broker.local", 1883)
 

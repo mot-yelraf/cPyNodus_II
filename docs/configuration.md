@@ -236,6 +236,13 @@ persistence fails from memory or Python-stack pressure, the location remains
 active until reboot and the serial command log reports
 `persistence_mode=volatile`.
 
+Runtime MQTT `Switch.SWITCH_1_LABEL` and `Switch.SWITCH_2_LABEL` writes also
+use the live-first pattern. Nodus updates the runtime switch label and
+publishes successful `config/result` plus `meta/patch` before best-effort
+`switch.toml` persistence. If persistence fails from memory or Python-stack
+pressure, the label remains active until reboot and the serial command log
+reports `persistence_mode=volatile`.
+
 `AP_SSID` and `AP_PASSWORD` are read from `[Network]` for AP mode but are not
 currently accepted by the web config classifier.
 
