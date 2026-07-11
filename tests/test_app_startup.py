@@ -35,6 +35,7 @@ from cpynodus_ii.app import (
     _resolve_startup_plan,
     _restart_sensor_stack,
     _runtime_device_id,
+    _sample_nodusweb_sensor,
     _sensor_driver_start_deferred,
     _sensor_errors_indicate_not_found,
     _should_cycle_mqtt_radio_for_socket_progress,
@@ -113,6 +114,31 @@ class _BrokerResolvePool:
         self.sockets.append(sock)
         return sock
 
+
+def test_nodusweb_sensor_sampling_retains_last_successful_snapshot(monkeypatch):
+    previous = SimpleNamespace(phase="ready", metrics={"Temperature": 21.0})
+    failed = SimpleNamespace(
+        phase="error",
+        metrics={},
+        errors=("sensor_read_failed", "pystack_exhausted"),
+    )
+    monkeypatch.setattr(app_module, "read_sensor_snapshot", lambda *args: failed)
+
+    snapshot, errors = _sample_nodusweb_sensor(object(), object(), previous)
+
+    assert snapshot is previous
+    assert errors == ("sensor_read_failed", "pystack_exhausted")
+
+
+def test_nodusweb_sensor_sampling_replaces_cache_on_success(monkeypatch):
+    previous = SimpleNamespace(phase="ready", metrics={"Temperature": 21.0})
+    current = SimpleNamespace(phase="ready", metrics={"Temperature": 22.0}, errors=())
+    monkeypatch.setattr(app_module, "read_sensor_snapshot", lambda *args: current)
+
+    snapshot, errors = _sample_nodusweb_sensor(object(), object(), previous)
+
+    assert snapshot is current
+    assert errors == ()
 
 def _ready_network_stack(socket_pool):
     return SimpleNamespace(

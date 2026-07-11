@@ -18,12 +18,14 @@ def build_status_payload(
     *,
     version,
     sensor_service=None,
+    sensor_snapshot=None,
+    display_timestamp="",
     switch_service=None,
     ip_address="",
+    wifi_recovery_count=0,
 ):
     """Build the operational status payload for `/` and `/current-data`."""
-    sensor_snapshot = None
-    if sensor_service is not None:
+    if sensor_snapshot is None and sensor_service is not None:
         from cpynodus_ii.features.sensor_service import read_sensor_snapshot
 
         sensor_snapshot = read_sensor_snapshot(sensor_service, runtime_config)
@@ -70,16 +72,19 @@ def build_status_payload(
             "hostname": runtime_config.network.hostname,
             "ssid": runtime_config.network.ssid,
             "ipv4addr": str(ip_address or ""),
+            "wifi_recovery_count": int(wifi_recovery_count or 0),
         },
         "sensor": {
             "present": bool(runtime_config.sensor.present),
             "sensor_id": runtime_config.sensor.sensor_id,
             "device": runtime_config.sensor.device,
             "location": runtime_config.sensor.location,
+            "display_timestamp": str(display_timestamp or ""),
             "display_metrics": display_metrics,
             "snapshot": {
                 "phase": getattr(sensor_snapshot, "phase", "unavailable"),
                 "metrics": dict(getattr(sensor_snapshot, "metrics", {}) or {}),
+                "errors": list(getattr(sensor_snapshot, "errors", ()) or ()),
             },
         },
         "switch": {
@@ -94,6 +99,7 @@ def build_status_payload(
 def build_setup_payload(runtime_config, *, version):
     """Build the view-model payload for `/setup`."""
     route_table = build_web_route_table(runtime_config)
+    sensor = runtime_config.sensor
     return {
         "schema": "nodus-setup/v1",
         "version": str(version or ""),
@@ -110,21 +116,32 @@ def build_setup_payload(runtime_config, *, version):
         ],
         "network": {
             "ssid": runtime_config.network.ssid,
+            "password": runtime_config.network.password,
             "hostname": runtime_config.network.hostname,
             "http_port": runtime_config.network.http_port,
             "ap_channel": runtime_config.network.ap_channel,
         },
         "sensor": {
-            "present": bool(runtime_config.sensor.present),
-            "device": runtime_config.sensor.device,
-            "sensor_id": runtime_config.sensor.sensor_id,
-            "location": runtime_config.sensor.location,
-            "display_metrics": list(runtime_config.sensor.display.metrics),
-            "display_styles": list(runtime_config.sensor.display.styles),
+            "present": bool(sensor.present),
+            "device": sensor.device,
+            "hardware": sensor.hardware,
+            "family": sensor.family,
+            "interface": sensor.interface,
+            "active_config_file": sensor.active_config_file,
+            "sensor_id": sensor.sensor_id,
+            "serial_number": sensor.serial_number,
+            "location": sensor.location,
+            "display_metrics": list(sensor.display.metrics),
+            "display_styles": list(sensor.display.styles),
+            "calibration_system": _calibration_payload(sensor.calibration_system),
+            "calibration_device": _calibration_payload(sensor.calibration_device),
         },
         "switch": {
             "present": bool(runtime_config.switch.present),
+            "device_id": runtime_config.switch.device_id,
+            "serial_number": runtime_config.switch.serial_number,
             "location": runtime_config.switch.location,
+            "channel_count": runtime_config.switch.channel_count,
             "channels": [
                 {
                     "key": channel.key,
@@ -146,8 +163,30 @@ def build_setup_payload(runtime_config, *, version):
             "broker": runtime_config.mqtt.broker,
             "broker_ip": runtime_config.mqtt.broker_ip,
             "port": runtime_config.mqtt.port,
+            "use_tls": bool(runtime_config.mqtt.use_tls),
             "base_topic": runtime_config.mqtt.base_topic,
+            "username": runtime_config.mqtt.username,
+            "password": runtime_config.mqtt.password,
         },
+    }
+
+
+def _calibration_payload(calibration):
+    return {
+        "TEMP_OFFSET": calibration.temp_offset,
+        "RH_OFFSET": calibration.rh_offset,
+        "CO2_OFFSET": calibration.co2_offset,
+        "AQI_OFFSET": calibration.aqi_offset,
+        "GAS_OFFSET": calibration.gas_offset,
+        "LUX_OFFSET": calibration.lux_offset,
+        "PPFD_OFFSET": calibration.ppfd_offset,
+        "APVPD_TEMP_CAL_VAL": calibration.apvpd_temp_cal_val,
+        "APVPD_RH_CAL_VAL": calibration.apvpd_rh_cal_val,
+        "ALTITUDE_METERS": calibration.altitude_meters,
+        "SOIL_TEMP_CAL_VAL": calibration.soil_temp_cal_val,
+        "SOIL_MOIST_CAL_VAL": calibration.soil_moist_cal_val,
+        "SOIL_PH_CAL_VAL": calibration.soil_ph_cal_val,
+        "SOIL_EC_CAL_VAL": calibration.soil_ec_cal_val,
     }
 
 

@@ -205,11 +205,23 @@ transition, and reboot reason.
 
 ## Local setup UI
 
-The built-in `/setup` web UI is intentionally small. The rendered page exposes:
+The built-in `/` and `/setup` web UI uses the same `nodusweb` dashboard. It
+provides Status, Setup, Calibration, and Nodus Info panes. The dashboard is
+available in normal mode only for `ACTIVE_PROFILE = "nodusweb"`; AP recovery
+continues to expose the setup surface, while MQTT profiles remain headless.
 
-- `Network`: SSID, hostname, and `AP_CHANNEL` as restart-required edits
-- `Sensor`: shared location and display metrics/styles as live-safe edits
-- `Switch`: switch labels and manual on/off override buttons
+- `Status`: the last successfully gathered sensor sample, its RTC timestamp,
+  and current switch states. A waiting or failed read keeps the prior sample;
+  no history buffer is allocated.
+- `Setup`: network, time, profile/MQTT, location, display, and switch settings
+- `Calibration`: device-appropriate calibration fields
+- `Nodus Info`: current network, firmware, sensor, and switch identity
+  plus the number of times the current boot entered Wi-Fi recovery
+
+Wi-Fi and MQTT passwords use password inputs with an explicit `Show` control.
+The Pico2 W dashboard does not allocate sensor history and does not expose
+history graphs, min/average/max statistics, stored-data summaries, or data
+export.
 
 The JSON `/config` route accepts a broader supported update set than the
 rendered page:

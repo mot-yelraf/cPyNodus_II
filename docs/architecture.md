@@ -36,6 +36,14 @@ The architecture is split into three layers:
   profiles do not start mDNS and keep broker access IP-literal.
 - Normal-mode web routes are started only for `ACTIVE_PROFILE = "nodusweb"`;
   MQTT profiles run headless after provisioning.
+- The web poll loop treats malformed browser/TLS probes reported as
+  `Unparseable raw_request` as recoverable and continues serving requests.
+  Unexpected poll failures move the web controller to `error`; periodic web
+  health logging reports its phase, server presence, route count, and errors.
+- In `nodusweb`, sensor acquisition runs from the shallow main loop on a
+  60-second cadence. The web controller receives only the latest successful
+  snapshot; HTTP request handlers never call sensor drivers. This avoids Pico2
+  W Python-stack exhaustion in the deeper HTTP dispatch/response call path.
 
 ## Network Startup Path
 

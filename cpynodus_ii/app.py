@@ -64,6 +64,7 @@ SENSOR_NOT_FOUND_REBOOT_S = 60.0
 SENSOR_NOT_FOUND_REBOOT_MIN_COUNT = 6
 SENSOR_NOT_FOUND_REINIT_MAX_ATTEMPTS = 2
 SOFT_REBOOT_SETTLE_S = 1.0
+NODUSWEB_SENSOR_INTERVAL_S = 60.0
 WARM_START_RADIO_SETTLE_S = 1.0
 WIFI_AFTER_READY_FAILURE_SIGNATURES = (
     "station_scan_miss_after_ready",
@@ -280,6 +281,14 @@ def read_sensor_snapshot(*args, **kwargs):
     from cpynodus_ii.features.sensor_service import read_sensor_snapshot as read
 
     return read(*args, **kwargs)
+
+
+def _sample_nodusweb_sensor(sensor_service, runtime_config, previous_snapshot):
+    """Gather one shallow-loop sample, retaining the prior successful sample."""
+    snapshot = read_sensor_snapshot(sensor_service, runtime_config)
+    if getattr(snapshot, "phase", "") == "ready":
+        return snapshot, ()
+    return previous_snapshot, tuple(getattr(snapshot, "errors", ()) or ())
 
 
 def _build_sensor_stack(runtime_config):
@@ -579,6 +588,20 @@ def _ntp_health_text(ntp_state):
     """Return compact NTP health for periodic runtime logs."""
     phase = str(getattr(ntp_state, "phase", "") or "").strip()
     return phase or "idle"
+
+
+def _web_health_text(web_runtime):
+    """Return compact web runtime health for periodic diagnostics."""
+    if web_runtime is None:
+        return "phase=none server=none routes=0 errors=none"
+    route_paths = getattr(web_runtime, "route_paths", ()) or ()
+    errors = getattr(web_runtime, "errors", ()) or ()
+    return "phase={} server={} routes={} errors={}".format(
+        str(getattr(web_runtime, "phase", "") or "unknown"),
+        "present" if getattr(web_runtime, "server", None) is not None else "none",
+        len(tuple(route_paths)),
+        ",".join(str(item) for item in errors) if errors else "none",
+    )
 
 
 def _command_results_request_ntp_resync(command_results):
@@ -2959,8 +2982,11 @@ async def main(*, startup_plan_override=None):
         if network_stack.phase == "ap"
         else -1.0,
     )
+    wifi_recovery_count = 0
+    last_counted_recovery_phase = recovery_state.phase
     web_runtime = None
     next_health_at = float(start_monotonic) + 300.0
+    next_nodusweb_sensor_at = float(start_monotonic) + NODUSWEB_SENSOR_INTERVAL_S
     next_periodic_gc_at = float(start_monotonic) + 60.0
     periodic_gc_count = 0
     mqtt_connect_attempt_count = 0
@@ -3129,6 +3155,7 @@ async def main(*, startup_plan_override=None):
             network_stack,
             version=__version__,
             sensor_service=sensor_service,
+            sensor_snapshot=sensor_snapshot,
             switch_service=switch_service,
             settings_root=writable_settings_root,
             reboot_callbacks={
@@ -3180,6 +3207,30 @@ async def main(*, startup_plan_override=None):
         while True:
             now_monotonic = time.monotonic()
             network_stack = refresh_network_stack(network_stack)
+            if (
+                plan.profile == "nodusweb"
+                and sensor_service is not None
+                and float(now_monotonic) >= float(next_nodusweb_sensor_at)
+            ):
+                sensor_snapshot, nodusweb_sensor_errors = _sample_nodusweb_sensor(
+                    sensor_service,
+                    runtime_config,
+                    sensor_snapshot,
+                )
+                if nodusweb_sensor_errors:
+                    _print_log(
+                        "sensor",
+                        "nodusweb phase=error errors={}".format(
+                            ",".join(nodusweb_sensor_errors)
+                        ),
+                        start_monotonic=start_monotonic,
+                    )
+                while float(next_nodusweb_sensor_at) <= float(now_monotonic):
+                    next_nodusweb_sensor_at += NODUSWEB_SENSOR_INTERVAL_S
+            if recovery_state.phase != last_counted_recovery_phase:
+                if recovery_state.phase == "wifi":
+                    wifi_recovery_count += 1
+                last_counted_recovery_phase = recovery_state.phase
             if network_link_is_ready(network_stack):
                 wifi_was_ready = True
                 last_wifi_failure_signature = ""
@@ -3190,8 +3241,10 @@ async def main(*, startup_plan_override=None):
                     runtime_config=runtime_config,
                     network_stack=network_stack,
                     sensor_service=sensor_service,
+                    sensor_snapshot=sensor_snapshot,
                     switch_service=switch_service,
                     version=__version__,
+                    wifi_recovery_count=wifi_recovery_count,
                 )
                 web_runtime.poll()
                 runtime_config = web_runtime.runtime_config
@@ -3206,6 +3259,10 @@ async def main(*, startup_plan_override=None):
                 transport_connected=transport.connected,
             )
             recovery_state = recovery_decision.state
+            if recovery_state.phase != last_counted_recovery_phase:
+                if recovery_state.phase == "wifi":
+                    wifi_recovery_count += 1
+                last_counted_recovery_phase = recovery_state.phase
             if recovery_state.phase != previous_phase:
                 if recovery_state.phase == "wifi" and transport.connected:
                     transport.mark_disconnected(reason="wifi_link_lost")
@@ -5358,6 +5415,12 @@ async def main(*, startup_plan_override=None):
                         ),
                         start_monotonic=start_monotonic,
                     )
+                    if web_runtime is not None:
+                        _print_log(
+                            "web",
+                            "health {}".format(_web_health_text(web_runtime)),
+                            start_monotonic=start_monotonic,
+                        )
                 while float(next_periodic_gc_at) <= float(now_monotonic):
                     next_periodic_gc_at += 60.0
             if transport.connected:

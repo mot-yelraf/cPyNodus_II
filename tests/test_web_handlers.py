@@ -83,7 +83,9 @@ def test_build_status_payload_includes_display_metrics_and_switch_state():
 
     assert payload["schema"] == "nodus-web-status/v1"
     assert payload["network"]["ipv4addr"] == "10.0.0.44"
+    assert payload["network"]["wifi_recovery_count"] == 0
     assert payload["sensor"]["snapshot"]["phase"] == "ready"
+    assert payload["sensor"]["display_timestamp"] == ""
     assert payload["sensor"]["display_metrics"][0]["metric"] == "Air Quality"
     assert payload["switch"]["channels"][0]["state"] is True
 
@@ -96,6 +98,11 @@ def test_build_setup_payload_lists_routes_and_current_values():
     assert payload["network"]["ap_channel"] == 6
     assert payload["sensor"]["display_metrics"][0] == "Air Quality"
     assert isinstance(payload["routes"], list)
+    assert "password" in payload["network"]
+    assert "CO2_OFFSET" in payload["sensor"]["calibration_device"]
+    assert "username" in payload["mqtt"]
+    assert "password" in payload["mqtt"]
+    assert "use_tls" in payload["mqtt"]
 
 
 def test_handle_web_config_request_reports_live_and_restart_required_updates():
