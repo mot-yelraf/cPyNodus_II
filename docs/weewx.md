@@ -667,14 +667,16 @@ printf '%s\n' "$MQTTSUB"
 Validate service-mode configuration:
 
 ```bash
-sudo python3 "$MQTTSUB" configure service \
+sudo -u weewx env PYTHONPATH=/usr/share/weewx \
+  python3 "$MQTTSUB" configure service \
   --validate --conf /etc/weewx/nodus.conf
 ```
 
 Optionally run the MQTTSubscribe simulator while the WeeWX service is stopped:
 
 ```bash
-sudo python3 "$MQTTSUB" simulate service \
+sudo -u weewx env PYTHONPATH=/usr/share/weewx \
+  python3 "$MQTTSUB" simulate service \
   --conf /etc/weewx/nodus.conf
 ```
 

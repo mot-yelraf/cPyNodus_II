@@ -174,3 +174,35 @@ exit 7
     assert result.returncode == 7
     assert target.read_text(encoding="utf-8") == "prior\n"
     assert "restoring the prior Nodus configuration" in result.stderr
+
+
+def test_installer_validation_uses_debian_weewx_python_path(tmp_path):
+    python_root = tmp_path / "share" / "weewx"
+    (python_root / "weeutil").mkdir(parents=True)
+    command = r'''
+source "$1"
+WEEWX_PYTHON_ROOT="$2"
+WEEWX_USER_ROOT="/etc/weewx/bin/user"
+run_weewx() {
+  printf '%s\n' "$@"
+}
+validate_mqttsubscribe_driver /etc/weewx/nodus.conf
+'''
+
+    output = subprocess.run(
+        [
+            "bash",
+            "-c",
+            command,
+            "installer-test",
+            str(INSTALLER),
+            str(python_root),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+    assert "PYTHONPATH={}".format(python_root) in output
+    assert "/etc/weewx/bin/user/MQTTSubscribe.py" in output
+    assert "configure\ndriver\n--validate\n--conf\n/etc/weewx/nodus.conf" in output

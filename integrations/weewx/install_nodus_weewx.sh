@@ -7,6 +7,7 @@ USER_SOURCE="$ROOT_DIR/bin/user"
 WEEWX_CONFIG="/etc/weewx/weewx.conf"
 WEEWX_USER_ROOT="/etc/weewx/bin/user"
 WEEWX_SKIN_ROOT="/etc/weewx/skins/Nodus"
+WEEWX_PYTHON_ROOT="/usr/share/weewx"
 MQTTSUBSCRIBE_URL="https://github.com/weewx-mqtt/subscribe/archive/refs/tags/v3.1.1.zip"
 DRY_RUN=0
 INSPECT_CONFIG=""
@@ -99,6 +100,19 @@ run_weewx() {
   else
     sudo -u weewx "$@"
   fi
+}
+
+validate_mqttsubscribe_driver() {
+  local config="$1"
+  local python_path="$WEEWX_PYTHON_ROOT"
+  if [[ -n "${PYTHONPATH:-}" ]]; then
+    python_path="$python_path:$PYTHONPATH"
+  fi
+  [[ -d "$WEEWX_PYTHON_ROOT/weeutil" ]] || \
+    die "WeeWX Python modules not found under $WEEWX_PYTHON_ROOT."
+  run_weewx env "PYTHONPATH=$python_path" \
+    python3 "$WEEWX_USER_ROOT/MQTTSubscribe.py" \
+    configure driver --validate --conf "$config"
 }
 
 ask_yes_no() {
@@ -738,8 +752,7 @@ main() {
   run_root install -o root -g weewx -m 0660 "$INSTALL_TEMP_CONFIG" "$target_config"
 
   log "Validating MQTTSubscribe driver configuration."
-  run_weewx python3 "$WEEWX_USER_ROOT/MQTTSubscribe.py" \
-    configure driver --validate --conf "$target_config"
+  validate_mqttsubscribe_driver "$target_config"
 
   run_root systemctl enable --now "$target_service"
   run_root systemctl status "$target_service" --no-pager -l || true
