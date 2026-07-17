@@ -43,6 +43,9 @@ The repository is no longer just a scaffold. Current implemented slices include:
 - switch runtime initialization, MQTT command intake, retained state publish, `config/ack`, `config/result`, and `meta/patch`
 - config/calibration apply plumbing with TOML persistence support and ROFS-aware volatile mode
 - host-testable sensor, switch, payload, publish-cycle, and transport layers
+- host-side WeeWX 5 integration with an isolated installer, MQTTSubscribe
+  mapping, Nodus report skin, retained identity, and optional confirmed switch
+  automation; see [docs/weewx.md](docs/weewx.md)
 
 ## Validated now
 

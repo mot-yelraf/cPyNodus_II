@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="refresh" content="60" />
+  <title>Nodus Sensor Conditions</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+  <link rel="stylesheet" href="style.css" type="text/css" />
+</head>
+
+<body>
+<main class="container nodus">
+
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-title">Nodus Sensor</div>
+      <div class="device-identity">
+        <span><strong>Device:</strong> $nodus.device_id</span>
+        <span><strong>Nodus firmware:</strong> $nodus.version</span>
+      </div>
+      <div class="brand-sub">$nodus.description</div>
+    </div>
+    <div class="asof">
+      <span class="asof-label">As of:</span>
+      <span class="asof-time">$current.dateTime.format("%Y-%m-%d %H:%M:%S")</span>
+    </div>
+  </header>
+
+  <section class="mini-grid">
+    <article class="mini-card">
+      <header>Sun</header>
+      <div class="mini-row"><span>Sunrise</span><strong>$almanac.sunrise.format("%H:%M:%S")</strong></div>
+      <div class="mini-row"><span>Sunset</span><strong>$almanac.sunset.format("%H:%M:%S")</strong></div>
+    </article>
+
+    <article class="mini-card">
+      <header>Moon</header>
+      <div class="mini-row"><span>Phase</span><strong>$almanac.moon_phase</strong></div>
+    </article>
+  </section>
+
+  <h3 class="section-title">Indoor Metrics</h3>
+
+  <section class="tile-grid">
+
+#if $current.absoluteHumidity.raw is not None
+    <article class="tile tile-amber">
+      <header>Absolute Humidity</header>
+      <img class="micrograph" src="micro_absoluteHumidity.png?ts=$current.dateTime.raw" alt="Absolute Humidity over the last 24 hours" />
+      <div class="value">$current.absoluteHumidity.format("%.2f")</div>
+      <div class="stats">
+        <div><span>Min</span><strong>$day.absoluteHumidity.min.format("%.2f")</strong></div>
+        <div><span>Avg</span><strong>$day.absoluteHumidity.avg.format("%.2f")</strong></div>
+        <div><span>Max</span><strong>$day.absoluteHumidity.max.format("%.2f")</strong></div>
+      </div>
+    </article>
+#end if
+
+#if $current.dewpoint.raw is not None
+    <article class="tile tile-amber">
+      <header>Dew Point</header>
+      <img class="micrograph" src="micro_dewpoint.png?ts=$current.dateTime.raw" alt="Dew Point over the last 24 hours" />
+      <div class="value">$current.dewpoint.formatted</div>
+      <div class="stats">
+        <div><span>Min</span><strong>$day.dewpoint.min.formatted</strong></div>
+        <div><span>Avg</span><strong>$day.dewpoint.avg.formatted</strong></div>
+        <div><span>Max</span><strong>$day.dewpoint.max.formatted</strong></div>
+      </div>
+    </article>
+#end if
+
+#if $current.dewpointDepression.raw is not None
+    <article class="tile tile-neutral">
+      <header>Dewpoint Depression</header>
+      <img class="micrograph" src="micro_dewpointDepression.png?ts=$current.dateTime.raw" alt="Dewpoint Depression over the last 24 hours" />
+      <div class="value">$current.dewpointDepression.format("%.1f")</div>
+      <div class="stats">
+        <div><span>Min</span><strong>$day.dewpointDepression.min.format("%.1f")</strong></div>
+        <div><span>Avg</span><strong>$day.dewpointDepression.avg.format("%.1f")</strong></div>
+        <div><span>Max</span><strong>$day.dewpointDepression.max.format("%.1f")</strong></div>
+      </div>
+    </article>
+#end if
+
+#if $current.dewVpdRisk.raw is not None
+    <article class="tile tile-neutral">
+      <header>DewVPD Risk</header>
+      <img class="micrograph" src="micro_dewVpdRisk.png?ts=$current.dateTime.raw" alt="DewVPD Risk over the last 24 hours" />
+      <div class="value">$current.dewVpdRisk.format("%.0f")</div>
+      <div class="stats">
+        <div><span>Min</span><strong>$day.dewVpdRisk.min.format("%.0f")</strong></div>
+        <div><span>Avg</span><strong>$day.dewVpdRisk.avg.format("%.0f")</strong></div>
+        <div><span>Max</span><strong>$day.dewVpdRisk.max.format("%.0f")</strong></div>
+      </div>
+    </article>
+#end if
+
+#if $current.inHumidity.raw is not None
+    <article class="tile tile-blue">
+      <header>Inside Humidity</header>
+      <img class="micrograph" src="micro_inHumidity.png?ts=$current.dateTime.raw" alt="Inside Humidity over the last 24 hours" />
+      <div class="value">$current.inHumidity.formatted</div>
+      <div class="stats">
+        <div><span>Min</span><strong>$day.inHumidity.min.formatted</strong></div>
+        <div><span>Avg</span><strong>$day.inHumidity.avg.formatted</strong></div>
+        <div><span>Max</span><strong>$day.inHumidity.max.formatted</strong></div>
+      </div>
+    </article>
+#end if
+
+#if $current.inTemp.raw is not None
+    <article class="tile tile-blue">
+      <header>Inside Temp</header>
+      <img class="micrograph" src="micro_inTemp.png?ts=$current.dateTime.raw" alt="Inside Temperature over the last 24 hours" />
+      <div class="value">$current.inTemp.formatted</div>
+      <div class="stats">
+        <div><span>Min</span><strong>$day.inTemp.min.formatted</strong></div>
+        <div><span>Avg</span><strong>$day.inTemp.avg.formatted</strong></div>
+        <div><span>Max</span><strong>$day.inTemp.max.formatted</strong></div>
+      </div>
+    </article>
+#end if
+
+#if $current.pressure.raw is not None
+    <article class="tile tile-blue">
+      <header>Station Pressure</header>
+      <img class="micrograph" src="micro_pressure.png?ts=$current.dateTime.raw" alt="Station Pressure over the last 24 hours" />
+      <div class="value">$current.pressure.formatted</div>
+      <div class="stats">
+        <div><span>Min</span><strong>$day.pressure.min.formatted</strong></div>
+        <div><span>Avg</span><strong>$day.pressure.avg.formatted</strong></div>
+        <div><span>Max</span><strong>$day.pressure.max.formatted</strong></div>
+      </div>
+    </article>
+#end if
+
+#if $current.vpd.raw is not None
+    <article class="tile tile-amber">
+      <header>VPD</header>
+      <img class="micrograph" src="micro_vpd.png?ts=$current.dateTime.raw" alt="VPD over the last 24 hours" />
+      <div class="value">$current.vpd.format("%.3f")</div>
+      <div class="stats">
+        <div><span>Min</span><strong>$day.vpd.min.format("%.3f")</strong></div>
+        <div><span>Avg</span><strong>$day.vpd.avg.format("%.3f")</strong></div>
+        <div><span>Max</span><strong>$day.vpd.max.format("%.3f")</strong></div>
+      </div>
+    </article>
+#end if
+
+  </section>
+
+#if $nodus_automation.enabled and $nodus_automation.rules
+  <h3 class="section-title">Switch Automations</h3>
+
+  <section class="automation-grid">
+#for $rule in $nodus_automation.rules
+    <article class="automation-card">
+      <header>$rule.name</header>
+      <div class="automation-state">
+        <span>$rule.label</span>
+        <strong class="state-$rule.state.lower()">$rule.state</strong>
+      </div>
+      <dl class="automation-detail">
+        <div><dt>Decision</dt><dd>$rule.decision</dd></div>
+        <div><dt>Last action</dt><dd>$rule.last_action</dd></div>
+#if $rule.error
+        <div class="automation-error"><dt>Error</dt><dd>$rule.error</dd></div>
+#end if
+      </dl>
+    </article>
+#end for
+  </section>
+#end if
+
+  <footer class="foot">Generated by WeeWX</footer>
+
+</main>
+</body>
+</html>

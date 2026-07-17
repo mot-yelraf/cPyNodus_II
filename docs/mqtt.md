@@ -29,6 +29,10 @@ wins.
 - Nodus publishes retained heartbeat and availability online/offline payloads.
 - In `homeassistant`, Nodus also publishes retained Home Assistant discovery
   messages under `[HomeAssistant].DISCOVERY_PREFIX`.
+- In `weewx`, Nodus publishes the normal `nodus-sensor-data/v1` payload. The
+  host-side MQTTSubscribe mapping, schema, report skin, retained identity, and
+  optional switch automation are documented in [WeeWX](./weewx.md); there is
+  no separate WeeWX firmware payload.
 - `/set` commands should normally be published non-retained. When a `/set`
   command is intentionally published retained by Sensorius, Sensorius owns
   clearing it with an empty retained publish to the same topic after successful

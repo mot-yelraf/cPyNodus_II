@@ -244,6 +244,9 @@ In normal mode the device:
 - `weewx` is a networked MQTT profile using the shared `[MQTT]` connection settings.
   - MQTT is enabled.
   - In normal mode, the built-in webserver is intentionally not started in this profile.
+  - The host-side integration includes an isolated WeeWX instance installer,
+    archive schema and units, a Nodus report skin, retained device identity,
+    and optional confirmed switch automation. See [WeeWX](./weewx.md).
   - Periodic NTP sync is started after normal network bring-up.
 - `homeassistant` is a networked MQTT profile using the shared `[MQTT]` connection settings.
   - MQTT is enabled.

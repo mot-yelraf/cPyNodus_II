@@ -111,6 +111,8 @@ The active runtime profile is configured in `settings.toml` under `[Profile]`:
   - networked MQTT behavior using the shared `[MQTT]` connection settings
   - MQTT enabled
   - normal-mode webserver disabled by design
+  - host installation and MQTTSubscribe mapping are documented in
+    [WeeWX](./weewx.md)
   - NTP sync enabled after network bring-up
 - `ACTIVE_PROFILE = "homeassistant"`
   - networked MQTT behavior using the shared `[MQTT]` connection settings
