@@ -1,0 +1,16 @@
+[Unit]
+Description=Maintain the registry of WeeWX-profile Nodus devices
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=weewx
+Group=weewx
+ExecStart=/usr/bin/python3 /etc/weewx/bin/user/nodus_discovery.py --config /etc/weewx/nodus-discovery.json
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

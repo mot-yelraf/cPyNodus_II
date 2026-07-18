@@ -19,6 +19,11 @@ INSTALL_SERVICE_WAS_ACTIVE=0
 INSTALL_ROLLBACK_NEEDED=0
 DEVICE_ID_ARG=""
 UPDATE_PROFILE=0
+INSTALL_BACKUP_DISCOVERY_CONFIG=""
+INSTALL_DISCOVERY_CONFIG_TOUCHED=0
+DISCOVERY_SERVICE_WAS_ACTIVE=0
+DISCOVERY_CONFIG="/etc/weewx/nodus-discovery.json"
+DISCOVERY_SERVICE="nodus-weewx-discovery.service"
 
 if [[ $EUID -eq 0 ]]; then
   SUDO=()
@@ -42,7 +47,8 @@ Behavior:
     /etc/weewx/nodus.conf, managed by weewx@nodus.service.
   * Installs MQTTSubscribe 3.1.1 only when it is missing.
   * Installs the Nodus skin, identity, switch status, units, schema, and automation services.
-  * Restores the prior Nodus configuration if validation or startup fails.
+  * Runs a registry-only watcher for retained WeeWX-profile Nodus metadata.
+  * Never creates or manages a WeeWX service for a discovered device.
 
 Options:
   --dry-run             Inspect and prompt, but do not modify the system.
@@ -71,8 +77,18 @@ cleanup_install() {
     elif [[ -n "$INSTALL_TARGET_CONFIG" ]]; then
       run_root rm -f "$INSTALL_TARGET_CONFIG"
     fi
+    if [[ $INSTALL_DISCOVERY_CONFIG_TOUCHED -eq 1 ]]; then
+      if [[ -n "$INSTALL_BACKUP_DISCOVERY_CONFIG" && -e "$INSTALL_BACKUP_DISCOVERY_CONFIG" ]]; then
+        run_root cp -a "$INSTALL_BACKUP_DISCOVERY_CONFIG" "$DISCOVERY_CONFIG"
+      else
+        run_root rm -f "$DISCOVERY_CONFIG"
+      fi
+    fi
     if [[ $INSTALL_SERVICE_WAS_ACTIVE -eq 1 && -n "$INSTALL_TARGET_SERVICE" ]]; then
       run_root systemctl start "$INSTALL_TARGET_SERVICE"
+    fi
+    if [[ $DISCOVERY_SERVICE_WAS_ACTIVE -eq 1 ]]; then
+      run_root systemctl start "$DISCOVERY_SERVICE"
     fi
   fi
   if [[ -n "$INSTALL_TEMP_CONFIG" ]]; then
@@ -446,7 +462,7 @@ add_field() {
 build_field_stanzas() {
   local family="$1"
   FIELD_STANZAS=""
-  if [[ "$family" != "soil" ]]; then
+  if [[ "$family" != "soil" && "$family" != "lux" ]]; then
     add_field "Temperature" "inTemp"
     add_field "Rel-Humidity" "inHumidity"
     add_field "Dew Point" "dewpoint"
@@ -456,8 +472,10 @@ build_field_stanzas() {
     add_field "DewVPD Risk" "dewVpdRisk"
   fi
   case "$family" in
-    avpd)
+    avpd|apvpd)
       add_field "Baro-Pressure" "pressure"
+      ;;
+    aht|apvpd_aht)
       ;;
     aqi)
       add_field "Baro-Pressure" "pressure"
@@ -490,7 +508,10 @@ infer_family() {
     co2-*) printf 'co2\n' ;;
     soil-*) printf 'soil\n' ;;
     lux-*) printf 'lux\n' ;;
-    aht-*|avpd-*|apvpd-*|apvpd_aht-*) printf 'avpd\n' ;;
+    aht-*) printf 'aht\n' ;;
+    apvpd_aht-*) printf 'apvpd_aht\n' ;;
+    avpd-*) printf 'avpd\n' ;;
+    apvpd-*) printf 'apvpd\n' ;;
     *) printf 'avpd\n' ;;
   esac
 }
@@ -712,7 +733,9 @@ validate_integration_sources() {
     "$SKIN_SOURCE/admin/index.html" \
     "$SKIN_SOURCE/admin/admin.css" \
     "$SKIN_SOURCE/admin/admin.js" \
+    "$ROOT_DIR/nodus-weewx-discovery.service" \
     "$USER_SOURCE/nodus_identity.py" \
+    "$USER_SOURCE/nodus_discovery.py" \
     "$USER_SOURCE/nodus_admin.py" \
     "$USER_SOURCE/nodus_switch.py" \
     "$USER_SOURCE/nodus_automation.py" \
@@ -751,6 +774,8 @@ install_integration_files() {
   run_root install -o root -g weewx -m 0644 \
     "$USER_SOURCE/nodus_identity.py" "$WEEWX_USER_ROOT/nodus_identity.py"
   run_root install -o root -g weewx -m 0644 \
+    "$USER_SOURCE/nodus_discovery.py" "$WEEWX_USER_ROOT/nodus_discovery.py"
+  run_root install -o root -g weewx -m 0644 \
     "$USER_SOURCE/nodus_admin.py" "$WEEWX_USER_ROOT/nodus_admin.py"
   run_root install -o root -g weewx -m 0644 \
     "$USER_SOURCE/nodus_switch.py" "$WEEWX_USER_ROOT/nodus_switch.py"
@@ -764,6 +789,32 @@ install_integration_files() {
     "$SKIN_SOURCE/style.css" "$html_root/style.css"
   run_root install -o weewx -g weewx -m 0664 \
     "$SKIN_SOURCE/dashboard.js" "$html_root/dashboard.js"
+}
+
+disable_discovery_managed_instances() {
+  local registry="${1:-/var/lib/weewx/nodus_discovery.json}"
+  [[ -r "$registry" ]] || return 0
+  local service=""
+  while IFS= read -r service; do
+    [[ "$service" =~ ^weewx@nodus-[A-Za-z0-9_.-]+[.]service$ ]] || continue
+    log "Disabling obsolete discovery-managed instance: $service"
+    run_root systemctl disable --now "$service" || true
+  done < <(python3 - "$registry" <<'PY'
+import json
+import re
+import sys
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as handle:
+        devices = (json.load(handle).get("devices") or {}).values()
+except (OSError, ValueError):
+    devices = ()
+for entry in devices:
+    service = str((entry or {}).get("service") or "")
+    if re.fullmatch(r"weewx@nodus-[A-Za-z0-9_.-]+[.]service", service):
+        print(service)
+PY
+)
 }
 
 main() {
@@ -880,7 +931,7 @@ main() {
     prompt_value "MQTT base topic" "${base_topic:-nodus}"
     base_topic="${PROMPT_VALUE%/}"
     family="${family:-$(infer_family "$device_id")}"
-    prompt_value "Sensor family (avpd, co2, aqi, or soil; lux requires manual setup)" "$family"
+    prompt_value "Sensor family (aht, avpd, apvpd, apvpd_aht, co2, aqi, or soil; lux requires manual setup)" "$family"
     family="${PROMPT_VALUE,,}"
     prompt_value "MQTT subscriber username" "$username"
     username="$PROMPT_VALUE"
@@ -905,7 +956,8 @@ main() {
       ca_certs="$PROMPT_VALUE"
     fi
   fi
-  [[ "$family" =~ ^(avpd|co2|aqi|soil)$ ]] || die "Unsupported sensor family: $family"
+  [[ "$family" =~ ^(aht|avpd|apvpd|apvpd_aht|co2|aqi|soil)$ ]] || \
+    die "Unsupported sensor family: $family"
   valid_coordinate "$latitude" latitude || die "Invalid latitude: $latitude"
   valid_coordinate "$longitude" longitude || die "Invalid longitude: $longitude"
   [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 )) || \
@@ -941,8 +993,8 @@ main() {
   log "  database:   /var/lib/weewx/$database_name"
   log "  report:     $html_root"
   log "  MQTT topic: $topic"
-  log "  dashboard:  http://<this-host>/weewx/nodus/"
-  log "  setup UI:   http://<this-host>/weewx/nodus/setup/"
+  log "  discovery:  $DISCOVERY_SERVICE (registry only)"
+  log "  MQTT watch: ${base_topic}/+/meta"
   if ! ask_yes_no "Apply this installation?" no; then
     log "Installation cancelled. Nothing was changed."
     exit 0
@@ -966,33 +1018,78 @@ main() {
   if systemctl is-active --quiet "$target_service"; then
     INSTALL_SERVICE_WAS_ACTIVE=1
   fi
+  if systemctl is-active --quiet "$DISCOVERY_SERVICE"; then
+    DISCOVERY_SERVICE_WAS_ACTIVE=1
+  fi
   if [[ -e "$target_config" ]]; then
     INSTALL_BACKUP_CONFIG="${target_config}.${stamp}.bak"
     run_root cp -a "$target_config" "$INSTALL_BACKUP_CONFIG"
   fi
+  if [[ -e "$DISCOVERY_CONFIG" ]]; then
+    INSTALL_BACKUP_DISCOVERY_CONFIG="${DISCOVERY_CONFIG}.${stamp}.bak"
+    run_root cp -a "$DISCOVERY_CONFIG" "$INSTALL_BACKUP_DISCOVERY_CONFIG"
+  fi
   run_root systemctl stop "$target_service" || true
+  run_root systemctl stop "$DISCOVERY_SERVICE" || true
   INSTALL_ROLLBACK_NEEDED=1
   run_root install -d -o root -g weewx -m 0775 \
-    /etc/weewx "$WEEWX_USER_ROOT"
+    /etc/weewx "$WEEWX_USER_ROOT" /var/lib/weewx
   run_root install -o root -g weewx -m 0660 "$INSTALL_TEMP_CONFIG" "$target_config"
 
   ensure_paho
   ensure_astral
   install_integration_files "$html_root"
   ensure_mqttsubscribe "$target_config"
-  # The extension installer may merge defaults into the target. Reinstall the
-  # deterministic Nodus configuration after the extension files are present.
   run_root install -o root -g weewx -m 0660 "$INSTALL_TEMP_CONFIG" "$target_config"
+  run_root install -o root -g root -m 0644 \
+    "$ROOT_DIR/nodus-weewx-discovery.service" \
+    "/etc/systemd/system/$DISCOVERY_SERVICE"
+
+  local discovery_temp=""
+  discovery_temp="$(mktemp)"
+  python3 - "$discovery_temp" "$broker" "$port" "$base_topic" "$username" \
+    "$password" "$tls_enable" "$ca_certs" <<'PY'
+import json
+import sys
+
+(path, broker, port, base_topic, username, password, use_tls,
+ ca_certs) = sys.argv[1:]
+document = {
+    "schema": "nodus-weewx-discovery-config/v1",
+    "broker": broker,
+    "port": int(port),
+    "base_topic": base_topic,
+    "username": username,
+    "password": password,
+    "use_tls": use_tls.lower() == "true",
+    "ca_certs": ca_certs,
+    "registry_file": "/var/lib/weewx/nodus_discovery.json",
+    "max_devices": 32,
+}
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(document, handle, indent=2, sort_keys=True)
+    handle.write("\n")
+PY
+  run_root install -o root -g weewx -m 0640 "$discovery_temp" "$DISCOVERY_CONFIG"
+  INSTALL_DISCOVERY_CONFIG_TOUCHED=1
+  rm -f "$discovery_temp"
 
   log "Validating MQTTSubscribe driver configuration."
   validate_mqttsubscribe_driver "$target_config"
-
   log "Generating the Nodus dashboard with the installed skin."
   if ! (cd /tmp && run_weewx weectl report run Nodus --config="$target_config"); then
     log "WARNING: initial dashboard generation failed; WeeWX will retry at the next archive interval."
   fi
+  run_root systemctl daemon-reload
+  if [[ -e /var/lib/weewx/nodus_discovery.json ]]; then
+    run_root chown weewx:weewx /var/lib/weewx/nodus_discovery.json
+    run_root chmod 0664 /var/lib/weewx/nodus_discovery.json
+  fi
+  disable_discovery_managed_instances
   run_root systemctl enable --now "$target_service"
+  run_root systemctl enable --now "$DISCOVERY_SERVICE"
   run_root systemctl status "$target_service" --no-pager -l || true
+  run_root systemctl status "$DISCOVERY_SERVICE" --no-pager -l || true
   INSTALL_ROLLBACK_NEEDED=0
 
   log ""
@@ -1000,9 +1097,9 @@ main() {
   log "Configuration: $target_config"
   log "Service log:  sudo journalctl -u $target_service -f"
   log "Report output: $html_root/"
-  log "Dashboard:    http://<this-host>/weewx/nodus/"
-  log "Setup UI:     http://<this-host>/weewx/nodus/setup/"
-  log "If no archive record exists yet, the first report appears after WeeWX archives one."
+  log "Discovery registry: /var/lib/weewx/nodus_discovery.json"
+  log "Discovery log: sudo journalctl -u $DISCOVERY_SERVICE -f"
+  log "Discovery records WeeWX-profile devices; it does not create services."
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

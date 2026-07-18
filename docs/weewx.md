@@ -24,9 +24,13 @@ Nodus sensor
   -> sensor data, retained /meta and /meta/switch, switch state/events
   -> MQTTSubscribe service or driver
   -> WeeWX loop/archive records
-  -> /var/lib/weewx/nodus.sdb for an automated Nodus instance
+  -> /var/lib/weewx/nodus.sdb
   -> Nodus Cheetah report + retained identity/switch status extensions
   -> /var/www/html/weewx/nodus/index.html
+
+Retained nodus/+/meta
+  -> registry-only discovery watcher
+  -> /var/lib/weewx/nodus_discovery.json
 ```
 
 The `weewx` profile does not publish a separate WeeWX payload. It publishes the
@@ -81,52 +85,54 @@ The installer:
 2. If WeeWX is absent, asks before adding the official WeeWX apt repository
    and installing the package. Answering no exits without changing the host.
 3. Examines the configured `[Station]` identity for useful defaults.
-4. Preserves the primary WeeWX configuration and creates an independent Nodus
-   instance at `/etc/weewx/nodus.conf`.
+4. Preserves the primary WeeWX configuration and creates the independent
+   `/etc/weewx/nodus.conf` configuration managed by `weewx@nodus.service`.
 5. Installs `python3-paho-mqtt`, `python3-astral`, and MQTTSubscribe 3.1.1 only
    when missing.
 6. Installs the Nodus archive schema, unit registration, retained-MQTT identity
    extension, switch status/event collector, authenticated setup UI,
    and Nodus skin from the clone.
-7. Validates MQTTSubscribe before enabling and starting the selected service.
+7. Validates the selected Nodus MQTTSubscribe configuration before replacing
+   and starting `weewx@nodus.service`.
+8. Installs a separate registry-only discovery watcher for retained
+   `nodus/+/meta` messages.
 
-The resulting layout is deliberately predictable: `/etc/weewx/nodus.conf`,
+The operational Nodus layout remains `/etc/weewx/nodus.conf`,
 `weewx@nodus.service`, `/var/lib/weewx/nodus.sdb`, and
-`/var/www/html/weewx/nodus`. The installer does not modify or stop the primary
-`/etc/weewx/weewx.conf` or `weewx.service`. This follows WeeWX's templated
-`weewx@.service` model for multiple instances.
+`/var/www/html/weewx/nodus/`. The installer does not modify or stop the primary
+`/etc/weewx/weewx.conf` or `weewx.service`.
 
-Before starting the service, the installer runs the Nodus report once from
-`/tmp` so the dashboard and its gear destinations immediately reflect the
-installed skin without competing with the long-running API listener. If no
-archive record exists yet, normal WeeWX report generation retries after the
-first archive interval.
+`nodus-weewx-discovery.service` runs as the unprivileged `weewx` account and
+maintains `/var/lib/weewx/nodus_discovery.json`. It records validated retained
+metadata only. It cannot create WeeWX configurations, allocate setup ports,
+start services, or change the active Nodus instance. Registration is bounded
+to 32 devices. The registry is informational and does not turn the limited
+single-device WeeWX integration into a Sensorius replacement.
 
-The installer prompts for the station coordinates, altitude, MQTT broker,
-Nodus `device_id`, sensor family, MQTT credentials, and TLS settings. It
-backs up an existing Nodus configuration with a timestamped `.bak` suffix
-before replacing it. If dependency installation, validation, or service
-startup fails, the installer restores the prior Nodus configuration and
-restarts the prior Nodus service when it was active. Broker passwords are
-written only to the root/weewx-readable configuration and are not printed in
-the installation summary.
+If upgrading from the short-lived discovery-provisioning implementation, the
+installer disables any `weewx@nodus-<device>.service` units recorded in the old
+registry before restoring `weewx@nodus.service`. It preserves their generated
+configuration and archive files for inspection; it does not delete data.
 
-On the first confirmed installation, the answers are saved in
-`integrations/weewx/<device_id>.toml` with mode `0600`. Later runs detect the
-profile from the installed Nodus configuration, or from the only profile in
-that directory, and reuse it without repeating the questions. Use
-`--update-profile` to prompt with saved values as defaults and rewrite it. If
-the directory contains multiple profiles, select one with
-`--device-id <device_id>`.
+The installer prompts for the selected Nodus device ID and sensor family plus
+station coordinates, altitude, MQTT broker access, credentials, and TLS
+settings. The same broker settings are written to the root/weewx-readable
+`/etc/weewx/nodus-discovery.json`; credentials are not printed in the summary.
 
-The profile contains the MQTT subscriber password in plain text because the
-installer must render it into the WeeWX configuration. Keep it private and do
-not commit or broadly distribute it.
+Discovery accepts only valid retained `nodus-meta/v1` messages whose
+`profile.active_profile` is `weewx` and whose topic matches the advertised
+`device_id`. It uses `sensor.hardware` to select the current stanza family;
+newer metadata may additionally provide a logical `sensor.device` hint. Topic
+and identifier values are constrained before they can enter the registry.
 
 The automated canonical mapping currently covers AHT/AVPD/APVPD environmental
 metrics, CO2, AQI, and soil. APVPD plant-side metrics and lux-only observations
 require a manual schema/skin extension; the installer does not silently map
 them to unrelated WeeWX observations.
+
+AHT is a distinct mapping and does not include `Baro-Pressure`. AVPD/APVPD and
+AQI mappings include barometric pressure when their concrete hardware provides
+it.
 
 Before making changes, config detection can be checked independently:
 
@@ -142,11 +148,13 @@ without changing the system:
 ./integrations/weewx/install_nodus_weewx.sh --dry-run
 ```
 
-After installation, inspect the Nodus service and its first records:
+After installation, inspect the operational Nodus service, passive discovery
+watcher, and first archive records:
 
 ```bash
+sudo systemctl status nodus-weewx-discovery --no-pager -l
+sudo journalctl -u nodus-weewx-discovery --since '10 minutes ago' --no-pager -l
 sudo systemctl status weewx@nodus --no-pager -l
-sudo journalctl -u weewx@nodus --since '10 minutes ago' --no-pager -l
 sqlite3 /var/lib/weewx/nodus.sdb \
   "select datetime(max(dateTime),'unixepoch','localtime') from archive;"
 ```
@@ -661,8 +669,8 @@ unit, so automation thresholds are entered and reviewed in the same units as
 the archived observation. Calibration fields likewise show the unit expected
 by the device.
 
-The setup server runs inside the separate `weewx@nodus` process as the
-unprivileged `weewx` account. It cannot edit `/etc/weewx/nodus.conf`. Automation
+The setup server runs inside `weewx@nodus.service` as the unprivileged `weewx`
+account. It cannot edit `/etc/weewx/nodus.conf`. Automation
 rules are validated and atomically stored in
 `/var/lib/weewx/nodus_automation_rules.json`; the automation service reloads
 them within five seconds without a WeeWX restart. Previous-state action
@@ -676,9 +684,10 @@ changes use non-retained MQTT commands and are reported successful only after
 the correlated Nodus acknowledgement and result.
 
 The setup HTML is installed below the generated dashboard. Its live API is
-provided by the `weewx@nodus` process on TCP port 8767 with cross-origin access
-from the dashboard host. This limited LAN UI is intentionally unauthenticated;
-do not expose port 8767 or the Nodus dashboard to an untrusted network.
+provided by `weewx@nodus.service` on port 8767. The discovery watcher does not
+open or allocate setup ports. This limited LAN UI is intentionally
+unauthenticated; do not expose port 8767 or the Nodus dashboard to an untrusted
+network.
 
 The MQTT account configured for the Nodus WeeWX instance needs these ACLs for
 the setup UI in addition to its normal read subscriptions:
@@ -695,7 +704,7 @@ If the setup server does not start, inspect:
 
 ```bash
 sudo journalctl -u weewx@nodus --since '10 minutes ago' --no-pager -l
-ss -ltn | grep ':8767'
+sudo python3 -m json.tool /var/lib/weewx/nodus_discovery.json
 ```
 
 After an upgrade, generate the report from a directory readable by the `weewx`
@@ -703,7 +712,8 @@ account:
 
 ```bash
 cd /tmp
-sudo -u weewx weectl report run Nodus --config=/etc/weewx/nodus.conf
+sudo -u weewx weectl report run Nodus \
+  --config=/etc/weewx/nodus.conf
 ```
 
 ## Switch automations
@@ -838,7 +848,7 @@ After enabling or editing rules, restart WeeWX and inspect the service log:
 ```bash
 sudo systemctl restart weewx@nodus
 sudo journalctl -u weewx@nodus --since '10 minutes ago' --no-pager -l
-sudo -u weewx test -r /var/lib/weewx/nodus_automation.json
+sudo -u weewx test -r /var/lib/weewx/nodus_automation-aht-va41ka.json
 ```
 
 Use `weewx.service` instead for an installation that uses the main instance.
@@ -864,7 +874,7 @@ Validate service-mode configuration:
 ```bash
 sudo -u weewx env PYTHONPATH=/usr/share/weewx \
   python3 "$MQTTSUB" configure service \
-  --validate --conf /etc/weewx/nodus.conf
+  --validate --conf /etc/weewx/nodus-aht-va41ka.conf
 ```
 
 Optionally run the MQTTSubscribe simulator while the WeeWX service is stopped:
@@ -872,7 +882,7 @@ Optionally run the MQTTSubscribe simulator while the WeeWX service is stopped:
 ```bash
 sudo -u weewx env PYTHONPATH=/usr/share/weewx \
   python3 "$MQTTSUB" simulate service \
-  --conf /etc/weewx/nodus.conf
+  --conf /etc/weewx/nodus-aht-va41ka.conf
 ```
 
 Start WeeWX and inspect the complete log:
@@ -890,7 +900,7 @@ directory is not traversable by `weewx`:
 ```bash
 cd /tmp
 sudo -u weewx weectl report run Nodus \
-  --config=/etc/weewx/nodus.conf
+  --config=/etc/weewx/nodus-aht-va41ka.conf
 ```
 
 The normal report cycle will also regenerate it after new archive records.
@@ -922,7 +932,7 @@ ls -l /var/www/html/weewx/nodus/micro_*.png
 Open:
 
 ```text
-http://<host>/weewx/nodus/
+http://<host>/weewx/nodus/aht-va41ka/
 ```
 
 The page reloads every 60 seconds. The centered `Data Updated` time advances
@@ -943,12 +953,12 @@ mosquitto_sub -h <mqtt-host> \
   -t 'nodus/aht-va41ka/meta' -C 1 -v
 cd /tmp
 sudo -u weewx weectl report run Nodus \
-  --config=/etc/weewx/nodus.conf
+  --config=/etc/weewx/nodus-aht-va41ka.conf
 sudo journalctl -u weewx@nodus --since '10 minutes ago' --no-pager -l | \
   grep -i 'Nodus identity'
 ls -l /var/lib/weewx/nodus_identity_*.json
 grep -n -A4 'device-identity' \
-  /var/www/html/weewx/nodus/index.html
+  /var/www/html/weewx/nodus/aht-va41ka/index.html
 ```
 
 If MQTTSubscribe has no exact `/data` topic or has several, set the
@@ -966,7 +976,7 @@ mosquitto_sub -h <mqtt-host> \
 
 sudo journalctl -u weewx@nodus --since '30 minutes ago' --no-pager -l
 
-sqlite3 /var/lib/weewx/weewx.sdb \
+sqlite3 /var/lib/weewx/nodus-aht-va41ka.sdb \
   "select datetime(max(dateTime),'unixepoch','localtime') from archive;"
 ```
 
@@ -990,9 +1000,9 @@ registered group.
 Compare the newest archive timestamp with the generated HTML modification time:
 
 ```bash
-sqlite3 /var/lib/weewx/weewx.sdb \
+sqlite3 /var/lib/weewx/nodus-aht-va41ka.sdb \
   "select datetime(max(dateTime),'unixepoch','localtime') from archive;"
-stat /var/www/html/weewx/nodus/index.html
+stat /var/www/html/weewx/nodus/aht-va41ka/index.html
 ```
 
 If the database is current but HTML is old, run the report manually and inspect
@@ -1005,7 +1015,7 @@ Run it from `/tmp`:
 ```bash
 cd /tmp
 sudo -u weewx weectl report run Nodus \
-  --config=/etc/weewx/nodus.conf
+  --config=/etc/weewx/nodus-aht-va41ka.conf
 ```
 
 ### A metric card is missing
