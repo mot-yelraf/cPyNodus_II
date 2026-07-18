@@ -1,6 +1,7 @@
 "use strict";
 
 const nodusApiOrigin = `${location.protocol}//${location.hostname}:8767`;
+const nodusManagerOrigin = `${location.protocol}//${location.hostname}:8768`;
 const nodusGuardUntil = {};
 
 function nodusStateElement(channelId) {
@@ -41,6 +42,34 @@ async function nodusRefreshSwitches() {
     (status.switch?.channels || []).forEach(nodusApplyChannel);
   } catch (_error) {
     // The archived dashboard remains readable when the live helper is offline.
+  }
+}
+
+async function nodusRefreshManagerState() {
+  const identity = document.getElementById("device-manager-state");
+  document.querySelectorAll(".system-setup-gear").forEach(link => {
+    link.href = `${nodusManagerOrigin}/system/`;
+  });
+  if (!identity) return;
+  try {
+    const response = await fetch(`${nodusManagerOrigin}/api/system`, {cache: "no-store"});
+    const data = await response.json();
+    const device = (data.devices || []).find(item => item.device_id === identity.dataset.deviceId);
+    const dot = identity.querySelector(".device-status-dot");
+    dot.classList.toggle("online", Boolean(device?.online));
+    dot.title = device?.online ? "Online" : "Offline";
+    const badges = document.getElementById("device-manager-badges");
+    badges.replaceChildren();
+    [[device?.installed, "Installed", "installed"], [device?.discovered, "Discovered", "discovered"]]
+      .forEach(([show, label, kind]) => {
+        if (!show) return;
+        const badge = document.createElement("span");
+        badge.className = `device-manager-badge ${kind}`;
+        badge.textContent = label;
+        badges.appendChild(badge);
+      });
+  } catch (_error) {
+    // The generated report remains usable when the persistent manager is unavailable.
   }
 }
 
@@ -383,6 +412,7 @@ document.addEventListener("DOMContentLoaded", () => {
     element.addEventListener("click", nodusToggle);
   });
   nodusRefreshSwitches();
+  nodusRefreshManagerState();
   nodusRenderAstronomy();
   document.querySelectorAll(".moon-view-button").forEach(button => {
     button.addEventListener("click", () => {
@@ -411,4 +441,5 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
   window.setInterval(nodusRefreshSwitches, 5000);
+  window.setInterval(nodusRefreshManagerState, 15000);
 });

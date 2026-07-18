@@ -29,8 +29,9 @@ Nodus sensor
   -> /var/www/html/weewx/nodus/index.html
 
 Retained nodus/+/meta
-  -> registry-only discovery watcher
+  -> persistent Nodus WeeWX manager
   -> /var/lib/weewx/nodus_discovery.json
+  -> exact device install/remove actions
 ```
 
 The `weewx` profile does not publish a separate WeeWX payload. It publishes the
@@ -94,8 +95,8 @@ The installer:
    and Nodus skin from the clone.
 7. Validates the selected Nodus MQTTSubscribe configuration before replacing
    and starting `weewx@nodus.service`.
-8. Installs a separate registry-only discovery watcher for retained
-   `nodus/+/meta` messages.
+8. Installs the persistent manager and its root-isolated systemd action path
+   for discovery, live/offline state, explicit removal, and reprovisioning.
 
 The operational Nodus layout remains `/etc/weewx/nodus.conf`,
 `weewx@nodus.service`, `/var/lib/weewx/nodus.sdb`, and
@@ -103,11 +104,23 @@ The operational Nodus layout remains `/etc/weewx/nodus.conf`,
 `/etc/weewx/weewx.conf` or `weewx.service`.
 
 `nodus-weewx-discovery.service` runs as the unprivileged `weewx` account and
-maintains `/var/lib/weewx/nodus_discovery.json`. It records validated retained
-metadata only. It cannot create WeeWX configurations, allocate setup ports,
-start services, or change the active Nodus instance. Registration is bounded
-to 32 devices. The registry is informational and does not turn the limited
-single-device WeeWX integration into a Sensorius replacement.
+maintains `/var/lib/weewx/nodus_discovery.json`, the local system-settings
+TOML, the port-8768 system UI, and live MQTT receipt times. Privileged file and
+service changes are performed only by `nodus-weewx-manager-action.service`,
+which consumes a validated fixed-path request. Registration is bounded to 32
+devices. Only one device is operationally installed in
+`weewx@nodus.service` at a time; other valid devices can remain discovered.
+Automatic reprovisioning is limited to the sensor family used to generate the
+managed WeeWX template, preventing a differently shaped discovered payload
+from being archived under the wrong observation mapping.
+
+Removing an installed device clears exact retained MQTT topics learned for its
+`device_id`, advertised `switch_id`, and channel IDs, stops the operational
+service, removes `/etc/weewx/nodus.conf`, deletes the Nodus archive and
+host-side status/rule files, and removes generated device output. It never
+resets or writes to the physical Nodus. When that device reconnects, its fresh
+metadata and live traffic recreate the managed configuration and restart
+`weewx@nodus.service` when automatic provisioning is enabled.
 
 If upgrading from the short-lived discovery-provisioning implementation, the
 installer disables any `weewx@nodus-<device>.service` units recorded in the old
@@ -124,6 +137,12 @@ Discovery accepts only valid retained `nodus-meta/v1` messages whose
 `device_id`. It uses `sensor.hardware` to select the current stanza family;
 newer metadata may additionally provide a logical `sensor.device` hint. Topic
 and identifier values are constrained before they can enter the registry.
+
+The System Settings WeeWX information block uses a desktop 5-5-4 card layout.
+It resolves the configured MQTT broker to IPv4 when host DNS permits. Astral
+does not derive an IANA time zone from latitude and longitude, so the manager
+reports the host's configured `TZ`, `/etc/timezone`, or `/etc/localtime` zone,
+with the host time-zone abbreviation as a final fallback.
 
 The automated canonical mapping currently covers AHT/AVPD/APVPD environmental
 metrics, CO2, AQI, and soil. APVPD plant-side metrics and lux-only observations
@@ -148,11 +167,12 @@ without changing the system:
 ./integrations/weewx/install_nodus_weewx.sh --dry-run
 ```
 
-After installation, inspect the operational Nodus service, passive discovery
-watcher, and first archive records:
+After installation, inspect the operational Nodus service, persistent manager,
+action path, and first archive records:
 
 ```bash
 sudo systemctl status nodus-weewx-discovery --no-pager -l
+sudo systemctl status nodus-weewx-manager-action.path --no-pager -l
 sudo journalctl -u nodus-weewx-discovery --since '10 minutes ago' --no-pager -l
 sudo systemctl status weewx@nodus --no-pager -l
 sqlite3 /var/lib/weewx/nodus.sdb \
@@ -441,6 +461,7 @@ integrations/weewx/Nodus/
   skin.conf
   style.css
   dashboard.js
+  nodus-favicon.svg
   admin/index.html
   admin/admin.css
   admin/admin.js
@@ -467,6 +488,7 @@ scp integrations/weewx/Nodus/index.html.tmpl \
     integrations/weewx/Nodus/skin.conf \
     integrations/weewx/Nodus/style.css \
     integrations/weewx/Nodus/dashboard.js \
+    integrations/weewx/Nodus/nodus-favicon.svg \
     integrations/weewx/bin/user/nodus_identity.py \
     integrations/weewx/bin/user/nodus_astronomy.py \
     integrations/weewx/bin/user/nodus_admin.py \
@@ -491,6 +513,7 @@ ssh <user>@<host> \
    sudo install -m 0644 /tmp/Nodus/skin.conf /etc/weewx/skins/Nodus/ &&
    sudo install -m 0644 /tmp/Nodus/style.css /etc/weewx/skins/Nodus/ &&
    sudo install -m 0644 /tmp/Nodus/dashboard.js /etc/weewx/skins/Nodus/ &&
+   sudo install -m 0644 /tmp/Nodus/nodus-favicon.svg /etc/weewx/skins/Nodus/ &&
    sudo install -m 0644 /tmp/Nodus/nodus_identity.py /etc/weewx/bin/user/ &&
    sudo install -m 0644 /tmp/Nodus/nodus_astronomy.py /etc/weewx/bin/user/ &&
    sudo install -m 0644 /tmp/Nodus/nodus_admin.py /etc/weewx/bin/user/ &&
@@ -507,8 +530,9 @@ If the Raspberry Pi already has a customized Nodus `style.css`, back it
 up and omit the final `style.css` install command unless the repository default
 style is wanted.
 
-`style.css` and `dashboard.js` are `copy_once` skin assets. The supplied HTML
-uses versioned asset URLs so browsers fetch the matching files after an
+`style.css`, `dashboard.js`, and `nodus-favicon.svg` are `copy_once` skin
+assets. The supplied HTML uses versioned asset URLs so browsers fetch the
+matching files after an
 upgrade. When updating an already-generated Nodus report manually, also
 replace its published copies so the new layout takes effect immediately:
 
@@ -686,7 +710,21 @@ Automations, and Switch Info. The UI provides:
 - switch location and per-channel labels; and
 - bounded host-side switch rules with metric, time/day, repeating timer,
   sunrise/sunset, switch-state, AND/OR, hysteresis, dwell, delay, and
-  multi-switch action support.
+multi-switch action support.
+
+The dashboard title is `Nodus AI`. Its adjacent system gear opens the
+persistent manager at `http://<weewx-host>:8768/system/`. That sidebar has only
+System Settings and Remove Device. System Settings are stored separately in
+`/var/lib/weewx/nodus_system.toml` and show the active WeeWX host, broker,
+station, database, service, and output paths. The dashboard shows a live
+online/offline dot before `Device:` and Installed/Discovered badges after the
+device ID. Online state requires recent non-retained MQTT traffic.
+
+Remove Device lists every installed or discovered device explicitly. Removal
+requires both a device selection and the independent confirmation checkbox.
+The pending/success/error notification reports the same way as other saves.
+An offline removed device is discoverable and installable again after it is
+powered on and republishes its metadata.
 
 Metric selectors show the canonical unit used by the separate Nodus WeeWX
 instance. The ON/OFF threshold labels and saved-rule summaries repeat that
@@ -714,11 +752,12 @@ MQTT save state and changes to a confirmed or failed notification when the
 device response arrives. Automation notifications are explicitly identified
 as host-side WeeWX saves because automation rules are not Nodus configuration.
 
-The setup HTML is installed below the generated dashboard. Its live API is
-provided by `weewx@nodus.service` on port 8767. The discovery watcher does not
-open or allocate setup ports. This limited LAN UI is intentionally
-unauthenticated; do not expose port 8767 or the Nodus dashboard to an untrusted
-network.
+The device setup HTML is installed below the generated dashboard and its live
+API is provided by `weewx@nodus.service` on port 8767. The persistent system
+UI is provided by the manager on port 8768, including while no device is
+installed. These limited LAN UIs are intentionally
+unauthenticated; do not expose ports 8767/8768 or the Nodus dashboard to an
+untrusted network.
 
 The MQTT account configured for the Nodus WeeWX instance needs these ACLs for
 the setup UI in addition to its normal read subscriptions:

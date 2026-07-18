@@ -1,0 +1,12 @@
+[Unit]
+Description=Apply one validated Nodus WeeWX manager action
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/bin/python3 /etc/weewx/bin/user/nodus_manager_helper.py --config /etc/weewx/nodus-discovery.json
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=false

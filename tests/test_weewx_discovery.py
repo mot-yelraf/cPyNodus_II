@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import time
 from pathlib import Path
 
 MODULE_PATH = (
@@ -47,9 +48,7 @@ def _meta(device_id="aht-yuk0nv", device="aht", hardware="AHTx0"):
 def test_discovery_accepts_only_matching_weewx_retained_metadata():
     module = _load_module()
 
-    descriptor = module.parse_meta(
-        _meta(), "nodus/aht-yuk0nv/meta", "nodus"
-    )
+    descriptor = module.parse_meta(_meta(), "nodus/aht-yuk0nv/meta", "nodus")
 
     assert descriptor["device_id"] == "aht-yuk0nv"
     assert descriptor["family"] == "aht"
@@ -100,9 +99,7 @@ def test_manager_records_devices_without_provisioning_services(tmp_path):
     saved = json.loads(registry.read_text())
     assert first_entry["device_id"] == "aht-yuk0nv"
     assert set(saved["devices"]) == {"aht-yuk0nv", "aqi-other"}
-    assert saved["devices"]["aht-yuk0nv"]["data_topic"] == (
-        "nodus/aht-yuk0nv/data"
-    )
+    assert saved["devices"]["aht-yuk0nv"]["data_topic"] == ("nodus/aht-yuk0nv/data")
     assert "service" not in saved["devices"]["aht-yuk0nv"]
     assert "config" not in saved["devices"]["aht-yuk0nv"]
     assert "admin_port" not in saved["devices"]["aht-yuk0nv"]
@@ -154,3 +151,91 @@ def test_discovery_systemd_unit_runs_unprivileged():
     assert "Group=weewx" in unit
     assert "NoNewPrivileges=true" in unit
     assert "provision isolated WeeWX instances" not in unit
+
+
+def test_system_settings_round_trip_in_host_toml(tmp_path):
+    module = _load_module()
+    path = tmp_path / "nodus_system.toml"
+
+    module.write_system_settings(
+        path,
+        {
+            "title": "Nodus Automation Instrumentorum",
+            "online_timeout_seconds": 210,
+            "auto_provision": False,
+        },
+    )
+
+    assert module.read_system_settings(path) == {
+        "title": "Nodus Automation Instrumentorum",
+        "online_timeout_seconds": 210,
+        "auto_provision": False,
+    }
+
+
+def test_manager_resolves_broker_ipv4_and_prefers_configured_timezone(monkeypatch):
+    module = _load_module()
+    monkeypatch.setattr(
+        module.socket,
+        "getaddrinfo",
+        lambda *_args: [
+            (
+                module.socket.AF_INET,
+                module.socket.SOCK_STREAM,
+                6,
+                "",
+                ("10.0.0.248", 0),
+            )
+        ],
+    )
+
+    assert module._broker_ipv4("mqtt.local") == "10.0.0.248"
+    assert module._host_timezone("America/Denver") == "America/Denver"
+
+
+def test_manager_removes_exact_device_switch_and_channel_retained_topics(tmp_path):
+    module = _load_module()
+    registry_path = tmp_path / "registry.json"
+    discovery = module.DiscoveryManager({"registry_file": str(registry_path)})
+    discovery.registry["devices"]["aht-va41ka"] = {
+        "device_id": "aht-va41ka",
+        "switch_id": "switch-va41ka",
+        "data_topic": "nodus/aht-va41ka/data",
+        "switch_meta_topic": "nodus/aht-va41ka/meta/switch",
+        "heartbeat_topic": "nodus/aht-va41ka/status/heartbeat",
+    }
+    discovery._save_registry()
+
+    published = []
+
+    class Result:
+        rc = 0
+
+        def wait_for_publish(self, timeout=None):
+            return timeout
+
+        def is_published(self):
+            return True
+
+    class Client:
+        def publish(self, topic, payload, qos, retain):
+            published.append((topic, payload, qos, retain))
+            return Result()
+
+    manager = module.NodusManager.__new__(module.NodusManager)
+    manager.settings = {"base_topic": "nodus"}
+    manager.discovery = discovery
+    manager.discovery_service = type("Service", (), {"client": Client()})()
+    manager.installed_file = str(tmp_path / "installed.json")
+    manager.live_seen = {"aht-va41ka": time.time()}
+    manager.topic_ids = {"aht-va41ka": {"nodus/S1-va41ka/state"}}
+
+    result = manager.remove_devices(["aht-va41ka"])
+
+    topics = {item[0] for item in published}
+    assert "nodus/aht-va41ka/meta" in topics
+    assert "nodus/switch-va41ka/meta" in topics
+    assert "nodus/S1-va41ka/state" in topics
+    assert all(item[1:] == ("", 0, True) for item in published)
+    assert result["results"]["aht-va41ka"]["installed"] is False
+    assert discovery.registry["devices"] == {}

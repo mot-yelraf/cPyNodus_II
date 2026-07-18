@@ -1,5 +1,5 @@
 [Unit]
-Description=Maintain the registry of WeeWX-profile Nodus devices
+Description=Manage WeeWX-profile Nodus discovery, setup, and liveness
 After=network-online.target
 Wants=network-online.target
 

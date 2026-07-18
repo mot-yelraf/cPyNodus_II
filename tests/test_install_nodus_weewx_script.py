@@ -30,8 +30,7 @@ def test_installer_is_valid_bash_and_has_help():
     assert "Skyfield 1.54" in output
     assert "--inspect-config PATH" in output
     assert "Preserves the primary WeeWX instance" in output
-    assert "registry-only watcher" in output
-    assert "Never creates or manages a WeeWX service" in output
+    assert "persistent Nodus manager" in output
     assert "--device-id ID" in output
     assert "--update-profile" in output
 
@@ -92,19 +91,18 @@ resolve_profile_device_id
     assert profile.stat().st_mode & 0o777 == 0o600
 
 
-def test_installer_keeps_discovery_registry_only():
+def test_installer_configures_persistent_manager_and_action_path():
     script = INSTALLER.read_text(encoding="utf-8")
 
     assert 'local target_service="weewx@nodus.service"' in script
     assert 'local target_config="/etc/weewx/nodus.conf"' in script
     assert 'run_root systemctl enable --now "$DISCOVERY_SERVICE"' in script
-    assert (
-        "Discovery records WeeWX-profile devices; it does not create services."
-        in script
-    )
-    assert "nodus-template.conf" not in script
-    assert 'instances:  /etc/weewx/nodus-<device_id>.conf' not in script
-    assert 'disable "$target_service"' not in script
+    assert 'run_root systemctl enable --now "$MANAGER_ACTION_PATH"' in script
+    assert "/etc/weewx/nodus-managed.conf.tmpl" in script
+    assert "/var/lib/weewx/nodus_system.toml" in script
+    assert "__NODUS_DATA_TOPIC__" in script
+    assert '"$SKIN_SOURCE/nodus-favicon.svg"' in script
+    assert '"$html_root/nodus-favicon.svg"' in script
 
 
 def test_installer_disables_only_registry_managed_obsolete_instances(tmp_path):

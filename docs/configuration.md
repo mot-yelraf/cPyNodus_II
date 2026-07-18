@@ -1,5 +1,14 @@
 # Configuration
 
+## WeeWX host system settings
+
+The host-side WeeWX integration keeps its system UI preferences in
+`/var/lib/weewx/nodus_system.toml`. This is not a CircuitPython
+`settings.toml`, sensor file, or switch file. It contains the Nodus system
+title, online timeout, and automatic-provisioning gate. Broker, station,
+database, service, and dashboard details remain sourced from the root-managed
+WeeWX manager configuration and are displayed read-only in the system pane.
+
 Live configuration is stored as TOML files at the project root. Defaults are
 provided as `.def` templates under `boards/`.
 

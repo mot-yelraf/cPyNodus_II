@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Nodus AI System Settings</title>
+  <link rel="icon" href="nodus-favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="system.css">
+</head>
+<body>
+<main class="settings-dialog">
+  <header class="dialog-header"><h1 id="system-heading">Nodus Automation Instrumentorum</h1></header>
+  <div class="dialog-layout">
+    <aside class="sidebar">
+      <nav aria-label="Nodus system setup">
+        <a href="#system-settings" data-view="system-settings">System Settings</a>
+        <a href="#remove-device" data-view="remove-device">Remove Device</a>
+      </nav>
+    </aside>
+    <section class="workspace">
+      <div id="notice" role="status" aria-live="polite"></div>
+      <section id="system-settings" class="view-card">
+        <header><h2>System Settings</h2></header>
+        <form id="system-form">
+          <div class="view-content">
+            <div class="form-grid editable">
+              <label>System title<input id="system-title" maxlength="80"></label>
+              <label>Online timeout (seconds)<input id="online-timeout" type="number" min="30" max="3600"></label>
+              <label>Automatic provisioning<select id="auto-provision"><option value="yes">Yes</option><option value="no">No</option></select></label>
+            </div>
+            <h3>WeeWX System</h3>
+            <div id="weewx-info" class="info-grid"></div>
+          </div>
+          <footer><a class="button dashboard" href="http://localhost/">Dashboard</a><button class="primary" type="submit">Save</button></footer>
+        </form>
+      </section>
+      <section id="remove-device" class="view-card" hidden>
+        <header><h2>Remove Device</h2></header>
+        <form id="remove-form">
+          <div id="device-list" class="device-list view-content"></div>
+          <label class="confirm"><input id="remove-confirm" type="checkbox">I understand this deletes selected WeeWX settings and data and clears retained MQTT messages.</label>
+          <footer><a class="button dashboard" href="http://localhost/">Dashboard</a><button id="remove-submit" class="danger" type="submit" disabled>Remove Selected</button></footer>
+        </form>
+      </section>
+    </section>
+  </div>
+</main>
+<script src="system.js"></script>
+</body>
+</html>

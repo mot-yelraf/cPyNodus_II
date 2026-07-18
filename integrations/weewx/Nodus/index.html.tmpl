@@ -3,18 +3,27 @@
 <head>
   <meta charset="UTF-8" />
   <meta http-equiv="refresh" content="60" />
-  <title>Nodus Automatio Instrumentorum</title>
+  <title>Nodus AI</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" href="nodus-favicon.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
-  <link rel="stylesheet" href="style.css?v=20260718-4" type="text/css" />
-  <script src="dashboard.js?v=20260718-4" defer></script>
+  <link rel="stylesheet" href="style.css?v=20260718-5" type="text/css" />
+  <script src="dashboard.js?v=20260718-5" defer></script>
 </head>
 
 <body>
 <main class="container nodus">
 
   <header class="topbar">
-    <div class="brand-title">Nodus Automatio Instrumentorum</div>
+    <div class="brand-title">Nodus AI
+      <a class="setup-gear system-setup-gear" href="system/" title="System settings" aria-label="System settings">
+        <svg class="setup-gear-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <circle cx="12" cy="12" r="7"></circle>
+          <path d="M12 1v4M12 19v4M1 12h4M19 12h4M4.2 4.2l2.8 2.8M17 17l2.8 2.8M19.8 4.2L17 7M7 17l-2.8 2.8"></path>
+          <circle cx="12" cy="12" r="2.25"></circle>
+        </svg>
+      </a>
+    </div>
     <div class="data-updated">
       <span class="data-updated-label">Data Updated:</span>
       <span class="data-updated-time">$current.dateTime.format("%Y-%m-%d %H:%M:%S")</span>
@@ -65,7 +74,11 @@
 
   <section class="metric-heading">
     <div class="device-identity">
-      <span><strong>Device:</strong> $nodus.device_id</span>
+      <span id="device-manager-state" data-device-id="$nodus.device_id">
+        <span class="device-status-dot" title="Device status unknown"></span>
+        <strong>Device:</strong> $nodus.device_id
+        <span id="device-manager-badges" class="device-manager-badges"></span>
+      </span>
       <span><strong>Nodus firmware:</strong> $nodus.version</span>
       <a class="setup-gear" href="setup/#sensor" title="Sensor setup" aria-label="Sensor setup">
         <svg class="setup-gear-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">

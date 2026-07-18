@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">Nodus favicon</title>
+  <desc id="desc">A blue and green letter N combining a vertical measurement signal with an open switch.</desc>
+
+  <defs>
+    <linearGradient id="nodus-gradient" x1="194" y1="112" x2="371" y2="382" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#08aeef"/>
+      <stop offset="0.52" stop-color="#24c7bf"/>
+      <stop offset="1" stop-color="#7ddb12"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="512" height="512" rx="72" fill="#fff"/>
+
+  <path
+    d="M146 407
+       L146 345
+       L124 333
+       L180 306
+       L110 279
+       L178 251
+       L146 234
+       L146 133
+       Q146 106 172 106
+       Q186 106 197 122"
+    fill="none"
+    stroke="#08aeef"
+    stroke-width="40"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+
+  <path
+    d="M197 122 L371 382"
+    fill="none"
+    stroke="url(#nodus-gradient)"
+    stroke-width="43"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+
+  <circle cx="393" cy="382" r="42" fill="#7ddb12"/>
+  <circle cx="393" cy="382" r="17" fill="#fff"/>
+
+  <path
+    d="M393 340 L393 157"
+    fill="none"
+    stroke="#7ddb12"
+    stroke-width="40"
+    stroke-linecap="round"
+  />
+
+  <circle cx="393" cy="115" r="42" fill="#7ddb12"/>
+  <circle cx="393" cy="115" r="17" fill="#fff"/>
+</svg>

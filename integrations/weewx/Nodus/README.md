@@ -3,7 +3,7 @@
 This directory is the complete `Nodus` WeeWX skin bundle. It arranges
 metric cards alphabetically, omits cards whose current observation is
 unavailable, and reloads the generated report in the browser every 60 seconds.
-The centered `Nodus Automatio Instrumentorum` title is followed by the latest
+The centered `Nodus AI` title and system-settings gear are followed by the latest
 data timestamp and Skyfield-backed Sun Position and Moon Phase cards. The
 cards use the station coordinates, pinned Astral 3.2 and Skyfield 1.54, and a
 locally cached DE421 ephemeris; report generation does not fetch astronomy
@@ -13,6 +13,7 @@ it. Device identity, firmware, sensor
 setup gear, and sensor description are centered above the metric cards.
 The template versions its stylesheet and dashboard-script URLs so an upgraded
 installation cannot combine new report markup with stale browser assets.
+The dashboard and both setup surfaces use the shared Nodus `N` SVG favicon.
 It shows every switch discovered from retained Nodus metadata, including its
 label, current state, and recent events. Automated switch cells are green
 regardless of their current ON/OFF state. Neutral manual cells can be clicked
@@ -39,12 +40,18 @@ LAN exposure, and MQTT ACL requirements.
 Automation-card titles show `<automation name> : Enabled|Disabled`; disabled
 rules are display-only and do not control a channel.
 
+The system gear opens the persistent port-8768 manager. Its two menus are
+System Settings and Remove Device. It stores host settings in
+`/var/lib/weewx/nodus_system.toml`, displays explicit Installed/Discovered
+badges and live online/offline state, clears exact retained device/switch
+topics during confirmed removal, and reprovisions a returning device.
+
 The installer stores reusable operator answers in
 `integrations/weewx/<device_id>.toml`. These mode-`0600` profiles are ignored
 by Git because they can contain an MQTT password.
 
-For a fresh installation, copy `index.html.tmpl`, `skin.conf`, `style.css`, and
-`dashboard.js`
+For a fresh installation, copy `index.html.tmpl`, `skin.conf`, `style.css`,
+`dashboard.js`, and `nodus-favicon.svg`
 into the host's `Nodus` skin directory. When updating a customized
 installation, keep its existing `style.css` unless the supplied default style
 is wanted.

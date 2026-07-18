@@ -2,12 +2,7 @@
 
 from pathlib import Path
 
-SKIN_ROOT = (
-    Path(__file__).resolve().parents[1]
-    / "integrations"
-    / "weewx"
-    / "Nodus"
-)
+SKIN_ROOT = Path(__file__).resolve().parents[1] / "integrations" / "weewx" / "Nodus"
 IDENTITY_EXTENSION = SKIN_ROOT.parent / "bin" / "user" / "nodus_identity.py"
 UNITS_EXTENSION = SKIN_ROOT.parent / "bin" / "user" / "nodus_units.py"
 SCHEMA_EXTENSION = SKIN_ROOT.parent / "bin" / "user" / "nodus_schema.py"
@@ -19,10 +14,8 @@ def test_nodus_refreshes_and_hides_unavailable_observations():
     stylesheet = (SKIN_ROOT / "style.css").read_text(encoding="utf-8")
 
     assert '<meta http-equiv="refresh" content="60" />' in template
-    assert (
-        '<div class="brand-title">Nodus Automatio Instrumentorum</div>'
-        in template
-    )
+    assert '<div class="brand-title">Nodus AI' in template
+    assert 'class="setup-gear system-setup-gear"' in template
     assert '<span class="data-updated-label">Data Updated:</span>' in template
     assert "As of:" not in template
     assert "Indoor Metrics" not in template
@@ -31,9 +24,7 @@ def test_nodus_refreshes_and_hides_unavailable_observations():
     assert template.index('class="brand-title"') < template.index(
         'class="data-updated"'
     )
-    assert template.index('class="data-updated"') < template.index(
-        'class="astro-grid"'
-    )
+    assert template.index('class="data-updated"') < template.index('class="astro-grid"')
     assert template.index('class="astro-grid"') < template.index(
         'class="metric-heading"'
     )
@@ -43,9 +34,7 @@ def test_nodus_refreshes_and_hides_unavailable_observations():
     assert template.index('class="device-identity"') < template.index(
         'class="brand-sub"'
     )
-    assert template.index('class="brand-sub"') < template.index(
-        'class="tile-grid"'
-    )
+    assert template.index('class="brand-sub"') < template.index('class="tile-grid"')
     assert '<div class="brand-sub">$nodus.description</div>' in template
     for observation in (
         "absoluteHumidity",
@@ -93,11 +82,52 @@ def test_nodus_bundle_includes_the_copied_stylesheet():
     skin_conf = (SKIN_ROOT / "skin.conf").read_text(encoding="utf-8")
     stylesheet = (SKIN_ROOT / "style.css").read_text(encoding="utf-8")
 
-    assert "copy_once = style.css, dashboard.js" in skin_conf
-    assert 'href="style.css?v=20260718-4"' in template
-    assert 'src="dashboard.js?v=20260718-4"' in template
+    assert "copy_once = style.css, dashboard.js, nodus-favicon.svg" in skin_conf
+    assert 'href="style.css?v=20260718-5"' in template
+    assert 'src="dashboard.js?v=20260718-5"' in template
     assert ".tile-grid" in stylesheet
     assert "@media (prefers-color-scheme: dark)" in stylesheet
+
+
+def test_nodus_uses_shared_n_svg_favicon_on_every_html_surface():
+    template = (SKIN_ROOT / "index.html.tmpl").read_text(encoding="utf-8")
+    admin = (SKIN_ROOT / "admin" / "index.html").read_text(encoding="utf-8")
+    system = (SKIN_ROOT / "system" / "index.html").read_text(encoding="utf-8")
+    favicon = (SKIN_ROOT / "nodus-favicon.svg").read_text(encoding="utf-8")
+
+    assert 'href="nodus-favicon.svg" type="image/svg+xml"' in template
+    assert 'href="../nodus-favicon.svg" type="image/svg+xml"' in admin
+    assert 'href="nodus-favicon.svg" type="image/svg+xml"' in system
+    assert '<title id="title">Nodus favicon</title>' in favicon
+    assert 'id="nodus-gradient"' in favicon
+
+
+def test_system_info_uses_requested_five_five_four_grid():
+    script = (SKIN_ROOT / "system" / "system.js").read_text(encoding="utf-8")
+    stylesheet = (SKIN_ROOT / "system" / "system.css").read_text(encoding="utf-8")
+    labels = (
+        "Hostname",
+        "HTTP Port",
+        "MQTT Broker",
+        "MQTT Port",
+        "TLS",
+        "Station",
+        "Lat",
+        "Long",
+        "Alt",
+        "Time Zone",
+        "WeeWX Service",
+        "WeeWX Config",
+        "Database",
+        "Dashboard",
+    )
+
+    positions = [script.index('["{}"'.format(label)) for label in labels]
+    assert positions == sorted(positions)
+    assert "grid-template-columns:repeat(5,minmax(0,1fr));" in stylesheet
+    assert ".info-grid .info-card:nth-child(n+11) strong { font-size:70%; }" in (
+        stylesheet
+    )
 
 
 def test_nodus_skin_uses_current_name_everywhere():
@@ -133,9 +163,9 @@ def test_nodus_shows_host_side_switch_automation_status():
 
     assert "user.nodus_automation.NodusAutomationStatus" in skin_conf
     assert "[NodusAutomationStatus]" in skin_conf
-    assert '$nodus_automation.enabled' in template
+    assert "$nodus_automation.enabled" in template
     assert 'class="automation-grid"' in template
-    assert '<header>$rule.name : $rule.enable_state</header>' in template
+    assert "<header>$rule.name : $rule.enable_state</header>" in template
     assert "$rule.last_action" in template
     assert ".automation-card" in stylesheet
 
@@ -150,13 +180,13 @@ def test_nodus_shows_discovered_switches_without_automation_rules():
     assert "#if $nodus_switch.channels" in template
     assert '<section class="switch-panel">' in template
     assert "$channel.label" in template
-    assert '<span>$channel.channel_id</span>' in template
+    assert "<span>$channel.channel_id</span>" in template
     assert "$channel.state" in template
     assert "$channel.automation" in template
     assert "$event.display" in template
     assert "mode-$channel.mode_class" in template
     assert 'data-channel-id="$channel.channel_id"' in template
-    assert 'src="dashboard.js?v=20260718-4"' in template
+    assert 'src="dashboard.js?v=20260718-5"' in template
     assert ".switch-current.mode-automated" in stylesheet
     assert ".switch-current.mode-automated .switch-control-mode" in stylesheet
     assert "grid-template-columns: minmax(150px, 1.05fr)" in stylesheet
@@ -187,7 +217,7 @@ def test_nodus_skin_embeds_skyfield_sun_and_moon_cards():
     assert "const horizon = pad + (innerHeight * 0.54);" in script
     assert "function nodusPlaceTimeLabel(id, raw)" in script
     assert "element.style.left" in script
-    assert 'grid-template-columns: minmax(82px, 1fr) 145px' in stylesheet
+    assert "grid-template-columns: minmax(82px, 1fr) 145px" in stylesheet
     assert "height: 175px;" in stylesheet
     assert "function nodusDrawMoon(data)" in script
     assert "function nodusDrawPositions(data)" in script
@@ -205,12 +235,30 @@ def test_nodus_skin_links_sensor_and_switch_gears_to_limited_admin_ui():
 
     assert 'href="setup/#sensor"' in template
     assert 'href="setup/#switch"' in template
-    assert template.count('class="setup-gear-icon"') == 2
+    assert template.count('class="setup-gear-icon"') == 3
     assert "⚙" not in template
     assert ".setup-gear-icon" in stylesheet
     assert "window.location.hostname" not in template
     for name in ("index.html", "admin.css", "admin.js"):
         assert (SKIN_ROOT / "admin" / name).is_file()
+    for name in ("index.html", "system.css", "system.js"):
+        assert (SKIN_ROOT / "system" / name).is_file()
+
+
+def test_nodus_dashboard_shows_manager_liveness_and_install_badges():
+    template = (SKIN_ROOT / "index.html.tmpl").read_text(encoding="utf-8")
+    script = (SKIN_ROOT / "dashboard.js").read_text(encoding="utf-8")
+    stylesheet = (SKIN_ROOT / "style.css").read_text(encoding="utf-8")
+
+    assert 'id="device-manager-state"' in template
+    assert template.index('class="device-status-dot"') < template.index(
+        "<strong>Device:</strong>"
+    )
+    assert 'id="device-manager-badges"' in template
+    assert "nodusManagerOrigin" in script
+    assert 'device?.installed, "Installed"' in script
+    assert 'device?.discovered, "Discovered"' in script
+    assert ".device-status-dot.online" in stylesheet
 
 
 def test_nodus_admin_ui_labels_automation_threshold_units():
@@ -246,12 +294,12 @@ def test_nodus_admin_ui_uses_sensorius_style_sensor_and_switch_views():
     assert page.index('id="notice"') < page.index('id="sensor-settings"')
     assert 'href="admin.css"' in page
     assert 'src="admin.js"' in page
-    assert 'location.hostname}:8767`' in script
+    assert "location.hostname}:8767`" in script
     assert '"#sensor": "sensor-settings"' in script
     assert '"#switch": "switch-settings"' in script
     assert 'window.addEventListener("hashchange", selectSetupView)' in script
-    assert 'view.hidden = view.id !== selected' in script
-    assert 'Channel label for switch_${channel.index}' in script
+    assert "view.hidden = view.id !== selected" in script
+    assert "Channel label for switch_${channel.index}" in script
     assert "Sending switch settings to Nodus over MQTT" in script
     assert "Nodus confirmed the switch settings save" in script
     assert "Nodus save failed" in script

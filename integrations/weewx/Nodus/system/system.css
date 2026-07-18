@@ -1,0 +1,25 @@
+:root { background:#b9bdbc; color:#262626; font-family:system-ui,-apple-system,"Segoe UI",sans-serif; font-size:16px; }
+* { box-sizing:border-box; } body { margin:0; padding:8px; } button,input,select { font:inherit; }
+.settings-dialog { background:#f2fffa; border:1px solid #d6dfda; border-radius:24px; margin:auto; max-width:1500px; min-height:calc(100vh - 16px); overflow:hidden; }
+.dialog-header { border-bottom:1px solid #d5dfda; padding:20px 28px; text-align:center; } .dialog-header h1 { margin:0; font-size:clamp(1.5rem,2.2vw,2rem); }
+.dialog-layout { display:grid; gap:24px; grid-template-columns:minmax(230px,300px) minmax(0,1fr); padding:26px 28px 28px; }
+.sidebar { background:#edf7f1; border:1px solid #d2ddd7; border-radius:18px; min-height:650px; padding:20px; }
+.sidebar nav { display:grid; gap:12px; } .sidebar a { background:#fff; border:1px solid transparent; border-radius:14px; color:#252525; font-weight:750; padding:16px 18px; text-decoration:none; }
+.sidebar a[aria-current="page"] { background:#d9e7ff; border-color:#9abfff; }
+.workspace { min-width:0; position:relative; } .view-card { background:#fff; border:1px solid #d1dbd5; border-radius:18px; display:flex; flex-direction:column; min-height:650px; overflow:hidden; }
+.view-card[hidden] { display:none; } .view-card header { border-bottom:1px solid #d8e1dc; padding:18px 28px; text-align:center; } h2,h3 { margin:0; } h3 { margin:28px 0 16px; text-align:center; }
+form { display:flex; flex:1; flex-direction:column; } .view-content { flex:1; padding:28px; }
+.form-grid { display:grid; gap:18px 26px; grid-template-columns:repeat(3,minmax(0,1fr)); }
+.info-grid { display:grid; gap:18px 20px; grid-template-columns:repeat(5,minmax(0,1fr)); }
+label { color:#697180; display:grid; font-weight:700; gap:7px; } input,select { background:#fff; border:1px solid #d3dbe0; border-radius:11px; height:44px; min-width:0; padding:10px 12px; }
+.info-card { border:1px solid #d8dfe4; border-radius:12px; padding:11px; text-align:center; } .info-card span { color:#697180; display:block; } .info-card strong { display:block; overflow-wrap:anywhere; }
+.info-grid .info-card:nth-child(n+11) strong { font-size:70%; }
+.device-list { display:grid; align-content:start; gap:10px; } .device-row { align-items:center; border:1px solid #d8e1dc; border-radius:12px; display:grid; gap:12px; grid-template-columns:auto auto minmax(130px,auto) 1fr; padding:14px 16px; }
+.device-row input,.confirm input { height:auto; } .status-dot { background:#7b8188; border:1px solid #4d5358; border-radius:50%; height:18px; width:18px; } .status-dot.online { background:#2eae50; }
+.badges { display:inline-flex; gap:7px; margin-left:8px; } .badge { background:#e8edf2; border-radius:999px; font-size:.78rem; padding:3px 9px; } .badge.installed { background:#dce8ff; color:#164ea7; } .badge.discovered { background:#def3e4; color:#176b38; }
+.device-detail { color:#687180; } .confirm { align-items:center; border-top:1px solid #d8e1dc; display:flex; gap:10px; justify-content:center; padding:18px; }
+footer { align-items:center; border-top:1px solid #d3ddd7; display:flex; justify-content:space-between; min-height:100px; padding:20px 28px; }
+.button,button { border:0; border-radius:10px; color:#fff; cursor:pointer; font-weight:800; padding:13px 24px; text-decoration:none; } .dashboard { background:#050505; } .primary { background:#285cf3; } .danger { background:#d83142; } button:disabled { background:#d99da4; cursor:not-allowed; }
+#notice { border-radius:10px; font-weight:700; left:28px; position:absolute; right:28px; top:14px; z-index:4; } #notice:empty { display:none; } #notice.pending,#notice.success,#notice.error { box-shadow:0 4px 14px #0002; padding:11px 13px; } #notice.pending { background:#fff2c7; color:#745500; } #notice.success { background:#dcf6e4; color:#176b38; } #notice.error { background:#ffe1e1; color:#8b2020; }
+@media(max-width:1100px){ .info-grid{grid-template-columns:repeat(2,minmax(0,1fr));} }
+@media(max-width:850px){ body{padding:0}.settings-dialog{border-radius:0}.dialog-layout{grid-template-columns:1fr;padding:14px}.sidebar{min-height:auto}.sidebar nav{grid-template-columns:1fr 1fr}.form-grid,.info-grid{grid-template-columns:1fr}.device-row{grid-template-columns:auto auto 1fr}.device-detail{grid-column:3}.view-card{min-height:600px} }

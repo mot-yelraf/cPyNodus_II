@@ -32,6 +32,8 @@ body {
   letter-spacing: -0.04em;
 }
 
+.brand-title .setup-gear { display: inline-flex; margin-left: 8px; }
+
 .brand-sub {
   color: var(--nodus-muted);
   font-size: 1.1rem;
@@ -56,6 +58,23 @@ body {
 .device-identity strong {
   color: var(--nodus-text);
 }
+
+.device-status-dot {
+  background: #7b8188;
+  border: 1px solid #4d5358;
+  border-radius: 50%;
+  display: inline-block;
+  height: 14px;
+  margin-right: 7px;
+  vertical-align: -1px;
+  width: 14px;
+}
+
+.device-status-dot.online { background: #2eae50; }
+.device-manager-badges { display: inline-flex; gap: 5px; margin-left: 6px; }
+.device-manager-badge { background: #e8edf2; border-radius: 999px; font-size: .72rem; padding: 2px 7px; }
+.device-manager-badge.installed { background: #dce8ff; color: #164ea7; }
+.device-manager-badge.discovered { background: #def3e4; color: #176b38; }
 
 .setup-gear {
   align-items: center;

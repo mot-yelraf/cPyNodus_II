@@ -16,6 +16,7 @@ SKYFIELD_ROOT="/var/lib/weewx/skyfield"
 DRY_RUN=0
 INSPECT_CONFIG=""
 INSTALL_TEMP_CONFIG=""
+INSTALL_TEMP_TEMPLATE=""
 INSTALL_TARGET_CONFIG=""
 INSTALL_BACKUP_CONFIG=""
 INSTALL_TARGET_SERVICE=""
@@ -28,6 +29,7 @@ INSTALL_DISCOVERY_CONFIG_TOUCHED=0
 DISCOVERY_SERVICE_WAS_ACTIVE=0
 DISCOVERY_CONFIG="/etc/weewx/nodus-discovery.json"
 DISCOVERY_SERVICE="nodus-weewx-discovery.service"
+MANAGER_ACTION_PATH="nodus-weewx-manager-action.path"
 
 if [[ $EUID -eq 0 ]]; then
   SUDO=()
@@ -52,8 +54,7 @@ Behavior:
   * Installs MQTTSubscribe 3.1.1 only when it is missing.
   * Installs Astral 3.2, Skyfield 1.54, and a local DE421 ephemeris.
   * Installs the Nodus skin, astronomy cards, identity, switch status, units, schema, and automation services.
-  * Runs a registry-only watcher for retained WeeWX-profile Nodus metadata.
-  * Never creates or manages a WeeWX service for a discovered device.
+  * Runs a persistent Nodus manager for discovery, liveness, removal, and reprovisioning.
 
 Options:
   --dry-run             Inspect and prompt, but do not modify the system.
@@ -98,6 +99,9 @@ cleanup_install() {
   fi
   if [[ -n "$INSTALL_TEMP_CONFIG" ]]; then
     rm -f "$INSTALL_TEMP_CONFIG"
+  fi
+  if [[ -n "$INSTALL_TEMP_TEMPLATE" ]]; then
+    rm -f "$INSTALL_TEMP_TEMPLATE"
   fi
   exit "$status"
 }
@@ -752,13 +756,20 @@ validate_integration_sources() {
     "$SKIN_SOURCE/skin.conf" \
     "$SKIN_SOURCE/style.css" \
     "$SKIN_SOURCE/dashboard.js" \
+    "$SKIN_SOURCE/nodus-favicon.svg" \
     "$SKIN_SOURCE/admin/index.html" \
     "$SKIN_SOURCE/admin/admin.css" \
     "$SKIN_SOURCE/admin/admin.js" \
+    "$SKIN_SOURCE/system/index.html" \
+    "$SKIN_SOURCE/system/system.css" \
+    "$SKIN_SOURCE/system/system.js" \
     "$ROOT_DIR/nodus-weewx-discovery.service" \
+    "$ROOT_DIR/nodus-weewx-manager-action.service" \
+    "$ROOT_DIR/nodus-weewx-manager-action.path" \
     "$USER_SOURCE/nodus_identity.py" \
     "$USER_SOURCE/nodus_astronomy.py" \
     "$USER_SOURCE/nodus_discovery.py" \
+    "$USER_SOURCE/nodus_manager_helper.py" \
     "$USER_SOURCE/nodus_admin.py" \
     "$USER_SOURCE/nodus_switch.py" \
     "$USER_SOURCE/nodus_automation.py" \
@@ -772,7 +783,7 @@ install_integration_files() {
   local html_root="$1"
 
   run_root install -d -o root -g weewx -m 0775 \
-    "$WEEWX_SKIN_ROOT" "$WEEWX_SKIN_ROOT/admin" "$WEEWX_USER_ROOT" \
+    "$WEEWX_SKIN_ROOT" "$WEEWX_SKIN_ROOT/admin" "$WEEWX_SKIN_ROOT/system" "$WEEWX_USER_ROOT" \
     /var/lib/weewx "$html_root" "$html_root/setup"
   run_root install -o root -g weewx -m 0644 \
     "$SKIN_SOURCE/index.html.tmpl" "$WEEWX_SKIN_ROOT/index.html.tmpl"
@@ -783,11 +794,22 @@ install_integration_files() {
   run_root install -o root -g weewx -m 0644 \
     "$SKIN_SOURCE/dashboard.js" "$WEEWX_SKIN_ROOT/dashboard.js"
   run_root install -o root -g weewx -m 0644 \
+    "$SKIN_SOURCE/nodus-favicon.svg" "$WEEWX_SKIN_ROOT/nodus-favicon.svg"
+  run_root install -o root -g weewx -m 0644 \
     "$SKIN_SOURCE/admin/index.html" "$WEEWX_SKIN_ROOT/admin/index.html"
   run_root install -o root -g weewx -m 0644 \
     "$SKIN_SOURCE/admin/admin.css" "$WEEWX_SKIN_ROOT/admin/admin.css"
   run_root install -o root -g weewx -m 0644 \
     "$SKIN_SOURCE/admin/admin.js" "$WEEWX_SKIN_ROOT/admin/admin.js"
+  run_root install -o root -g weewx -m 0644 \
+    "$SKIN_SOURCE/system/index.html" "$WEEWX_SKIN_ROOT/system/index.html"
+  run_root install -o root -g weewx -m 0644 \
+    "$SKIN_SOURCE/system/system.css" "$WEEWX_SKIN_ROOT/system/system.css"
+  run_root install -o root -g weewx -m 0644 \
+    "$SKIN_SOURCE/system/system.js" "$WEEWX_SKIN_ROOT/system/system.js"
+  run_root install -o root -g weewx -m 0644 \
+    "$SKIN_SOURCE/nodus-favicon.svg" \
+    "$WEEWX_SKIN_ROOT/system/nodus-favicon.svg"
   run_root install -o weewx -g weewx -m 0644 \
     "$SKIN_SOURCE/admin/index.html" "$html_root/setup/index.html"
   run_root install -o weewx -g weewx -m 0644 \
@@ -800,6 +822,8 @@ install_integration_files() {
     "$USER_SOURCE/nodus_astronomy.py" "$WEEWX_USER_ROOT/nodus_astronomy.py"
   run_root install -o root -g weewx -m 0644 \
     "$USER_SOURCE/nodus_discovery.py" "$WEEWX_USER_ROOT/nodus_discovery.py"
+  run_root install -o root -g root -m 0755 \
+    "$USER_SOURCE/nodus_manager_helper.py" "$WEEWX_USER_ROOT/nodus_manager_helper.py"
   run_root install -o root -g weewx -m 0644 \
     "$USER_SOURCE/nodus_admin.py" "$WEEWX_USER_ROOT/nodus_admin.py"
   run_root install -o root -g weewx -m 0644 \
@@ -814,6 +838,8 @@ install_integration_files() {
     "$SKIN_SOURCE/style.css" "$html_root/style.css"
   run_root install -o weewx -g weewx -m 0664 \
     "$SKIN_SOURCE/dashboard.js" "$html_root/dashboard.js"
+  run_root install -o weewx -g weewx -m 0664 \
+    "$SKIN_SOURCE/nodus-favicon.svg" "$html_root/nodus-favicon.svg"
 }
 
 disable_discovery_managed_instances() {
@@ -1009,6 +1035,19 @@ main() {
     "$longitude" "$altitude" "$database_name" "$html_root" "$broker" \
     "$port" "$username" "$password" "$tls_enable" "$ca_certs" "$topic" \
     "$mqtt_module" "$admin_username" "$admin_password" "$admin_port"
+  INSTALL_TEMP_TEMPLATE="$(mktemp)"
+  python3 - "$INSTALL_TEMP_CONFIG" "$INSTALL_TEMP_TEMPLATE" "$topic" <<'PY'
+import sys
+
+source, target, topic = sys.argv[1:]
+with open(source, "r", encoding="utf-8") as handle:
+    config = handle.read()
+marker = "__NODUS_DATA_TOPIC__"
+if topic not in config:
+    raise SystemExit("rendered Nodus topic was not found")
+with open(target, "w", encoding="utf-8") as handle:
+    handle.write(config.replace(topic, marker))
+PY
 
   log ""
   log "Installation plan:"
@@ -1018,7 +1057,7 @@ main() {
   log "  database:   /var/lib/weewx/$database_name"
   log "  report:     $html_root"
   log "  MQTT topic: $topic"
-  log "  discovery:  $DISCOVERY_SERVICE (registry only)"
+  log "  manager:    $DISCOVERY_SERVICE (discovery, removal, reprovisioning)"
   log "  MQTT watch: ${base_topic}/+/meta"
   if ! ask_yes_no "Apply this installation?" no; then
     log "Installation cancelled. Nothing was changed."
@@ -1060,6 +1099,8 @@ main() {
   run_root install -d -o root -g weewx -m 0775 \
     /etc/weewx "$WEEWX_USER_ROOT" /var/lib/weewx
   run_root install -o root -g weewx -m 0660 "$INSTALL_TEMP_CONFIG" "$target_config"
+  run_root install -o root -g weewx -m 0640 "$INSTALL_TEMP_TEMPLATE" \
+    /etc/weewx/nodus-managed.conf.tmpl
 
   ensure_paho
   ensure_astronomy
@@ -1069,16 +1110,24 @@ main() {
   run_root install -o root -g root -m 0644 \
     "$ROOT_DIR/nodus-weewx-discovery.service" \
     "/etc/systemd/system/$DISCOVERY_SERVICE"
+  run_root install -o root -g root -m 0644 \
+    "$ROOT_DIR/nodus-weewx-manager-action.service" \
+    /etc/systemd/system/nodus-weewx-manager-action.service
+  run_root install -o root -g root -m 0644 \
+    "$ROOT_DIR/nodus-weewx-manager-action.path" \
+    "/etc/systemd/system/$MANAGER_ACTION_PATH"
 
   local discovery_temp=""
   discovery_temp="$(mktemp)"
   python3 - "$discovery_temp" "$broker" "$port" "$base_topic" "$username" \
-    "$password" "$tls_enable" "$ca_certs" <<'PY'
+    "$password" "$tls_enable" "$ca_certs" "$location" "$latitude" \
+    "$longitude" "$altitude" "$html_root" "$database_name" "$family" <<'PY'
 import json
 import sys
 
 (path, broker, port, base_topic, username, password, use_tls,
- ca_certs) = sys.argv[1:]
+ ca_certs, location, latitude, longitude, altitude, html_root,
+ database_name, family) = sys.argv[1:]
 document = {
     "schema": "nodus-weewx-discovery-config/v1",
     "broker": broker,
@@ -1090,6 +1139,28 @@ document = {
     "ca_certs": ca_certs,
     "registry_file": "/var/lib/weewx/nodus_discovery.json",
     "max_devices": 32,
+    "template_family": family,
+    "location": location,
+    "latitude": latitude,
+    "longitude": longitude,
+    "altitude": altitude,
+    "admin_host": "0.0.0.0",
+    "admin_port": 8768,
+    "system_web_root": "/etc/weewx/skins/Nodus/system",
+    "system_settings_file": "/var/lib/weewx/nodus_system.toml",
+    "request_file": "/var/lib/weewx/nodus_manager_request.json",
+    "result_file": "/var/lib/weewx/nodus_manager_result.json",
+    "installed_file": "/var/lib/weewx/nodus_installed.json",
+    "template_config": "/etc/weewx/nodus-managed.conf.tmpl",
+    "operational_config": "/etc/weewx/nodus.conf",
+    "operational_service": "weewx@nodus.service",
+    "database": "/var/lib/weewx/{}".format(database_name),
+    "dashboard_web_root": html_root,
+    "status_file": "/var/lib/weewx/nodus_switch.json",
+    "control_file": "/var/lib/weewx/nodus_switch_control.json",
+    "rules_file": "/var/lib/weewx/nodus_automation_rules.json",
+    "runtime_file": "/var/lib/weewx/nodus_automation_runtime.json",
+    "automation_status_file": "/var/lib/weewx/nodus_automation.json",
 }
 with open(path, "w", encoding="utf-8") as handle:
     json.dump(document, handle, indent=2, sort_keys=True)
@@ -1098,6 +1169,21 @@ PY
   run_root install -o root -g weewx -m 0640 "$discovery_temp" "$DISCOVERY_CONFIG"
   INSTALL_DISCOVERY_CONFIG_TOUCHED=1
   rm -f "$discovery_temp"
+  if [[ ! -e /var/lib/weewx/nodus_system.toml ]]; then
+    local system_temp=""
+    system_temp="$(mktemp)"
+    printf '%s\n' '[System]' 'TITLE = "Nodus Automation Instrumentorum"' \
+      'ONLINE_TIMEOUT_SECONDS = 150' 'AUTO_PROVISION = true' >"$system_temp"
+    run_root install -o weewx -g weewx -m 0664 "$system_temp" \
+      /var/lib/weewx/nodus_system.toml
+    rm -f "$system_temp"
+  fi
+  local installed_temp=""
+  installed_temp="$(mktemp)"
+  printf '{"device_id":"%s","data_topic":"%s"}\n' "$device_id" "$topic" >"$installed_temp"
+  run_root install -o weewx -g weewx -m 0664 "$installed_temp" \
+    /var/lib/weewx/nodus_installed.json
+  rm -f "$installed_temp"
 
   log "Validating MQTTSubscribe driver configuration."
   validate_mqttsubscribe_driver "$target_config"
@@ -1113,6 +1199,7 @@ PY
   disable_discovery_managed_instances
   run_root systemctl enable --now "$target_service"
   run_root systemctl enable --now "$DISCOVERY_SERVICE"
+  run_root systemctl enable --now "$MANAGER_ACTION_PATH"
   run_root systemctl status "$target_service" --no-pager -l || true
   run_root systemctl status "$DISCOVERY_SERVICE" --no-pager -l || true
   INSTALL_ROLLBACK_NEEDED=0
@@ -1122,9 +1209,9 @@ PY
   log "Configuration: $target_config"
   log "Service log:  sudo journalctl -u $target_service -f"
   log "Report output: $html_root/"
+  log "Manager UI: http://<host>:8768/system/"
   log "Discovery registry: /var/lib/weewx/nodus_discovery.json"
-  log "Discovery log: sudo journalctl -u $DISCOVERY_SERVICE -f"
-  log "Discovery records WeeWX-profile devices; it does not create services."
+  log "Manager log: sudo journalctl -u $DISCOVERY_SERVICE -f"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

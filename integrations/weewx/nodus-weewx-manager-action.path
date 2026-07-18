@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch for validated Nodus WeeWX manager actions
+
+[Path]
+PathExists=/var/lib/weewx/nodus_manager_request.json
+Unit=nodus-weewx-manager-action.service
+
+[Install]
+WantedBy=multi-user.target
