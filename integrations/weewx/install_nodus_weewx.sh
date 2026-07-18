@@ -5,10 +5,14 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SKIN_SOURCE="$ROOT_DIR/Nodus"
 USER_SOURCE="$ROOT_DIR/bin/user"
 WEEWX_CONFIG="/etc/weewx/weewx.conf"
+WEEWX_BIN_ROOT="/etc/weewx/bin"
 WEEWX_USER_ROOT="/etc/weewx/bin/user"
 WEEWX_SKIN_ROOT="/etc/weewx/skins/Nodus"
 WEEWX_PYTHON_ROOT="/usr/share/weewx"
 MQTTSUBSCRIBE_URL="https://github.com/weewx-mqtt/subscribe/archive/refs/tags/v3.1.1.zip"
+ASTRAL_VERSION="3.2"
+SKYFIELD_VERSION="1.54"
+SKYFIELD_ROOT="/var/lib/weewx/skyfield"
 DRY_RUN=0
 INSPECT_CONFIG=""
 INSTALL_TEMP_CONFIG=""
@@ -46,7 +50,8 @@ Behavior:
   * Preserves the primary WeeWX instance and creates
     /etc/weewx/nodus.conf, managed by weewx@nodus.service.
   * Installs MQTTSubscribe 3.1.1 only when it is missing.
-  * Installs the Nodus skin, identity, switch status, units, schema, and automation services.
+  * Installs Astral 3.2, Skyfield 1.54, and a local DE421 ephemeris.
+  * Installs the Nodus skin, astronomy cards, identity, switch status, units, schema, and automation services.
   * Runs a registry-only watcher for retained WeeWX-profile Nodus metadata.
   * Never creates or manages a WeeWX service for a discovered device.
 
@@ -714,14 +719,31 @@ ensure_paho() {
   run_root apt-get install -y python3-paho-mqtt
 }
 
-ensure_astral() {
-  if python3 -c 'from astral import Observer; from astral.sun import sun' \
+ensure_astronomy() {
+  local python_path="$WEEWX_BIN_ROOT:$WEEWX_PYTHON_ROOT"
+  local packages_ok=0
+  if env "PYTHONPATH=$python_path" python3 -c \
+    'import astral, skyfield; from astral import Observer, moon; from astral.sun import sun; assert astral.__version__ == "3.2"; assert skyfield.__version__ == "1.54"; assert all(hasattr(moon, name) for name in ("moonrise", "moonset", "azimuth", "elevation"))' \
     >/dev/null 2>&1; then
-    return 0
+    packages_ok=1
   fi
-  log "Installing the Astral Python library."
-  run_root apt-get update
-  run_root apt-get install -y python3-astral
+  if [[ $packages_ok -ne 1 ]]; then
+    log "Installing Astral $ASTRAL_VERSION and Skyfield $SKYFIELD_VERSION for WeeWX."
+    run_root apt-get update
+    run_root apt-get install -y python3-pip
+    run_root python3 -m pip install --disable-pip-version-check \
+      --no-warn-script-location --upgrade --target "$WEEWX_BIN_ROOT" \
+      "astral==$ASTRAL_VERSION" "skyfield==$SKYFIELD_VERSION"
+  fi
+
+  run_root install -d -o weewx -g weewx -m 0775 "$SKYFIELD_ROOT"
+  if [[ ! -r "$SKYFIELD_ROOT/de421.bsp" ]]; then
+    log "Downloading the Skyfield DE421 ephemeris."
+    run_weewx env "PYTHONPATH=$python_path" python3 -c \
+      'from skyfield.api import Loader; Loader("/var/lib/weewx/skyfield")("de421.bsp")'
+  fi
+  run_weewx env "PYTHONPATH=$python_path" python3 -c \
+    'import astral, skyfield; from skyfield.api import load_file; assert astral.__version__ == "3.2"; assert skyfield.__version__ == "1.54"; load_file("/var/lib/weewx/skyfield/de421.bsp")'
 }
 
 validate_integration_sources() {
@@ -735,6 +757,7 @@ validate_integration_sources() {
     "$SKIN_SOURCE/admin/admin.js" \
     "$ROOT_DIR/nodus-weewx-discovery.service" \
     "$USER_SOURCE/nodus_identity.py" \
+    "$USER_SOURCE/nodus_astronomy.py" \
     "$USER_SOURCE/nodus_discovery.py" \
     "$USER_SOURCE/nodus_admin.py" \
     "$USER_SOURCE/nodus_switch.py" \
@@ -773,6 +796,8 @@ install_integration_files() {
     "$SKIN_SOURCE/admin/admin.js" "$html_root/setup/admin.js"
   run_root install -o root -g weewx -m 0644 \
     "$USER_SOURCE/nodus_identity.py" "$WEEWX_USER_ROOT/nodus_identity.py"
+  run_root install -o root -g weewx -m 0644 \
+    "$USER_SOURCE/nodus_astronomy.py" "$WEEWX_USER_ROOT/nodus_astronomy.py"
   run_root install -o root -g weewx -m 0644 \
     "$USER_SOURCE/nodus_discovery.py" "$WEEWX_USER_ROOT/nodus_discovery.py"
   run_root install -o root -g weewx -m 0644 \
@@ -1037,7 +1062,7 @@ main() {
   run_root install -o root -g weewx -m 0660 "$INSTALL_TEMP_CONFIG" "$target_config"
 
   ensure_paho
-  ensure_astral
+  ensure_astronomy
   install_integration_files "$html_root"
   ensure_mqttsubscribe "$target_config"
   run_root install -o root -g weewx -m 0660 "$INSTALL_TEMP_CONFIG" "$target_config"

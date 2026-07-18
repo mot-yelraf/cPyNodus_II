@@ -2,10 +2,11 @@
 
 import importlib.util
 import json
+import sys
 import threading
 import time
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -249,6 +250,128 @@ def test_switch_manual_toggle_rejects_automation_and_guards_rapid_commands():
     service.manual_guard_until.clear()
     with pytest.raises(ValueError, match="disable the switch automation"):
         service.admin_toggle_switch({"channel_id": "S1-yuk0nv"})
+
+
+def test_switch_admin_updates_location_and_labels_with_paced_config_requests():
+    module = _load_module()
+    service = object.__new__(module.NodusSwitchStatus)
+    service.lock = threading.RLock()
+    service.controller = module.SwitchStatusController()
+    service.controller.update_meta(_meta(), now=100)
+    service.manual_countdowns = {}
+    service.manual_deadlines = {}
+    service.admin_snapshot = lambda: {
+        "switch": service.controller.status()
+    }
+    service._message_id = lambda prefix: "{}-id".format(prefix)
+    requests = []
+    service._request = lambda kind, payload: requests.append((kind, payload))
+    service._save_manual_control = lambda: None
+
+    result = service.admin_update_switch(
+        {
+            "location": "Propagation Bench",
+            "labels": [
+                {"channel_id": "S1-yuk0nv", "label": "Grow Light"}
+            ],
+        }
+    )
+
+    assert result["ok"] is True
+    assert [request[1]["payload"]["updates"][0]["key"] for request in requests] == [
+        "SWITCH_LOCATION",
+        "SWITCH_1_LABEL",
+    ]
+    assert requests[1][1]["payload"]["updates"][0]["value"] == "Grow Light"
+    assert service.controller.location == "Propagation Bench"
+    assert service.controller.channels["S1-yuk0nv"]["label"] == "Grow Light"
+
+
+def test_switch_admin_rejects_unknown_or_blank_channel_labels():
+    module = _load_module()
+    service = object.__new__(module.NodusSwitchStatus)
+    service.lock = threading.RLock()
+    service.controller = module.SwitchStatusController()
+    service.controller.update_meta(_meta(), now=100)
+    service.admin_snapshot = lambda: {
+        "switch": service.controller.status()
+    }
+    service._request = lambda _kind, _payload: None
+
+    with pytest.raises(ValueError, match="channel is invalid"):
+        service.admin_update_switch(
+            {
+                "location": "DevDesk",
+                "labels": [{"channel_id": "missing", "label": "Light"}],
+            }
+        )
+    with pytest.raises(ValueError, match="label is required"):
+        service.admin_update_switch(
+            {
+                "location": "DevDesk",
+                "labels": [{"channel_id": "S1-yuk0nv", "label": ""}],
+            }
+        )
+
+
+def test_switch_admin_snapshot_exposes_retained_identity_and_service_statistics(
+    monkeypatch, tmp_path
+):
+    module = _load_module()
+    admin_path = MODULE_PATH.with_name("nodus_admin.py")
+    spec = importlib.util.spec_from_file_location("user.nodus_admin", admin_path)
+    admin_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(admin_module)
+    user_package = ModuleType("user")
+    user_package.nodus_admin = admin_module
+    monkeypatch.setitem(sys.modules, "user", user_package)
+    monkeypatch.setitem(sys.modules, "user.nodus_admin", admin_module)
+
+    service = object.__new__(module.NodusSwitchStatus)
+    service.lock = threading.RLock()
+    service.controller = module.SwitchStatusController()
+    service.controller.update_meta(_meta(), now=100)
+    service.device_meta = {
+        "device_id": "aht-yuk0nv",
+        "mcu": "xesp32s3",
+        "version": "v0.26.199.1",
+        "network": {"ipv4addr": "10.0.0.233"},
+        "mqtt": {"broker": "broker.local", "active_broker": "10.0.0.20"},
+        "sensor": {
+            "device": "aht",
+            "hardware": "AHTx0",
+            "location": "Propagation Bench",
+        },
+    }
+    service.mqtt_host = "fallback.local"
+    service.mqtt_connected = True
+    service.service_started = 10
+    service.mqtt_connected_at = 20
+    service.last_disconnect_at = 30
+    service.disconnect_count = 2
+    service.last_message_at = 40
+    service.messages_received = 50
+    service.rules_file = str(tmp_path / "missing-rules.json")
+    service.config_dict = _config()
+
+    snapshot = service.admin_snapshot()
+
+    assert snapshot["sensor"]["location"] == "Propagation Bench"
+    assert snapshot["info"] == {
+        "service_started": 10,
+        "mqtt_connected_at": 20,
+        "last_disconnect_at": 30,
+        "disconnect_count": 2,
+        "last_packet_at": 40,
+        "packets_received": 50,
+        "board_type": "xesp32s3",
+        "firmware_version": "v0.26.199.1",
+        "sensor_device": "aht",
+        "sensor_hardware": "AHTx0",
+        "ip_address": "10.0.0.233",
+        "broker": "10.0.0.20",
+        "broker_status": "Connected",
+    }
 
 
 def test_switch_status_preserves_events_across_metadata_refresh():

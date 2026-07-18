@@ -248,11 +248,13 @@ In normal mode the device:
     `weewx@nodus.service`, archive, and report. A separate passive watcher
     records retained metadata from WeeWX-profile devices without creating
     additional WeeWX instances. The integration also includes archive schema
-    and units, a Nodus report skin, retained device identity,
-    an always-on switch label/state/event panel, and optional confirmed switch
-    automation. A bounded LAN host UI configures sensor/switch locations,
-    manual switch countdowns, calibration changes, and AND/OR metric, timer, time/day,
-    Astral, and switch-state automations. See
+    and units, a Nodus report skin, retained device identity, Skyfield-backed
+    Sun/Moon position and phase cards, an always-on switch label/state/event
+    panel, and optional confirmed switch
+    automation. A bounded Sensorius-style LAN host UI configures sensor/switch
+    locations, switch labels, device calibration changes, and AND/OR metric,
+    timer, time/day, Astral, and switch-state automations, with sensor/switch
+    information panes. See
     [WeeWX](./weewx.md).
   - Periodic NTP sync is started after normal network bring-up.
 - `homeassistant` is a networked MQTT profile using the shared `[MQTT]` connection settings.

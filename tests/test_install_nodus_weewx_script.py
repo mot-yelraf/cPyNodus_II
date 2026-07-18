@@ -26,6 +26,8 @@ def test_installer_is_valid_bash_and_has_help():
     assert "/etc/weewx/nodus.conf" in output
     assert "weewx@nodus.service" in output
     assert "MQTTSubscribe 3.1.1" in output
+    assert "Astral 3.2" in output
+    assert "Skyfield 1.54" in output
     assert "--inspect-config PATH" in output
     assert "Preserves the primary WeeWX instance" in output
     assert "registry-only watcher" in output
@@ -41,6 +43,16 @@ def test_installer_only_prompts_for_optional_mqtt_secret():
     assert "WeeWX Nodus setup password" not in script
     assert 'prompt_value "Nodus device ID' in script
     assert 'prompt_value "Sensor family' in script
+
+
+def test_installer_pins_astronomy_libraries_and_caches_ephemeris():
+    script = INSTALLER.read_text(encoding="utf-8")
+
+    assert 'ASTRAL_VERSION="3.2"' in script
+    assert 'SKYFIELD_VERSION="1.54"' in script
+    assert '"astral==$ASTRAL_VERSION" "skyfield==$SKYFIELD_VERSION"' in script
+    assert 'Loader("/var/lib/weewx/skyfield")("de421.bsp")' in script
+    assert '"$USER_SOURCE/nodus_astronomy.py"' in script
 
 
 def test_installer_writes_and_reuses_device_profile(tmp_path):

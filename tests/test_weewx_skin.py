@@ -32,9 +32,9 @@ def test_nodus_refreshes_and_hides_unavailable_observations():
         'class="data-updated"'
     )
     assert template.index('class="data-updated"') < template.index(
-        'class="mini-grid"'
+        'class="astro-grid"'
     )
-    assert template.index('class="mini-grid"') < template.index(
+    assert template.index('class="astro-grid"') < template.index(
         'class="metric-heading"'
     )
     assert template.index('class="metric-heading"') < template.index(
@@ -94,8 +94,8 @@ def test_nodus_bundle_includes_the_copied_stylesheet():
     stylesheet = (SKIN_ROOT / "style.css").read_text(encoding="utf-8")
 
     assert "copy_once = style.css, dashboard.js" in skin_conf
-    assert 'href="style.css?v=20260718-1"' in template
-    assert 'src="dashboard.js?v=20260718-1"' in template
+    assert 'href="style.css?v=20260718-4"' in template
+    assert 'src="dashboard.js?v=20260718-4"' in template
     assert ".tile-grid" in stylesheet
     assert "@media (prefers-color-scheme: dark)" in stylesheet
 
@@ -156,7 +156,7 @@ def test_nodus_shows_discovered_switches_without_automation_rules():
     assert "$event.display" in template
     assert "mode-$channel.mode_class" in template
     assert 'data-channel-id="$channel.channel_id"' in template
-    assert 'src="dashboard.js?v=20260718-1"' in template
+    assert 'src="dashboard.js?v=20260718-4"' in template
     assert ".switch-current.mode-automated" in stylesheet
     assert ".switch-current.mode-automated .switch-control-mode" in stylesheet
     assert "grid-template-columns: minmax(150px, 1.05fr)" in stylesheet
@@ -168,6 +168,35 @@ def test_nodus_shows_discovered_switches_without_automation_rules():
     assert "white-space: nowrap;" in stylesheet
     assert ".switch-panel" in stylesheet
     assert SWITCH_EXTENSION.is_file()
+
+
+def test_nodus_skin_embeds_skyfield_sun_and_moon_cards():
+    template = (SKIN_ROOT / "index.html.tmpl").read_text(encoding="utf-8")
+    skin_conf = (SKIN_ROOT / "skin.conf").read_text(encoding="utf-8")
+    stylesheet = (SKIN_ROOT / "style.css").read_text(encoding="utf-8")
+    script = (SKIN_ROOT / "dashboard.js").read_text(encoding="utf-8")
+
+    assert "user.nodus_astronomy.NodusAstronomy" in skin_conf
+    assert "ephemeris = /var/lib/weewx/skyfield/de421.bsp" in skin_conf
+    assert 'data-astronomy="$nodus_astronomy.payload_b64"' in template
+    assert 'id="moonPhaseCanvas"' in template
+    assert 'id="sunMoonPositionCanvas"' in template
+    assert 'data-moon-view="local"' in template
+    assert 'data-moon-view="reference"' in template
+    assert ".astro-grid" in stylesheet
+    assert "const horizon = pad + (innerHeight * 0.54);" in script
+    assert "function nodusPlaceTimeLabel(id, raw)" in script
+    assert "element.style.left" in script
+    assert 'grid-template-columns: minmax(82px, 1fr) 145px' in stylesheet
+    assert "height: 175px;" in stylesheet
+    assert "function nodusDrawMoon(data)" in script
+    assert "function nodusDrawPositions(data)" in script
+    assert 'id="sunMoon29Card"' in template
+    assert 'id="sunMoon29Canvas"' in template
+    assert "function nodusDraw29Days(data)" in script
+    assert "function nodusSet29DayOpen(open)" in script
+    assert 'grid.classList.toggle("astronomy-expanded", open)' in script
+    assert ".astronomy-expanded-card" in stylesheet
 
 
 def test_nodus_skin_links_sensor_and_switch_gears_to_limited_admin_ui():
@@ -195,21 +224,44 @@ def test_nodus_admin_ui_labels_automation_threshold_units():
     )
 
 
-def test_nodus_admin_ui_selects_sensor_or_switch_panel_from_hash():
+def test_nodus_admin_ui_uses_sensorius_style_sensor_and_switch_views():
     page = (SKIN_ROOT / "admin" / "index.html").read_text(encoding="utf-8")
     script = (SKIN_ROOT / "admin" / "admin.js").read_text(encoding="utf-8")
     stylesheet = (SKIN_ROOT / "admin" / "admin.css").read_text(encoding="utf-8")
 
-    assert 'href="#sensor" data-panel="sensor"' in page
-    assert 'href="#switch" data-panel="switch"' in page
-    assert 'class="dashboard-button" href="../">Dashboard</a>' in page
+    for view in (
+        "sensor-settings",
+        "sensor-calibration",
+        "sensor-info",
+        "switch-settings",
+        "automations",
+        "switch-info",
+    ):
+        assert 'data-view="{}"'.format(view) in page
+    assert "System Calibration" not in page
+    assert 'class="button dashboard" href="../">Dashboard</a>' in page
+    assert 'id="switch-labels"' in page
+    assert 'id="automation-editor"' in page
+    assert page.index('class="workspace"') < page.index('id="notice"')
+    assert page.index('id="notice"') < page.index('id="sensor-settings"')
     assert 'href="admin.css"' in page
     assert 'src="admin.js"' in page
     assert 'location.hostname}:8767`' in script
-    assert 'location.hash === "#switch"' in script
-    assert 'window.addEventListener("hashchange", selectSetupPanel)' in script
-    assert '$(name).hidden = name !== selected' in script
-    assert ".panel[hidden]" in stylesheet
+    assert '"#sensor": "sensor-settings"' in script
+    assert '"#switch": "switch-settings"' in script
+    assert 'window.addEventListener("hashchange", selectSetupView)' in script
+    assert 'view.hidden = view.id !== selected' in script
+    assert 'Channel label for switch_${channel.index}' in script
+    assert "Sending switch settings to Nodus over MQTT" in script
+    assert "Nodus confirmed the switch settings save" in script
+    assert "Nodus save failed" in script
+    assert ".view-card[hidden]" in stylesheet
+    assert ".settings-dialog" in stylesheet
+    assert "#notice.pending" in stylesheet
+    assert "width: min(50%, 560px);" in stylesheet
+    assert "#switch-setting-fields { align-content: start;" in stylesheet
+    assert "max-width: 980px;" in stylesheet
+    assert "height: 44px;" in stylesheet
 
 
 def test_nodus_generates_24_hour_card_micrographs():

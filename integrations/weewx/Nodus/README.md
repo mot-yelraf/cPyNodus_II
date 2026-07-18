@@ -4,7 +4,12 @@ This directory is the complete `Nodus` WeeWX skin bundle. It arranges
 metric cards alphabetically, omits cards whose current observation is
 unavailable, and reloads the generated report in the browser every 60 seconds.
 The centered `Nodus Automatio Instrumentorum` title is followed by the latest
-data timestamp and the Sun and Moon cards. Device identity, firmware, sensor
+data timestamp and Skyfield-backed Sun Position and Moon Phase cards. The
+cards use the station coordinates, pinned Astral 3.2 and Skyfield 1.54, and a
+locally cached DE421 ephemeris; report generation does not fetch astronomy
+data from the network. Clicking the position card opens a full-width 29-day
+Sun/Moon position and lunar-phase graph; clicking the expanded graph closes
+it. Device identity, firmware, sensor
 setup gear, and sensor description are centered above the metric cards.
 The template versions its stylesheet and dashboard-script URLs so an upgraded
 installation cannot combine new report markup with stale browser assets.
@@ -21,10 +26,13 @@ action, and error status.
 
 The generated metrics dashboard and its setup page share the visible
 `/weewx/nodus/` URL tree. Sensor and switch setup gears open `setup/#sensor`
-and `setup/#switch`; the page uses separate tabs and has a Dashboard return
-button. The switch-status service supplies its unauthenticated LAN API on TCP
-port 8767. The UI supports locations, manual countdowns, change-only calibration
-writes, and bounded host-side
+and `setup/#switch`; the page uses Sensorius-style sensor and switch sidebars
+with a Dashboard return button. Sensor views cover Location, Device
+Calibration, and device/network information. Switch views cover location and
+channel labels, saved automations and their editor, and switch/network
+information. There is no System Calibration view. The switch-status service
+supplies its unauthenticated LAN API on TCP port 8767. The UI supports
+locations, switch labels, change-only calibration writes, and bounded host-side
 automations with AND/OR metric, timer, time/day, Astral, and switch-state
 conditions plus multiple switch actions. See `docs/weewx.md` for its limits,
 LAN exposure, and MQTT ACL requirements.

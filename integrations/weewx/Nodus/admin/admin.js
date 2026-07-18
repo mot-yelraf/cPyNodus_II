@@ -10,24 +10,42 @@ const apiOrigin = location.port === "8767"
   ? ""
   : `${location.protocol}//${location.hostname}:8767`;
 
-function selectSetupPanel() {
-  const selected = location.hash === "#switch" ? "switch" : "sensor";
-  document.querySelectorAll(".setup-tabs [data-panel]").forEach(link => {
-    if (link.dataset.panel === selected) {
+function selectSetupView() {
+  const aliases = {"#sensor": "sensor-settings", "#switch": "switch-settings"};
+  let selected = aliases[location.hash] || location.hash.slice(1) || "sensor-settings";
+  if (!$(selected)) selected = "sensor-settings";
+  const switchView = selected.startsWith("switch") || selected.startsWith("automation");
+  $("sensor-nav").hidden = switchView;
+  $("switch-nav").hidden = !switchView;
+  $("dialog-title").textContent = switchView
+    ? "Edit Switch Settings"
+    : "Sensor Settings & Calibration";
+  $("context-title").textContent = switchView
+    ? (state.switch?.switch_device_id || state.device_id || "Switch")
+    : (state.device_id || "Sensor");
+  document.querySelectorAll(".sidebar [data-view]").forEach(link => {
+    const active = link.dataset.view === selected
+      || (selected === "automation-editor" && link.dataset.view === "automations");
+    if (active) {
       link.setAttribute("aria-current", "page");
     } else {
       link.removeAttribute("aria-current");
     }
   });
-  ["sensor", "switch"].forEach(name => {
-    $(name).hidden = name !== selected;
+  document.querySelectorAll(".view-card").forEach(view => {
+    view.hidden = view.id !== selected;
   });
 }
 
-function notice(message, error = false) {
+function showView(name) {
+  location.hash = `#${name}`;
+  selectSetupView();
+}
+
+function notice(message, status = "success") {
   const element = $("notice");
   element.textContent = message || "";
-  element.className = message ? (error ? "error" : "ok") : "";
+  element.className = message ? status : "";
 }
 
 async function api(path, options = {}) {
@@ -57,7 +75,7 @@ function field(labelText, control) {
   return {label, text};
 }
 
-function button(text, className = "secondary compact") {
+function button(text, className = "quiet compact") {
   const element = document.createElement("button");
   element.type = "button";
   element.textContent = text;
@@ -369,21 +387,23 @@ function renderAutomations() {
   automations.forEach(rule => {
     const row = document.createElement("div");
     row.className = "automation-row";
+    row.tabIndex = 0;
+    row.setAttribute("role", "button");
     const text = document.createElement("div");
     const title = document.createElement("strong");
     const detail = document.createElement("div");
-    title.textContent = `${rule.name}${rule.enabled ? "" : " (disabled)"}`;
+    title.textContent = rule.name;
+    detail.className = "automation-summary";
     detail.textContent = (rule.conditions || []).map(conditionSummary).join(" AND ").replace("AND OR AND", "OR");
     text.append(title, detail);
-    const actions = document.createElement("div");
-    const edit = button("Edit", "secondary compact");
-    edit.onclick = () => editAutomation(rule);
-    const remove = button("Delete", "danger compact");
-    remove.onclick = () => saveAutomations(
-      automations.filter(item => item.name !== rule.name)
-    );
-    actions.append(edit, remove);
-    row.append(text, actions);
+    const status = document.createElement("span");
+    status.className = `status-badge${rule.enabled === false ? " disabled" : ""}`;
+    status.textContent = rule.enabled === false ? "Disabled" : "Enabled";
+    row.onclick = () => editAutomation(rule);
+    row.onkeydown = event => {
+      if (event.key === "Enter" || event.key === " ") editAutomation(rule);
+    };
+    row.append(text, status);
     list.appendChild(row);
   });
 }
@@ -393,17 +413,18 @@ function clearAutomation() {
   $("editing-name").value = "";
   $("minimum-on").value = "300";
   $("minimum-off").value = "300";
-  $("automation-enabled").checked = true;
+  $("automation-enabled").value = "yes";
   $("conditions").replaceChildren();
   $("automation-actions").replaceChildren();
   addCondition({type: "metric"});
   addAction({state: "on", false_action: "opposite", delay_seconds: 0});
+  showView("automation-editor");
 }
 
 function editAutomation(rule) {
   $("editing-name").value = rule.name;
   $("automation-name").value = rule.name;
-  $("automation-enabled").checked = rule.enabled !== false;
+  $("automation-enabled").value = rule.enabled === false ? "no" : "yes";
   $("minimum-on").value = rule.minimum_on_seconds ?? 300;
   $("minimum-off").value = rule.minimum_off_seconds ?? 300;
   $("stale-action").value = rule.stale_action || "off";
@@ -411,29 +432,116 @@ function editAutomation(rule) {
   $("automation-actions").replaceChildren();
   (rule.conditions || []).forEach(addCondition);
   (rule.actions || []).forEach(addAction);
+  showView("automation-editor");
   $("automation-name").focus();
 }
 
 async function saveAutomations(next) {
   try {
-    notice("Saving automations…");
+    notice("Saving automation in WeeWX…", "pending");
     await api("/api/automations", {
       method: "POST",
       body: JSON.stringify({automations: next})
     });
     automations = next;
     renderAutomations();
-    clearAutomation();
-    notice("Automations saved. WeeWX reloads them within five seconds.");
+    $("editing-name").value = "";
+    showView("automations");
+    notice("Automation saved in WeeWX. It reloads within five seconds.");
   } catch (error) {
-    notice(error.message, true);
+    notice(`WeeWX automation save failed: ${error.message}`, "error");
   }
+}
+
+function formatAge(epoch, empty = "No events recorded") {
+  if (!epoch) return empty;
+  let seconds = Math.max(0, Math.floor(Date.now() / 1000) - Number(epoch));
+  const days = Math.floor(seconds / 86400);
+  seconds %= 86400;
+  const hours = Math.floor(seconds / 3600);
+  seconds %= 3600;
+  const minutes = Math.floor(seconds / 60);
+  seconds %= 60;
+  return [days ? `${days}d` : "", hours ? `${hours}h` : "", minutes ? `${minutes}m` : "", `${seconds}s`]
+    .filter(Boolean).join(" ");
+}
+
+function displayValue(value, fallback = "Unknown") {
+  return value === undefined || value === null || value === "" ? fallback : String(value);
+}
+
+function infoGroup(title, content) {
+  const section = document.createElement("section");
+  section.className = "info-group";
+  const heading = document.createElement("h4");
+  heading.textContent = title;
+  section.append(heading, content);
+  return section;
+}
+
+function renderInfo(target, includeChannels = false) {
+  const info = state.info || {};
+  const network = document.createElement("div");
+  network.className = "network-grid";
+  [
+    ["IP Address", displayValue(info.ip_address)],
+    ["Broker", displayValue(info.broker)],
+    ["Broker Status", displayValue(info.broker_status, "Disconnected")]
+  ].forEach(([label, value]) => {
+    const card = document.createElement("div");
+    card.className = "network-card";
+    const name = document.createElement("span");
+    const data = document.createElement("strong");
+    name.textContent = `${label}:`;
+    data.textContent = value;
+    card.append(name, data);
+    network.appendChild(card);
+  });
+
+  const stats = document.createElement("div");
+  stats.className = "stat-list";
+  const rows = [
+    ["Broker disconnects since WeeWX start", info.disconnect_count ?? 0],
+    ["WeeWX service uptime", formatAge(info.service_started, "Unknown")],
+    ["Last broker disconnect", info.last_disconnect_at
+      ? new Date(info.last_disconnect_at * 1000).toLocaleString()
+      : "No disconnects recorded"],
+    ["Last MQTT packet received", formatAge(info.last_packet_at, "No packet received")],
+    ["MQTT packets received", info.packets_received ?? 0]
+  ];
+  if (includeChannels) {
+    (state.switch?.channels || []).forEach(channel => {
+      rows.push([
+        `${channel.label} current state, last switch update`,
+        `${channel.state || "Unknown"}, ${formatAge(state.switch?.updated, "unknown")}`
+      ]);
+    });
+  }
+  rows.forEach(([label, value]) => {
+    const row = document.createElement("div");
+    row.className = "stat-row";
+    const name = document.createElement("span");
+    const data = document.createElement("strong");
+    name.textContent = `${label}:`;
+    data.textContent = value;
+    row.append(name, data);
+    stats.appendChild(row);
+  });
+  $(target).replaceChildren(infoGroup("Network", network), infoGroup("Statistics", stats));
 }
 
 function renderStatus() {
   $("device").textContent = state.device_id || "Unknown device";
   $("sensor-location").value = state.sensor?.location || "";
   $("switch-location").value = state.switch?.location || "";
+  $("calibration-device-id").textContent = state.device_id || "Unknown";
+  $("calibration-device-type").textContent = state.info?.sensor_device || "Unknown";
+  $("calibration-location").textContent = state.sensor?.location || "Unknown";
+  const sensorDescription = [state.info?.board_type, state.info?.sensor_hardware]
+    .filter(Boolean).join(" · ");
+  $("sensor-info-title").textContent = `Sensor Info${sensorDescription ? `: ${sensorDescription}` : ""}`;
+  $("switch-info-title").textContent = `Switch Info${state.info?.board_type ? `: Board Type: ${state.info.board_type}` : ""}`;
+  $("switch-settings-title").textContent = `Switch Settings${state.info?.firmware_version ? ` ${state.info.firmware_version}` : ""}`;
   const calibrations = $("calibrations");
   calibrations.replaceChildren();
   (state.sensor?.calibrations || []).forEach(item => {
@@ -451,24 +559,26 @@ function renderStatus() {
     unit: ""
   }))).forEach(item => { metricOptions[item.name] = item; });
   channelOptions = state.switch?.channels || [];
-  const manualControls = $("manual-controls");
-  manualControls.replaceChildren();
+  const switchLabels = $("switch-labels");
+  switchLabels.replaceChildren();
   channelOptions.forEach(channel => {
-    const input = numberInput(channel.countdown_seconds ?? 0, 0);
-    input.max = "86400";
-    input.step = "1";
+    const input = document.createElement("input");
+    input.value = channel.label || "";
+    input.maxLength = 64;
     input.dataset.channelId = channel.channel_id;
-    manualControls.appendChild(
-      field(`${channel.label} countdown (seconds)`, input).label
+    switchLabels.appendChild(
+      field(`Channel label for switch_${channel.index}`, input).label
     );
   });
+  renderInfo("sensor-info-content");
+  renderInfo("switch-info-content", true);
   renderAutomations();
-  clearAutomation();
+  selectSetupView();
 }
 
 document.addEventListener("DOMContentLoaded", async () => {
-  selectSetupPanel();
-  window.addEventListener("hashchange", selectSetupPanel);
+  selectSetupView();
+  window.addEventListener("hashchange", selectSetupView);
   try {
     state = await api("/api/status");
     automations = state.automations || [];
@@ -480,42 +590,65 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("condition-add").onclick = () => addCondition({type: "metric"});
   $("action-add").onclick = () => addAction({state: "on", false_action: "opposite"});
   $("automation-clear").onclick = clearAutomation;
+  $("automation-new").onclick = clearAutomation;
+  $("saved-automations").onclick = () => showView("automations");
+  $("automation-remove").onclick = () => {
+    const old = $("editing-name").value;
+    if (old) saveAutomations(automations.filter(item => item.name !== old));
+  };
 
-  $("sensor-form").onsubmit = async event => {
+  $("sensor-location-form").onsubmit = async event => {
+    event.preventDefault();
+    try {
+      notice("Sending sensor location to Nodus over MQTT…", "pending");
+      await api("/api/sensor", {
+        method: "POST",
+        body: JSON.stringify({location: $("sensor-location").value, calibrations: []})
+      });
+      state.sensor.location = $("sensor-location").value.trim();
+      $("calibration-location").textContent = state.sensor.location || "Unknown";
+      notice("Nodus confirmed the sensor location save.");
+    } catch (error) {
+      notice(`Nodus save failed: ${error.message}`, "error");
+    }
+  };
+
+  $("calibration-form").onsubmit = async event => {
     event.preventDefault();
     const calibrations = [...document.querySelectorAll("#calibrations input")]
       .filter(element => element.value !== "")
       .map(element => ({key: element.dataset.key, value: Number(element.value)}));
     try {
-      notice("Applying sensor settings…");
+      notice("Sending device calibration to Nodus over MQTT…", "pending");
       await api("/api/sensor", {
         method: "POST",
         body: JSON.stringify({location: $("sensor-location").value, calibrations})
       });
-      notice("Sensor settings confirmed by Nodus.");
+      document.querySelectorAll("#calibrations input").forEach(input => { input.value = ""; });
+      notice("Nodus confirmed the device calibration save.");
     } catch (error) {
-      notice(error.message, true);
+      notice(`Nodus save failed: ${error.message}`, "error");
     }
   };
 
   $("switch-form").onsubmit = async event => {
     event.preventDefault();
     try {
-      notice("Applying switch settings…");
+      notice("Sending switch settings to Nodus over MQTT…", "pending");
       await api("/api/switch", {
         method: "POST",
         body: JSON.stringify({
           location: $("switch-location").value,
-          manual_controls: [...document.querySelectorAll("#manual-controls input")]
+          labels: [...document.querySelectorAll("#switch-labels input")]
             .map(element => ({
               channel_id: element.dataset.channelId,
-              countdown_seconds: Number(element.value)
+              label: element.value
             }))
         })
       });
-      notice("Switch settings saved.");
+      notice("Nodus confirmed the switch settings save.");
     } catch (error) {
-      notice(error.message, true);
+      notice(`Nodus save failed: ${error.message}`, "error");
     }
   };
 
@@ -523,7 +656,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     event.preventDefault();
     const rule = {
       name: $("automation-name").value,
-      enabled: $("automation-enabled").checked,
+      enabled: $("automation-enabled").value === "yes",
       conditions: [...document.querySelectorAll("#conditions .condition-row")]
         .map(readCondition),
       actions: [...document.querySelectorAll("#automation-actions .action-row")]

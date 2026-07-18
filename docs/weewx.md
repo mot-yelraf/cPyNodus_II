@@ -87,8 +87,8 @@ The installer:
 3. Examines the configured `[Station]` identity for useful defaults.
 4. Preserves the primary WeeWX configuration and creates the independent
    `/etc/weewx/nodus.conf` configuration managed by `weewx@nodus.service`.
-5. Installs `python3-paho-mqtt`, `python3-astral`, and MQTTSubscribe 3.1.1 only
-   when missing.
+5. Installs `python3-paho-mqtt`, pinned Astral 3.2 and Skyfield 1.54 libraries,
+   a local Skyfield DE421 ephemeris, and MQTTSubscribe 3.1.1 only when missing.
 6. Installs the Nodus archive schema, unit registration, retained-MQTT identity
    extension, switch status/event collector, authenticated setup UI,
    and Nodus skin from the clone.
@@ -446,6 +446,7 @@ integrations/weewx/Nodus/
   admin/admin.js
 integrations/weewx/bin/user/
   nodus_identity.py
+  nodus_astronomy.py
   nodus_admin.py
   nodus_switch.py
   nodus_automation.py
@@ -467,6 +468,7 @@ scp integrations/weewx/Nodus/index.html.tmpl \
     integrations/weewx/Nodus/style.css \
     integrations/weewx/Nodus/dashboard.js \
     integrations/weewx/bin/user/nodus_identity.py \
+    integrations/weewx/bin/user/nodus_astronomy.py \
     integrations/weewx/bin/user/nodus_admin.py \
     integrations/weewx/bin/user/nodus_switch.py \
     integrations/weewx/bin/user/nodus_automation.py \
@@ -490,6 +492,7 @@ ssh <user>@<host> \
    sudo install -m 0644 /tmp/Nodus/style.css /etc/weewx/skins/Nodus/ &&
    sudo install -m 0644 /tmp/Nodus/dashboard.js /etc/weewx/skins/Nodus/ &&
    sudo install -m 0644 /tmp/Nodus/nodus_identity.py /etc/weewx/bin/user/ &&
+   sudo install -m 0644 /tmp/Nodus/nodus_astronomy.py /etc/weewx/bin/user/ &&
    sudo install -m 0644 /tmp/Nodus/nodus_admin.py /etc/weewx/bin/user/ &&
    sudo install -m 0644 /tmp/Nodus/nodus_switch.py /etc/weewx/bin/user/ &&
    sudo install -m 0644 /tmp/Nodus/nodus_automation.py /etc/weewx/bin/user/ &&
@@ -529,6 +532,26 @@ Add the report under `[StdReport]` in `/etc/weewx/weewx.conf`:
 
 Merge this subsection into the existing `[StdReport]`; do not create a second
 top-level `[StdReport]` section.
+
+The astronomy cards require Astral 3.2, Skyfield 1.54, and the DE421
+ephemeris. The automated installer places the pinned Python packages below
+`/etc/weewx/bin` and caches the ephemeris at
+`/var/lib/weewx/skyfield/de421.bsp`. Manual installations must provide the
+same versions and path, then add the astronomy search-list extension and skin
+section:
+
+```ini
+[CheetahGenerator]
+    search_list_extensions = user.nodus_identity.NodusIdentity, user.nodus_switch.NodusSwitchStatusSearchList, user.nodus_automation.NodusAutomationStatus, user.nodus_astronomy.NodusAstronomy
+
+[NodusAstronomy]
+    ephemeris = /var/lib/weewx/skyfield/de421.bsp
+```
+
+Normal report generation reads the cached ephemeris and does not require
+Internet access. Astral supplies the local rise, noon, and set events;
+Skyfield supplies the sampled Sun/Moon elevations, exact lunar illumination,
+phase angle, next principal phase, and local/reference bright-limb angles.
 
 ### Renaming an existing historical skin installation
 
@@ -651,14 +674,16 @@ sudo -u weewx python3 -m json.tool /var/lib/weewx/nodus_switch.json
 The generated metrics dashboard remains at
 `http://<weewx-host>/weewx/nodus/`. Its sensor and switch gears open
 `setup/#sensor` and `setup/#switch` within the same visible URL tree. Sensor
-and Switch & Automations tabs keep the two setup areas separate, and a
-Dashboard button returns directly to the metrics dashboard. The UI remains
-intentionally smaller than Sensorius and provides:
+and switch views use the same sidebar-and-workspace presentation as Sensorius,
+and a Dashboard button returns directly to the metrics dashboard. The sensor
+sidebar contains Sensor Settings, Device Calibration, and Sensor Info; there is
+no System Calibration view. The switch sidebar contains Switch Settings,
+Automations, and Switch Info. The UI provides:
 
 - sensor location;
 - explicit, change-only calibration offsets appropriate to the sensor family;
-- switch location and an optional per-channel manual countdown (0 keeps the
-  switch ON until it is clicked again); and
+- retained device/network identity and WeeWX-observed MQTT service statistics;
+- switch location and per-channel labels; and
 - bounded host-side switch rules with metric, time/day, repeating timer,
   sunrise/sunset, switch-state, AND/OR, hysteresis, dwell, delay, and
   multi-switch action support.
@@ -676,12 +701,18 @@ rules are validated and atomically stored in
 them within five seconds without a WeeWX restart. Previous-state action
 ownership is stored in `/var/lib/weewx/nodus_automation_runtime.json`, so a
 normal WeeWX restart does not lose the state that must later be restored.
-Manual countdown settings and active OFF deadlines are stored in
+Existing manual countdown settings and active OFF deadlines are stored in
 `/var/lib/weewx/nodus_switch_control.json`, so a host restart does not leave a
-one-shot manual ON command without its scheduled OFF.
-Location and calibration
+one-shot manual ON command without its scheduled OFF. The Sensorius-style
+setup page does not edit these host-side countdown values.
+Location, switch-label, and calibration
 changes use non-retained MQTT commands and are reported successful only after
-the correlated Nodus acknowledgement and result.
+the correlated Nodus acknowledgement and result. Switch label updates are
+paced as individual configuration requests and use the canonical
+`SWITCH_N_LABEL` keys. The top of the right setup pane displays the current
+MQTT save state and changes to a confirmed or failed notification when the
+device response arrives. Automation notifications are explicitly identified
+as host-side WeeWX saves because automation rules are not Nodus configuration.
 
 The setup HTML is installed below the generated dashboard. Its live API is
 provided by `weewx@nodus.service` on port 8767. The discovery watcher does not
@@ -936,9 +967,21 @@ http://<host>/weewx/nodus/aht-va41ka/
 ```
 
 The page reloads every 60 seconds. The centered `Data Updated` time advances
-only when WeeWX has generated a report from a newer archive record. The Sun
-and Moon cards follow that timestamp. Device identity, firmware, sensor setup
-gear, and sensor description are centered immediately above the metric cards.
+only when WeeWX has generated a report from a newer archive record. The Moon
+Phase card shows local Moon rise/set, precise illumination, the next principal
+phase, and a Local/Ref bright-limb view. The Sun Position card plots the
+Skyfield Sun and Moon elevation tracks and shows local rise/noon/set events.
+Clicking the Sun/Moon Position card replaces both daily cards with a full-width
+29-day position and Moon-phase graph; clicking the expanded graph closes it.
+Device identity, firmware, sensor setup gear, and sensor description are
+centered immediately above the metric cards.
+
+Verify the pinned astronomy runtime and cached ephemeris with:
+
+```bash
+sudo -u weewx env PYTHONPATH=/etc/weewx/bin:/usr/share/weewx python3 -c \
+  'import astral, skyfield; from skyfield.api import load_file; print(astral.__version__, skyfield.__version__); load_file("/var/lib/weewx/skyfield/de421.bsp")'
+```
 
 ## 11. Troubleshooting
 

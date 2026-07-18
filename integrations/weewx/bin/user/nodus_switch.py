@@ -478,6 +478,14 @@ class NodusSwitchStatus(StdService):
         self.command_timeout = max(1, int(section.get("command_timeout") or 15))
         self.config_dict = config_dict
         self.device_meta = {}
+        self.service_started = int(time.time())
+        self.mqtt_connected = False
+        self.mqtt_connected_at = 0
+        self.last_disconnect_at = 0
+        self.disconnect_count = 0
+        self.messages_received = 0
+        self.last_message_at = 0
+        self.mqtt_host = ""
         self.rules_file = str(
             section.get("rules_file")
             or config_dict.get("NodusAutomation", {}).get("rules_file")
@@ -522,8 +530,10 @@ class NodusSwitchStatus(StdService):
             ca_certs = str(section.get("ca_certs") or tls.get("ca_certs") or "")
             self.client.tls_set(ca_certs=ca_certs or None)
         self.client.on_connect = self._on_connect
+        self.client.on_disconnect = self._on_disconnect
         self.client.on_message = self._on_message
         host = str(section.get("host") or mqtt_section.get("host") or "localhost")
+        self.mqtt_host = host
         port = int(section.get("port") or mqtt_section.get("port") or 1883)
         self.client.connect_async(host, port, keepalive=30)
         self.client.loop_start()
@@ -547,6 +557,9 @@ class NodusSwitchStatus(StdService):
         except (TypeError, ValueError):
             connected = reason_code == 0
         if connected:
+            with self.lock:
+                self.mqtt_connected = True
+                self.mqtt_connected_at = int(time.time())
             client.subscribe(self.meta_topic, qos=0)
             for suffix in (
                 "meta",
@@ -557,11 +570,24 @@ class NodusSwitchStatus(StdService):
             ):
                 client.subscribe("{}/{}".format(self.device_topic, suffix), qos=0)
         else:
+            with self.lock:
+                self.mqtt_connected = False
             log.error("Nodus switch status MQTT connect failed: %s", reason_code)
+
+    def _on_disconnect(self, _client, _userdata, reason_code, _properties=None):
+        """Record broker disconnects for the setup information panes."""
+        with self.lock:
+            was_connected = self.mqtt_connected
+            self.mqtt_connected = False
+            self.last_disconnect_at = int(time.time())
+            if was_connected or reason_code:
+                self.disconnect_count += 1
 
     def _on_message(self, client, _userdata, message):
         try:
             with self.lock:
+                self.messages_received += 1
+                self.last_message_at = int(time.time())
                 if message.topic == self.meta_topic:
                     for topic in self.controller.update_meta(message.payload):
                         client.subscribe(topic, qos=0)
@@ -746,8 +772,43 @@ class NodusSwitchStatus(StdService):
         with self.lock:
             switch = self.controller.status()
             meta = dict(self.device_meta)
+            mqtt_connected = bool(getattr(self, "mqtt_connected", False))
+            info = {
+                "service_started": int(getattr(self, "service_started", 0) or 0),
+                "mqtt_connected_at": int(
+                    getattr(self, "mqtt_connected_at", 0) or 0
+                ),
+                "last_disconnect_at": int(
+                    getattr(self, "last_disconnect_at", 0) or 0
+                ),
+                "disconnect_count": int(
+                    getattr(self, "disconnect_count", 0) or 0
+                ),
+                "last_packet_at": int(getattr(self, "last_message_at", 0) or 0),
+                "packets_received": int(
+                    getattr(self, "messages_received", 0) or 0
+                ),
+            }
         device_id = str(meta.get("device_id") or switch.get("device_id") or "")
         sensor = dict(meta.get("sensor") or {})
+        network = dict(meta.get("network") or {})
+        mqtt = dict(meta.get("mqtt") or {})
+        info.update(
+            {
+                "board_type": str(meta.get("mcu") or ""),
+                "firmware_version": str(meta.get("version") or ""),
+                "sensor_device": str(sensor.get("device") or ""),
+                "sensor_hardware": str(sensor.get("hardware") or ""),
+                "ip_address": str(network.get("ipv4addr") or ""),
+                "broker": str(
+                    mqtt.get("active_broker")
+                    or mqtt.get("broker")
+                    or getattr(self, "mqtt_host", "")
+                    or ""
+                ),
+                "broker_status": "Connected" if mqtt_connected else "Disconnected",
+            }
+        )
         try:
             rules = rules_for_ui(read_rules(self.rules_file))
         except Exception:
@@ -760,6 +821,7 @@ class NodusSwitchStatus(StdService):
                 "calibrations": calibration_fields(device_id),
             },
             "switch": switch,
+            "info": info,
             "metrics": metrics,
             "metric_options": metric_fields(metrics),
             "automations": rules,
@@ -807,11 +869,28 @@ class NodusSwitchStatus(StdService):
         return {"ok": True, "message": "Sensor settings confirmed"}
 
     def admin_update_switch(self, body):
-        """Apply switch location and host-side manual countdown settings."""
+        """Apply switch location, labels, and host-side countdown settings."""
         location = str(body.get("location") or "").strip()
         if len(location) > 64:
             raise ValueError("switch location is too long")
         current_location = self.admin_snapshot()["switch"]["location"]
+        with self.lock:
+            channels = {
+                item["channel_id"]: item for item in self.controller.channels.values()
+            }
+        label_changes = []
+        for item in body.get("labels") or ():
+            channel_id = str(item.get("channel_id") or "").strip()
+            if channel_id not in channels:
+                raise ValueError("switch label channel is invalid")
+            label = str(item.get("label") or "").strip()
+            if not label:
+                raise ValueError("switch label is required")
+            if len(label) > 64:
+                raise ValueError("switch label is too long")
+            channel = channels[channel_id]
+            if label != str(channel.get("label") or ""):
+                label_changes.append((channel_id, channel, label))
         if location != current_location:
             payload = {
                 "message_id": self._message_id("switch-location"),
@@ -827,8 +906,27 @@ class NodusSwitchStatus(StdService):
                 "restart": False,
             }
             self._request("config", payload)
+        for _channel_id, channel, label in label_changes:
+            self._request(
+                "config",
+                {
+                    "message_id": self._message_id("switch-label"),
+                    "payload": {
+                        "updates": [
+                            {
+                                "section": "Switch",
+                                "key": "SWITCH_{}_LABEL".format(channel["index"]),
+                                "value": label,
+                            }
+                        ]
+                    },
+                    "restart": False,
+                },
+            )
         with self.lock:
             self.controller.location = location
+            for channel_id, _channel, label in label_changes:
+                self.controller.channels[channel_id]["label"] = label
             channel_ids = set(self.controller.channels)
             for item in body.get("manual_controls") or ():
                 channel_id = str(item.get("channel_id") or "").strip()

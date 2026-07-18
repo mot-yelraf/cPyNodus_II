@@ -149,6 +149,188 @@ body {
   padding: 8px 22px 0;
 }
 
+.astro-grid {
+  display: grid;
+  gap: 24px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.astro-card {
+  background: #fffde1;
+  border: 1px solid #c9cbd0;
+  border-radius: 20px;
+  box-shadow: none;
+  color: #303238;
+  margin: 0;
+  min-height: 0;
+  padding: 10px 14px 12px;
+}
+
+.astro-card > header,
+.astro-card-head {
+  background: transparent;
+  border: 0;
+  color: #50504b;
+  font-size: clamp(1.2rem, 1.7vw, 1.5rem);
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  margin: 0;
+  padding: 0;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.astro-card-head {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  text-align: left;
+}
+
+.astro-card-head > span:first-child {
+  white-space: nowrap;
+}
+
+.moon-view-toggle {
+  background: #f4edc9;
+  border: 1px solid #d5ceb1;
+  border-radius: 999px;
+  display: inline-flex;
+  flex: 0 0 auto;
+  padding: 2px;
+  width: auto !important;
+}
+
+.moon-view-button {
+  background: transparent;
+  border: 0;
+  border-radius: 999px;
+  color: #555861;
+  font-size: 0.9rem;
+  font-weight: 700;
+  flex: 0 0 auto !important;
+  line-height: 1;
+  margin: 0;
+  min-height: 0;
+  padding: 7px 12px;
+  width: auto !important;
+}
+
+.moon-view-button.active {
+  background: #355789;
+  color: #fff;
+}
+
+.moon-layout {
+  align-items: center;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(82px, 1fr) 145px minmax(82px, 1fr);
+  margin-top: 18px;
+}
+
+.moon-side {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.9rem;
+  line-height: 1.05;
+}
+
+.moon-side strong {
+  font-size: 1.05rem;
+  margin-bottom: 10px;
+}
+
+.moon-side-right {
+  text-align: right;
+}
+
+#moonPhaseCanvas {
+  height: 145px;
+  width: 145px;
+}
+
+.astro-meta {
+  font-size: 0.95rem;
+  margin-top: 8px;
+  text-align: center;
+}
+
+.sun-times,
+.moon-times {
+  font-size: 1.05rem;
+  height: 28px;
+  position: relative;
+}
+
+.sun-times strong,
+.moon-times strong {
+  left: 50%;
+  position: absolute;
+  text-align: center;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+.position-card canvas {
+  background: #d8ecfa;
+  border: 1px solid #c9b985;
+  border-radius: 14px;
+  display: block;
+  height: 175px;
+  width: 100%;
+}
+
+.position-card,
+.astronomy-expanded-card {
+  cursor: pointer;
+}
+
+.position-card:focus-visible,
+.astronomy-expanded-card:focus-visible {
+  outline: 3px solid #355789;
+  outline-offset: 3px;
+}
+
+.astronomy-expanded-card {
+  display: none;
+  grid-column: 1 / -1;
+  padding: 10px 14px 8px;
+}
+
+.astro-grid.astronomy-expanded > .moon-card,
+.astro-grid.astronomy-expanded > .position-card {
+  display: none;
+}
+
+.astro-grid.astronomy-expanded > .astronomy-expanded-card {
+  display: block;
+}
+
+.astronomy-expanded-card canvas {
+  background: #fffbe0;
+  border: 1px solid #c9b985;
+  border-radius: 12px;
+  display: block;
+  height: 225px;
+  margin-top: 6px;
+  width: 100%;
+}
+
+.astronomy-expanded-card .astro-meta {
+  margin-top: 3px;
+}
+
+.moon-times {
+  height: 24px;
+  padding-top: 2px;
+}
+
+.astro-card > .moon-position-title {
+  font-size: 1.05rem;
+}
+
 .section-title {
   margin: 48px 0 22px;
 }
@@ -446,6 +628,7 @@ body {
   }
 
   .mini-grid,
+  .astro-grid,
   .tile-grid,
   .automation-grid {
     grid-template-columns: 1fr;
@@ -467,6 +650,20 @@ body {
   .switch-row > * + * {
     border-top: 1px solid var(--nodus-border);
   }
+
+  .moon-layout {
+    gap: 8px;
+    grid-template-columns: minmax(68px, 1fr) 120px minmax(68px, 1fr);
+  }
+
+  #moonPhaseCanvas {
+    height: 120px;
+    width: 120px;
+  }
+
+  .astro-card {
+    min-height: 0;
+  }
 }
 
 @media (prefers-color-scheme: dark) {
@@ -482,6 +679,7 @@ body {
   }
 
   .mini-card,
+  .astro-card,
   .tile {
     color: #343943;
   }

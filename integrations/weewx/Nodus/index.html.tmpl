@@ -6,8 +6,8 @@
   <title>Nodus Automatio Instrumentorum</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
-  <link rel="stylesheet" href="style.css?v=20260718-1" type="text/css" />
-  <script src="dashboard.js?v=20260718-1" defer></script>
+  <link rel="stylesheet" href="style.css?v=20260718-4" type="text/css" />
+  <script src="dashboard.js?v=20260718-4" defer></script>
 </head>
 
 <body>
@@ -21,16 +21,45 @@
     </div>
   </header>
 
-  <section class="mini-grid">
-    <article class="mini-card">
-      <header>Sun</header>
-      <div class="mini-row"><span>Sunrise</span><strong>$almanac.sunrise.format("%H:%M:%S")</strong></div>
-      <div class="mini-row"><span>Sunset</span><strong>$almanac.sunset.format("%H:%M:%S")</strong></div>
+  <section class="astro-grid" data-astronomy="$nodus_astronomy.payload_b64">
+    <article class="astro-card moon-card">
+      <header class="astro-card-head">
+        <span>Moon Phase</span>
+        <span class="moon-view-toggle" role="group" aria-label="Moon view mode">
+          <button type="button" class="moon-view-button active" data-moon-view="local" aria-pressed="true">Local</button>
+          <button type="button" class="moon-view-button" data-moon-view="reference" aria-pressed="false">Ref</button>
+        </span>
+      </header>
+      <div class="moon-layout">
+        <div class="moon-side">
+          <span>Moonrise</span><strong id="moonRiseTime">--</strong>
+          <span>Moonset</span><strong id="moonSetTime">--</strong>
+        </div>
+        <canvas id="moonPhaseCanvas" width="176" height="176" aria-label="Current Moon phase"></canvas>
+        <div class="moon-side moon-side-right">
+          <span>% Lit</span><strong id="moonLitPct">--</strong>
+          <span id="moonNextPhaseLabel">Next Phase</span><strong id="moonNextPhaseDate">--</strong>
+        </div>
+      </div>
+      <div class="astro-meta" id="moonMeta">Moon data unavailable</div>
     </article>
 
-    <article class="mini-card">
-      <header>Moon</header>
-      <div class="mini-row"><span>Phase</span><strong>$almanac.moon_phase</strong></div>
+    <article class="astro-card position-card" id="sunMoonPositionCard" role="button" tabindex="0" aria-label="Open 29-day Sun and Moon position graph" title="Open 29-day Sun/Moon position">
+      <header>Sun Position</header>
+      <div class="sun-times">
+        <strong id="sunRiseTime">--</strong><strong id="sunNoonTime">--</strong><strong id="sunSetTime">--</strong>
+      </div>
+      <canvas id="sunMoonPositionCanvas" width="880" height="430" aria-label="Sun and Moon elevation through the day"></canvas>
+      <div class="moon-times">
+        <strong id="positionMoonRise">--</strong><strong id="positionMoonSet">--</strong>
+      </div>
+      <header class="moon-position-title">Moon Position</header>
+    </article>
+
+    <article class="astro-card astronomy-expanded-card" id="sunMoon29Card" role="button" tabindex="0" aria-label="Close 29-day Sun and Moon position graph" title="Close 29-day Sun/Moon position" aria-hidden="true">
+      <header>29 Days Sun/Moon Position</header>
+      <canvas id="sunMoon29Canvas" width="1900" height="260" aria-label="Sun and Moon positions for the next 29 days"></canvas>
+      <div class="astro-meta" id="sunMoon29Meta">29-day position data unavailable</div>
     </article>
   </section>
 

@@ -7,60 +7,128 @@
   <link rel="stylesheet" href="admin.css">
 </head>
 <body>
-<main>
-  <header class="hero">
-    <div><h1>Nodus WeeWX Setup</h1><p id="device">Loading device…</p></div>
-    <a class="dashboard-button" href="../">Dashboard</a>
-  </header>
-  <div id="notice" role="status"></div>
+<main class="settings-dialog">
+  <header class="dialog-header"><h1 id="dialog-title">Sensor Settings &amp; Calibration</h1></header>
+  <h2 id="context-title">Loading device…</h2>
 
-  <nav class="setup-tabs" aria-label="Setup section">
-    <a href="#sensor" data-panel="sensor">Sensor</a>
-    <a href="#switch" data-panel="switch">Switch &amp; automations</a>
-  </nav>
+  <div class="dialog-layout">
+    <aside class="sidebar">
+      <strong id="device">Loading device…</strong>
+      <nav id="sensor-nav" aria-label="Sensor setup">
+        <a href="#sensor-settings" data-view="sensor-settings">Sensor Settings</a>
+        <a href="#sensor-calibration" data-view="sensor-calibration">Device Calibration</a>
+        <a href="#sensor-info" data-view="sensor-info">Sensor Info</a>
+      </nav>
+      <nav id="switch-nav" aria-label="Switch setup" hidden>
+        <a href="#switch-settings" data-view="switch-settings">Switch Settings</a>
+        <a href="#automations" data-view="automations">Automations</a>
+        <a href="#switch-info" data-view="switch-info">Switch Info</a>
+      </nav>
+    </aside>
 
-  <section id="sensor" class="panel">
-    <h2>Sensor settings</h2>
-    <form id="sensor-form">
-      <label>Location<input id="sensor-location" maxlength="64"></label>
-      <h3>Calibration changes</h3>
-      <p class="hint">Leave a calibration blank to keep its current value.</p>
-      <div id="calibrations" class="fields"></div>
-      <button type="submit">Apply sensor settings</button>
-    </form>
-  </section>
+    <section class="workspace">
+      <div id="notice" role="status" aria-live="polite"></div>
+      <section id="sensor-settings" class="view-card" data-title="Sensor Settings">
+        <header><h3>Sensor Settings</h3></header>
+        <form id="sensor-location-form" class="view-form">
+          <div class="view-content form-grid single-field">
+            <label>Location<input id="sensor-location" maxlength="64"></label>
+          </div>
+          <footer><a class="button dashboard" href="../">Dashboard</a><button type="submit" class="primary">Save</button></footer>
+        </form>
+      </section>
 
-  <section id="switch" class="panel">
-    <h2>Switch settings</h2>
-    <form id="switch-form">
-      <label>Location<input id="switch-location" maxlength="64"></label>
-      <h3>Manual control</h3>
-      <p class="hint">A countdown of 0 keeps a manually switched channel ON until it is clicked again.</p>
-      <div id="manual-controls" class="fields"></div>
-      <button type="submit">Apply switch settings</button>
-    </form>
+      <section id="sensor-calibration" class="view-card" data-title="Device Calibration" hidden>
+        <header><h3>Device Calibration</h3></header>
+        <form id="calibration-form" class="view-form">
+          <div class="view-content">
+            <section class="outlined calibration-device">
+              <p>You are calibrating this device:</p>
+              <strong>Sensor ID: <span id="calibration-device-id">—</span></strong>
+              <strong>Device: <span id="calibration-device-type">—</span></strong>
+              <strong>Location: <span id="calibration-location">Unknown</span></strong>
+            </section>
+            <section class="outlined">
+              <h4>Offsets</h4>
+              <p class="hint">Leave a field blank to keep its current value.</p>
+              <div id="calibrations" class="calibration-fields"></div>
+            </section>
+          </div>
+          <footer><a class="button dashboard" href="../">Dashboard</a><button type="submit" class="primary">Apply Device Calibration</button></footer>
+        </form>
+      </section>
 
-    <h3>Automations</h3>
-    <div id="automation-list"></div>
-    <form id="automation-form" class="automation-form">
-      <input id="editing-name" type="hidden">
-      <div class="fields">
-        <label>Automation name<input id="automation-name" maxlength="48" required><small class="hint">Letters, numbers, spaces, dots, underscores, and hyphens.</small></label>
-        <label class="check"><input id="automation-enabled" type="checkbox" checked> Automation enabled</label>
-        <label>Minimum ON seconds<input id="minimum-on" type="number" min="0" value="300"></label>
-        <label>Minimum OFF seconds<input id="minimum-off" type="number" min="0" value="300"></label>
-        <label>Stale sensor data<select id="stale-action"><option value="off">Turn off</option><option value="hold">Hold state</option></select></label>
-      </div>
+      <section id="sensor-info" class="view-card" data-title="Sensor Info" hidden>
+        <header><h3 id="sensor-info-title">Sensor Info</h3></header>
+        <div id="sensor-info-content" class="view-content"></div>
+        <footer><a class="button dashboard" href="../">Dashboard</a></footer>
+      </section>
 
-      <div class="builder-heading"><div><h4>Conditions</h4><p class="hint">Conditions in each group use AND. Add an OR separator to begin another group.</p></div><button id="condition-add" type="button" class="secondary compact">Add condition</button></div>
-      <div id="conditions" class="builder-list"></div>
+      <section id="switch-settings" class="view-card" data-title="Switch Settings" hidden>
+        <header><h3 id="switch-settings-title">Switch Settings</h3></header>
+        <form id="switch-form" class="view-form">
+          <div class="view-content form-grid" id="switch-setting-fields">
+            <label>Location<input id="switch-location" maxlength="64"></label>
+            <div id="switch-labels" class="label-fields"></div>
+          </div>
+          <footer><a class="button dashboard" href="../">Dashboard</a><button type="submit" class="primary">Save</button></footer>
+        </form>
+      </section>
 
-      <div class="builder-heading"><div><h4>Switch actions</h4><p class="hint">Choose the active state and what happens when the conditions become false.</p></div><button id="action-add" type="button" class="secondary compact">Add action</button></div>
-      <div id="automation-actions" class="builder-list"></div>
+      <section id="automations" class="view-card" data-title="Saved Automations" hidden>
+        <header class="saved-heading"><h3>Saved Automations</h3><button id="automation-new" type="button" class="success">New</button></header>
+        <div id="automation-list" class="view-content automation-list"></div>
+        <footer><a class="button dashboard" href="../">Dashboard</a></footer>
+      </section>
 
-      <div class="actions"><button type="submit">Save automation</button><button id="automation-clear" type="button" class="secondary">Clear</button></div>
-    </form>
-  </section>
+      <section id="automation-editor" class="view-card" data-title="Automation Editor" hidden>
+        <form id="automation-form" class="view-form automation-form">
+          <input id="editing-name" type="hidden">
+          <div class="view-content">
+            <div class="form-grid automation-identity">
+              <label>Automation Name<input id="automation-name" maxlength="48" required></label>
+              <label>Enable<select id="automation-enabled"><option value="yes">Yes</option><option value="no">No</option></select></label>
+            </div>
+
+            <section class="outlined builder-section">
+              <h4>Condition(s)</h4>
+              <p class="hint">Use an OR separator to split logic groups (AND within a group, OR between groups).</p>
+              <button id="condition-add" type="button" class="quiet compact">Add Condition</button>
+              <div id="conditions" class="builder-list"></div>
+            </section>
+
+            <section class="outlined builder-section">
+              <h4>Action(s)</h4>
+              <button id="action-add" type="button" class="quiet compact">Add Action</button>
+              <div id="automation-actions" class="builder-list"></div>
+            </section>
+
+            <details class="behavior-settings">
+              <summary>Automation behavior</summary>
+              <div class="form-grid">
+                <label>Minimum ON seconds<input id="minimum-on" type="number" min="0" value="300"></label>
+                <label>Minimum OFF seconds<input id="minimum-off" type="number" min="0" value="300"></label>
+                <label>Stale sensor data<select id="stale-action"><option value="off">Turn off</option><option value="hold">Hold state</option></select></label>
+              </div>
+            </details>
+            <button type="submit" class="success wide-save">Save</button>
+          </div>
+          <footer class="automation-footer">
+            <a class="button dashboard" href="../">Dashboard</a>
+            <button id="saved-automations" type="button" class="dashboard">Saved Automations</button>
+            <button id="automation-clear" type="button" class="success">New</button>
+            <button id="automation-remove" type="button" class="danger">Remove</button>
+          </footer>
+        </form>
+      </section>
+
+      <section id="switch-info" class="view-card" data-title="Switch Info" hidden>
+        <header><h3 id="switch-info-title">Switch Info</h3></header>
+        <div id="switch-info-content" class="view-content"></div>
+        <footer><a class="button dashboard" href="../">Dashboard</a></footer>
+      </section>
+    </section>
+  </div>
 </main>
 <script src="admin.js"></script>
 </body>
