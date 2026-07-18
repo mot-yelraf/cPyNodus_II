@@ -3,11 +3,40 @@
 This directory is the complete `Nodus` WeeWX skin bundle. It arranges
 metric cards alphabetically, omits cards whose current observation is
 unavailable, and reloads the generated report in the browser every 60 seconds.
-When the optional Nodus automation service is enabled, it also shows each
+The centered `Nodus Automatio Instrumentorum` title is followed by the latest
+data timestamp and the Sun and Moon cards. Device identity, firmware, sensor
+setup gear, and sensor description are centered above the metric cards.
+The template versions its stylesheet and dashboard-script URLs so an upgraded
+installation cannot combine new report markup with stale browser assets.
+It shows every switch discovered from retained Nodus metadata, including its
+label, current state, and recent events. Automated switch cells are green
+regardless of their current ON/OFF state. Neutral manual cells can be clicked
+to toggle the switch, with a five-second guard and an optional persisted
+one-shot countdown. The switch column shows the label and channel ID. The event
+area is five lines high and scrolls through up to twenty retained entries.
+Event lines use `<timestamp> <rule name> : <state>`. When the optional Nodus automation
+service is enabled, it also shows each
 configured switch rule's channel state, current decision, last confirmed
 action, and error status.
 
-For a fresh installation, copy `index.html.tmpl`, `skin.conf`, and `style.css`
+The generated metrics dashboard and its setup page share the visible
+`/weewx/nodus/` URL tree. Sensor and switch setup gears open `setup/#sensor`
+and `setup/#switch`; the page uses separate tabs and has a Dashboard return
+button. The switch-status service supplies its unauthenticated LAN API on TCP
+port 8767. The UI supports locations, manual countdowns, change-only calibration
+writes, and bounded host-side
+automations with AND/OR metric, timer, time/day, Astral, and switch-state
+conditions plus multiple switch actions. See `docs/weewx.md` for its limits,
+LAN exposure, and MQTT ACL requirements.
+Automation-card titles show `<automation name> : Enabled|Disabled`; disabled
+rules are display-only and do not control a channel.
+
+The installer stores reusable operator answers in
+`integrations/weewx/<device_id>.toml`. These mode-`0600` profiles are ignored
+by Git because they can contain an MQTT password.
+
+For a fresh installation, copy `index.html.tmpl`, `skin.conf`, `style.css`, and
+`dashboard.js`
 into the host's `Nodus` skin directory. When updating a customized
 installation, keep its existing `style.css` unless the supplied default style
 is wanted.

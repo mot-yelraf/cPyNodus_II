@@ -6,6 +6,7 @@ import os
 import re
 import threading
 import time
+from datetime import datetime, timedelta
 
 try:
     import weewx
@@ -33,6 +34,7 @@ except ImportError:  # Allow host-side tests without a WeeWX installation.
 log = logging.getLogger(__name__)
 
 _DEFAULT_STATUS_FILE = "/var/lib/weewx/nodus_automation.json"
+_DEFAULT_RULES_FILE = "/var/lib/weewx/nodus_automation_rules.json"
 _DAY_NAMES = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 
 
@@ -121,6 +123,77 @@ def _parse_condition(value, name):
     }
 
 
+def _parse_advanced_condition(source, name):
+    """Build one runtime condition from the version-two JSON schema."""
+    kind = str(source.get("type") or "metric").strip().lower()
+    if kind == "or":
+        return {"type": "or", "name": name}
+    if kind == "metric":
+        parsed = _parse_condition(
+            "{}, {}, {}, {}".format(
+                source.get("metric") or "",
+                source.get("direction") or "above",
+                source.get("on_threshold"),
+                source.get("off_threshold"),
+            ),
+            name,
+        )
+        parsed["type"] = "metric"
+        return parsed
+    if kind == "time":
+        days = [item[:3].lower() for item in _as_list(source.get("days"))]
+        return {
+            "type": "time",
+            "name": name,
+            "start_minute": _parse_clock(source.get("start") or "00:00"),
+            "end_minute": _parse_clock(source.get("end") or "00:00"),
+            "days": days or list(_DAY_NAMES),
+        }
+    if kind == "timer":
+        duration = int(source.get("duration_minutes") or 0)
+        period = int(source.get("period_minutes") or 0)
+        if duration < 1 or period < 2 or duration >= period:
+            raise ValueError("{} has an invalid timer window".format(name))
+        return {
+            "type": "timer",
+            "name": name,
+            "duration_seconds": duration * 60,
+            "period_seconds": period * 60,
+            "anchor_epoch": max(0, int(source.get("anchor_epoch") or 0)),
+        }
+    if kind == "astral":
+        return {
+            "type": "astral",
+            "name": name,
+            "event": str(source.get("event") or "sunrise").strip().lower(),
+            "offset_minutes": int(source.get("offset_minutes") or 0),
+            "days": [
+                item[:3].lower() for item in _as_list(source.get("days"))
+            ]
+            or list(_DAY_NAMES),
+        }
+    if kind == "switch":
+        return {
+            "type": "switch",
+            "name": name,
+            "channel_id": str(source.get("channel_id") or "").strip(),
+            "state": str(source.get("state") or "on").strip().lower() == "on",
+        }
+    raise ValueError("{} has unsupported type {}".format(name, kind))
+
+
+def _parse_advanced_action(source):
+    """Build one runtime switch action from the version-two JSON schema."""
+    return {
+        "channel_id": str(source.get("channel_id") or "").strip(),
+        "state": str(source.get("state") or "on").strip().lower() == "on",
+        "false_action": str(source.get("false_action") or "opposite")
+        .strip()
+        .lower(),
+        "delay_seconds": max(0, int(source.get("delay_seconds") or 0)),
+    }
+
+
 def _section_names(section):
     """Return ConfigObj subsection names or plain mapping keys."""
     names = getattr(section, "sections", None)
@@ -137,6 +210,48 @@ def _parse_rules(section):
     for rule_name in _section_names(rules_section):
         source = rules_section[rule_name]
         if not _to_bool(source.get("enabled"), True):
+            continue
+        if source.get("conditions") is not None and source.get("actions") is not None:
+            conditions = [
+                _parse_advanced_condition(item, "condition_{}".format(index))
+                for index, item in enumerate(source.get("conditions") or (), 1)
+            ]
+            actions = [
+                _parse_advanced_action(item) for item in source.get("actions") or ()
+            ]
+            if not conditions or not actions:
+                raise ValueError(
+                    "rule {} has no conditions or actions".format(rule_name)
+                )
+            action_channels = [item["channel_id"] for item in actions]
+            if any(not channel_id for channel_id in action_channels):
+                raise ValueError("rule {} has an invalid action".format(rule_name))
+            if any(channel_id in used_channels for channel_id in action_channels):
+                raise ValueError(
+                    "more than one enabled rule targets {}".format(
+                        ", ".join(action_channels)
+                    )
+                )
+            used_channels.update(action_channels)
+            rules.append(
+                {
+                    "name": str(rule_name),
+                    "conditions": conditions,
+                    "actions": actions,
+                    "stale_action": str(source.get("stale_action") or "off")
+                    .strip()
+                    .lower(),
+                    "stale_after": int(
+                        source.get("stale_after") or section.get("stale_after") or 180
+                    ),
+                    "minimum_on": int(source.get("minimum_on_seconds") or 0),
+                    "minimum_off": int(source.get("minimum_off_seconds") or 0),
+                    "retry_seconds": int(source.get("retry_seconds") or 60),
+                    "last_decision": "waiting",
+                    "last_action": "",
+                    "last_error": "",
+                }
+            )
             continue
         conditions = []
         for key in sorted(source):
@@ -169,6 +284,16 @@ def _parse_rules(section):
                 "name": str(rule_name),
                 "channel_id": channel_id,
                 "conditions": conditions,
+                "actions": [
+                    {
+                        "channel_id": channel_id,
+                        "state": True,
+                        "false_action": "off"
+                        if outside == "off"
+                        else "hold",
+                        "delay_seconds": 0,
+                    }
+                ],
                 "start_minute": _parse_clock(source.get("start_time") or "00:00"),
                 "end_minute": _parse_clock(source.get("end_time") or "00:00"),
                 "days": days or list(_DAY_NAMES),
@@ -187,6 +312,46 @@ def _parse_rules(section):
             }
         )
     return rules
+
+
+def _disabled_rules(section):
+    """Return display-only definitions for saved disabled rules."""
+    rows = []
+    rules_section = section.get("rules", {})
+    for rule_name in _section_names(rules_section):
+        source = rules_section[rule_name]
+        if _to_bool(source.get("enabled"), True):
+            continue
+        actions = source.get("actions") or ()
+        if isinstance(actions, dict):
+            actions = actions.values()
+        channel_ids = [
+            str(action.get("channel_id") or "").strip()
+            for action in actions
+            if str(action.get("channel_id") or "").strip()
+        ]
+        legacy_channel = str(source.get("channel_id") or "").strip()
+        if legacy_channel and legacy_channel not in channel_ids:
+            channel_ids.append(legacy_channel)
+        rows.append({"name": str(rule_name), "channel_ids": channel_ids})
+    return rows
+
+
+def _rules_source(section):
+    """Load optional UI-managed rules without exposing the WeeWX config."""
+    path = str(section.get("rules_file") or "").strip()
+    if not path:
+        return section
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except FileNotFoundError:
+        return {"rules": {}}
+    if not isinstance(data, dict) or not isinstance(data.get("rules"), dict):
+        raise ValueError("Nodus automation rules file is invalid")
+    source = dict(section)
+    source["rules"] = data["rules"]
+    return source
 
 
 def _mqtt_section(config_dict):
@@ -250,16 +415,58 @@ def _command_payload(channel, desired, message_id):
 
 
 class AutomationController:
-    """Evaluate rules and coordinate correlated Nodus switch commands."""
+    """Evaluate advanced rules and confirm correlated Nodus commands."""
 
-    def __init__(self, rules, publisher, command_timeout=15):
+    def __init__(
+        self,
+        rules,
+        publisher,
+        command_timeout=15,
+        latitude=None,
+        longitude=None,
+        runtime_file="",
+    ):
         self.rules = rules
         self.publisher = publisher
         self.command_timeout = max(1, int(command_timeout))
+        self.latitude = float(latitude) if latitude is not None else None
+        self.longitude = float(longitude) if longitude is not None else None
+        self.runtime_file = str(runtime_file or "").strip()
         self.channels = {}
         self.observations = {}
         self.pending = {}
+        self.delays = {}
+        self.retry_not_before = {}
+        self.active_actions = self._load_runtime()
         self.sequence = 0
+
+    def _load_runtime(self):
+        if not self.runtime_file:
+            return {}
+        try:
+            with open(self.runtime_file, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+            active = data.get("active_actions") or {}
+            return active if isinstance(active, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def _save_runtime(self):
+        if not self.runtime_file:
+            return
+        temporary = "{}.tmp.{}".format(self.runtime_file, os.getpid())
+        try:
+            with open(temporary, "w", encoding="utf-8") as handle:
+                json.dump(
+                    {"active_actions": self.active_actions},
+                    handle,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+                handle.write("\n")
+            os.replace(temporary, self.runtime_file)
+        except OSError as exc:
+            log.warning("Unable to save Nodus automation runtime state: %s", exc)
 
     def update_meta(self, payload, now=None):
         """Load authoritative retained switch metadata and initial states."""
@@ -333,7 +540,7 @@ class AutomationController:
         return True
 
     def evaluate(self, packet=None, now=None):
-        """Evaluate all enabled rules against current observations and time."""
+        """Evaluate all enabled rules against observations, time, and state."""
         now = float(now if now is not None else time.time())
         packet = packet or {}
         sample_time = float(packet.get("dateTime") or now)
@@ -341,68 +548,260 @@ class AutomationController:
             if name != "dateTime" and value is not None:
                 self.observations[name] = (value, sample_time)
         self._expire_pending(now)
+        self._cleanup_inactive_actions(now)
         for rule in self.rules:
             self._evaluate_rule(rule, now)
 
+    def _cleanup_inactive_actions(self, now):
+        """Restore prior state when a previous-state action is removed."""
+        current_keys = set()
+        current_channels = set()
+        for rule in self.rules:
+            for action in rule["actions"]:
+                current_channels.add(action["channel_id"])
+                if action.get("false_action") == "previous_state":
+                    current_keys.add(self._action_key(rule, action))
+        for key, active in list(self.active_actions.items()):
+            if key in current_keys:
+                continue
+            channel_id = str(active.get("channel_id") or "")
+            if channel_id in current_channels:
+                self.active_actions.pop(key, None)
+                self._save_runtime()
+                continue
+            channel = self.channels.get(channel_id)
+            if not channel or "state" not in channel:
+                continue
+            desired = bool(active.get("previous"))
+            if channel["state"] == desired:
+                self.active_actions.pop(key, None)
+                self._save_runtime()
+                continue
+            if any(
+                pending["channel_id"] == channel_id
+                for pending in self.pending.values()
+            ):
+                continue
+            if now < self.retry_not_before.get(channel_id, 0):
+                continue
+            cleanup_rule = {
+                "name": key.split("|", 1)[0] or "removed-rule",
+                "retry_seconds": 60,
+                "last_action": "",
+                "last_error": "",
+            }
+            self._send(
+                cleanup_rule,
+                channel,
+                desired,
+                now,
+                release_key=key,
+            )
+
+    @staticmethod
+    def _groups(conditions):
+        groups = []
+        current = []
+        for condition in conditions:
+            if condition.get("type") == "or":
+                if current:
+                    groups.append(current)
+                    current = []
+                continue
+            current.append(condition)
+        if current:
+            groups.append(current)
+        return groups
+
+    def _astral_result(self, condition, now):
+        if self.latitude is None or self.longitude is None:
+            return None
+        local = datetime.fromtimestamp(now).astimezone()
+        if _DAY_NAMES[local.weekday()] not in condition.get("days", _DAY_NAMES):
+            return False
+        try:
+            from astral import Observer
+            from astral.sun import sun
+
+            events = sun(
+                Observer(latitude=self.latitude, longitude=self.longitude),
+                date=local.date(),
+                tzinfo=local.tzinfo,
+            )
+            offset = timedelta(minutes=condition.get("offset_minutes", 0))
+            sunrise = events["sunrise"] + offset
+            sunset = events["sunset"] + offset
+        except Exception as exc:
+            log.warning("Nodus automation Astral calculation failed: %s", exc)
+            return None
+        event = condition.get("event")
+        if event == "sunrise_to_sunset":
+            return sunrise <= local < sunset
+        if event == "sunset_to_sunrise":
+            return local >= sunset or local < sunrise
+        if event == "sunrise":
+            return local >= sunrise
+        if event == "sunset":
+            return local >= sunset
+        return None
+
+    def _condition_result(self, condition, rule, now):
+        kind = condition.get("type", "metric")
+        if kind == "metric":
+            reading = self.observations.get(condition["observation"])
+            if not reading or now - reading[1] > rule.get("stale_after", 180):
+                return None
+            condition["active"] = _condition_active(
+                condition, reading[0], condition.get("active", False)
+            )
+            return condition["active"]
+        if kind == "time":
+            return _time_window_active(
+                now,
+                condition["start_minute"],
+                condition["end_minute"],
+                condition.get("days"),
+            )
+        if kind == "timer":
+            period = condition["period_seconds"]
+            anchor = condition.get("anchor_epoch", 0)
+            if anchor:
+                phase = max(0, int(now) - anchor) % period
+            else:
+                local = time.localtime(now)
+                elapsed = local.tm_hour * 3600 + local.tm_min * 60 + local.tm_sec
+                phase = elapsed % period
+            return phase < condition["duration_seconds"]
+        if kind == "astral":
+            return self._astral_result(condition, now)
+        if kind == "switch":
+            channel = self.channels.get(condition["channel_id"])
+            if not channel or "state" not in channel:
+                return None
+            return bool(channel["state"]) == condition["state"]
+        return None
+
+    def _rule_result(self, rule, now):
+        conditions = list(rule["conditions"])
+        if "start_minute" in rule:
+            conditions.append(
+                {
+                    "type": "time",
+                    "start_minute": rule["start_minute"],
+                    "end_minute": rule["end_minute"],
+                    "days": rule["days"],
+                }
+            )
+        group_results = []
+        for group in self._groups(conditions):
+            results = [self._condition_result(item, rule, now) for item in group]
+            if any(result is False for result in results):
+                group_results.append(False)
+            elif any(result is None for result in results):
+                group_results.append(None)
+            else:
+                group_results.append(True)
+        if any(result is True for result in group_results):
+            return True
+        if group_results and all(result is False for result in group_results):
+            return False
+        return None
+
+    @staticmethod
+    def _action_key(rule, action):
+        return "{}|{}".format(rule["name"], action["channel_id"])
+
+    def _false_desired(self, rule, action):
+        behavior = action.get("false_action", "opposite")
+        key = self._action_key(rule, action)
+        if behavior == "opposite":
+            return not action["state"]
+        if behavior == "on":
+            return True
+        if behavior == "off":
+            return False
+        if behavior == "previous_state":
+            active = self.active_actions.get(key)
+            return None if active is None else bool(active.get("previous"))
+        return None
+
     def _evaluate_rule(self, rule, now):
-        channel = self.channels.get(rule["channel_id"])
-        if not channel:
+        result = self._rule_result(rule, now)
+        if result is True:
+            rule["last_decision"] = "condition groups active"
+        elif result is False:
+            rule["last_decision"] = "condition groups idle"
+        else:
+            stale_metric = any(
+                condition.get("type", "metric") == "metric"
+                and (
+                    condition.get("observation") not in self.observations
+                    or now
+                    - self.observations[condition["observation"]][1]
+                    > rule.get("stale_after", 180)
+                )
+                for condition in rule["conditions"]
+            )
+            rule["last_decision"] = (
+                "sensor data stale" if stale_metric else "condition state unknown"
+            )
+        for action in rule["actions"]:
+            self._evaluate_action(rule, action, result, now)
+
+    def _evaluate_action(self, rule, action, result, now):
+        channel = self.channels.get(action["channel_id"])
+        if not channel or "state" not in channel:
             rule["last_decision"] = "waiting for switch metadata"
             return
-        pending = next(
-            (
-                item
-                for item in self.pending.values()
-                if item["channel_id"] == rule["channel_id"]
-            ),
-            None,
-        )
-        if pending:
-            rule["last_decision"] = "waiting for command result"
+        if any(
+            pending["channel_id"] == action["channel_id"]
+            for pending in self.pending.values()
+        ):
+            rule["last_decision"] += "; waiting for command result"
             return
-
-        values_fresh = True
-        all_active = True
-        for condition in rule["conditions"]:
-            reading = self.observations.get(condition["observation"])
-            if not reading or now - reading[1] > rule["stale_after"]:
-                values_fresh = False
-                continue
-            condition["active"] = _condition_active(
-                condition, reading[0], condition["active"]
-            )
-            all_active = all_active and condition["active"]
-
-        in_window = _time_window_active(
-            now, rule["start_minute"], rule["end_minute"], rule["days"]
-        )
-        desired = None
-        if not values_fresh:
-            rule["last_decision"] = "sensor data stale"
-            if rule["stale_action"] == "off":
-                desired = False
-        elif not in_window:
-            rule["last_decision"] = "outside active window"
-            if rule["outside_window"] == "off":
-                desired = False
+        key = self._action_key(rule, action)
+        if result is True:
+            desired = action["state"]
+            delay = action.get("delay_seconds", 0)
+            if delay:
+                due = self.delays.setdefault(key, now + delay)
+                if now < due:
+                    rule["last_decision"] += "; action delay"
+                    return
+            if (
+                action.get("false_action") == "previous_state"
+                and key not in self.active_actions
+                and channel["state"] != desired
+            ):
+                self.active_actions[key] = {
+                    "channel_id": action["channel_id"],
+                    "previous": bool(channel["state"]),
+                }
+                self._save_runtime()
+        elif result is False:
+            self.delays.pop(key, None)
+            desired = self._false_desired(rule, action)
         else:
-            desired = bool(all_active)
-            rule["last_decision"] = (
-                "conditions active" if desired else "conditions idle"
-            )
-
-        if desired is None or channel.get("state") == desired:
+            self.delays.pop(key, None)
+            desired = False if rule.get("stale_action") == "off" else None
+        if desired is None:
             return
-        if now < rule["retry_not_before"]:
+        if channel["state"] == desired:
+            if result is not True and key in self.active_actions:
+                self.active_actions.pop(key, None)
+                self._save_runtime()
+            return
+        if now < self.retry_not_before.get(action["channel_id"], 0):
             rule["last_decision"] += "; retry cooldown"
             return
-        dwell = rule["minimum_on"] if channel.get("state") else rule["minimum_off"]
+        dwell = rule["minimum_on"] if channel["state"] else rule["minimum_off"]
         if now - channel.get("last_changed", now) < dwell:
             rule["last_decision"] += "; minimum dwell"
             return
-        self._send(rule, channel, desired, now)
+        release_key = key if result is not True and key in self.active_actions else ""
+        self._send(rule, channel, desired, now, release_key=release_key)
 
-    def _send(self, rule, channel, desired, now):
+    def _send(self, rule, channel, desired, now, release_key=""):
         self.sequence += 1
         token = re.sub(r"[^A-Za-z0-9_.-]+", "-", rule["name"]).strip("-")
         message_id = "weewx-{}-{}-{}".format(token or "rule", int(now), self.sequence)
@@ -412,9 +811,10 @@ class AutomationController:
             json.dumps(payload, separators=(",", ":")),
             False,
         )
+        retry_at = now + max(1, rule["retry_seconds"])
+        self.retry_not_before[channel["channel_id"]] = retry_at
         if published is False:
             rule["last_error"] = "MQTT publish failed"
-            rule["retry_not_before"] = now + max(1, rule["retry_seconds"])
             log.warning(
                 "Nodus automation %s failed to publish %s",
                 rule["name"],
@@ -430,33 +830,27 @@ class AutomationController:
             "ack": False,
             "result": False,
             "state_seen": False,
+            "release_key": release_key,
         }
-        rule["retry_not_before"] = now + max(1, rule["retry_seconds"])
-        rule["last_action"] = "requested {}".format("ON" if desired else "OFF")
-        rule["last_error"] = ""
-        log.info(
-            "Nodus automation %s requested %s on %s message_id=%s",
-            rule["name"],
-            "ON" if desired else "OFF",
-            channel["channel_id"],
-            message_id,
+        rule["last_action"] = "requested {} on {}".format(
+            "ON" if desired else "OFF", channel["channel_id"]
         )
+        rule["last_error"] = ""
 
     def _finish_completed(self, now):
         for message_id, pending in list(self.pending.items()):
             if pending["ack"] and pending["result"] and pending["state_seen"]:
                 rule = pending["rule"]
-                rule["last_action"] = "confirmed {} at {}".format(
+                rule["last_action"] = "confirmed {} at {} on {}".format(
                     "ON" if pending["desired"] else "OFF",
                     time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
+                    pending["channel_id"],
                 )
                 rule["last_error"] = ""
-                log.info(
-                    "Nodus automation %s confirmed %s message_id=%s",
-                    rule["name"],
-                    "ON" if pending["desired"] else "OFF",
-                    message_id,
-                )
+                release_key = pending.get("release_key")
+                if release_key:
+                    self.active_actions.pop(release_key, None)
+                    self._save_runtime()
                 del self.pending[message_id]
 
     def _fail_pending(self, pending, error):
@@ -479,15 +873,28 @@ class AutomationController:
         now = int(now if now is not None else time.time())
         rows = []
         for rule in self.rules:
-            channel = self.channels.get(rule["channel_id"], {})
+            actions = []
+            for action in rule["actions"]:
+                channel = self.channels.get(action["channel_id"], {})
+                actions.append(
+                    {
+                        "channel_id": action["channel_id"],
+                        "label": channel.get("label") or action["channel_id"],
+                        "state": "ON" if channel.get("state") else "OFF"
+                        if "state" in channel
+                        else "unknown",
+                    }
+                )
+            first = actions[0] if actions else {}
             rows.append(
                 {
                     "name": rule["name"],
-                    "channel_id": rule["channel_id"],
-                    "label": channel.get("label") or rule["channel_id"],
-                    "state": "ON" if channel.get("state") else "OFF"
-                    if "state" in channel
-                    else "unknown",
+                    "enabled": True,
+                    "enable_state": "Enabled",
+                    "channel_id": first.get("channel_id", ""),
+                    "label": first.get("label", ""),
+                    "state": first.get("state", "unknown"),
+                    "actions": actions,
                     "decision": rule["last_decision"],
                     "last_action": rule["last_action"] or "none",
                     "error": rule["last_error"],
@@ -503,6 +910,20 @@ def _write_status(path, status):
         json.dump(status, handle, separators=(",", ":"), sort_keys=True)
         handle.write("\n")
     os.replace(temporary, path)
+
+
+def _skin_status(status):
+    """Normalize older automation snapshots for the current skin."""
+    result = dict(status)
+    rules = []
+    for source in status.get("rules") or ():
+        rule = dict(source)
+        enabled = _to_bool(rule.get("enabled"), True)
+        rule["enabled"] = enabled
+        rule["enable_state"] = "Enabled" if enabled else "Disabled"
+        rules.append(rule)
+    result["rules"] = rules
+    return result
 
 
 def _new_mqtt_client(mqtt_module, client_id):
@@ -521,22 +942,35 @@ class NodusAutomation(StdService):
         section = config_dict.get("NodusAutomation", {})
         self.enabled = _to_bool(section.get("enabled"), False)
         self.status_file = str(section.get("status_file") or _DEFAULT_STATUS_FILE)
+        self.runtime_file = str(section.get("runtime_file") or "").strip()
+        self.rules_file = str(section.get("rules_file") or "").strip()
+        self.rules_mtime = None
         self.lock = threading.RLock()
         self.stop_event = threading.Event()
         self.last_status = ""
         self.client = None
+        self.disabled_rules = []
+        self.rule_order = []
         self.controller = AutomationController([], lambda *_args: False)
-        if not self.enabled:
+        if not self.enabled and not self.rules_file:
             self._save_status()
             return
 
-        rules = _parse_rules(section)
-        if not rules:
+        rules_source = _rules_source(section)
+        rules = _parse_rules(rules_source)
+        self.disabled_rules = _disabled_rules(rules_source)
+        self.rule_order = _section_names(rules_source.get("rules", {}))
+        if self.enabled and not self.rules_file and not rules:
             raise ValueError("NodusAutomation is enabled but has no enabled rules")
         mqtt_section = _mqtt_section(config_dict)
         self.meta_topic = _derive_meta_topic(config_dict, section.get("meta_topic"))
         self.controller = AutomationController(
-            rules, self._publish, section.get("command_timeout") or 15
+            rules,
+            self._publish,
+            section.get("command_timeout") or 15,
+            config_dict.get("Station", {}).get("latitude"),
+            config_dict.get("Station", {}).get("longitude"),
+            self.runtime_file,
         )
 
         import paho.mqtt.client as mqtt
@@ -564,6 +998,7 @@ class NodusAutomation(StdService):
             target=self._watchdog, name="nodus-automation", daemon=True
         )
         self.watchdog.start()
+        self._remember_rules_mtime()
         self._save_status()
 
     def _on_connect(self, client, _userdata, _flags, reason_code, _properties=None):
@@ -601,11 +1036,78 @@ class NodusAutomation(StdService):
     def _watchdog(self):
         while not self.stop_event.wait(5):
             with self.lock:
+                self._reload_rules()
                 self.controller.evaluate()
                 self._save_status()
 
+    def _remember_rules_mtime(self):
+        if not self.rules_file:
+            return
+        try:
+            self.rules_mtime = os.path.getmtime(self.rules_file)
+        except OSError:
+            self.rules_mtime = None
+
+    def _reload_rules(self):
+        """Reload UI-managed rules after an atomic file replacement."""
+        if not self.rules_file:
+            return
+        try:
+            modified = os.path.getmtime(self.rules_file)
+        except OSError:
+            modified = None
+        if modified == self.rules_mtime:
+            return
+        try:
+            rules_source = _rules_source({"rules_file": self.rules_file})
+            rules = _parse_rules(rules_source)
+            disabled_rules = _disabled_rules(rules_source)
+        except Exception as exc:
+            log.error("Unable to reload Nodus automation rules: %s", exc)
+            self.rules_mtime = modified
+            return
+        self.controller.rules = rules
+        self.disabled_rules = disabled_rules
+        self.rule_order = _section_names(rules_source.get("rules", {}))
+        self.rules_mtime = modified
+        log.info("Reloaded %d Nodus automation rule(s)", len(rules))
+
     def _save_status(self):
         status = self.controller.status(enabled=self.enabled)
+        for rule in self.disabled_rules:
+            actions = []
+            for channel_id in rule["channel_ids"]:
+                channel = self.controller.channels.get(channel_id, {})
+                actions.append(
+                    {
+                        "channel_id": channel_id,
+                        "label": channel.get("label") or channel_id,
+                        "state": "ON"
+                        if channel.get("state")
+                        else "OFF"
+                        if "state" in channel
+                        else "unknown",
+                    }
+                )
+            first = actions[0] if actions else {}
+            status["rules"].append(
+                {
+                    "name": rule["name"],
+                    "enabled": False,
+                    "enable_state": "Disabled",
+                    "channel_id": first.get("channel_id", ""),
+                    "label": first.get("label", ""),
+                    "state": first.get("state", "unknown"),
+                    "actions": actions,
+                    "decision": "disabled",
+                    "last_action": "none",
+                    "error": "",
+                }
+            )
+        order = {name: index for index, name in enumerate(self.rule_order)}
+        status["rules"].sort(
+            key=lambda rule: order.get(rule["name"], len(order))
+        )
         comparison = dict(status)
         comparison["updated"] = 0
         serialized = json.dumps(comparison, separators=(",", ":"), sort_keys=True)
@@ -637,6 +1139,6 @@ class NodusAutomationStatus(SearchList):
         path = str(section.get("status_file") or _DEFAULT_STATUS_FILE)
         try:
             with open(path, "r", encoding="utf-8") as handle:
-                self.nodus_automation = json.load(handle)
+                self.nodus_automation = _skin_status(json.load(handle))
         except Exception:
             self.nodus_automation = {"enabled": False, "updated": 0, "rules": []}

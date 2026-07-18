@@ -11,6 +11,7 @@ SKIN_ROOT = (
 IDENTITY_EXTENSION = SKIN_ROOT.parent / "bin" / "user" / "nodus_identity.py"
 UNITS_EXTENSION = SKIN_ROOT.parent / "bin" / "user" / "nodus_units.py"
 SCHEMA_EXTENSION = SKIN_ROOT.parent / "bin" / "user" / "nodus_schema.py"
+SWITCH_EXTENSION = SKIN_ROOT.parent / "bin" / "user" / "nodus_switch.py"
 
 
 def test_nodus_refreshes_and_hides_unavailable_observations():
@@ -18,13 +19,32 @@ def test_nodus_refreshes_and_hides_unavailable_observations():
     stylesheet = (SKIN_ROOT / "style.css").read_text(encoding="utf-8")
 
     assert '<meta http-equiv="refresh" content="60" />' in template
-    assert '<div class="brand-title">Nodus Sensor</div>' in template
+    assert (
+        '<div class="brand-title">Nodus Automatio Instrumentorum</div>'
+        in template
+    )
+    assert '<span class="data-updated-label">Data Updated:</span>' in template
+    assert "As of:" not in template
+    assert "Indoor Metrics" not in template
     assert "font-size: clamp(1.7rem, 3vw, 2.4rem);" in stylesheet
+    assert "text-align: center;" in stylesheet
     assert template.index('class="brand-title"') < template.index(
+        'class="data-updated"'
+    )
+    assert template.index('class="data-updated"') < template.index(
+        'class="mini-grid"'
+    )
+    assert template.index('class="mini-grid"') < template.index(
+        'class="metric-heading"'
+    )
+    assert template.index('class="metric-heading"') < template.index(
         'class="device-identity"'
     )
     assert template.index('class="device-identity"') < template.index(
         'class="brand-sub"'
+    )
+    assert template.index('class="brand-sub"') < template.index(
+        'class="tile-grid"'
     )
     assert '<div class="brand-sub">$nodus.description</div>' in template
     for observation in (
@@ -69,10 +89,13 @@ def test_nodus_preserves_requested_metric_precision():
 
 
 def test_nodus_bundle_includes_the_copied_stylesheet():
+    template = (SKIN_ROOT / "index.html.tmpl").read_text(encoding="utf-8")
     skin_conf = (SKIN_ROOT / "skin.conf").read_text(encoding="utf-8")
     stylesheet = (SKIN_ROOT / "style.css").read_text(encoding="utf-8")
 
-    assert "copy_once = style.css" in skin_conf
+    assert "copy_once = style.css, dashboard.js" in skin_conf
+    assert 'href="style.css?v=20260718-1"' in template
+    assert 'src="dashboard.js?v=20260718-1"' in template
     assert ".tile-grid" in stylesheet
     assert "@media (prefers-color-scheme: dark)" in stylesheet
 
@@ -83,6 +106,8 @@ def test_nodus_skin_uses_current_name_everywhere():
 
     assert SKIN_ROOT.name == "Nodus"
     assert "    skin = Nodus" in skin_conf
+    assert "    site_title = Nodus Automatio Instrumentorum" in skin_conf
+    assert "    nodus_title = Nodus Automatio Instrumentorum" in skin_conf
     assert "Nodus WeeWX skin files" in readme
 
 
@@ -110,8 +135,81 @@ def test_nodus_shows_host_side_switch_automation_status():
     assert "[NodusAutomationStatus]" in skin_conf
     assert '$nodus_automation.enabled' in template
     assert 'class="automation-grid"' in template
+    assert '<header>$rule.name : $rule.enable_state</header>' in template
     assert "$rule.last_action" in template
     assert ".automation-card" in stylesheet
+
+
+def test_nodus_shows_discovered_switches_without_automation_rules():
+    template = (SKIN_ROOT / "index.html.tmpl").read_text(encoding="utf-8")
+    skin_conf = (SKIN_ROOT / "skin.conf").read_text(encoding="utf-8")
+    stylesheet = (SKIN_ROOT / "style.css").read_text(encoding="utf-8")
+
+    assert "user.nodus_switch.NodusSwitchStatusSearchList" in skin_conf
+    assert "[NodusSwitchStatus]" in skin_conf
+    assert "#if $nodus_switch.channels" in template
+    assert '<section class="switch-panel">' in template
+    assert "$channel.label" in template
+    assert '<span>$channel.channel_id</span>' in template
+    assert "$channel.state" in template
+    assert "$channel.automation" in template
+    assert "$event.display" in template
+    assert "mode-$channel.mode_class" in template
+    assert 'data-channel-id="$channel.channel_id"' in template
+    assert 'src="dashboard.js?v=20260718-1"' in template
+    assert ".switch-current.mode-automated" in stylesheet
+    assert ".switch-current.mode-automated .switch-control-mode" in stylesheet
+    assert "grid-template-columns: minmax(150px, 1.05fr)" in stylesheet
+    assert "white-space: nowrap;" in stylesheet
+    assert "width: calc(50% - 12px);" in stylesheet
+    assert "height: calc(5.625rem + 28px);" in stylesheet
+    assert "overflow-y: auto;" in stylesheet
+    assert "font-size: 75%;" in stylesheet
+    assert "white-space: nowrap;" in stylesheet
+    assert ".switch-panel" in stylesheet
+    assert SWITCH_EXTENSION.is_file()
+
+
+def test_nodus_skin_links_sensor_and_switch_gears_to_limited_admin_ui():
+    template = (SKIN_ROOT / "index.html.tmpl").read_text(encoding="utf-8")
+    stylesheet = (SKIN_ROOT / "style.css").read_text(encoding="utf-8")
+
+    assert 'href="setup/#sensor"' in template
+    assert 'href="setup/#switch"' in template
+    assert template.count('class="setup-gear-icon"') == 2
+    assert "⚙" not in template
+    assert ".setup-gear-icon" in stylesheet
+    assert "window.location.hostname" not in template
+    for name in ("index.html", "admin.css", "admin.js"):
+        assert (SKIN_ROOT / "admin" / name).is_file()
+
+
+def test_nodus_admin_ui_labels_automation_threshold_units():
+    script = (SKIN_ROOT / "admin" / "admin.js").read_text(encoding="utf-8")
+
+    assert "state.metric_options" in script
+    assert "ON threshold (${unit})" in script
+    assert "OFF threshold (${unit})" in script
+    assert "pattern=" not in (SKIN_ROOT / "admin" / "index.html").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_nodus_admin_ui_selects_sensor_or_switch_panel_from_hash():
+    page = (SKIN_ROOT / "admin" / "index.html").read_text(encoding="utf-8")
+    script = (SKIN_ROOT / "admin" / "admin.js").read_text(encoding="utf-8")
+    stylesheet = (SKIN_ROOT / "admin" / "admin.css").read_text(encoding="utf-8")
+
+    assert 'href="#sensor" data-panel="sensor"' in page
+    assert 'href="#switch" data-panel="switch"' in page
+    assert 'class="dashboard-button" href="../">Dashboard</a>' in page
+    assert 'href="admin.css"' in page
+    assert 'src="admin.js"' in page
+    assert 'location.hostname}:8767`' in script
+    assert 'location.hash === "#switch"' in script
+    assert 'window.addEventListener("hashchange", selectSetupPanel)' in script
+    assert '$(name).hidden = name !== selected' in script
+    assert ".panel[hidden]" in stylesheet
 
 
 def test_nodus_generates_24_hour_card_micrographs():

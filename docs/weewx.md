@@ -21,11 +21,11 @@ the Raspberry Pi login and a resolvable hostname or SSH configuration alias.
 
 ```text
 Nodus sensor
-  -> nodus/<sensor-id>/data and retained /meta on the MQTT broker
+  -> sensor data, retained /meta and /meta/switch, switch state/events
   -> MQTTSubscribe service or driver
   -> WeeWX loop/archive records
   -> /var/lib/weewx/nodus.sdb for an automated Nodus instance
-  -> Nodus Cheetah report + retained-meta identity extension
+  -> Nodus Cheetah report + retained identity/switch status extensions
   -> /var/www/html/weewx/nodus/index.html
 ```
 
@@ -83,9 +83,11 @@ The installer:
 3. Examines the configured `[Station]` identity for useful defaults.
 4. Preserves the primary WeeWX configuration and creates an independent Nodus
    instance at `/etc/weewx/nodus.conf`.
-5. Installs `python3-paho-mqtt` and MQTTSubscribe 3.1.1 only when missing.
+5. Installs `python3-paho-mqtt`, `python3-astral`, and MQTTSubscribe 3.1.1 only
+   when missing.
 6. Installs the Nodus archive schema, unit registration, retained-MQTT identity
-   extension, and Nodus skin from the clone.
+   extension, switch status/event collector, authenticated setup UI,
+   and Nodus skin from the clone.
 7. Validates MQTTSubscribe before enabling and starting the selected service.
 
 The resulting layout is deliberately predictable: `/etc/weewx/nodus.conf`,
@@ -94,14 +96,32 @@ The resulting layout is deliberately predictable: `/etc/weewx/nodus.conf`,
 `/etc/weewx/weewx.conf` or `weewx.service`. This follows WeeWX's templated
 `weewx@.service` model for multiple instances.
 
+Before starting the service, the installer runs the Nodus report once from
+`/tmp` so the dashboard and its gear destinations immediately reflect the
+installed skin without competing with the long-running API listener. If no
+archive record exists yet, normal WeeWX report generation retries after the
+first archive interval.
+
 The installer prompts for the station coordinates, altitude, MQTT broker,
-Nodus `device_id`, sensor family, subscriber credentials, and TLS settings. It
+Nodus `device_id`, sensor family, MQTT credentials, and TLS settings. It
 backs up an existing Nodus configuration with a timestamped `.bak` suffix
 before replacing it. If dependency installation, validation, or service
 startup fails, the installer restores the prior Nodus configuration and
 restarts the prior Nodus service when it was active. Broker passwords are
 written only to the root/weewx-readable configuration and are not printed in
 the installation summary.
+
+On the first confirmed installation, the answers are saved in
+`integrations/weewx/<device_id>.toml` with mode `0600`. Later runs detect the
+profile from the installed Nodus configuration, or from the only profile in
+that directory, and reuse it without repeating the questions. Use
+`--update-profile` to prompt with saved values as defaults and rewrite it. If
+the directory contains multiple profiles, select one with
+`--device-id <device_id>`.
+
+The profile contains the MQTT subscriber password in plain text because the
+installer must render it into the WeeWX configuration. Keep it private and do
+not commit or broadly distribute it.
 
 The automated canonical mapping currently covers AHT/AVPD/APVPD environmental
 metrics, CO2, AQI, and soil. APVPD plant-side metrics and lux-only observations
@@ -412,8 +432,14 @@ integrations/weewx/Nodus/
   index.html.tmpl
   skin.conf
   style.css
+  dashboard.js
+  admin/index.html
+  admin/admin.css
+  admin/admin.js
 integrations/weewx/bin/user/
   nodus_identity.py
+  nodus_admin.py
+  nodus_switch.py
   nodus_automation.py
   nodus_units.py
   nodus_schema.py
@@ -426,44 +452,61 @@ copy the skin and its identity extension:
 cd /path/to/cPyNodus_II
 
 ssh <user>@<host> \
-  'mkdir -p /tmp/Nodus'
+  'mkdir -p /tmp/Nodus/admin'
 
 scp integrations/weewx/Nodus/index.html.tmpl \
     integrations/weewx/Nodus/skin.conf \
     integrations/weewx/Nodus/style.css \
+    integrations/weewx/Nodus/dashboard.js \
     integrations/weewx/bin/user/nodus_identity.py \
+    integrations/weewx/bin/user/nodus_admin.py \
+    integrations/weewx/bin/user/nodus_switch.py \
     integrations/weewx/bin/user/nodus_automation.py \
     integrations/weewx/bin/user/nodus_units.py \
     integrations/weewx/bin/user/nodus_schema.py \
     <user>@<host>:/tmp/Nodus/
+
+scp integrations/weewx/Nodus/admin/index.html \
+    integrations/weewx/Nodus/admin/admin.css \
+    integrations/weewx/Nodus/admin/admin.js \
+    <user>@<host>:/tmp/Nodus/admin/
 ```
 
 Install the staged files on the Raspberry Pi:
 
 ```bash
 ssh <user>@<host> \
-  'sudo install -d -m 0755 /etc/weewx/skins/Nodus /etc/weewx/bin/user &&
+  'sudo install -d -m 0755 /etc/weewx/skins/Nodus/admin /etc/weewx/bin/user &&
    sudo install -m 0644 /tmp/Nodus/index.html.tmpl /etc/weewx/skins/Nodus/ &&
    sudo install -m 0644 /tmp/Nodus/skin.conf /etc/weewx/skins/Nodus/ &&
    sudo install -m 0644 /tmp/Nodus/style.css /etc/weewx/skins/Nodus/ &&
+   sudo install -m 0644 /tmp/Nodus/dashboard.js /etc/weewx/skins/Nodus/ &&
    sudo install -m 0644 /tmp/Nodus/nodus_identity.py /etc/weewx/bin/user/ &&
+   sudo install -m 0644 /tmp/Nodus/nodus_admin.py /etc/weewx/bin/user/ &&
+   sudo install -m 0644 /tmp/Nodus/nodus_switch.py /etc/weewx/bin/user/ &&
    sudo install -m 0644 /tmp/Nodus/nodus_automation.py /etc/weewx/bin/user/ &&
    sudo install -m 0644 /tmp/Nodus/nodus_units.py /etc/weewx/bin/user/ &&
-   sudo install -m 0644 /tmp/Nodus/nodus_schema.py /etc/weewx/bin/user/'
+   sudo install -m 0644 /tmp/Nodus/nodus_schema.py /etc/weewx/bin/user/ &&
+   sudo install -m 0644 /tmp/Nodus/admin/index.html /etc/weewx/skins/Nodus/admin/ &&
+   sudo install -m 0644 /tmp/Nodus/admin/admin.css /etc/weewx/skins/Nodus/admin/ &&
+   sudo install -m 0644 /tmp/Nodus/admin/admin.js /etc/weewx/skins/Nodus/admin/'
 ```
 
 If the Raspberry Pi already has a customized Nodus `style.css`, back it
 up and omit the final `style.css` install command unless the repository default
 style is wanted.
 
-`style.css` is a `copy_once` skin asset. When updating an already-generated
-Nodus report, also replace its published copy so the new layout takes
-effect immediately:
+`style.css` and `dashboard.js` are `copy_once` skin assets. The supplied HTML
+uses versioned asset URLs so browsers fetch the matching files after an
+upgrade. When updating an already-generated Nodus report manually, also
+replace its published copies so the new layout takes effect immediately:
 
 ```bash
 ssh <user>@<host> \
   'sudo install -o weewx -g weewx -m 0664 \
-   /tmp/Nodus/style.css /var/www/html/weewx/nodus/style.css'
+   /tmp/Nodus/style.css /var/www/html/weewx/nodus/style.css &&
+   sudo install -o weewx -g weewx -m 0664 \
+   /tmp/Nodus/dashboard.js /var/www/html/weewx/nodus/dashboard.js'
 ```
 
 Add the report under `[StdReport]` in `/etc/weewx/weewx.conf`:
@@ -541,6 +584,128 @@ The skin:
   timestamp in the image URL prevents a browser from reusing an older PNG;
 - uses the existing WeeWX almanac for sunrise, sunset, and moon phase.
 
+## Switch status panel
+
+The `user.nodus_switch.NodusSwitchStatus` WeeWX data service runs independently
+of switch automation. It derives the selected device's retained
+`nodus/<device_id>/meta/switch` topic from the exact MQTTSubscribe `/data`
+topic, discovers every channel, then subscribes to each channel's retained
+`state` and live `event` topics. It writes a bounded status snapshot to
+`/var/lib/weewx/nodus_switch.json`.
+
+The generated page displays the switch device ID and location, plus each
+channel's label, current ON/OFF state, host-side automation status, and up to
+twenty recent events. The switch column shows the configured label above the
+channel ID. The event area is five lines tall and scrolls vertically through
+the retained twenty-line maximum. On a four-column desktop metrics grid, the
+switch card spans the width of two metric cards plus their intervening gap.
+Automated channels use a green state-cell background even
+when their current state is OFF. Manual channels use a neutral background and
+their state cell acts as an ON/OFF control with a five-second command guard.
+Events use `<timestamp> <rule name> : <state>`; manual events use
+`Manual` as the rule name. New events use the WeeWX host's local MQTT receipt
+time for display. This avoids applying the host timezone a second time to the
+Pico RTC's already-local wall-clock timestamp; existing cached entries are
+normalized during upgrade. The panel
+appears whenever retained metadata contains at least one channel; automation
+does not need to be enabled. Event history begins while the WeeWX switch status
+service is running because Nodus switch event messages are not retained. The
+cached history survives normal report generation and service restarts.
+
+The automated installer enables this read-only collector with:
+
+```ini
+[NodusSwitchStatus]
+    enabled = true
+    status_file = /var/lib/weewx/nodus_switch.json
+    control_file = /var/lib/weewx/nodus_switch_control.json
+    max_events = 20
+```
+
+For a manual installation, add
+`user.nodus_switch.NodusSwitchStatus` after MQTTSubscribe in
+`[Engine] / [[Services]] / data_services`. A restricted broker account needs
+subscribe access to the selected device's `meta/switch` topic and its channel
+`state`, `event`, `ack`, and `result` topics. Manual dashboard control also
+publishes non-retained channel `config/set` commands.
+
+With multiple exact `/data` topics, set `meta_topic` in `[NodusSwitchStatus]`
+to select one device explicitly. After restarting WeeWX, verify collection:
+
+```bash
+sudo journalctl -u weewx@nodus --since '10 minutes ago' --no-pager -l
+sudo -u weewx test -r /var/lib/weewx/nodus_switch.json
+sudo -u weewx python3 -m json.tool /var/lib/weewx/nodus_switch.json
+```
+
+## Limited setup UI
+
+The generated metrics dashboard remains at
+`http://<weewx-host>/weewx/nodus/`. Its sensor and switch gears open
+`setup/#sensor` and `setup/#switch` within the same visible URL tree. Sensor
+and Switch & Automations tabs keep the two setup areas separate, and a
+Dashboard button returns directly to the metrics dashboard. The UI remains
+intentionally smaller than Sensorius and provides:
+
+- sensor location;
+- explicit, change-only calibration offsets appropriate to the sensor family;
+- switch location and an optional per-channel manual countdown (0 keeps the
+  switch ON until it is clicked again); and
+- bounded host-side switch rules with metric, time/day, repeating timer,
+  sunrise/sunset, switch-state, AND/OR, hysteresis, dwell, delay, and
+  multi-switch action support.
+
+Metric selectors show the canonical unit used by the separate Nodus WeeWX
+instance. The ON/OFF threshold labels and saved-rule summaries repeat that
+unit, so automation thresholds are entered and reviewed in the same units as
+the archived observation. Calibration fields likewise show the unit expected
+by the device.
+
+The setup server runs inside the separate `weewx@nodus` process as the
+unprivileged `weewx` account. It cannot edit `/etc/weewx/nodus.conf`. Automation
+rules are validated and atomically stored in
+`/var/lib/weewx/nodus_automation_rules.json`; the automation service reloads
+them within five seconds without a WeeWX restart. Previous-state action
+ownership is stored in `/var/lib/weewx/nodus_automation_runtime.json`, so a
+normal WeeWX restart does not lose the state that must later be restored.
+Manual countdown settings and active OFF deadlines are stored in
+`/var/lib/weewx/nodus_switch_control.json`, so a host restart does not leave a
+one-shot manual ON command without its scheduled OFF.
+Location and calibration
+changes use non-retained MQTT commands and are reported successful only after
+the correlated Nodus acknowledgement and result.
+
+The setup HTML is installed below the generated dashboard. Its live API is
+provided by the `weewx@nodus` process on TCP port 8767 with cross-origin access
+from the dashboard host. This limited LAN UI is intentionally unauthenticated;
+do not expose port 8767 or the Nodus dashboard to an untrusted network.
+
+The MQTT account configured for the Nodus WeeWX instance needs these ACLs for
+the setup UI in addition to its normal read subscriptions:
+
+- publish `nodus/<device_id>/config/set` and
+  `nodus/<device_id>/calibration/set`;
+- subscribe to their matching `ack` and `result` topics;
+- subscribe to retained device `meta`, retained `meta/switch`, and channel
+  state/event topics; and
+- for enabled automations, publish channel `config/set` and subscribe to the
+  matching channel `ack`, `result`, and retained state topics.
+
+If the setup server does not start, inspect:
+
+```bash
+sudo journalctl -u weewx@nodus --since '10 minutes ago' --no-pager -l
+ss -ltn | grep ':8767'
+```
+
+After an upgrade, generate the report from a directory readable by the `weewx`
+account:
+
+```bash
+cd /tmp
+sudo -u weewx weectl report run Nodus --config=/etc/weewx/nodus.conf
+```
+
 ## Switch automations
 
 The optional `user.nodus_automation.NodusAutomation` WeeWX data service can
@@ -548,19 +713,48 @@ control Nodus switch channels from gathered WeeWX observations. Automation
 logic runs on the WeeWX host, not in the generated HTML and not on the
 CircuitPython device.
 
-Each rule combines these requirements with logical AND:
+The setup UI builds ordered condition groups. Conditions within a group use
+logical AND; an OR separator starts the next group. A rule is active when any
+complete group is true. The supported conditions are:
 
-- every configured metric condition is active;
-- the current local day is enabled; and
-- the current local time is inside the rule's active window.
+- metric above/below with separate ON and OFF hysteresis thresholds;
+- local time window and selected weekdays;
+- repeating timer with ON duration and total period;
+- sunrise, sunset, daylight, or nighttime with an optional offset and
+  weekdays; and
+- another switch channel's confirmed ON/OFF state.
+
+Each action selects a switch, the state requested while the rule is active,
+an optional delay, and what happens when the rule becomes false: opposite
+state, explicit ON/OFF, restore the state that preceded activation, or hold.
+A rule may contain multiple actions. Minimum ON/OFF dwell times are enforced
+per target before a command is sent.
+
+The generated automation-card title uses
+`<automation name> : Enabled|Disabled`. Disabled saved rules remain visible in
+the report for configuration clarity but are not evaluated and never own or
+command a switch.
 
 Each metric condition has separate ON and OFF thresholds. This hysteresis,
 together with minimum ON/OFF dwell times, prevents relay chatter around a
 single threshold. The service also stops trusting an observation after its
 configured freshness interval.
 
-The automated installer registers the service but leaves it disabled. Set
-`enabled = true` and configure rules such as the following. For a manual skin
+The implementation is deliberately bounded to 32 rules, 24 conditions per
+rule, and 8 actions per rule. Only one enabled rule may own a target channel.
+Switch-state dependency cycles and self-dependencies are rejected. Astral
+conditions use the station latitude/longitude and the WeeWX host's local time
+zone.
+
+A 30-minute ON / 30-minute OFF cycle is one timer condition with an ON
+duration of 30 minutes and a period of 60 minutes, plus an action whose active
+state is ON and false behavior is OFF. No metric condition is needed.
+
+The automated installer registers the service and enables UI-managed v2
+rules. The setup gear is the recommended configuration path. The older static
+metric/time rule format remains accepted for compatibility. For a manual
+legacy configuration without the setup UI, omit `rules_file`, set
+`enabled = true`, and configure rules such as the following. For a manual skin
 installation, also add `user.nodus_automation.NodusAutomation` after
 MQTTSubscribe in `[Engine] / [[Services]] / data_services`.
 
@@ -568,6 +762,7 @@ MQTTSubscribe in `[Engine] / [[Services]] / data_services`.
 [NodusAutomation]
     enabled = true
     status_file = /var/lib/weewx/nodus_automation.json
+    runtime_file = /var/lib/weewx/nodus_automation_runtime.json
     stale_after = 180
     command_timeout = 15
 
@@ -615,9 +810,9 @@ window.
 - `off`: request OFF after the normal dwell check;
 - `hold`: leave the current switch state unchanged.
 
-Only one enabled rule may target a channel. `retry_seconds` delays another
-attempt after a publish, rejection, failed result, or confirmation timeout so
-a broker or device fault cannot produce a rapid command loop.
+`retry_seconds` delays another attempt after a publish, rejection, failed
+result, or confirmation timeout so a broker or device fault cannot produce a
+rapid command loop.
 
 The service derives `nodus/<device_id>/meta/switch` from the single exact
 MQTTSubscribe `/data` topic. With multiple `/data` topics, set an exact
@@ -720,7 +915,7 @@ Check report generation:
 
 ```bash
 stat /var/www/html/weewx/nodus/index.html
-grep -n -A2 'asof-label' /var/www/html/weewx/nodus/index.html
+grep -n -A2 'data-updated-label' /var/www/html/weewx/nodus/index.html
 ls -l /var/www/html/weewx/nodus/micro_*.png
 ```
 
@@ -730,8 +925,10 @@ Open:
 http://<host>/weewx/nodus/
 ```
 
-The page reloads every 60 seconds. The displayed `As of` time advances only
-when WeeWX has generated a report from a newer archive record.
+The page reloads every 60 seconds. The centered `Data Updated` time advances
+only when WeeWX has generated a report from a newer archive record. The Sun
+and Moon cards follow that timestamp. Device identity, firmware, sensor setup
+gear, and sensor description are centered immediately above the metric cards.
 
 ## 11. Troubleshooting
 

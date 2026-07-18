@@ -17,6 +17,8 @@ INSTALL_BACKUP_CONFIG=""
 INSTALL_TARGET_SERVICE=""
 INSTALL_SERVICE_WAS_ACTIVE=0
 INSTALL_ROLLBACK_NEEDED=0
+DEVICE_ID_ARG=""
+UPDATE_PROFILE=0
 
 if [[ $EUID -eq 0 ]]; then
   SUDO=()
@@ -30,6 +32,7 @@ Install the Nodus MQTT/WeeWX integration on a Debian or Raspberry Pi OS host.
 
 Usage:
   ./integrations/weewx/install_nodus_weewx.sh [--dry-run]
+  ./integrations/weewx/install_nodus_weewx.sh [--device-id ID] [--update-profile]
   ./integrations/weewx/install_nodus_weewx.sh --inspect-config PATH
   ./integrations/weewx/install_nodus_weewx.sh --help
 
@@ -38,11 +41,13 @@ Behavior:
   * Preserves the primary WeeWX instance and creates
     /etc/weewx/nodus.conf, managed by weewx@nodus.service.
   * Installs MQTTSubscribe 3.1.1 only when it is missing.
-  * Installs the Nodus skin, identity, units, schema, and automation service.
+  * Installs the Nodus skin, identity, switch status, units, schema, and automation services.
   * Restores the prior Nodus configuration if validation or startup fails.
 
 Options:
   --dry-run             Inspect and prompt, but do not modify the system.
+  --device-id ID        Select integrations/weewx/ID.toml explicitly.
+  --update-profile      Prompt using saved values, then update ID.toml.
   --inspect-config PATH Print the detected installation mode and exit.
 EOF
 }
@@ -153,6 +158,124 @@ prompt_secret() {
   read -r -s -p "$prompt (leave empty for none): " value
   printf '\n'
   PROMPT_VALUE="$value"
+}
+
+prompt_saved_secret() {
+  local prompt="$1"
+  local value=""
+  read -r -s -p "$prompt (leave empty to keep saved value): " value
+  printf '\n'
+  PROMPT_VALUE="$value"
+}
+
+profile_value() {
+  local path="$1"
+  local section="$2"
+  local key="$3"
+  python3 - "$path" "$section" "$key" <<'PY'
+import sys
+import tomllib
+
+path, section, key = sys.argv[1:]
+with open(path, "rb") as handle:
+    data = tomllib.load(handle)
+value = data.get(section, {}) if section else data
+value = value.get(key, "") if isinstance(value, dict) else ""
+if isinstance(value, bool):
+    print("true" if value else "false")
+elif value is not None:
+    print(value)
+PY
+}
+
+write_device_profile() {
+  local path="$1"
+  local device_id="$2"
+  local family="$3"
+  local location="$4"
+  local latitude="$5"
+  local longitude="$6"
+  local altitude="$7"
+  local broker="$8"
+  local port="$9"
+  shift 9
+  local base_topic="$1"
+  local username="$2"
+  local password="$3"
+  local tls_enable="$4"
+  local ca_certs="$5"
+  local temporary=""
+
+  local q_device_id q_family q_location q_altitude q_broker q_base_topic
+  local q_username q_password q_ca_certs
+  conf_escape "$device_id"; q_device_id="$CONF_ESCAPED"
+  conf_escape "$family"; q_family="$CONF_ESCAPED"
+  conf_escape "$location"; q_location="$CONF_ESCAPED"
+  conf_escape "$altitude"; q_altitude="$CONF_ESCAPED"
+  conf_escape "$broker"; q_broker="$CONF_ESCAPED"
+  conf_escape "$base_topic"; q_base_topic="$CONF_ESCAPED"
+  conf_escape "$username"; q_username="$CONF_ESCAPED"
+  conf_escape "$password"; q_password="$CONF_ESCAPED"
+  conf_escape "$ca_certs"; q_ca_certs="$CONF_ESCAPED"
+
+  temporary="$(mktemp "${path}.tmp.XXXXXX")"
+  chmod 600 "$temporary"
+  cat >"$temporary" <<EOF
+schema = 1
+device_id = "$q_device_id"
+sensor_family = "$q_family"
+
+[station]
+description = "$q_location"
+latitude = $latitude
+longitude = $longitude
+altitude = "$q_altitude"
+
+[mqtt]
+broker = "$q_broker"
+port = $port
+base_topic = "$q_base_topic"
+username = "$q_username"
+password = "$q_password"
+use_tls = $tls_enable
+ca_certs = "$q_ca_certs"
+EOF
+  mv "$temporary" "$path"
+  chmod 600 "$path"
+}
+
+configured_device_id() {
+  local config="$1"
+  [[ -r "$config" ]] || return 0
+  python3 - "$config" <<'PY'
+import re
+import sys
+
+text = open(sys.argv[1], encoding="utf-8").read()
+matches = re.findall(r"\[\[\[([^]\n]+)/data\]\]\]", text)
+if len(matches) == 1:
+    print(matches[0].rsplit("/", 1)[-1])
+PY
+}
+
+resolve_profile_device_id() {
+  if [[ -n "$DEVICE_ID_ARG" ]]; then
+    printf '%s\n' "$DEVICE_ID_ARG"
+    return
+  fi
+  local configured=""
+  configured="$(configured_device_id /etc/weewx/nodus.conf)"
+  if [[ -n "$configured" && -f "$ROOT_DIR/$configured.toml" ]]; then
+    printf '%s\n' "$configured"
+    return
+  fi
+  local profiles=()
+  shopt -s nullglob
+  profiles=("$ROOT_DIR"/*.toml)
+  shopt -u nullglob
+  if (( ${#profiles[@]} == 1 )); then
+    basename "${profiles[0]}" .toml
+  fi
 }
 
 prompt_coordinate() {
@@ -390,12 +513,17 @@ render_config() {
   local ca_certs="$5"
   local topic="$6"
   local mqtt_module="$7"
+  local admin_username="${8:-admin}"
+  local admin_password="${9:-change-me}"
+  local admin_port="${10:-8767}"
 
   conf_escape "$location"; location="$CONF_ESCAPED"
   conf_escape "$broker"; broker="$CONF_ESCAPED"
   conf_escape "$username"; username="$CONF_ESCAPED"
   conf_escape "$password"; password="$CONF_ESCAPED"
   conf_escape "$ca_certs"; ca_certs="$CONF_ESCAPED"
+  conf_escape "$admin_username"; admin_username="$CONF_ESCAPED"
+  conf_escape "$admin_password"; admin_password="$CONF_ESCAPED"
 
   cat >"$output" <<EOF
 # Nodus WeeWX configuration generated by integrations/weewx/install_nodus_weewx.sh
@@ -479,7 +607,7 @@ version = $version
 [Engine]
     [[Services]]
         prep_services = weewx.engine.StdTimeSynch, user.nodus_units.NodusUnits
-        data_services = $mqtt_module.MQTTSubscribeService, user.nodus_automation.NodusAutomation
+        data_services = $mqtt_module.MQTTSubscribeService, user.nodus_switch.NodusSwitchStatus, user.nodus_automation.NodusAutomation
         process_services = weewx.engine.StdConvert, weewx.engine.StdCalibrate, weewx.engine.StdQC, weewx.wxservices.StdWXCalculate
         xtype_services = weewx.wxxtypes.StdWXXTypes, weewx.wxxtypes.StdPressureCooker, weewx.wxxtypes.StdRainRater, weewx.wxxtypes.StdDelta
         archive_services = weewx.engine.StdArchive
@@ -515,24 +643,28 @@ version = $version
 $FIELD_STANZAS
 
 [NodusAutomation]
-    enabled = false
+    enabled = true
     status_file = /var/lib/weewx/nodus_automation.json
+    rules_file = /var/lib/weewx/nodus_automation_rules.json
+    runtime_file = /var/lib/weewx/nodus_automation_runtime.json
     stale_after = 180
     command_timeout = 15
 
-    [[rules]]
-        [[[example_fan]]]
-            enabled = false
-            channel_id = S1-example
-            condition_1 = inTemp, above, 27.0, 25.0
-            start_time = 08:00
-            end_time = 20:00
-            days = mon, tue, wed, thu, fri, sat, sun
-            outside_window = off
-            stale_action = off
-            minimum_on_seconds = 300
-            minimum_off_seconds = 300
-            retry_seconds = 60
+[NodusSwitchStatus]
+    enabled = true
+    status_file = /var/lib/weewx/nodus_switch.json
+    control_file = /var/lib/weewx/nodus_switch_control.json
+    rules_file = /var/lib/weewx/nodus_automation_rules.json
+    max_events = 20
+    command_timeout = 15
+    admin_enabled = true
+    admin_require_auth = false
+    admin_host = 0.0.0.0
+    admin_port = $admin_port
+    admin_username = "$admin_username"
+    admin_password = "$admin_password"
+    admin_web_root = /etc/weewx/skins/Nodus/admin
+    dashboard_web_root = $html_root
 EOF
   chmod 600 "$output"
 }
@@ -561,12 +693,28 @@ ensure_paho() {
   run_root apt-get install -y python3-paho-mqtt
 }
 
+ensure_astral() {
+  if python3 -c 'from astral import Observer; from astral.sun import sun' \
+    >/dev/null 2>&1; then
+    return 0
+  fi
+  log "Installing the Astral Python library."
+  run_root apt-get update
+  run_root apt-get install -y python3-astral
+}
+
 validate_integration_sources() {
   for path in \
     "$SKIN_SOURCE/index.html.tmpl" \
     "$SKIN_SOURCE/skin.conf" \
     "$SKIN_SOURCE/style.css" \
+    "$SKIN_SOURCE/dashboard.js" \
+    "$SKIN_SOURCE/admin/index.html" \
+    "$SKIN_SOURCE/admin/admin.css" \
+    "$SKIN_SOURCE/admin/admin.js" \
     "$USER_SOURCE/nodus_identity.py" \
+    "$USER_SOURCE/nodus_admin.py" \
+    "$USER_SOURCE/nodus_switch.py" \
     "$USER_SOURCE/nodus_automation.py" \
     "$USER_SOURCE/nodus_units.py" \
     "$USER_SOURCE/nodus_schema.py"; do
@@ -578,7 +726,8 @@ install_integration_files() {
   local html_root="$1"
 
   run_root install -d -o root -g weewx -m 0775 \
-    "$WEEWX_SKIN_ROOT" "$WEEWX_USER_ROOT" /var/lib/weewx "$html_root"
+    "$WEEWX_SKIN_ROOT" "$WEEWX_SKIN_ROOT/admin" "$WEEWX_USER_ROOT" \
+    /var/lib/weewx "$html_root" "$html_root/setup"
   run_root install -o root -g weewx -m 0644 \
     "$SKIN_SOURCE/index.html.tmpl" "$WEEWX_SKIN_ROOT/index.html.tmpl"
   run_root install -o root -g weewx -m 0644 \
@@ -586,7 +735,25 @@ install_integration_files() {
   run_root install -o root -g weewx -m 0644 \
     "$SKIN_SOURCE/style.css" "$WEEWX_SKIN_ROOT/style.css"
   run_root install -o root -g weewx -m 0644 \
+    "$SKIN_SOURCE/dashboard.js" "$WEEWX_SKIN_ROOT/dashboard.js"
+  run_root install -o root -g weewx -m 0644 \
+    "$SKIN_SOURCE/admin/index.html" "$WEEWX_SKIN_ROOT/admin/index.html"
+  run_root install -o root -g weewx -m 0644 \
+    "$SKIN_SOURCE/admin/admin.css" "$WEEWX_SKIN_ROOT/admin/admin.css"
+  run_root install -o root -g weewx -m 0644 \
+    "$SKIN_SOURCE/admin/admin.js" "$WEEWX_SKIN_ROOT/admin/admin.js"
+  run_root install -o weewx -g weewx -m 0644 \
+    "$SKIN_SOURCE/admin/index.html" "$html_root/setup/index.html"
+  run_root install -o weewx -g weewx -m 0644 \
+    "$SKIN_SOURCE/admin/admin.css" "$html_root/setup/admin.css"
+  run_root install -o weewx -g weewx -m 0644 \
+    "$SKIN_SOURCE/admin/admin.js" "$html_root/setup/admin.js"
+  run_root install -o root -g weewx -m 0644 \
     "$USER_SOURCE/nodus_identity.py" "$WEEWX_USER_ROOT/nodus_identity.py"
+  run_root install -o root -g weewx -m 0644 \
+    "$USER_SOURCE/nodus_admin.py" "$WEEWX_USER_ROOT/nodus_admin.py"
+  run_root install -o root -g weewx -m 0644 \
+    "$USER_SOURCE/nodus_switch.py" "$WEEWX_USER_ROOT/nodus_switch.py"
   run_root install -o root -g weewx -m 0644 \
     "$USER_SOURCE/nodus_automation.py" "$WEEWX_USER_ROOT/nodus_automation.py"
   run_root install -o root -g weewx -m 0644 \
@@ -595,12 +762,20 @@ install_integration_files() {
     "$USER_SOURCE/nodus_schema.py" "$WEEWX_USER_ROOT/nodus_schema.py"
   run_root install -o weewx -g weewx -m 0664 \
     "$SKIN_SOURCE/style.css" "$html_root/style.css"
+  run_root install -o weewx -g weewx -m 0664 \
+    "$SKIN_SOURCE/dashboard.js" "$html_root/dashboard.js"
 }
 
 main() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --dry-run) DRY_RUN=1; shift ;;
+      --device-id)
+        [[ $# -ge 2 ]] || die "--device-id requires an ID."
+        DEVICE_ID_ARG="$2"
+        shift 2
+        ;;
+      --update-profile) UPDATE_PROFILE=1; shift ;;
       --inspect-config)
         [[ $# -ge 2 ]] || die "--inspect-config requires a path."
         INSPECT_CONFIG="$2"
@@ -642,18 +817,9 @@ main() {
   location="$(ini_value "$WEEWX_CONFIG" Station location)"
   altitude="$(ini_value "$WEEWX_CONFIG" Station altitude)"
 
-  prompt_value "Station description" "${location:-Nodus Sensor}"
-  location="$PROMPT_VALUE"
-  prompt_coordinate latitude "$latitude"
-  latitude="$PROMPT_VALUE"
-  prompt_coordinate longitude "$longitude"
-  longitude="$PROMPT_VALUE"
-  prompt_value "Altitude with unit" "${altitude:-0, meter}"
-  altitude="$PROMPT_VALUE"
-
   local broker=""
-  local port=""
-  local base_topic=""
+  local port="1883"
+  local base_topic="nodus"
   local device_id=""
   local family=""
   local username=""
@@ -661,15 +827,13 @@ main() {
   local tls_enable="false"
   local ca_certs=""
   local mqtt_module="user.MQTTSubscribe"
+  local admin_username="admin"
+  local admin_password=""
+  local admin_port="8767"
+  local profile_path=""
+  local profile_exists=0
 
-  prompt_value "MQTT broker hostname or address" "localhost"
-  broker="$PROMPT_VALUE"
-  prompt_value "MQTT broker port" "1883"
-  port="$PROMPT_VALUE"
-  [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 )) || \
-    die "Invalid MQTT port: $port"
-  prompt_value "MQTT base topic" "nodus"
-  base_topic="${PROMPT_VALUE%/}"
+  device_id="$(resolve_profile_device_id)"
   while [[ ! "$device_id" =~ ^[A-Za-z0-9_.-]+$ ]]; do
     prompt_value "Nodus device ID, for example aht-va41ka"
     device_id="$PROMPT_VALUE"
@@ -677,21 +841,80 @@ main() {
       echo "Use only letters, digits, dot, underscore, and hyphen."
     fi
   done
-  family="$(infer_family "$device_id")"
-  prompt_value "Sensor family (avpd, co2, aqi, or soil; lux requires manual setup)" "$family"
-  family="${PROMPT_VALUE,,}"
-  [[ "$family" =~ ^(avpd|co2|aqi|soil)$ ]] || die "Unsupported sensor family: $family"
-  prompt_value "MQTT subscriber username" ""
-  username="$PROMPT_VALUE"
-  prompt_secret "MQTT subscriber password"
-  password="$PROMPT_VALUE"
-  if ask_yes_no "Use MQTT TLS?" no; then
-    tls_enable="true"
-    prompt_value "CA certificate path"
-    ca_certs="$PROMPT_VALUE"
-    [[ -n "$ca_certs" ]] || die "A CA certificate path is required for TLS."
+  profile_path="$ROOT_DIR/$device_id.toml"
+  if [[ -f "$profile_path" ]]; then
+    profile_exists=1
+    local stored_device_id=""
+    stored_device_id="$(profile_value "$profile_path" "" device_id)"
+    [[ "$stored_device_id" == "$device_id" ]] || \
+      die "Profile device_id does not match its filename: $profile_path"
+    family="$(profile_value "$profile_path" "" sensor_family)"
+    location="$(profile_value "$profile_path" station description)"
+    latitude="$(profile_value "$profile_path" station latitude)"
+    longitude="$(profile_value "$profile_path" station longitude)"
+    altitude="$(profile_value "$profile_path" station altitude)"
+    broker="$(profile_value "$profile_path" mqtt broker)"
+    port="$(profile_value "$profile_path" mqtt port)"
+    base_topic="$(profile_value "$profile_path" mqtt base_topic)"
+    username="$(profile_value "$profile_path" mqtt username)"
+    password="$(profile_value "$profile_path" mqtt password)"
+    tls_enable="$(profile_value "$profile_path" mqtt use_tls)"
+    ca_certs="$(profile_value "$profile_path" mqtt ca_certs)"
   fi
 
+  if (( profile_exists == 1 && UPDATE_PROFILE == 0 )); then
+    log "Using saved device profile: $profile_path"
+  else
+    prompt_value "Station description" "${location:-Nodus Sensor}"
+    location="$PROMPT_VALUE"
+    prompt_coordinate latitude "$latitude"
+    latitude="$PROMPT_VALUE"
+    prompt_coordinate longitude "$longitude"
+    longitude="$PROMPT_VALUE"
+    prompt_value "Altitude with unit" "${altitude:-0, meter}"
+    altitude="$PROMPT_VALUE"
+    prompt_value "MQTT broker hostname or address" "${broker:-localhost}"
+    broker="$PROMPT_VALUE"
+    prompt_value "MQTT broker port" "${port:-1883}"
+    port="$PROMPT_VALUE"
+    prompt_value "MQTT base topic" "${base_topic:-nodus}"
+    base_topic="${PROMPT_VALUE%/}"
+    family="${family:-$(infer_family "$device_id")}"
+    prompt_value "Sensor family (avpd, co2, aqi, or soil; lux requires manual setup)" "$family"
+    family="${PROMPT_VALUE,,}"
+    prompt_value "MQTT subscriber username" "$username"
+    username="$PROMPT_VALUE"
+    if [[ -n "$password" ]]; then
+      prompt_saved_secret "MQTT subscriber password"
+    else
+      prompt_secret "MQTT subscriber password"
+    fi
+    if [[ -n "$PROMPT_VALUE" || -z "$password" ]]; then
+      password="$PROMPT_VALUE"
+    fi
+    if [[ "$tls_enable" == "true" ]]; then
+      if ! ask_yes_no "Use MQTT TLS?" yes; then
+        tls_enable="false"
+        ca_certs=""
+      fi
+    elif ask_yes_no "Use MQTT TLS?" no; then
+      tls_enable="true"
+    fi
+    if [[ "$tls_enable" == "true" ]]; then
+      prompt_value "CA certificate path" "$ca_certs"
+      ca_certs="$PROMPT_VALUE"
+    fi
+  fi
+  [[ "$family" =~ ^(avpd|co2|aqi|soil)$ ]] || die "Unsupported sensor family: $family"
+  valid_coordinate "$latitude" latitude || die "Invalid latitude: $latitude"
+  valid_coordinate "$longitude" longitude || die "Invalid longitude: $longitude"
+  [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 )) || \
+    die "Invalid MQTT port: $port"
+  base_topic="${base_topic%/}"
+  [[ -n "$broker" && -n "$base_topic" ]] || die "Profile MQTT settings are incomplete."
+  if [[ "$tls_enable" == "true" && -z "$ca_certs" ]]; then
+    die "A CA certificate path is required for TLS."
+  fi
   build_field_stanzas "$family"
   if [[ -f "$WEEWX_USER_ROOT/mqttsubscribe.py" ]]; then
     mqtt_module="user.mqttsubscribe"
@@ -708,7 +931,7 @@ main() {
   render_config "$INSTALL_TEMP_CONFIG" "$version" "$location" "$latitude" \
     "$longitude" "$altitude" "$database_name" "$html_root" "$broker" \
     "$port" "$username" "$password" "$tls_enable" "$ca_certs" "$topic" \
-    "$mqtt_module"
+    "$mqtt_module" "$admin_username" "$admin_password" "$admin_port"
 
   log ""
   log "Installation plan:"
@@ -718,6 +941,8 @@ main() {
   log "  database:   /var/lib/weewx/$database_name"
   log "  report:     $html_root"
   log "  MQTT topic: $topic"
+  log "  dashboard:  http://<this-host>/weewx/nodus/"
+  log "  setup UI:   http://<this-host>/weewx/nodus/setup/"
   if ! ask_yes_no "Apply this installation?" no; then
     log "Installation cancelled. Nothing was changed."
     exit 0
@@ -725,6 +950,13 @@ main() {
   if [[ $DRY_RUN -eq 1 ]]; then
     log "DRY-RUN: configuration rendered successfully; no changes applied."
     exit 0
+  fi
+
+  if (( profile_exists == 0 || UPDATE_PROFILE == 1 )); then
+    write_device_profile "$profile_path" "$device_id" "$family" "$location" \
+      "$latitude" "$longitude" "$altitude" "$broker" "$port" "$base_topic" \
+      "$username" "$password" "$tls_enable" "$ca_certs"
+    log "Saved device profile: $profile_path"
   fi
 
   local stamp=""
@@ -745,6 +977,7 @@ main() {
   run_root install -o root -g weewx -m 0660 "$INSTALL_TEMP_CONFIG" "$target_config"
 
   ensure_paho
+  ensure_astral
   install_integration_files "$html_root"
   ensure_mqttsubscribe "$target_config"
   # The extension installer may merge defaults into the target. Reinstall the
@@ -754,6 +987,10 @@ main() {
   log "Validating MQTTSubscribe driver configuration."
   validate_mqttsubscribe_driver "$target_config"
 
+  log "Generating the Nodus dashboard with the installed skin."
+  if ! (cd /tmp && run_weewx weectl report run Nodus --config="$target_config"); then
+    log "WARNING: initial dashboard generation failed; WeeWX will retry at the next archive interval."
+  fi
   run_root systemctl enable --now "$target_service"
   run_root systemctl status "$target_service" --no-pager -l || true
   INSTALL_ROLLBACK_NEEDED=0
@@ -763,7 +1000,9 @@ main() {
   log "Configuration: $target_config"
   log "Service log:  sudo journalctl -u $target_service -f"
   log "Report output: $html_root/"
-  log "The first report appears after WeeWX archives its first Nodus record."
+  log "Dashboard:    http://<this-host>/weewx/nodus/"
+  log "Setup UI:     http://<this-host>/weewx/nodus/setup/"
+  log "If no archive record exists yet, the first report appears after WeeWX archives one."
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

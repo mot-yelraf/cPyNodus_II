@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Nodus WeeWX Setup</title>
+  <link rel="stylesheet" href="admin.css">
+</head>
+<body>
+<main>
+  <header class="hero">
+    <div><h1>Nodus WeeWX Setup</h1><p id="device">Loading device…</p></div>
+    <a class="dashboard-button" href="../">Dashboard</a>
+  </header>
+  <div id="notice" role="status"></div>
+
+  <nav class="setup-tabs" aria-label="Setup section">
+    <a href="#sensor" data-panel="sensor">Sensor</a>
+    <a href="#switch" data-panel="switch">Switch &amp; automations</a>
+  </nav>
+
+  <section id="sensor" class="panel">
+    <h2>Sensor settings</h2>
+    <form id="sensor-form">
+      <label>Location<input id="sensor-location" maxlength="64"></label>
+      <h3>Calibration changes</h3>
+      <p class="hint">Leave a calibration blank to keep its current value.</p>
+      <div id="calibrations" class="fields"></div>
+      <button type="submit">Apply sensor settings</button>
+    </form>
+  </section>
+
+  <section id="switch" class="panel">
+    <h2>Switch settings</h2>
+    <form id="switch-form">
+      <label>Location<input id="switch-location" maxlength="64"></label>
+      <h3>Manual control</h3>
+      <p class="hint">A countdown of 0 keeps a manually switched channel ON until it is clicked again.</p>
+      <div id="manual-controls" class="fields"></div>
+      <button type="submit">Apply switch settings</button>
+    </form>
+
+    <h3>Automations</h3>
+    <div id="automation-list"></div>
+    <form id="automation-form" class="automation-form">
+      <input id="editing-name" type="hidden">
+      <div class="fields">
+        <label>Automation name<input id="automation-name" maxlength="48" required><small class="hint">Letters, numbers, spaces, dots, underscores, and hyphens.</small></label>
+        <label class="check"><input id="automation-enabled" type="checkbox" checked> Automation enabled</label>
+        <label>Minimum ON seconds<input id="minimum-on" type="number" min="0" value="300"></label>
+        <label>Minimum OFF seconds<input id="minimum-off" type="number" min="0" value="300"></label>
+        <label>Stale sensor data<select id="stale-action"><option value="off">Turn off</option><option value="hold">Hold state</option></select></label>
+      </div>
+
+      <div class="builder-heading"><div><h4>Conditions</h4><p class="hint">Conditions in each group use AND. Add an OR separator to begin another group.</p></div><button id="condition-add" type="button" class="secondary compact">Add condition</button></div>
+      <div id="conditions" class="builder-list"></div>
+
+      <div class="builder-heading"><div><h4>Switch actions</h4><p class="hint">Choose the active state and what happens when the conditions become false.</p></div><button id="action-add" type="button" class="secondary compact">Add action</button></div>
+      <div id="automation-actions" class="builder-list"></div>
+
+      <div class="actions"><button type="submit">Save automation</button><button id="automation-clear" type="button" class="secondary">Clear</button></div>
+    </form>
+  </section>
+</main>
+<script src="admin.js"></script>
+</body>
+</html>

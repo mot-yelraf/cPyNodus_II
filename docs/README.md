@@ -246,7 +246,11 @@ In normal mode the device:
   - In normal mode, the built-in webserver is intentionally not started in this profile.
   - The host-side integration includes an isolated WeeWX instance installer,
     archive schema and units, a Nodus report skin, retained device identity,
-    and optional confirmed switch automation. See [WeeWX](./weewx.md).
+    an always-on switch label/state/event panel, and optional confirmed switch
+    automation. A bounded LAN host UI configures sensor/switch locations,
+    manual switch countdowns, calibration changes, and AND/OR metric, timer, time/day,
+    Astral, and switch-state automations. See
+    [WeeWX](./weewx.md).
   - Periodic NTP sync is started after normal network bring-up.
 - `homeassistant` is a networked MQTT profile using the shared `[MQTT]` connection settings.
   - MQTT is enabled.

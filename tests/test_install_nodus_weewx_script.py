@@ -2,6 +2,7 @@
 
 import os
 import subprocess
+import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,6 +28,52 @@ def test_installer_is_valid_bash_and_has_help():
     assert "--inspect-config PATH" in output
     assert "Preserves the primary WeeWX instance" in output
     assert "Restores the prior Nodus configuration" in output
+    assert "--device-id ID" in output
+    assert "--update-profile" in output
+
+
+def test_installer_only_prompts_for_optional_mqtt_secret():
+    script = INSTALLER.read_text(encoding="utf-8")
+
+    assert 'prompt_secret "MQTT subscriber password"' in script
+    assert "WeeWX Nodus setup password" not in script
+
+
+def test_installer_writes_and_reuses_device_profile(tmp_path):
+    profile = tmp_path / "aht-yuk0nv.toml"
+    command = r'''
+source "$1"
+write_device_profile "$2" "aht-yuk0nv" "avpd" "DevDesk" \
+  "32.7622222" "-108.2372222" "1781, meter" "localhost" "1883" \
+  "nodus" "mqtt-user" "mqtt-password" "false" ""
+ROOT_DIR="$3"
+DEVICE_ID_ARG=""
+resolve_profile_device_id
+'''
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            command,
+            "profile-test",
+            str(INSTALLER),
+            str(profile),
+            str(tmp_path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    with profile.open("rb") as handle:
+        saved = tomllib.load(handle)
+    assert result.stdout.strip() == "aht-yuk0nv"
+    assert saved["device_id"] == "aht-yuk0nv"
+    assert saved["sensor_family"] == "avpd"
+    assert saved["station"]["description"] == "DevDesk"
+    assert saved["mqtt"]["broker"] == "localhost"
+    assert saved["mqtt"]["password"] == "mqtt-password"
+    assert profile.stat().st_mode & 0o777 == 0o600
 
 
 def test_installer_detects_physical_station_without_overwriting_it(tmp_path):
@@ -77,7 +124,8 @@ build_field_stanzas aqi
 render_config "$2" "5.2.0" "Greenhouse" "32.79" "-108.27" \
   "1782, meter" "nodus.sdb" "/var/www/html/weewx/nodus" \
   "broker.local" "1883" "reader" 'p"ass' "false" "" \
-  "nodus/aqi-example/data" "user.MQTTSubscribe"
+  "nodus/aqi-example/data" "user.MQTTSubscribe" \
+  "operator" "admin-secret" "8767"
 '''
     subprocess.run(
         ["bash", "-c", command, "installer-test", str(INSTALLER), str(output)],
@@ -100,8 +148,20 @@ render_config "$2" "5.2.0" "Greenhouse" "32.79" "-108.27" \
     assert "name = airQuality" in config
     assert 'password = "p\\"ass"' in config
     assert "user.nodus_automation.NodusAutomation" in config
+    assert "user.nodus_switch.NodusSwitchStatus" in config
     assert "[NodusAutomation]" in config
-    assert "condition_1 = inTemp, above, 27.0, 25.0" in config
+    assert "[NodusSwitchStatus]" in config
+    assert "status_file = /var/lib/weewx/nodus_switch.json" in config
+    assert "control_file = /var/lib/weewx/nodus_switch_control.json" in config
+    assert "max_events = 20" in config
+    assert "rules_file = /var/lib/weewx/nodus_automation_rules.json" in config
+    assert "runtime_file = /var/lib/weewx/nodus_automation_runtime.json" in config
+    assert "admin_enabled = true" in config
+    assert "admin_require_auth = false" in config
+    assert 'admin_username = "operator"' in config
+    assert 'admin_password = "admin-secret"' in config
+    assert "admin_web_root = /etc/weewx/skins/Nodus/admin" in config
+    assert "dashboard_web_root = /var/www/html/weewx/nodus" in config
 
 
 def test_installer_maps_sensor_families_to_expected_observations():

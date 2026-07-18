@@ -3,27 +3,21 @@
 <head>
   <meta charset="UTF-8" />
   <meta http-equiv="refresh" content="60" />
-  <title>Nodus Sensor Conditions</title>
+  <title>Nodus Automatio Instrumentorum</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
-  <link rel="stylesheet" href="style.css" type="text/css" />
+  <link rel="stylesheet" href="style.css?v=20260718-1" type="text/css" />
+  <script src="dashboard.js?v=20260718-1" defer></script>
 </head>
 
 <body>
 <main class="container nodus">
 
   <header class="topbar">
-    <div class="brand">
-      <div class="brand-title">Nodus Sensor</div>
-      <div class="device-identity">
-        <span><strong>Device:</strong> $nodus.device_id</span>
-        <span><strong>Nodus firmware:</strong> $nodus.version</span>
-      </div>
-      <div class="brand-sub">$nodus.description</div>
-    </div>
-    <div class="asof">
-      <span class="asof-label">As of:</span>
-      <span class="asof-time">$current.dateTime.format("%Y-%m-%d %H:%M:%S")</span>
+    <div class="brand-title">Nodus Automatio Instrumentorum</div>
+    <div class="data-updated">
+      <span class="data-updated-label">Data Updated:</span>
+      <span class="data-updated-time">$current.dateTime.format("%Y-%m-%d %H:%M:%S")</span>
     </div>
   </header>
 
@@ -40,7 +34,20 @@
     </article>
   </section>
 
-  <h3 class="section-title">Indoor Metrics</h3>
+  <section class="metric-heading">
+    <div class="device-identity">
+      <span><strong>Device:</strong> $nodus.device_id</span>
+      <span><strong>Nodus firmware:</strong> $nodus.version</span>
+      <a class="setup-gear" href="setup/#sensor" title="Sensor setup" aria-label="Sensor setup">
+        <svg class="setup-gear-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <circle cx="12" cy="12" r="7"></circle>
+          <path d="M12 1v4M12 19v4M1 12h4M19 12h4M4.2 4.2l2.8 2.8M17 17l2.8 2.8M19.8 4.2L17 7M7 17l-2.8 2.8"></path>
+          <circle cx="12" cy="12" r="2.25"></circle>
+        </svg>
+      </a>
+    </div>
+    <div class="brand-sub">$nodus.description</div>
+  </section>
 
   <section class="tile-grid">
 
@@ -150,17 +157,72 @@
 
   </section>
 
+#if $nodus_switch.channels
+  <h3 class="section-title switch-title">Switches</h3>
+
+  <section class="switch-panel">
+    <header class="switch-heading">
+      <strong>$nodus_switch.switch_device_id</strong>
+      <a class="setup-gear" href="setup/#switch" title="Switch setup" aria-label="Switch setup">
+        <svg class="setup-gear-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <circle cx="12" cy="12" r="7"></circle>
+          <path d="M12 1v4M12 19v4M1 12h4M19 12h4M4.2 4.2l2.8 2.8M17 17l2.8 2.8M19.8 4.2L17 7M7 17l-2.8 2.8"></path>
+          <circle cx="12" cy="12" r="2.25"></circle>
+        </svg>
+      </a>
+#if $nodus_switch.location
+      <span>$nodus_switch.location</span>
+#end if
+    </header>
+
+    <div class="switch-table">
+      <div class="switch-table-head">
+        <strong>Switch</strong>
+        <strong>State</strong>
+        <strong>Events</strong>
+      </div>
+#for $channel in $nodus_switch.channels
+      <div class="switch-row">
+        <div class="switch-label">
+          <strong>$channel.label</strong>
+          <span>$channel.channel_id</span>
+        </div>
+        <button type="button" class="switch-current mode-$channel.mode_class state-$channel.state.lower()" data-channel-id="$channel.channel_id" data-automation-enabled="$channel.automation_enabled"
+#if $channel.automation_enabled
+          disabled
+#end if
+        >
+          <strong class="switch-state-value">$channel.state</strong>
+          <span class="switch-control-mode">$channel.automation</span>
+        </button>
+        <div class="switch-events">
+#if $channel.events
+#for $event in $channel.events
+          <div class="switch-event state-text-$event.state.lower()">$event.display</div>
+#end for
+#else
+          <span class="switch-no-events">No events recorded</span>
+#end if
+        </div>
+      </div>
+#end for
+    </div>
+  </section>
+#end if
+
 #if $nodus_automation.enabled and $nodus_automation.rules
   <h3 class="section-title">Switch Automations</h3>
 
   <section class="automation-grid">
 #for $rule in $nodus_automation.rules
     <article class="automation-card">
-      <header>$rule.name</header>
+      <header>$rule.name : $rule.enable_state</header>
+#for $action in $rule.actions
       <div class="automation-state">
-        <span>$rule.label</span>
-        <strong class="state-$rule.state.lower()">$rule.state</strong>
+        <span>$action.label</span>
+        <strong class="state-$action.state.lower()">$action.state</strong>
       </div>
+#end for
       <dl class="automation-detail">
         <div><dt>Decision</dt><dd>$rule.decision</dd></div>
         <div><dt>Last action</dt><dd>$rule.last_action</dd></div>
