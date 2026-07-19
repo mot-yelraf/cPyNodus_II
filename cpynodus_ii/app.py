@@ -3122,10 +3122,11 @@ async def main(*, startup_plan_override=None):
     _collect_garbage()
     _print_log(
         "cPyNodus_II",
-        "network ssid={} ipv4={} hostname={}".format(
+        "network ssid={} ipv4={} hostname={} profile={}".format(
             network_stack.ssid or "none",
             network_stack.ip_address or "none",
             network_stack.hostname or "none",
+            plan.profile,
         ),
         start_monotonic=start_monotonic,
     )
