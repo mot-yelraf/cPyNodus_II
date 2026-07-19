@@ -21,6 +21,7 @@ def build_status_payload(
     sensor_snapshot=None,
     display_timestamp="",
     switch_service=None,
+    automation_service=None,
     ip_address="",
     wifi_recovery_count=0,
 ):
@@ -53,6 +54,11 @@ def build_status_payload(
     switch_channels = []
     for channel in runtime_config.switch.channels:
         snapshot = switch_snapshot.get(channel.key, {})
+        owners = ()
+        if automation_service is not None and automation_service.active:
+            owners = automation_service.channel_controlled(
+                channel_id=channel.channel_id
+            )
         switch_channels.append(
             {
                 "key": channel.key,
@@ -60,6 +66,11 @@ def build_status_payload(
                 "label": channel.label,
                 "state": snapshot.get("state", channel.last_state),
                 "phase": snapshot.get("phase", ""),
+                "automation": {
+                    "controlled": bool(owners),
+                    "controller": "nodusweb" if owners else "",
+                    "automations": list(owners),
+                },
             }
         )
 

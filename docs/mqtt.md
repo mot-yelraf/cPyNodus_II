@@ -33,6 +33,9 @@ wins.
   host-side MQTTSubscribe mapping, schema, report skin, retained identity, and
   optional switch automation are documented in [WeeWX](./weewx.md); there is
   no separate WeeWX firmware payload.
+- Local `nodusweb` automations create no MQTT traffic. Unlike cPyNodus_III,
+  cPyNodus_II does not subscribe to controller automation-status or
+  automation-availability topics because all MQTT profiles remain headless.
 - `/set` commands should normally be published non-retained. When a `/set`
   command is intentionally published retained by Sensorius, Sensorius owns
   clearing it with an empty retained publish to the same topic after successful

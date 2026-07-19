@@ -90,6 +90,31 @@ def test_build_status_payload_includes_display_metrics_and_switch_state():
     assert payload["switch"]["channels"][0]["state"] is True
 
 
+def test_build_status_payload_marks_local_automation_ownership():
+    automation_service = SimpleNamespace(
+        active=True,
+        channel_controlled=lambda channel_id=None: ("Cool when hot",)
+        if channel_id == "S1-x943fm"
+        else (),
+    )
+
+    payload = build_status_payload(
+        _runtime_config(),
+        version="v0.26.193.1",
+        switch_service=_switch_service(),
+        automation_service=automation_service,
+    )
+
+    first = payload["switch"]["channels"][0]["automation"]
+    second = payload["switch"]["channels"][1]["automation"]
+    assert first == {
+        "controlled": True,
+        "controller": "nodusweb",
+        "automations": ["Cool when hot"],
+    }
+    assert second["controlled"] is False
+
+
 def test_build_setup_payload_lists_routes_and_current_values():
     payload = build_setup_payload(_runtime_config(), version="v0.26.112.14")
 

@@ -87,6 +87,34 @@ class _FakeServerModule:
     JSONResponse = _FakeJSONResponse
 
 
+class _ScriptedSocket:
+    def __init__(self, reads=(), sends=()):
+        self.reads = list(reads)
+        self.sends = list(sends)
+        self.blocking = []
+        self.timeouts = []
+
+    def setblocking(self, value):
+        self.blocking.append(value)
+
+    def settimeout(self, value):
+        self.timeouts.append(value)
+
+    def recv_into(self, buffer, size):
+        value = self.reads.pop(0)
+        if isinstance(value, Exception):
+            raise value
+        length = min(len(value), size)
+        buffer[:length] = value[:length]
+        return length
+
+    def send(self, buffer):
+        value = self.sends.pop(0) if self.sends else len(buffer)
+        if isinstance(value, Exception):
+            raise value
+        return min(int(value), len(buffer))
+
+
 def _runtime_config():
     docs_root = Path(__file__).resolve().parents[1] / "docs" / "sensor+switch"
     with TemporaryDirectory() as tmpdir:
@@ -98,6 +126,94 @@ def _runtime_config():
         runtime_config = Settings.from_directory(tmpdir_path).runtime_config()
         runtime_config.active_profile = "nodusweb"
         return runtime_config
+
+
+def test_bounded_header_read_accepts_fragmented_http(monkeypatch):
+    would_block = OSError(web_runtime.EAGAIN)
+    sock = _ScriptedSocket(
+        reads=(b"GET / HTTP/1.1\r\nHost: nodus", would_block, b"\r\n\r\n")
+    )
+    server = SimpleNamespace(_buffer=bytearray(64), _timeout=1)
+    monkeypatch.setattr(web_runtime, "sleep", lambda _seconds: None)
+
+    received = web_runtime._receive_bounded_header(server, sock)
+
+    assert received.endswith(b"\r\n\r\n")
+    assert sock.blocking == [False]
+    assert sock.timeouts == [1]
+
+
+def test_bounded_header_read_returns_tls_client_hello_immediately():
+    sock = _ScriptedSocket(reads=(b"\x16\x03\x01\x05\xfe",))
+    server = SimpleNamespace(_buffer=bytearray(64), _timeout=1)
+
+    received = web_runtime._receive_bounded_header(server, sock)
+
+    assert received == b"\x16\x03\x01\x05\xfe"
+    assert sock.blocking == [False]
+    assert sock.timeouts == [1]
+
+
+def test_bounded_header_read_expires_incomplete_client(monkeypatch):
+    sock = _ScriptedSocket(
+        reads=(
+            b"GET / HTTP/1.1\r\n",
+            OSError(web_runtime.EAGAIN),
+            OSError(web_runtime.EAGAIN),
+        )
+    )
+    server = SimpleNamespace(_buffer=bytearray(64), _timeout=1)
+    times = iter((0.0, 0.1, 0.3))
+    monkeypatch.setattr(web_runtime, "monotonic", lambda: next(times))
+    monkeypatch.setattr(web_runtime, "sleep", lambda _seconds: None)
+
+    received = web_runtime._receive_bounded_header(server, sock)
+
+    assert received == b"GET / HTTP/1.1\r\n"
+    assert sock.timeouts == [1]
+
+
+def test_bounded_body_read_accepts_fragments(monkeypatch):
+    sock = _ScriptedSocket(
+        reads=(b'"state":', OSError(web_runtime.EAGAIN), b"true}")
+    )
+    server = SimpleNamespace(_buffer=bytearray(64), _timeout=1)
+    monkeypatch.setattr(web_runtime, "sleep", lambda _seconds: None)
+
+    received = web_runtime._receive_bounded_body(
+        server, sock, b"{", len(b'{"state":true}')
+    )
+
+    assert received == b'{"state":true}'
+    assert sock.timeouts == [1]
+
+
+def test_bounded_send_retries_and_rejects_zero_progress(monkeypatch):
+    sock = _ScriptedSocket(sends=(OSError(web_runtime.EAGAIN), 2, 3))
+    monkeypatch.setattr(web_runtime, "sleep", lambda _seconds: None)
+
+    assert web_runtime._send_bounded_bytes(sock, b"hello") == 5
+
+    stalled = _ScriptedSocket(sends=(0,))
+    try:
+        web_runtime._send_bounded_bytes(stalled, b"hello")
+    except OSError as exc:
+        assert web_runtime._socket_error_number(exc) == web_runtime.ECONNRESET
+    else:
+        raise AssertionError("zero-progress send did not fail")
+
+
+def test_bounded_adapters_wrap_real_server_shapes():
+    class _ServerShape:
+        def _receive_header_bytes(self, sock):
+            return b"base"
+
+    class _ResponseShape:
+        def _send_bytes(self, conn, buffer):
+            return None
+
+    assert web_runtime._bounded_server_class(_ServerShape) is not _ServerShape
+    assert web_runtime._bounded_response_class(_ResponseShape) is not _ResponseShape
 
 
 def test_ap_mode_network_stack_includes_socket_artifacts_for_web_runtime():
@@ -134,7 +250,7 @@ def test_web_runtime_controller_registers_and_polls_routes():
     assert controller.server.poll_count == 1
 
 
-def test_web_dashboard_has_pico_panels_without_history_or_export():
+def test_web_status_page_is_small_and_excludes_configuration_editors():
     runtime_config = _runtime_config()
     stack = build_network_stack(
         runtime_config, wifi_radio=_FakeRadio(), connection_manager_module=_FakeConnMgr
@@ -150,57 +266,66 @@ def test_web_dashboard_has_pico_panels_without_history_or_export():
     html = response.body
 
     assert "Status" in html
-    assert "Device Calibration" in html
-    assert "AQI OFFSET" in html
-    assert "Nodus Info" in html
+    assert 'rel="icon" href="data:image/svg+xml;base64,PHN2Zy' in html
     assert "background:#eef8f3;color:#1b1f24" in html
-    assert ".side{padding:14px;background:#e6f1ea}" in html
-    assert ".nav button.active{background:#dceaff;border-color:#2d6cdf}" in html
-    assert '<button class="active" onclick="panel(\'status\',this)">' in html
-    assert ".group-body table td:first-child{width:50%}" in html
-    assert "height:max-content" not in html
-    assert "height:min(640px,calc(100vh - 36px));overflow-y:auto" in html
-    assert ".side,.panel{height:auto;overflow-y:visible}" in html
-    assert ".panel.active{display:flex;flex-direction:column}" in html
-    assert (
-        ".panel>.body{display:block;flex:1 1 auto;min-height:0;overflow-y:scroll}"
-        in html
-    )
-    assert ".panel>.body>.section,.panel>.body>.group{margin-bottom:14px}" in html
-    assert ".panel>.actions{flex:0 0 auto}" in html
-    assert ".panel.active{display:block}" in html
-    assert "Current Sample" in html
     assert 'id="sample_timestamp"' in html
     assert 'id="sample_1"' in html
     assert 'id="switch_SWITCH_1"' in html
-    assert "setInterval(refreshStatus,15000)" in html
+    assert 'href="/switch-setup"' in html
+    assert 'href="/automations-ui"' in html
+    assert "setInterval(refresh,15000)" in html
     assert "fetch('/current-data',{cache:'no-store'})" in html
-    assert html.count('class="status-table"') == 2
-    assert (
-        ".status-table th:first-child,.status-table td:first-child{width:50%}"
-        in html
-    )
-    assert "Save &amp; Restart" in html
-    assert '<footer class="actions"><button onclick="saveSetup(true)">' in html
-    assert "Setup v0.26.193.1" not in html
-    assert 'id="wifi_password" type="password"' in html
-    assert (
-        '<label>Web</label><input value="http://aqi-x943fm.local:8000" readonly>'
-        in html
-    )
-    assert "AP Channel" not in html
-    assert "'AP_CHANNEL','ap_channel'" not in html
-    assert "togglePassword('wifi_password',this)" in html
-    assert "Stored Data" not in html
-    assert "Export Data" not in html
-    assert "/history-data" not in html
-    assert "Min" not in html
-    assert "Average" not in html
-    assert "Max" not in html
-    assert ".title(" not in html
+    assert "Device Calibration" not in html
+    assert "Save &amp; Restart" not in html
+    assert 'id="wifi_password"' not in html
+    assert 'id="automation_script"' not in html
+    assert "loadAutomations()" not in html
+    assert len(html.encode("utf-8")) < 7000
 
 
-def test_web_dashboard_memory_error_returns_503(monkeypatch):
+def test_web_configuration_surfaces_render_on_separate_routes():
+    runtime_config = _runtime_config()
+    stack = build_network_stack(
+        runtime_config, wifi_radio=_FakeRadio(), connection_manager_module=_FakeConnMgr
+    )
+    controller = WebRuntimeController(
+        runtime_config,
+        stack,
+        version="v0.26.200.1",
+        automation_service=SimpleNamespace(
+            active=True,
+            payload=lambda: {"rules": []},
+            channel_controlled=lambda **kwargs: (),
+        ),
+        server_module=_FakeServerModule,
+    ).start()
+
+    setup = controller.server.routes[("/setup", ("GET",))](_FakeRequest()).body
+    calibration = controller.server.routes[("/calibration", ("GET",))](
+        _FakeRequest()
+    ).body
+    switch = controller.server.routes[("/switch-setup", ("GET",))](
+        _FakeRequest()
+    ).body
+    automations = controller.server.routes[("/automations-ui", ("GET",))](
+        _FakeRequest()
+    ).body
+    info = controller.server.routes[("/info", ("GET",))](_FakeRequest()).body
+
+    assert "Save &amp; Restart" in setup
+    assert 'id="wifi_password" type="password"' in setup
+    assert "Device Calibration" in calibration
+    assert "AQI OFFSET" in calibration
+    assert "Switch Settings" in switch
+    assert "Switch Automations" in automations
+    assert 'id="automation_script"' in automations
+    assert "loadAutomations()" in automations
+    assert "Nodus Info" in info
+    assert "WiFi Recovery Count" in info
+    assert 'id="automation_script"' not in setup
+
+
+def test_web_status_memory_error_returns_503(monkeypatch):
     runtime_config = _runtime_config()
     stack = build_network_stack(
         runtime_config, wifi_radio=_FakeRadio(), connection_manager_module=_FakeConnMgr
@@ -215,11 +340,37 @@ def test_web_dashboard_memory_error_returns_503(monkeypatch):
     def fail_render(*args, **kwargs):
         raise MemoryError
 
-    monkeypatch.setattr(web_runtime, "_render_dashboard_html", fail_render)
+    monkeypatch.setattr(
+        "cpynodus_ii.features.web_status_ui.render_status_html", fail_render
+    )
     response = controller.server.routes[("/", ("GET",))](_FakeRequest())
 
     assert response.status == (503, "Service Unavailable")
     assert "retry" in response.body
+
+
+def test_web_pages_enforce_heap_floors_after_collection(monkeypatch):
+    runtime_config = _runtime_config()
+    stack = build_network_stack(
+        runtime_config, wifi_radio=_FakeRadio(), connection_manager_module=_FakeConnMgr
+    )
+    controller = WebRuntimeController(
+        runtime_config,
+        stack,
+        version="v0.26.200.1",
+        server_module=_FakeServerModule,
+    ).start()
+    collections = []
+
+    monkeypatch.setattr(web_runtime.gc, "collect", lambda: collections.append(True))
+    monkeypatch.setattr(web_runtime.gc, "mem_free", lambda: 15999, raising=False)
+
+    status = controller.server.routes[("/", ("GET",))](_FakeRequest())
+    setup = controller.server.routes[("/setup", ("GET",))](_FakeRequest())
+
+    assert status.status == (503, "Service Unavailable")
+    assert setup.status == (503, "Service Unavailable")
+    assert len(collections) == 2
 
 
 def test_web_dashboard_keeps_last_successful_sample_and_timestamp(monkeypatch):
@@ -334,7 +485,7 @@ def test_web_runtime_controller_stops_server():
     assert controller.phase == "stopped"
 
 
-def test_web_dashboard_displays_updated_wifi_recovery_count():
+def test_web_info_displays_updated_wifi_recovery_count():
     runtime_config = _runtime_config()
     stack = build_network_stack(
         runtime_config, wifi_radio=_FakeRadio(), connection_manager_module=_FakeConnMgr
@@ -348,13 +499,13 @@ def test_web_dashboard_displays_updated_wifi_recovery_count():
     ).start()
     controller.update_context(wifi_recovery_count=3)
 
-    response = controller.server.routes[("/", ("GET",))](_FakeRequest())
+    response = controller.server.routes[("/info", ("GET",))](_FakeRequest())
 
     assert "WiFi Recovery Count" in response.body
     assert "<td>3</td>" in response.body
 
 
-def test_web_runtime_recovers_unparseable_browser_request():
+def test_web_runtime_silently_recovers_tls_client_hello():
     class _MalformedRequestServer(_FakeServer):
         def poll(self):
             raise ValueError(("Unparseable raw_request: ", b"\x16\x03\x01"))
@@ -379,11 +530,37 @@ def test_web_runtime_recovers_unparseable_browser_request():
 
     assert controller.phase == "ready"
     assert controller.errors == ()
-    assert events == [
-        "phase=ready reason=web_poll_recovered type=ValueError "
-        "detail=('Unparseable_raw_request:_',_b'\\x16\\x03\\x01') "
-        "server=present;request_buffer_size=1024;socket_timeout=1 free_mem=unknown"
-    ]
+    assert events == []
+
+
+def test_web_runtime_logs_other_unparseable_browser_requests():
+    class _MalformedRequestServer(_FakeServer):
+        def poll(self):
+            raise ValueError(("Unparseable raw_request: ", b"NOT HTTP"))
+
+    class _MalformedRequestModule(_FakeServerModule):
+        Server = _MalformedRequestServer
+
+    runtime_config = _runtime_config()
+    stack = build_network_stack(
+        runtime_config, wifi_radio=_FakeRadio(), connection_manager_module=_FakeConnMgr
+    )
+    events = []
+    controller = WebRuntimeController(
+        runtime_config,
+        stack,
+        version="v0.26.200.1",
+        server_module=_MalformedRequestModule,
+        event_logger=events.append,
+    ).start()
+
+    controller.poll()
+
+    assert controller.phase == "ready"
+    assert controller.errors == ()
+    assert len(events) == 1
+    assert "reason=web_poll_recovered" in events[0]
+    assert "NOT_HTTP" in events[0]
 
 
 def test_web_runtime_logs_and_stops_polling_after_unexpected_error():
@@ -413,7 +590,7 @@ def test_web_runtime_logs_and_stops_polling_after_unexpected_error():
     assert controller.errors == ("web_poll_failed", "poll failed")
     assert events == [
         "phase=error reason=web_poll_failed type=RuntimeError detail=poll_failed "
-        "server=present;request_buffer_size=1024;socket_timeout=1 free_mem=unknown"
+        "server=present;request_buffer_size=2048;socket_timeout=1 free_mem=unknown"
     ]
 
 
@@ -730,4 +907,50 @@ def test_web_runtime_controller_switch_route_applies_live_override():
     response = handler(_FakeRequest(b'{"channel_id":"S1-x943fm","state":true}'))
 
     assert response.body["success"] is True
+    assert response.body["guard_seconds"] == 5
     assert controller.runtime_config.switch.channels[0].last_state is True
+
+    guarded = handler(_FakeRequest(b'{"channel_id":"S1-x943fm","state":false}'))
+
+    assert guarded.status == (429, "Too Many Requests")
+    assert guarded.body["error"] == "switch_manual_guard_active"
+
+
+def test_web_runtime_automation_routes_and_ownership_guard():
+    runtime_config = _runtime_config()
+    stack = build_network_stack(
+        runtime_config, wifi_radio=_FakeRadio(), connection_manager_module=_FakeConnMgr
+    )
+
+    class _AutomationService:
+        active = True
+
+        def payload(self):
+            return {"success": True, "rules": []}
+
+        def channel_controlled(self, channel_id=None, channel_key=None):
+            return ("Water plants",) if channel_id == "S1-x943fm" else ()
+
+        def save_rule(self, rule_id, enabled, script):
+            return {"success": True, "rule_id": rule_id or "new_rule"}
+
+        def delete_rule(self, rule_id):
+            return {"success": True, "rule_id": rule_id}
+
+    controller = WebRuntimeController(
+        runtime_config,
+        stack,
+        version="v0.26.193.1",
+        automation_service=_AutomationService(),
+        server_module=_FakeServerModule,
+    ).start()
+
+    assert ("/automations", ("GET",)) in controller.server.routes
+    assert ("/automations", ("POST",)) in controller.server.routes
+    assert ("/automations/delete", ("POST",)) in controller.server.routes
+    response = controller.server.routes[("/set-switch-state", ("POST",))](
+        _FakeRequest(b'{"channel_id":"S1-x943fm","state":true}')
+    )
+
+    assert response.status == (409, "Conflict")
+    assert response.body["error"] == "switch_controlled_by_automation"

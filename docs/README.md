@@ -209,10 +209,11 @@ AP mode exposes `/itaot-init`, `/itaot-meta`, `/setup`, `/config`, `/current-dat
 
 Nodus uses intentional low-memory guards around the web UI to protect runtime stability on constrained CircuitPython heaps.
 
-- The web server has a global low-memory admission guard. Under pressure, requests may be rejected before heavy handler work begins.
-- Some routes have stricter route-specific guards than the global floor. `/setup` is the most memory-sensitive page and is guarded more aggressively than lightweight status views.
+- Every HTML page request runs garbage collection before checking free heap.
+- The lightweight `/` status page requires at least 16 KB free after collection.
+- Setup, calibration, switch settings, information, and automation editor pages require at least 24 KB free after collection.
+- Configuration and automation code is imported only when its independent page is requested; it is not embedded in the initial status response.
 - Guarded requests return `503 Service Unavailable` with a retry message. This is a protective response, not necessarily a crash or reboot condition.
-- Before rejecting a request for low memory, Nodus attempts a garbage-collection pass and re-checks available memory.
 - Manual pacing still matters on weaker devices. Repeated rapid page loads or heavy configuration actions can still push the heap into protection windows.
 
 ## Normal Mode
@@ -235,6 +236,8 @@ In normal mode the device:
   - The device can run without an MQTT broker.
   - In AP mode, bootstrap routes and the local setup route are available.
   - In normal mode, the local web UI/API can manage supported live and restart-required settings directly without Sensorius.
+  - Switch devices can execute local sensor, time, timer, and AND/OR rules.
+    The evaluator and editor exist only in this profile; Astral is unsupported.
 - `sensorius` is the networked profile used by Sensorius for Nodus onboarding, management, monitoring and automation implementation.
   - Periodic NTP sync is started after normal network bring-up.
   - MQTT is started and switch control topics are subscribed when enabled.
@@ -653,7 +656,13 @@ the primary gate for switch-enabled operation on normal boots.
   channels pass that check, Nodus treats the device as not switch-enabled.
 - If only one switch is installed, only that channel is enabled/populated in `switch.toml`.
 
-Automations are implemented in Sensorius or Home Assistant. Commands are published to each channel's MQTT `config/set` topic. Nodus applies the change locally, publishes channel `config/ack` and `config/result`, emits a JSON `event`, updates retained `state`, and persists `SWITCH_#_LAST_STATE` when the filesystem is writable.
+Under MQTT profiles, automations are implemented by Sensorius, WeeWX, or Home
+Assistant and commands use each channel's MQTT `config/set` topic. Under
+`nodusweb`, switch devices can instead execute local Sensorius-compatible rules
+from `automations.toml`, excluding Astral conditions. Local rules use the latest
+normal NodusWeb sensor sample and direct switch service without MQTT. See
+[NodusWeb Switch Automations](automations.md). Every successful state change
+persists `SWITCH_#_LAST_STATE` when the filesystem is writable.
 
 ## Recovery & Resilience
 
@@ -666,9 +675,11 @@ Automations are implemented in Sensorius or Home Assistant. Commands are publish
 ## Web Server
 
 - Lightweight `adafruit_httpserver` based server.
+- Request reads and response writes are bounded so incomplete HTTP clients and
+  HTTPS/TLS probes cannot stall the cooperative runtime loop.
 - AP mode routes are intentionally minimal to reduce memory pressure.
 - Normal-mode routes are exposed only in `nodusweb`.
-- Route set: `/`, `/current-data`, `/setup`, `/config`, `/set-switch-state`, and `/restart` when enabled; `/itaot-init` and `/itaot-meta` are AP-bootstrap routes.
+- Route set: `/`, `/current-data`, `/setup`, `/calibration`, `/info`, `/config`, `/set-switch-state`, and `/restart` when enabled. NodusWeb switch devices also expose `/switch-setup`, `/automations-ui`, and the automation JSON API. `/itaot-init` and `/itaot-meta` are AP-bootstrap routes.
 - In station mode, mDNS publishes `<Network.HOSTNAME>.local` only for
   `nodusweb` and temporary OTA HTTP mode. MQTT profiles remain headless and do
   not start mDNS.

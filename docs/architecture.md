@@ -36,8 +36,18 @@ The architecture is split into three layers:
   profiles do not start mDNS and keep broker access IP-literal.
 - Normal-mode web routes are started only for `ACTIVE_PROFILE = "nodusweb"`;
   MQTT profiles run headless after provisioning.
+- The initial `/` page imports only the compact status renderer. Configuration
+  and automation renderers are imported on their independent routes after a
+  garbage-collection pass and route-specific free-heap admission check.
 - The web poll loop treats malformed browser/TLS probes reported as
   `Unparseable raw_request` as recoverable and continues serving requests.
+  TLS ClientHello probes sent to the plain HTTP port are discarded silently;
+  other malformed requests remain visible in recovery diagnostics.
+- Accepted sockets use nonblocking request reads with a 250 ms header window
+  and a 500 ms declared-body window. TLS is identified from its record prefix
+  and closed immediately. Response writes have a one-second progress deadline.
+  An incomplete or stopped client therefore cannot hold the cooperative main
+  loop indefinitely.
   Unexpected poll failures move the web controller to `error`; periodic web
   health logging reports its phase, server presence, route count, and errors.
 - In `nodusweb`, sensor acquisition runs from the shallow main loop on a
@@ -112,6 +122,9 @@ calibration code trying to manage the radio directly.
   - Webserver startup is started in this profile.
   - NTP sync is started after normal network bring-up.
   - MQTT startup is skipped; the device will run without an MQTT broker.
+  - When a switch is present, the local automation evaluator consumes the
+    latest shallow-loop sensor sample on a five-second gate. It adds no task,
+    sensor poll, socket, or MQTT path.
 
 ## Current Feature Slices
 

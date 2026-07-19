@@ -46,6 +46,9 @@ The repository is no longer just a scaffold. Current implemented slices include:
 - host-side WeeWX 5 integration with an isolated installer, MQTTSubscribe
   mapping, Nodus report skin, retained identity, and optional confirmed switch
   automation; see [docs/weewx.md](docs/weewx.md)
+- NodusWeb-only local switch automations using the latest sampled metrics,
+  local time/timers, and Sensorius-compatible rule documents; MQTT profiles
+  remain headless and use their external automation controller
 
 ## Validated now
 

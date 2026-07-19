@@ -56,6 +56,18 @@ def _operational_routes(runtime_config):
             description="Setup and operational configuration view",
         ),
         WebRoute(
+            path="/calibration",
+            methods=("GET",),
+            kind="ui",
+            description="Device calibration view",
+        ),
+        WebRoute(
+            path="/info",
+            methods=("GET",),
+            kind="ui",
+            description="Network and device information view",
+        ),
+        WebRoute(
             path="/config",
             methods=("POST",),
             kind="config",
@@ -76,6 +88,35 @@ def _operational_routes(runtime_config):
                 kind="control",
                 description=(
                     "Schedule a soft or hard restart for restart-required changes"
+                ),
+            )
+        )
+    if profile == "nodusweb" and runtime_config.switch.present:
+        routes.extend(
+            (
+                WebRoute(
+                    path="/switch-setup",
+                    methods=("GET",),
+                    kind="ui",
+                    description="Switch settings and identity view",
+                ),
+                WebRoute(
+                    path="/automations-ui",
+                    methods=("GET",),
+                    kind="ui",
+                    description="Local NodusWeb automation editor",
+                ),
+                WebRoute(
+                    path="/automations",
+                    methods=("GET", "POST"),
+                    kind="automation",
+                    description="List or save local NodusWeb switch automations",
+                ),
+                WebRoute(
+                    path="/automations/delete",
+                    methods=("POST",),
+                    kind="automation",
+                    description="Delete a local NodusWeb switch automation",
                 ),
             )
         )

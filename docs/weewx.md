@@ -793,6 +793,10 @@ control Nodus switch channels from gathered WeeWX observations. Automation
 logic runs on the WeeWX host, not in the generated HTML and not on the
 CircuitPython device.
 
+cPyNodus_II does not consume retained controller-ownership status topics. The
+WeeWX service controls the headless device through `config/set` and confirms
+`ack`, `result`, and retained state; no device web-service topic is required.
+
 The setup UI builds ordered condition groups. Conditions within a group use
 logical AND; an OR separator starts the next group. A rule is active when any
 complete group is true. The supported conditions are:

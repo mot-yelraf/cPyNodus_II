@@ -359,13 +359,19 @@ def _print_log(prefix, message, *, start_monotonic):
     print("{} {} {}".format(_log_stamp(start_monotonic), prefix, message))
 
 
-def _memory_summary():
+def _free_mem_text():
+    """Return the current free heap without failing on host Python."""
     free_mem = "unknown"
-    mem_alloc = "unknown"
     try:
         free_mem = str(gc.mem_free())
     except Exception:
         pass
+    return free_mem
+
+
+def _memory_summary():
+    free_mem = _free_mem_text()
+    mem_alloc = "unknown"
     try:
         mem_alloc = str(gc.mem_alloc())
     except Exception:
@@ -2973,6 +2979,20 @@ async def main(*, startup_plan_override=None):
     switch_init, switch_runtime, switch_adapter, switch_service = _build_switch_stack(
         runtime_config
     )
+    automation_service = None
+    if runtime_config.active_profile == "nodusweb" and switch_service is not None:
+        from cpynodus_ii.features.nodusweb_automation import (
+            NodusWebAutomationService,
+        )
+
+        automation_service = NodusWebAutomationService(
+            runtime_config,
+            switch_service,
+            settings_root=writable_settings_root,
+        )
+        automation_service.update_context(
+            metrics=getattr(sensor_snapshot, "metrics", {})
+        )
     ntp_state = NTPState()
     ntp_startup_defer_logged = False
     recovery_policy = RecoveryPolicy()
@@ -3020,12 +3040,16 @@ async def main(*, startup_plan_override=None):
 
     _print_log(
         "cPyNodus_II",
-        "boot version={} profile={} ap_mode={} fs={} persistence_mode={}".format(
+        (
+            "boot version={} profile={} ap_mode={} fs={} "
+            "persistence_mode={} free_mem={}"
+        ).format(
             __version__,
             plan.profile,
             plan.ap_mode,
             fs_mode,
             persistence_mode,
+            _free_mem_text(),
         ),
         start_monotonic=start_monotonic,
     )
@@ -3157,6 +3181,7 @@ async def main(*, startup_plan_override=None):
             sensor_service=sensor_service,
             sensor_snapshot=sensor_snapshot,
             switch_service=switch_service,
+            automation_service=automation_service,
             settings_root=writable_settings_root,
             reboot_callbacks={
                 "soft": _request_runtime_soft_reboot,
@@ -3227,6 +3252,17 @@ async def main(*, startup_plan_override=None):
                     )
                 while float(next_nodusweb_sensor_at) <= float(now_monotonic):
                     next_nodusweb_sensor_at += NODUSWEB_SENSOR_INTERVAL_S
+            if automation_service is not None:
+                automation_service.update_context(
+                    runtime_config=runtime_config,
+                    switch_service=switch_service,
+                    metrics=getattr(sensor_snapshot, "metrics", None),
+                )
+                automation_service.tick(
+                    now_monotonic=now_monotonic,
+                    now_epoch=time.time(),
+                )
+                runtime_config = automation_service.runtime_config
             if recovery_state.phase != last_counted_recovery_phase:
                 if recovery_state.phase == "wifi":
                     wifi_recovery_count += 1
@@ -3243,6 +3279,7 @@ async def main(*, startup_plan_override=None):
                     sensor_service=sensor_service,
                     sensor_snapshot=sensor_snapshot,
                     switch_service=switch_service,
+                    automation_service=automation_service,
                     version=__version__,
                     wifi_recovery_count=wifi_recovery_count,
                 )

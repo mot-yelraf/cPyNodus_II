@@ -236,6 +236,11 @@ Retained switch `state` topic implementation note:
 - Consumers should tolerate both shapes on `nodus/<channel_id>/state` and use
   `event` plus `config/result` for correlated command handling.
 
+NodusWeb-local automation is separate from this MQTT contract. It executes
+only in the `nodusweb` profile, where MQTT is disabled, and stores compatible
+rules in `automations.toml`. MQTT profiles never load those local rules and
+remain controlled through the canonical channel command topics above.
+
 ## Retained `meta`
 
 Retained `nodus/<device_id>/meta` is the compact authoritative startup

@@ -116,6 +116,8 @@ The active runtime profile is configured in `settings.toml` under `[Profile]`:
   - default local-only behavior
   - MQTT disabled
   - NTP sync enabled after network bring-up
+  - local switch automation editor/evaluator available when a physical switch
+    channel is enabled; Astral rules are not supported
 - `ACTIVE_PROFILE = "weewx"`
   - networked MQTT behavior using the shared `[MQTT]` connection settings
   - MQTT enabled
@@ -216,23 +218,34 @@ transition, and reboot reason.
 
 ## Local setup UI
 
-The built-in `/` and `/setup` web UI uses the same `nodusweb` dashboard. It
-provides Status, Setup, Calibration, and Nodus Info panes. The dashboard is
-available in normal mode only for `ACTIVE_PROFILE = "nodusweb"`; AP recovery
-continues to expose the setup surface, while MQTT profiles remain headless.
+The built-in `nodusweb` UI uses independent pages so the initial `/` response
+contains only status and switch controls. Setup, calibration, switch settings,
+automation editing, and device information are generated only when their
+navigation link is requested. The UI is available in normal mode only for
+`ACTIVE_PROFILE = "nodusweb"`; AP recovery continues to expose the setup
+surface, while MQTT profiles remain headless.
+
+Every NodusWeb page embeds the same blue/green Nodus `N` SVG favicon used by
+the WeeWX web surfaces, without adding a favicon route or HTTP request.
 
 - `Status`: the last successfully gathered sensor sample, its RTC timestamp,
-  and current switch states. A waiting or failed read keeps the prior sample;
-  no history buffer is allocated.
-- `Setup`: network, time, profile/MQTT, location, display, and switch settings
+  and a switch card with state controls and local automation ownership. A
+  waiting or failed read keeps the prior sample; no history buffer is allocated.
+- `Setup`: network, time, profile/MQTT, sensor location, and display settings
+- `Switch Settings`: switch location, labels, identity, and manual controls
+- `Automations`: NodusWeb-local rules for enabled switch devices
 - `Calibration`: device-appropriate calibration fields
 - `Nodus Info`: current network, firmware, sensor, and switch identity
   plus the number of times the current boot entered Wi-Fi recovery
 
-Wi-Fi and MQTT passwords use password inputs with an explicit `Show` control.
-The Pico2 W dashboard does not allocate sensor history and does not expose
+Wi-Fi and MQTT passwords use password inputs. The Pico2 W UI does not allocate sensor history and does not expose
 history graphs, min/average/max statistics, stored-data summaries, or data
 export.
+
+HTML rendering collects garbage first and admits `/` only with at least 16 KB
+free heap. The separate setup, calibration, switch settings, information, and
+automation pages require at least 24 KB. A request below its floor returns
+`503 Service Unavailable` with a retry message.
 
 The JSON `/config` route accepts a broader supported update set than the
 rendered page:
@@ -295,7 +308,12 @@ Corner case:
 - The normal-mode setup UI is available only when `ACTIVE_PROFILE = "nodusweb"`.
 - Devices for MQTT-enabled profiles should be provisioned through AP/nodusweb mode before being switched into the target profile.
 
-Manual switch overrides use the live runtime switch controller and also persist the resulting `SWITCH_#_LAST_STATE`, so the next boot starts from the last successfully applied manual state.
+Manual switch overrides use the live runtime switch controller and persist the
+resulting `SWITCH_#_LAST_STATE`, so the next boot starts from the last
+successfully applied manual state. The browser and backend enforce a
+per-channel five-second guard. An enabled local rule owns its target channel
+and blocks manual changes until disabled. Rules are stored transactionally in
+`automations.toml`; see [automations.md](automations.md).
 
 ## Time settings
 

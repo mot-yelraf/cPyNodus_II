@@ -14,6 +14,7 @@ from cpynodus_ii.app import (
     _consume_soft_reload_prepared,
     _cycle_wifi_radio_for_warm_start,
     _dns_health_text,
+    _free_mem_text,
     _hard_reboot,
     _is_mqtt_subscription_failure,
     _mark_recovery_hard_reset_requested,
@@ -36,6 +37,17 @@ from cpynodus_ii.app import (
 )
 from cpynodus_ii.core.config import RuntimeConfig
 from cpynodus_ii.core.ntp import NTPState
+
+
+def test_free_mem_text_reports_heap_and_has_host_fallback(monkeypatch):
+    monkeypatch.setattr(app_module.gc, "mem_free", lambda: 24496, raising=False)
+    assert _free_mem_text() == "24496"
+
+    def fail_mem_free():
+        raise AttributeError
+
+    monkeypatch.setattr(app_module.gc, "mem_free", fail_mem_free)
+    assert _free_mem_text() == "unknown"
 
 
 def test_should_log_command_result_skips_switch_commands():
