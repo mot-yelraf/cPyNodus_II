@@ -95,6 +95,28 @@ Feature code should not own socket lifecycle. Network ownership belongs in
 `cpynodus_ii/core/network.py`, with MQTT socket/client behavior kept behind the
 MQTT adapter and app-level recovery flow.
 
+## OTA Package Creation
+
+When the operator requests an OTA package:
+
+- Build target-specific compiled artifacts first with `scripts/nodus_mpy.sh`
+  for the requested board and its verified CircuitPython version.
+- Package importable firmware modules under `cpynodus_ii/` only as `.mpy`.
+  Never include the corresponding `cpynodus_ii/**/*.py` source files in an OTA
+  package.
+- Add each replaced module's matching `cpynodus_ii/**/*.py` path to the
+  manifest `delete` list so a device cannot retain both `.py` and `.mpy`
+  versions after the update.
+- Include root CircuitPython source entrypoints such as `boot.py` or `code.py`
+  only when the operator explicitly requests them or the requested commit range
+  requires them; do not treat them as importable package modules.
+- Before delivering the package, inspect `manifest.json` and fail the build if
+  any `cpynodus_ii/**/*.py` path appears in `files`, if an expected `.mpy`
+  artifact is missing, or if a matching source-module deletion is absent.
+- If the current OTA tooling cannot build a compliant MPY-only package from the
+  requested refs, stop and report that tooling gap. Do not fall back to a
+  source `.py` OTA package.
+
 ## MQTT Startup and Recovery Investigation
 
 For MQTT startup/recovery failures:

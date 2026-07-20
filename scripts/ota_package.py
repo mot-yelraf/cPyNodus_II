@@ -20,6 +20,15 @@ from urllib.request import Request, urlopen
 SCHEMA = "nodus-ota/v1"
 DEFAULT_PLATFORM = "pico2w"
 DEFAULT_CIRCUITPYTHON = "9.2.8"
+TARGET_CIRCUITPYTHON = {
+    "pico2w": "9.2.8",
+    "xesp32s3": "10.2.1",
+}
+MPY_SOURCE_EXCEPTIONS = {
+    "boot.py",
+    "code.py",
+    "dataclass.py",
+}
 PRESERVED_CONFIG_FILES = (
     "settings.toml",
     "sensor_i2c.toml",
@@ -44,6 +53,7 @@ EXCLUDED_NAMES = {
 ROOT_DEPLOYABLE = {
     "boot.py",
     "code.py",
+    "dataclass.py",
     "dataclasses.py",
     "ota_test.py",
     "settings.toml.def",
@@ -74,14 +84,26 @@ def build_ota_package(
     created_at=None,
     include=None,
     exclude=None,
+    target=DEFAULT_PLATFORM,
+    compiled_root=None,
 ):
     """Create an OTA package directory and return the manifest dictionary."""
     repo_path = Path(repo_root)
     out_path = Path(out_dir)
+    platform = _normalize_target(target)
+    circuitpython = TARGET_CIRCUITPYTHON[platform]
+    compiled_path = Path(compiled_root) if compiled_root else None
     from_ref = str(from_tag)
     to_ref = str(to_tag)
     _require_git_ref(repo_path, from_ref)
     _require_git_ref(repo_path, to_ref)
+    if compiled_path is not None:
+        _validate_compiled_root(
+            compiled_path,
+            platform,
+            circuitpython,
+            _version_at_ref(repo_path, to_ref),
+        )
 
     changed_paths = _git_lines(
         repo_path,
@@ -113,18 +135,45 @@ def build_ota_package(
     files_root.mkdir(parents=True, exist_ok=True)
 
     file_entries = []
+    packaged_paths = set()
     for path in sorted(selected):
-        payload = _git_file_bytes(repo_path, to_ref, path)
-        target = files_root / Path(path)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(payload)
+        package_path = path
+        if compiled_path is not None and _is_python_module_path(path):
+            package_path = "{}.mpy".format(path[:-3])
+            artifact_path = compiled_path / Path(package_path)
+            if not artifact_path.is_file():
+                raise OTAPackageError(
+                    "compiled_artifact_missing:{}".format(package_path)
+                )
+            payload = artifact_path.read_bytes()
+            if path not in deleted:
+                deleted.append(path)
+        elif compiled_path is not None and path.endswith(".py"):
+            if path not in MPY_SOURCE_EXCEPTIONS:
+                raise OTAPackageError("source_python_payload_forbidden:{}".format(path))
+            payload = _git_file_bytes(repo_path, to_ref, path)
+        else:
+            payload = _git_file_bytes(repo_path, to_ref, path)
+        if package_path in packaged_paths:
+            raise OTAPackageError("duplicate_package_path:{}".format(package_path))
+        packaged_paths.add(package_path)
+        package_target = files_root / Path(package_path)
+        package_target.parent.mkdir(parents=True, exist_ok=True)
+        package_target.write_bytes(payload)
         file_entries.append(
             {
-                "path": path,
+                "path": package_path,
                 "size": len(payload),
                 "sha256": hashlib.sha256(payload).hexdigest(),
             }
         )
+
+    if compiled_path is not None:
+        for path in tuple(deleted):
+            if _is_python_module_path(path):
+                compiled_delete = "{}.mpy".format(path[:-3])
+                if compiled_delete not in deleted and path not in selected:
+                    deleted.append(compiled_delete)
 
     manifest = {
         "schema": SCHEMA,
@@ -133,8 +182,8 @@ def build_ota_package(
         "to_tag": to_ref,
         "created_at": created_at or _utc_timestamp(),
         "target": {
-            "platform": DEFAULT_PLATFORM,
-            "circuitpython": DEFAULT_CIRCUITPYTHON,
+            "platform": platform,
+            "circuitpython": circuitpython,
         },
         "requires": {
             "version": _version_at_ref(repo_path, from_ref),
@@ -634,6 +683,12 @@ def main(argv=None):
     package_parser = subparsers.add_parser("package", parents=[common_package_args])
     package_parser.add_argument("--from", dest="from_tag", required=True)
     package_parser.add_argument("--to", dest="to_tag", required=True)
+    package_parser.add_argument(
+        "--target",
+        choices=tuple(sorted(TARGET_CIRCUITPYTHON)),
+        default=DEFAULT_PLATFORM,
+    )
+    package_parser.add_argument("--compiled-root")
     worktree_parser = subparsers.add_parser(
         "package-worktree", parents=[common_package_args]
     )
@@ -674,6 +729,8 @@ def main(argv=None):
             args.out,
             include=args.include or (),
             exclude=args.exclude or (),
+            target=args.target,
+            compiled_root=args.compiled_root,
         )
         log(
             "created {package_id} files={files} delete={delete}".format(
@@ -917,6 +974,47 @@ def _is_deployable_path(path):
         if path.startswith(prefix):
             return True
     return False
+
+
+def _is_python_module_path(path):
+    return str(path).startswith("cpynodus_ii/") and str(path).endswith(".py")
+
+
+def _normalize_target(target):
+    platform = str(target or DEFAULT_PLATFORM).strip().lower()
+    if platform not in TARGET_CIRCUITPYTHON:
+        raise OTAPackageError("unsupported_target:{}".format(platform))
+    return platform
+
+
+def _validate_compiled_root(compiled_root, target, circuitpython, project_version):
+    if not compiled_root.is_dir():
+        raise OTAPackageError("compiled_root_missing:{}".format(compiled_root))
+    info_path = compiled_root / "BUILD_INFO"
+    if not info_path.is_file():
+        raise OTAPackageError("compiled_build_info_missing:{}".format(info_path))
+    info = {}
+    for raw_line in info_path.read_text(encoding="utf-8").splitlines():
+        key, separator, value = raw_line.partition("=")
+        if separator:
+            info[key.strip()] = value.strip()
+    expected = {
+        "format": "cpynodus-mpy-build-v1",
+        "target": target,
+        "circuitpython": circuitpython,
+        "mpy_abi": "mpy v6.3",
+        "project_version": project_version,
+    }
+    for key, expected_value in expected.items():
+        actual_value = info.get(key, "")
+        if actual_value != expected_value:
+            raise OTAPackageError(
+                "compiled_build_info_mismatch:{}:{}!={}".format(
+                    key,
+                    actual_value or "missing",
+                    expected_value,
+                )
+            )
 
 
 def _package_id(from_ref, to_ref):

@@ -32,6 +32,13 @@ plus HTTP transfer flow that Sensorius should reuse.
 
 - OTA package targets are board-specific. Verified targets are `pico2w` on
   CircuitPython `9.2.8` and `xesp32s3` on CircuitPython `10.2.1`.
+- OTA payloads must use target-specific compiled `.mpy` files for all
+  CircuitPython modules except the required source-file exceptions `boot.py`,
+  `code.py`, and `dataclass.py`. No other `.py` file may appear in an OTA
+  package.
+- When an OTA package installs a compiled module, its manifest must delete the
+  matching `.py` source path. A device must not retain both `.py` and `.mpy`
+  forms of the same module after apply.
 - Heap and filesystem space are tight, so manifests and handlers must be small.
   Pico2 W testing has shown an out-of-memory condition when attempting to OTA a
   very large `cpynodus_ii/app.mpy`; keep package slices small and characterize
@@ -128,50 +135,60 @@ git push origin OTA-Verified---baseline v0.26.174.1
 ```
 
 Build the OTA package from the exact tag range the device is expected to move
-through. For example, to update a device already on the verified baseline to
+through. First compile the target-specific MPY image with the compiler matching
+the target CircuitPython release:
+
+```text
+scripts/nodus_mpy.sh --target pico2w
+scripts/nodus_mpy.sh --target xesp32s3
+```
+
+Then build the OTA package from those compiled artifacts and the requested Git
+range. For example, to update a Pico2 W already on the verified baseline to
 `v0.26.174.1`:
 
 ```text
 python scripts/nodus_ota.py package \
   --from OTA-Verified---baseline \
   --to v0.26.174.1 \
+  --target pico2w \
+  --compiled-root build/firmware/pico2w \
   --out build/ota/OTA-Verified---baseline_to_v0.26.174.1
 ```
 
-The resulting `manifest.json` records `from_tag`, `to_tag`, package id, file
-hashes, and the firmware version read from `cpynodus_ii/__init__.py` at the
-`--from` tag. Sensorius should use that manifest data to match the selected
-package to the retained device version before initiating OTA.
+The package builder must support `--target` and `--compiled-root` before this
+production command is used. The current Git-range implementation reads source
+files directly from Git and therefore must not be used to create a deployable
+OTA package until it maps changed CircuitPython modules to the corresponding
+compiled `.mpy` artifacts and emits deletion entries for their `.py` paths. Do
+not fall back to a source-module OTA package.
 
-The generic tag-range package shape is:
+The resulting `manifest.json` records `from_tag`, `to_tag`, package id, file
+hashes, and the firmware version derived from the source tree at the `--from`
+ref. Sensorius should use that manifest data to match the selected package to
+the retained device version before initiating OTA.
+
+The required compiled tag-range package interface is:
 
 ```text
-nodus-ota package --from tagA --to tagB --out build/ota/tagA_tagB
+nodus-ota package --from tagA --to tagB --target pico2w \
+  --compiled-root build/firmware/pico2w --out build/ota/tagA_tagB
 nodus-ota push build/ota/tagA_tagB --device http://co2-ykdvea.local:8000
 ```
 
-Current repository entrypoint:
+Required repository interface after compiled-artifact support is implemented:
 
 ```text
-python scripts/nodus_ota.py package --from tagA --to tagB --out build/ota/tagA_tagB
+python scripts/nodus_ota.py package --from tagA --to tagB --target pico2w \
+  --compiled-root build/firmware/pico2w --out build/ota/tagA_tagB
 python scripts/nodus_ota.py push build/ota/tagA_tagB --device http://co2-ykdvea.local:8000
 ```
 
-For the first single-file transfer attempts with `ota_test.py`, before formal
-baseline tags exist:
-
-```text
-python scripts/nodus_ota.py package-worktree \
-  --out build/ota/ota_test_only \
-  --package-id ota-test-1 \
-  --include ota_test.py
-
-python scripts/nodus_ota.py push build/ota/ota_test_only \
-  --prepare \
-  --broker <mqtt-broker-host-or-ip> \
-  --device-id co2-ykdvea \
-  --device http://10.0.0.213:8000
-```
+The former source-tree single-file and `package-worktree` flow is retired for
+device updates. Any replacement single-file or worktree workflow must compile
+`ota_test.mpy` or the selected modules for the target first and must enforce
+the same `.mpy` payload and matching `.py` deletion rules as a tag-range
+package.
 
 The `push --prepare` flow publishes `prepare` to
 `nodus/<device-id>/fwupdate`, waits briefly for Nodus to reboot into temporary
@@ -202,6 +219,14 @@ The package command should:
 
 - require both tags to exist;
 - derive changed files with Git, using `tagA..tagB`;
+- require an explicit target and a complete, current compiled artifact root;
+- translate changed CircuitPython module paths from `.py` to the corresponding
+  target-specific `.mpy` artifacts;
+- allow `.py` payloads only for `boot.py`, `code.py`, and `dataclass.py`;
+- add the matching `.py` path to `delete` whenever a compiled `.mpy` module is
+  included;
+- reject a package containing any other `.py` path or containing both source
+  and compiled forms of one module;
 - include only deployable firmware paths by default;
 - include board TOML templates under `boards/`;
 - exclude development-only paths such as `.git/`, `tests/`, `docs/`,
@@ -217,8 +242,9 @@ manifest.json
 files/
   code.py
   boot.py
-  cpynodus_ii/app.py
-  cpynodus_ii/core/settings.py
+  dataclass.py
+  cpynodus_ii/app.mpy
+  cpynodus_ii/core/settings.mpy
 ```
 
 The tool avoids requiring Sensorius during early development. `push` publishes
@@ -249,12 +275,14 @@ Example:
   },
   "files": [
     {
-      "path": "cpynodus_ii/app.py",
+      "path": "cpynodus_ii/app.mpy",
       "size": 12345,
       "sha256": "..."
     }
   ],
-  "delete": [],
+  "delete": [
+    "cpynodus_ii/app.py"
+  ],
   "preserve": [
     "settings.toml",
     "sensor_i2c.toml",
@@ -270,6 +298,10 @@ Example:
 
 Manifest rules:
 
+- `boot.py`, `code.py`, and `dataclass.py` are the only permitted `.py`
+  payload paths. Every other CircuitPython module must use its `.mpy` path.
+- Each `.mpy` entry must have its matching `.py` source path in `delete` so
+  stale source and compiled modules cannot coexist on the device.
 - `settings.toml`, `sensor_i2c.toml`, `sensor_soil.toml`, and `switch.toml`
   are preserved unless listed explicitly in `files`.
 - `target.platform` should match the deploy target, currently `pico2w` or
@@ -472,9 +504,12 @@ Do not include Wi-Fi or MQTT credentials in OTA packages.
 ## Implementation Phases
 
 1. Package builder and tests.
-   - Implemented tag-range and worktree package creation.
+   - Implemented source-based tag-range and worktree package creation for
+     host-side development only; these paths are not valid for device OTA.
    - Implemented include/exclude behavior.
    - Generates `manifest.json`.
+   - Remaining: require target-specific compiled artifacts, map changed modules
+     to `.mpy`, emit matching `.py` deletions, and reject other `.py` payloads.
 2. Host-only OTA CLI.
    - Implemented package creation, prepare publish, and HTTP `push`.
    - Uses the same HTTP protocol Sensorius will use later.
@@ -513,6 +548,11 @@ Host tests:
 
 - package creation from two temporary Git tags;
 - worktree package creation for pre-tag validation;
+- target-specific `.mpy` artifact selection for changed source modules;
+- rejection of `.py` payloads other than `boot.py`, `code.py`, and
+  `dataclass.py`;
+- required matching `.py` deletion for every packaged `.mpy` module;
+- rejection when both `.py` and `.mpy` forms of a module are present;
 - manifest path normalization and exclusion rules;
 - rejected missing tags;
 - rejected path traversal;
@@ -564,10 +604,10 @@ Normal boot: 13:37:32
 Observed serial-side file windows:
 
 ```text
-cpynodus_ii/core/ntp.py                  9,329 B   40s
-cpynodus_ii/features/payloads.py        18,778 B   80s
-cpynodus_ii/hardware/switch_adapter.py   4,207 B   21s
-cpynodus_ii/ota/runtime.py               4,125 B   18s
+cpynodus_ii/core/ntp.mpy                  9,329 B   40s
+cpynodus_ii/features/payloads.mpy        18,778 B   80s
+cpynodus_ii/hardware/switch_adapter.mpy   4,207 B   21s
+cpynodus_ii/ota/runtime.mpy               4,125 B   18s
 ```
 
 Commit took about 102 seconds for this package. This is acceptable for early

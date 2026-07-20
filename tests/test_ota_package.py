@@ -149,6 +149,106 @@ def test_build_ota_package_includes_board_templates_and_root_def_deletes(tmp_pat
     ) == template_payload
 
 
+def test_build_ota_package_uses_compiled_modules_and_deletes_sources(tmp_path):
+    repo = _init_repo(tmp_path / "repo")
+    _write(repo / "cpynodus_ii" / "__init__.py", '__version__ = "v0.26.123.3"\n')
+    _write(repo / "cpynodus_ii" / "app.py", "APP = 1\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "tag a")
+    _git(repo, "tag", "tagA")
+
+    _write(repo / "cpynodus_ii" / "app.py", "APP = 2\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "tag b")
+    _git(repo, "tag", "tagB")
+
+    compiled = tmp_path / "compiled"
+    compiled_payload = b"compiled-app"
+    (compiled / "cpynodus_ii").mkdir(parents=True)
+    (compiled / "cpynodus_ii" / "app.mpy").write_bytes(compiled_payload)
+    _write_build_info(compiled, project_version="v0.26.123.3")
+
+    manifest = build_ota_package(
+        repo,
+        "tagA",
+        "tagB",
+        tmp_path / "package",
+        target="pico2w",
+        compiled_root=compiled,
+    )
+
+    assert manifest["target"] == {"platform": "pico2w", "circuitpython": "9.2.8"}
+    assert manifest["delete"] == ["cpynodus_ii/app.py"]
+    assert manifest["files"] == [
+        {
+            "path": "cpynodus_ii/app.mpy",
+            "size": len(compiled_payload),
+            "sha256": hashlib.sha256(compiled_payload).hexdigest(),
+        }
+    ]
+    assert (
+        tmp_path / "package" / "files" / "cpynodus_ii" / "app.mpy"
+    ).read_bytes() == compiled_payload
+    assert not (tmp_path / "package" / "files" / "cpynodus_ii" / "app.py").exists()
+
+
+def test_build_compiled_ota_package_deletes_removed_source_and_mpy(tmp_path):
+    repo = _init_repo(tmp_path / "repo")
+    _write(repo / "cpynodus_ii" / "__init__.py", '__version__ = "v0.26.123.3"\n')
+    _write(repo / "cpynodus_ii" / "obsolete.py", "OLD = True\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "tag a")
+    _git(repo, "tag", "tagA")
+
+    (repo / "cpynodus_ii" / "obsolete.py").unlink()
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "tag b")
+    _git(repo, "tag", "tagB")
+
+    compiled = tmp_path / "compiled"
+    compiled.mkdir()
+    _write_build_info(compiled, project_version="v0.26.123.3")
+    manifest = build_ota_package(
+        repo,
+        "tagA",
+        "tagB",
+        tmp_path / "package",
+        compiled_root=compiled,
+    )
+
+    assert manifest["files"] == []
+    assert manifest["delete"] == [
+        "cpynodus_ii/obsolete.mpy",
+        "cpynodus_ii/obsolete.py",
+    ]
+
+
+def test_build_compiled_ota_package_rejects_missing_artifact(tmp_path):
+    repo = _init_repo(tmp_path / "repo")
+    _write(repo / "cpynodus_ii" / "__init__.py", '__version__ = "v0.26.123.3"\n')
+    _write(repo / "cpynodus_ii" / "app.py", "APP = 1\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "tag a")
+    _git(repo, "tag", "tagA")
+    _write(repo / "cpynodus_ii" / "app.py", "APP = 2\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "tag b")
+    _git(repo, "tag", "tagB")
+
+    compiled = tmp_path / "compiled"
+    compiled.mkdir()
+    _write_build_info(compiled, project_version="v0.26.123.3")
+
+    with pytest.raises(OTAPackageError, match="compiled_artifact_missing"):
+        build_ota_package(
+            repo,
+            "tagA",
+            "tagB",
+            tmp_path / "package",
+            compiled_root=compiled,
+        )
+
+
 def test_build_ota_package_rejects_missing_tag(tmp_path):
     repo = _init_repo(tmp_path / "repo")
     _write(repo / "cpynodus_ii" / "__init__.py", '__version__ = "v0.26.123.3"\n')
@@ -593,6 +693,22 @@ def _write(path, text):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
+
+
+def _write_build_info(path, *, project_version):
+    _write(
+        path / "BUILD_INFO",
+        "\n".join(
+            (
+                "format=cpynodus-mpy-build-v1",
+                "target=pico2w",
+                "circuitpython=9.2.8",
+                "mpy_abi=mpy v6.3",
+                "project_version={}".format(project_version),
+                "",
+            )
+        ),
+    )
 
 
 def _git(repo, *args):
