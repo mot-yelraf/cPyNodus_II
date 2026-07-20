@@ -18,6 +18,8 @@ def render_automation_html(hostname):
         hostname,
         "Switch Automations",
         body,
-        nav=navigation(switch_present=True, automations=True),
+        nav=navigation(
+            switch_present=True, automations=True, current="/automations-ui"
+        ),
         script=script,
     )

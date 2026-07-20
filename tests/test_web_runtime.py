@@ -91,6 +91,7 @@ class _ScriptedSocket:
     def __init__(self, reads=(), sends=()):
         self.reads = list(reads)
         self.sends = list(sends)
+        self.send_sizes = []
         self.blocking = []
         self.timeouts = []
 
@@ -109,6 +110,7 @@ class _ScriptedSocket:
         return length
 
     def send(self, buffer):
+        self.send_sizes.append(len(buffer))
         value = self.sends.pop(0) if self.sends else len(buffer)
         if isinstance(value, Exception):
             raise value
@@ -189,10 +191,14 @@ def test_bounded_body_read_accepts_fragments(monkeypatch):
 
 
 def test_bounded_send_retries_and_rejects_zero_progress(monkeypatch):
-    sock = _ScriptedSocket(sends=(OSError(web_runtime.EAGAIN), 2, 3))
+    sock = _ScriptedSocket(
+        sends=(OSError(web_runtime.EAGAIN), OSError(web_runtime.ETIMEDOUT), 2, 3)
+    )
     monkeypatch.setattr(web_runtime, "sleep", lambda _seconds: None)
 
     assert web_runtime._send_bounded_bytes(sock, b"hello") == 5
+    assert sock.blocking == [False]
+    assert sock.timeouts == [0]
 
     stalled = _ScriptedSocket(sends=(0,))
     try:
@@ -201,6 +207,68 @@ def test_bounded_send_retries_and_rejects_zero_progress(monkeypatch):
         assert web_runtime._socket_error_number(exc) == web_runtime.ECONNRESET
     else:
         raise AssertionError("zero-progress send did not fail")
+
+
+def test_bounded_send_limits_chunk_size_and_paces_progress(monkeypatch):
+    sock = _ScriptedSocket()
+    pauses = []
+    monkeypatch.setattr(web_runtime, "sleep", lambda seconds: pauses.append(seconds))
+
+    assert web_runtime._send_bounded_bytes(sock, bytes(2500)) == 2500
+    assert sock.send_sizes == [
+        256,
+        256,
+        256,
+        256,
+        256,
+        256,
+        256,
+        256,
+        256,
+        196,
+    ]
+    assert pauses == [0.025] * 9
+    assert sock.blocking == [False]
+    assert sock.timeouts == [0]
+
+
+def test_bounded_send_expires_would_block_client(monkeypatch):
+    sock = _ScriptedSocket(
+        sends=(OSError(web_runtime.EAGAIN), OSError(web_runtime.EAGAIN))
+    )
+    times = iter((0.0, 0.1, 1.0))
+    monkeypatch.setattr(web_runtime, "monotonic", lambda: next(times))
+    monkeypatch.setattr(web_runtime, "sleep", lambda _seconds: None)
+
+    try:
+        web_runtime._send_bounded_bytes(sock, b"hello")
+    except OSError as exc:
+        assert web_runtime._socket_error_number(exc) == web_runtime.ETIMEDOUT
+    else:
+        raise AssertionError("stalled send did not expire")
+
+
+def test_bounded_send_resets_stall_deadline_on_progress(monkeypatch):
+    sock = _ScriptedSocket(sends=(1, 1, 1))
+    times = iter((0.0, 0.5, 0.5, 1.4, 1.4, 2.3, 2.3))
+    monkeypatch.setattr(web_runtime, "monotonic", lambda: next(times))
+
+    assert web_runtime._send_bounded_bytes(sock, b"abc") == 3
+
+
+def test_bounded_send_enforces_five_second_total_deadline(monkeypatch):
+    sock = _ScriptedSocket(sends=(1, 1, 1, 1, 1))
+    times = iter(
+        (0.0, 0.9, 0.9, 1.8, 1.8, 2.7, 2.7, 3.6, 3.6, 4.5, 4.5, 5.0)
+    )
+    monkeypatch.setattr(web_runtime, "monotonic", lambda: next(times))
+
+    try:
+        web_runtime._send_bounded_bytes(sock, b"abcdef")
+    except OSError as exc:
+        assert web_runtime._socket_error_number(exc) == web_runtime.ETIMEDOUT
+    else:
+        raise AssertionError("progressing send exceeded its total deadline")
 
 
 def test_bounded_adapters_wrap_real_server_shapes():
@@ -267,7 +335,10 @@ def test_web_status_page_is_small_and_excludes_configuration_editors():
 
     assert "Status" in html
     assert 'rel="icon" href="data:image/svg+xml;base64,PHN2Zy' in html
-    assert "background:#eef8f3;color:#1b1f24" in html
+    assert "grid-template-columns:220px minmax(0,900px)" in html
+    assert "th,td{width:50%" in html
+    assert "NodusWeb" in html
+    assert 'href="/" class="active"' in html
     assert 'id="sample_timestamp"' in html
     assert 'id="sample_1"' in html
     assert 'id="switch_SWITCH_1"' in html
@@ -322,6 +393,13 @@ def test_web_configuration_surfaces_render_on_separate_routes():
     assert "loadAutomations()" in automations
     assert "Nodus Info" in info
     assert "WiFi Recovery Count" in info
+    assert "Network Info" in info
+    assert "Device Info" in info
+    assert 'href="/setup" class="active"' in setup
+    assert 'href="/calibration" class="active"' in calibration
+    assert 'href="/switch-setup" class="active"' in switch
+    assert 'href="/automations-ui" class="active"' in automations
+    assert 'href="/info" class="active"' in info
     assert 'id="automation_script"' not in setup
 
 
@@ -363,7 +441,7 @@ def test_web_pages_enforce_heap_floors_after_collection(monkeypatch):
     collections = []
 
     monkeypatch.setattr(web_runtime.gc, "collect", lambda: collections.append(True))
-    monkeypatch.setattr(web_runtime.gc, "mem_free", lambda: 15999, raising=False)
+    monkeypatch.setattr(web_runtime.gc, "mem_free", lambda: 9999, raising=False)
 
     status = controller.server.routes[("/", ("GET",))](_FakeRequest())
     setup = controller.server.routes[("/setup", ("GET",))](_FakeRequest())
@@ -371,6 +449,14 @@ def test_web_pages_enforce_heap_floors_after_collection(monkeypatch):
     assert status.status == (503, "Service Unavailable")
     assert setup.status == (503, "Service Unavailable")
     assert len(collections) == 2
+
+    monkeypatch.setattr(web_runtime.gc, "mem_free", lambda: 10000, raising=False)
+    status = controller.server.routes[("/", ("GET",))](_FakeRequest())
+    setup = controller.server.routes[("/setup", ("GET",))](_FakeRequest())
+
+    assert status.status == (200, "OK")
+    assert setup.status == (200, "OK")
+    assert len(collections) == 4
 
 
 def test_web_dashboard_keeps_last_successful_sample_and_timestamp(monkeypatch):

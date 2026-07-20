@@ -45,9 +45,10 @@ The architecture is split into three layers:
   other malformed requests remain visible in recovery diagnostics.
 - Accepted sockets use nonblocking request reads with a 250 ms header window
   and a 500 ms declared-body window. TLS is identified from its record prefix
-  and closed immediately. Response writes have a one-second progress deadline.
-  An incomplete or stopped client therefore cannot hold the cooperative main
-  loop indefinitely.
+  and closed immediately. Response writes use explicitly nonblocking 256-byte
+  chunks with a 25 ms cooperative pause between successful chunks, a one-second
+  no-progress limit, and a five-second absolute deadline. An incomplete or
+  stopped client therefore cannot hold the cooperative main loop indefinitely.
   Unexpected poll failures move the web controller to `error`; periodic web
   health logging reports its phase, server presence, route count, and errors.
 - In `nodusweb`, sensor acquisition runs from the shallow main loop on a

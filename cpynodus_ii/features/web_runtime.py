@@ -34,11 +34,14 @@ _HTTP_STATUS = {
 }
 
 _MANUAL_SWITCH_GUARD_S = 5.0
-_STATUS_HEAP_FLOOR = 16000
-_CONFIG_HEAP_FLOOR = 24000
+_STATUS_HEAP_FLOOR = 10000
+_CONFIG_HEAP_FLOOR = 10000
 _HEADER_READ_WINDOW_S = 0.25
 _BODY_READ_WINDOW_S = 0.5
-_RESPONSE_SEND_WINDOW_S = 1.0
+_RESPONSE_SEND_STALL_WINDOW_S = 1.0
+_RESPONSE_SEND_TOTAL_WINDOW_S = 5.0
+_RESPONSE_SEND_CHUNK_BYTES = 256
+_RESPONSE_SEND_PACE_S = 0.025
 _SOCKET_RETRY_DELAY_S = 0.005
 _MAX_HEADER_BYTES = 2048
 
@@ -875,24 +878,45 @@ def _send_bounded_bytes(conn, buffer):
     """Send bytes with retry bounds for nonblocking or stalled clients."""
     sent = 0
     view = memoryview(buffer)
-    deadline = monotonic() + _RESPONSE_SEND_WINDOW_S
+    started = monotonic()
+    stall_deadline = started + _RESPONSE_SEND_STALL_WINDOW_S
+    total_deadline = started + _RESPONSE_SEND_TOTAL_WINDOW_S
+    _set_response_socket_nonblocking(conn)
     while sent < len(buffer):
-        if monotonic() >= deadline:
+        now = monotonic()
+        if now >= stall_deadline or now >= total_deadline:
             raise OSError(ETIMEDOUT)
         try:
-            count = conn.send(view[sent:])
+            end = min(sent + _RESPONSE_SEND_CHUNK_BYTES, len(buffer))
+            count = conn.send(view[sent:end])
         except OSError as exc:
             error = _socket_error_number(exc)
             if error == ECONNRESET:
                 raise
-            if error != EAGAIN:
+            if error not in (EAGAIN, ETIMEDOUT):
                 raise
             sleep(_SOCKET_RETRY_DELAY_S)
             continue
         if not count:
             raise OSError(ECONNRESET)
         sent += count
+        stall_deadline = monotonic() + _RESPONSE_SEND_STALL_WINDOW_S
+        if sent < len(buffer):
+            sleep(_RESPONSE_SEND_PACE_S)
     return sent
+
+
+def _set_response_socket_nonblocking(sock):
+    """Apply both CircuitPython nonblocking socket controls for response writes."""
+    configured = _set_socket_nonblocking(sock)
+    setter = getattr(sock, "settimeout", None)
+    if callable(setter):
+        try:
+            setter(0)
+            configured = True
+        except Exception:
+            pass
+    return configured
 
 
 def _set_socket_nonblocking(sock):

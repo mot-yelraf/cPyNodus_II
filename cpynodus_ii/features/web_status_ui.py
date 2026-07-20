@@ -21,7 +21,7 @@ def render_status_html(payload):
         )
     if not metric_rows:
         metric_rows.append("<tr><td colspan='2'>No metrics configured</td></tr>")
-    body = '<div class="status" id="sample_timestamp">{}</div><table><tr><th>Metric</th><th>Current</th></tr>{}</table>'.format(
+    body = '<div class="card"><div class="timestamp" id="sample_timestamp">{}</div><table><tr><th>Metric</th><th>Current</th></tr>{}</table></div>'.format(
         html_escape(payload["sensor"]["display_timestamp"]),
         "".join(metric_rows),
     )
@@ -50,7 +50,7 @@ def render_status_html(payload):
                     owner,
                 )
             )
-        body += '<h2 style="margin-top:16px">Switches</h2><table><tr><th>Switch</th><th>State</th></tr>{}</table><div id="switch_status" class="status"></div>'.format(
+        body += '<div class="card"><h2>Switches</h2><table><tr><th>Switch</th><th>State</th></tr>{}</table><div id="switch_status" class="status"></div></div>'.format(
             "".join(rows)
         )
     script = """let guard={};
@@ -63,6 +63,7 @@ setInterval(refresh,15000);setTimeout(refresh,1000);"""
     nav = navigation(
         switch_present=switch_present,
         automations=payload["profile"] == "nodusweb" and switch_present,
+        current="/",
     )
     return render_page(
         payload["network"]["hostname"], "Status", body, nav=nav, script=script

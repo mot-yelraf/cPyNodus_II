@@ -14,6 +14,11 @@ def render_config_html(page, payload, *, status_payload=None):
     nav = navigation(
         switch_present=switch_present,
         automations=payload["profile"] == "nodusweb" and switch_present,
+        current={
+            "calibration": "/calibration",
+            "switch": "/switch-setup",
+            "info": "/info",
+        }.get(page, "/setup"),
     )
     if page == "calibration":
         title, body, script = _calibration_page(payload)
@@ -135,13 +140,21 @@ def _info_page(payload, status):
         ("Switch ID", switch["device_id"]),
         ("Switch Channels", switch["channel_count"]),
     )
-    body = "<table>{}</table>".format(
+    network_rows = rows[:5]
+    device_rows = rows[5:]
+    body = '<details open><summary>Network Info</summary><div class="group"><table>{}</table></div></details><details open><summary>Device Info</summary><div class="group"><table>{}</table></div></details>'.format(
         "".join(
             "<tr><td>{}</td><td>{}</td></tr>".format(
                 html_escape(label), html_escape(value)
             )
-            for label, value in rows
-        )
+            for label, value in network_rows
+        ),
+        "".join(
+            "<tr><td>{}</td><td>{}</td></tr>".format(
+                html_escape(label), html_escape(value)
+            )
+            for label, value in device_rows
+        ),
     )
     return "Nodus Info", body, ""
 

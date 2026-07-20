@@ -210,8 +210,7 @@ AP mode exposes `/itaot-init`, `/itaot-meta`, `/setup`, `/config`, `/current-dat
 Nodus uses intentional low-memory guards around the web UI to protect runtime stability on constrained CircuitPython heaps.
 
 - Every HTML page request runs garbage collection before checking free heap.
-- The lightweight `/` status page requires at least 16 KB free after collection.
-- Setup, calibration, switch settings, information, and automation editor pages require at least 24 KB free after collection.
+- HTML pages require at least 10 KB free after collection.
 - Configuration and automation code is imported only when its independent page is requested; it is not embedded in the initial status response.
 - Guarded requests return `503 Service Unavailable` with a retry message. This is a protective response, not necessarily a crash or reboot condition.
 - Manual pacing still matters on weaker devices. Repeated rapid page loads or heavy configuration actions can still push the heap into protection windows.

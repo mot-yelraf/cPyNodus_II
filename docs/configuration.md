@@ -225,6 +225,12 @@ navigation link is requested. The UI is available in normal mode only for
 `ACTIVE_PROFILE = "nodusweb"`; AP recovery continues to expose the setup
 surface, while MQTT profiles remain headless.
 
+The pages use a responsive, centered NodusWeb sidebar and card layout inspired
+by the host-side Nodus interfaces. On narrow screens the sidebar becomes a
+compact horizontal navigation row. This styling does not add sensor history,
+graphs, statistics, external assets, or a single-page application; each
+surface keeps its independent constrained-memory response.
+
 Every NodusWeb page embeds the same blue/green Nodus `N` SVG favicon used by
 the WeeWX web surfaces, without adding a favicon route or HTTP request.
 
@@ -242,10 +248,9 @@ Wi-Fi and MQTT passwords use password inputs. The Pico2 W UI does not allocate s
 history graphs, min/average/max statistics, stored-data summaries, or data
 export.
 
-HTML rendering collects garbage first and admits `/` only with at least 16 KB
-free heap. The separate setup, calibration, switch settings, information, and
-automation pages require at least 24 KB. A request below its floor returns
-`503 Service Unavailable` with a retry message.
+HTML rendering collects garbage first and admits each page only with at least
+10 KB free heap. A request below that floor returns `503 Service Unavailable`
+with a retry message.
 
 The JSON `/config` route accepts a broader supported update set than the
 rendered page:
