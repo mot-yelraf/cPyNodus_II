@@ -22,7 +22,8 @@ class FwUpdateState:
     `prior_profile` lets normal runtime resume the same profile after a
     successful update. `package_id` binds the MQTT prepare request to the
     HTTP transfer, and `phase` records whether OTA is requested, ready,
-    staging, applied, aborted, or invalid.
+    staging, applying, applied_pending_boot, boot_pending, applied, aborted, or
+    invalid.
     """
 
     mode: str = "ota"

@@ -639,6 +639,20 @@ Implemented behavior:
   soft-reboots into temporary OTA mode.
 - OTA mode does not run MQTT. Sensorius or the CLI transfers package files
   over HTTP using the endpoints in `docs/ota.md`.
+- OTA HTTP mode self-aborts and reboots after five minutes without
+  `/ota/begin`, after 15 minutes without accepted staging activity, or after an
+  unrecoverable HTTP poll failure.
+- Nodus logs `Verifying file...`, `Verified...`, or `Verification failed...`
+  around streamed per-file SHA-256 verification. Chunk offset mismatch
+  responses include the current device offset for safe client resumption.
+- Manifest acceptance includes a free-space check for staging, apply
+  temporaries, and backups. Commit applies both `files` and `delete` through a
+  durable transaction journal.
+- A reset during apply restores the pre-update filesystem before normal
+  startup. After commit, phase `boot_pending` is retained until the prior
+  profile reaches its health checkpoint. For MQTT profiles, that requires a
+  successful MQTT-client send of `fwupdate/result`; another reset before that
+  checkpoint rolls the update back.
 - After successful apply and reboot back into the prior profile, Nodus
   publishes a non-retained `fwupdate/result` with `phase = "applied"`,
   `applied = true`, `package_id`, and `prior_profile`.

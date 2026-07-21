@@ -17,8 +17,8 @@ plus HTTP transfer flow that Sensorius should reuse.
   to update or revert reliably.
 - Reboot into the same runtime profile, Wi-Fi network, MQTT broker, and device
   identity after a successful update.
-- Preserve a rollback path when download, validation, or apply fails. A
-  fuller post-update boot-health rollback remains future work.
+- Preserve a rollback path when download, validation, apply, or the first
+  post-update boot fails.
 
 ## Non-Goals
 
@@ -40,6 +40,8 @@ plus HTTP transfer flow that Sensorius should reuse.
   matching `.py` source path. A device must not retain both `.py` and `.mpy`
   forms of the same module after apply.
 - Heap and filesystem space are tight, so manifests and handlers must be small.
+  Before accepting a manifest, Nodus checks that free space can hold staging,
+  same-directory apply temporaries, backups, and a small metadata margin.
   Pico2 W testing has shown an out-of-memory condition when attempting to OTA a
   very large `cpynodus_ii/app.mpy`; keep package slices small and characterize
   large runtime-module updates before field use.
@@ -67,6 +69,9 @@ plus HTTP transfer flow that Sensorius should reuse.
   instead of remaining in HTTP-unavailable OTA mode.
 - Configuration files remain device-local state and should not be replaced by
   default templates unless explicitly requested by the package manifest.
+- Packages that introduce this boot-health behavior must include the updated
+  root `code.py`; it arms the first-boot checkpoint before importing the
+  application, so an import/startup failure is recoverable on the next reboot.
 
 ## Hardware Verification Status
 
@@ -82,8 +87,7 @@ post-update completion reporting for bounded package sizes. Pico2 W testing
 also exposed an out-of-memory condition when updating with a very large
 `cpynodus_ii/app.mpy`, so large-package behavior is not part of the baseline.
 Remaining hardware work is fault injection, profile/device matrix soak testing,
-filesystem-space limits, large-package limits, and post-update boot-health
-rollback.
+large-package limits, and on-device validation of the boot-health rollback.
 
 ## High-Level Architecture
 
@@ -338,6 +342,12 @@ rejected manifest, or OTA startup cannot reach network/HTTP readiness, Nodus
 removes `/_ota/state.json` so the next reboot resumes normal runtime. A retry
 requires a fresh MQTT prepare command.
 
+Ready OTA mode waits five minutes for `/ota/begin`. Once staging starts, each
+accepted request refreshes a 15-minute inactivity timer. Expiring either timer,
+or losing the OTA HTTP poll loop, clears the session and reboots to normal
+runtime. This prevents a lost Sensorius job from stranding the device in OTA
+mode.
+
 The OTA intent should live outside the normal public config schema, for
 example `/_ota/state.json`, so ordinary configuration remains stable. Keep this
 file small and rewrite it atomically where possible.
@@ -387,11 +397,13 @@ Current chunked flow:
 3. Nodus validates package identity and safe manifest paths.
 4. For each file, client calls `/ota/file/begin`.
 5. Client sends 1024-byte chunks to `/ota/file/chunk` with the current offset.
-6. Nodus appends each chunk to `/_ota/stage/<relative-path>` and rejects offset
-   mismatches.
+6. Nodus appends each chunk to `/_ota/stage/<relative-path>`. An offset
+   mismatch response includes the current device offset so the client can
+   resume after a lost response.
 7. Client calls `/ota/file/end`.
-8. Nodus streams the staged file from disk, verifies size and SHA-256, and
-   accepts or rejects the file.
+8. Nodus reports `Verifying file...`, streams the staged file from disk, then
+   reports `Verified...` or `Verification failed...` before accepting or
+   rejecting the file.
 9. Client calls `/ota/commit`.
 10. Nodus verifies all staged files again, backs up replaced files, applies
     changes, records `applied_pending_boot`, waits less than 10 seconds, and
@@ -423,20 +435,28 @@ Error responses should include a short machine-readable reason:
 
 ## Apply and Rollback Strategy
 
-Nodus currently uses a single-slot workspace plus two-phase apply:
+Nodus uses a journaled single-slot workspace and transactional apply:
 
 1. On `/ota/begin`, clear stale `/_ota/stage/`, stale `/_ota/backup/`, and
    stale `/_ota/*.tmp` files from prior attempts.
 2. Stage all incoming files under `/_ota/stage/`.
 3. Validate the complete package before touching live firmware paths.
-4. Copy current live files that will be replaced into `/_ota/backup/`.
-5. Copy staged files into their live paths.
-6. Write `/_ota/state.json` phase `applied_pending_boot`.
-7. Remove `/_ota/stage/` and stale `/_ota/*.tmp`.
-8. Wait for a short confirmation window, less than 10 seconds.
-9. Reboot.
-10. On normal startup, mark OTA state `applied`.
-11. Publish `nodus/<device_id>/fwupdate/result` with `phase="applied"`.
+4. Persist `/_ota/transaction.json` with every affected path and whether it
+   existed before apply, then write OTA state phase `applying`.
+5. Copy each staged file to a same-directory `.ota-new` temporary, back up an
+   existing live file, and rename the temporary into place. Apply manifest
+   deletions only after backing up their live files.
+6. On apply failure, restore replaced and deleted files and remove files that
+   did not exist before the transaction.
+7. Write `/_ota/state.json` phase `applied_pending_boot`, remove staging, wait
+   less than 10 seconds, and reboot.
+8. On the first normal boot, write phase `boot_pending`. A reset before the
+   prior profile reaches its health checkpoint causes the next boot to restore
+   the journaled transaction.
+9. MQTT profiles mark the update `applied` only after the MQTT client
+   successfully sends the queued `fwupdate/result`. Non-MQTT profiles mark it
+   applied after their runtime services start.
+10. Publish `nodus/<device_id>/fwupdate/result` with `phase="applied"`.
 
 Only the most recent backup is retained. The next accepted `/ota/begin` clears
 the previous backup before staging the new package.
@@ -458,15 +478,9 @@ Rollback behavior:
 - expose rollback reason in `/ota/status`, serial logs, reboot logs, and later
   Sensorius metadata.
 
-Current implementation restores backups if the apply step itself fails. A
-post-reboot health-check rollback, where the first normal boot must reach a
-defined healthy checkpoint before the update is considered fully safe, is still
-planned.
-
-The first healthy checkpoint can be conservative: Wi-Fi joined and the prior
-profile startup plan reached the point where it would normally start its
-profile services. For MQTT profiles, a later checkpoint can require MQTT
-connect plus retained `meta` publish.
+Power loss during phase `applying` is recovered before normal profile startup.
+The retained `boot_pending` phase also provides a one-boot health checkpoint;
+for MQTT profiles that checkpoint requires reconnect and startup publication.
 
 ## Sensorius Flow
 
@@ -485,9 +499,11 @@ Sensorius should orchestrate only one physical Nodus host at a time:
 9. Confirm new retained `meta.version`, heartbeat, and expected profile.
 10. Mark the update complete in Sensorius.
 
-If HTTP cannot be reached after OTA mode starts, Sensorius should time out and
-surface the failure. Current OTA mode waits indefinitely for an HTTP client
-once entered; automatic return to the prior profile is still an open decision.
+Sensorius retains its 60-second settle plus 90-second readiness windows and
+shows `Nodus OTA mode booting...` during both. On timeout it makes a best-effort
+abort request. It makes three total attempts per file and stops a device update
+after 30 minutes. Nodus independently returns to normal runtime on its own
+five-minute begin or 15-minute staging inactivity timeout.
 
 ## Security Model
 
@@ -527,9 +543,11 @@ Do not include Wi-Fi or MQTT credentials in OTA packages.
    - Implemented staging under `/_ota/stage/`.
    - Enforces path, size, package identity, and SHA-256 checks.
 6. Apply and rollback.
-   - Implemented backup/apply/restore routines for apply failures.
-   - Implemented post-boot `applied` marking and result publish.
-   - Boot health checkpoint rollback remains future work.
+   - Implemented journaled backup/apply/restore routines for apply failures and
+     power loss during apply.
+   - Implemented a retained one-boot `boot_pending` checkpoint; MQTT reconnect
+     and startup publication mark the new image `applied`.
+   - A second boot before that checkpoint restores the prior image.
 7. Sensorius integration.
    - Add UI/API to pick one target device and one package.
    - Use HTTP transfer after an OTA prepare command.
@@ -622,9 +640,6 @@ large-package validation separate from the baseline success criteria above.
 
 ## Open Decisions
 
-- How much free filesystem space to require before accepting an update.
-- How long OTA mode should wait before automatically rebooting back into the
-  prior profile when no HTTP client connects.
 - Whether commit can safely skip the second SHA-256 pass when `/ota/file/end`
   has already verified each staged file.
-- What boot-health checkpoint should trigger post-update rollback.
+- How signed-manifest public keys should be provisioned and rotated.

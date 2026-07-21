@@ -34,7 +34,6 @@ from cpynodus_ii.core.recovery import (
 from cpynodus_ii.core.settings import Settings
 from cpynodus_ii.ota.state import (
     FwUpdateState,
-    clear_ota_state,
     load_ota_state,
     save_ota_state,
 )
@@ -2814,20 +2813,34 @@ def _should_enter_ota_mode(ota_state, fs_writable):
     return getattr(ota_state, "phase", "") in {"requested", "ready"}
 
 
-def _mark_ota_applied_after_boot(ota_state, settings_root, fs_writable):
-    """Mark an OTA update applied once normal startup resumes."""
+def _prepare_ota_boot_health_check(
+    ota_state,
+    settings_root,
+    fs_writable,
+    *,
+    first_boot_armed=False,
+):
+    """Arm first-boot rollback until the prior profile reaches readiness."""
     if fs_writable is not True or ota_state is None or not settings_root:
         return ota_state
     if getattr(ota_state, "mode", "") != "ota":
         return ota_state
-    if getattr(ota_state, "phase", "") != "applied_pending_boot":
+    phase = str(getattr(ota_state, "phase", "") or "")
+    if phase == "boot_pending":
+        if first_boot_armed:
+            return ota_state
+        from cpynodus_ii.ota.http import recover_interrupted_ota_apply
+
+        error = recover_interrupted_ota_apply(settings_root)
+        return FwUpdateState(phase="rollback_failed", error=error) if error else None
+    if phase != "applied_pending_boot":
         return ota_state
-    applied_state = FwUpdateState(
+    boot_state = FwUpdateState(
         prior_profile=getattr(ota_state, "prior_profile", "") or "",
         package_id=getattr(ota_state, "package_id", "") or "",
-        phase="applied",
+        phase="boot_pending",
     )
-    return save_ota_state(applied_state, _ota_state_path(settings_root))
+    return save_ota_state(boot_state, _ota_state_path(settings_root))
 
 
 def _clear_terminal_startup_ota_state(ota_state, settings_root, fs_writable):
@@ -2839,11 +2852,13 @@ def _clear_terminal_startup_ota_state(ota_state, settings_root, fs_writable):
     phase = str(getattr(ota_state, "phase", "") or "")
     if phase not in {"invalid", "aborted", "staging"}:
         return ota_state
-    clear_ota_state(_ota_state_path(settings_root))
+    from cpynodus_ii.ota.http import cleanup_abandoned_ota_session
+
+    cleanup_abandoned_ota_session(settings_root)
     return None
 
 
-async def main(*, startup_plan_override=None):
+async def main(*, startup_plan_override=None, ota_first_boot_armed=False):
     """Run the current scaffold runtime."""
     start_monotonic = time.monotonic()
     settings_root = "."
@@ -2876,11 +2891,36 @@ async def main(*, startup_plan_override=None):
     if soft_reload_cleanup_requested:
         _cycle_wifi_radio_for_warm_start(start_monotonic)
     ota_state = _load_startup_ota_state(writable_settings_root)
-    ota_state = _mark_ota_applied_after_boot(
+    if getattr(ota_state, "phase", "") == "applying":
+        from cpynodus_ii.ota.http import recover_interrupted_ota_apply
+
+        recovery_error = recover_interrupted_ota_apply(writable_settings_root)
+        _print_log(
+            "ota",
+            "phase=apply_recovery status={} error={}".format(
+                "failed" if recovery_error else "restored",
+                recovery_error or "none",
+            ),
+            start_monotonic=start_monotonic,
+        )
+        if recovery_error:
+            return
+        ota_state = _load_startup_ota_state(writable_settings_root)
+    ota_state = _prepare_ota_boot_health_check(
         ota_state,
         writable_settings_root,
         fs_writable,
+        first_boot_armed=ota_first_boot_armed,
     )
+    if getattr(ota_state, "phase", "") == "rollback_failed":
+        _print_log(
+            "ota",
+            "phase=boot_rollback status=failed error={}".format(
+                getattr(ota_state, "error", "") or "unknown",
+            ),
+            start_monotonic=start_monotonic,
+        )
+        return
     loaded_ota_state = ota_state
     ota_state = _clear_terminal_startup_ota_state(
         ota_state,
@@ -2949,6 +2989,7 @@ async def main(*, startup_plan_override=None):
         if _broker_ip_changed and writable_settings_root is not None:
             broker_ip_persist_pending = True
     if plan.mqtt_enabled:
+        from cpynodus_ii.features.publish_cycle import mark_ota_completion_published
         from cpynodus_ii.features.steady_state import (
             SteadyState,
             run_steady_state_iteration,
@@ -3210,6 +3251,20 @@ async def main(*, startup_plan_override=None):
                 _startup_ap_fallback_reason(startup_ap_fallback_errors),
             ),
             start_monotonic=start_monotonic,
+        )
+    if (
+        not plan.mqtt_enabled
+        and getattr(ota_state, "phase", "") == "boot_pending"
+        and writable_settings_root
+    ):
+        applied_state = FwUpdateState(
+            prior_profile=getattr(ota_state, "prior_profile", "") or "",
+            package_id=getattr(ota_state, "package_id", "") or "",
+            phase="applied",
+        )
+        ota_state = save_ota_state(
+            applied_state,
+            _ota_state_path(writable_settings_root),
         )
     _print_log(
         "cPyNodus_II",
@@ -4965,6 +5020,14 @@ async def main(*, startup_plan_override=None):
                         require_clean_poll_before_subscribe=True,
                     )
                     mqtt_adapter = sync_result.adapter
+                    if (
+                        sync_result.phase == "synced"
+                        and sync_result.published_count > 0
+                    ):
+                        mark_ota_completion_published(
+                            sync_result.topic,
+                            settings_root=writable_settings_root,
+                        )
                     if sync_result.phase == "error":
                         _print_log(
                             "mqtt",
@@ -5469,6 +5532,14 @@ async def main(*, startup_plan_override=None):
                     require_clean_poll_before_subscribe=True,
                 )
                 mqtt_adapter = sync_result.adapter
+                if (
+                    sync_result.phase == "synced"
+                    and sync_result.published_count > 0
+                ):
+                    mark_ota_completion_published(
+                        sync_result.topic,
+                        settings_root=writable_settings_root,
+                    )
                 if sync_result.phase == "error":
                     _print_log(
                         "mqtt",

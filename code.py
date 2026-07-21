@@ -48,10 +48,40 @@ else:
 
     disable_auto_reload()
 
-    from cpynodus_ii.app import main
+    def _arm_ota_boot_health():
+        from cpynodus_ii.ota.state import (
+            FwUpdateState,
+            load_ota_state,
+            save_ota_state,
+        )
+
+        state_path = "./_ota/state.json"
+        state = load_ota_state(state_path)
+        phase = str(getattr(state, "phase", "") or "")
+        if phase == "applied_pending_boot":
+            save_ota_state(
+                FwUpdateState(
+                    prior_profile=getattr(state, "prior_profile", "") or "",
+                    package_id=getattr(state, "package_id", "") or "",
+                    phase="boot_pending",
+                ),
+                state_path,
+            )
+            return True
+        if phase == "boot_pending":
+            from cpynodus_ii.ota.http import recover_interrupted_ota_apply
+
+            error = recover_interrupted_ota_apply(".")
+            if error:
+                raise RuntimeError("ota_boot_rollback_failed:{}".format(error))
+            print("{} ota phase=boot_rollback status=restored".format(_stamp()))
+        return False
 
     try:
-        asyncio.run(main())
+        ota_first_boot_armed = _arm_ota_boot_health()
+        from cpynodus_ii.app import main
+
+        asyncio.run(main(ota_first_boot_armed=ota_first_boot_armed))
     except Exception as exc:
         append_reboot_traceback(exc)
         print_exception = getattr(sys, "print_exception", None)

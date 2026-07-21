@@ -13,7 +13,9 @@ from cpynodus_ii.core.config import (
 )
 from cpynodus_ii.core.mqtt import MQTTTransport
 from cpynodus_ii.features.publish_cycle import (
+    mark_ota_completion_published,
     publish_availability_refresh_cycle,
+    publish_ota_completion_report,
     publish_retained_startup_refresh,
     publish_sensor_cycle,
     publish_shutdown_cycle,
@@ -21,6 +23,59 @@ from cpynodus_ii.features.publish_cycle import (
     publish_switch_meta_cycle,
     publish_switch_result,
 )
+from cpynodus_ii.ota.state import FwUpdateState, load_ota_state, save_ota_state
+
+
+def test_ota_completion_report_stays_pending_until_mqtt_send_succeeds(tmp_path):
+    transport = MQTTTransport("broker.local", 1883)
+    runtime_config = RuntimeConfig(
+        network=NetworkConfig(hostname="nodus-test"),
+        mqtt=MQTTConfig(broker="broker.local", base_topic="nodus"),
+    )
+    state_path = tmp_path / "_ota" / "state.json"
+    save_ota_state(
+        FwUpdateState(
+            prior_profile="homeassistant",
+            package_id="ota-tagA-to-tagB",
+            phase="boot_pending",
+        ),
+        state_path,
+    )
+
+    result = publish_ota_completion_report(
+        transport,
+        runtime_config,
+        settings_root=tmp_path,
+    )
+
+    assert result.phase == "published"
+    assert result.topics == ("nodus/nodus-test/fwupdate/result",)
+    assert load_ota_state(state_path).phase == "boot_pending"
+    assert transport.published_messages[-1].payload["package_id"] == "ota-tagA-to-tagB"
+
+    applied = mark_ota_completion_published(
+        result.topics[0],
+        settings_root=tmp_path,
+    )
+
+    assert applied.phase == "applied"
+    assert load_ota_state(state_path).phase == "applied"
+
+
+def test_unrelated_mqtt_publish_does_not_complete_ota_health_check(tmp_path):
+    state_path = tmp_path / "_ota" / "state.json"
+    save_ota_state(
+        FwUpdateState(package_id="ota-tagA-to-tagB", phase="boot_pending"),
+        state_path,
+    )
+
+    result = mark_ota_completion_published(
+        "nodus/nodus-test/meta",
+        settings_root=tmp_path,
+    )
+
+    assert result is None
+    assert load_ota_state(state_path).phase == "boot_pending"
 
 
 def test_startup_cycle_publishes_heartbeat_meta_sensor_and_switch_topics():

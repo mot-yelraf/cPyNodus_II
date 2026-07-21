@@ -30,6 +30,8 @@ _HTTP_STATUS = {
     503: "Service Unavailable",
 }
 _SHA256_UNAVAILABLE_SIZE = -2
+OTA_WAIT_FOR_BEGIN_TIMEOUT_S = 300
+OTA_STAGING_IDLE_TIMEOUT_S = 900
 _SHA256_K = (
     0x428A2F98,
     0x71374491,
@@ -137,6 +139,7 @@ class OtaHttpController:
         self._route_paths = ()
         self._reboot_due_at = -1.0
         self._reboot_requested = False
+        self._last_activity_at = self._monotonic()
 
     def start(self):
         """Initialize the backing HTTP server and register OTA routes."""
@@ -163,12 +166,20 @@ class OtaHttpController:
 
     def poll(self):
         """Poll the OTA server once and run any due scheduled reboot."""
+        self._maybe_reboot()
         if self.phase != "ready" or self.server is None:
             return self
         poll = getattr(self.server, "poll", None)
         if not callable(poll):
             self.phase = "error"
             self.errors = ("ota_server_poll_unavailable",)
+            if not self._reboot_requested:
+                state = (
+                    load_ota_state(_ota_state_path(self.settings_root))
+                    or self.ota_state
+                )
+                self._abort_transfer_state(state, "ota_server_poll_unavailable")
+                self._schedule_reboot()
             return self
         try:
             poll()
@@ -176,8 +187,15 @@ class OtaHttpController:
             self.phase = "error"
             self.errors = ("ota_poll_failed", str(exc))
             self._log("poll failed error={}".format(_exception_text(exc)))
-            self._maybe_reboot()
+            if not self._reboot_requested:
+                state = (
+                    load_ota_state(_ota_state_path(self.settings_root))
+                    or self.ota_state
+                )
+                self._abort_transfer_state(state, "ota_poll_failed")
+                self._schedule_reboot()
             return self
+        self._maybe_abort_inactive()
         self._maybe_reboot()
         return self
 
@@ -366,6 +384,10 @@ class OtaHttpController:
         if error:
             self._log("begin rejected error={} action=abort".format(error))
             return self._abort_transfer(error)
+        error = _manifest_storage_error(self.settings_root, manifest)
+        if error:
+            self._log("begin rejected error={} action=abort".format(error))
+            return self._abort_transfer(error)
         next_state = FwUpdateState(
             prior_profile=getattr(state, "prior_profile", "") or "",
             package_id=str(manifest.get("package_id", "") or ""),
@@ -375,6 +397,7 @@ class OtaHttpController:
         save_ota_state(next_state, _ota_state_path(self.settings_root))
         _write_json_file(_ota_manifest_path(self.settings_root), manifest)
         self.ota_state = next_state
+        self._touch_activity()
         self._log(
             "begin accepted package={} files={}".format(
                 next_state.package_id,
@@ -405,7 +428,10 @@ class OtaHttpController:
             error=str(error or "ota_aborted"),
         )
         _remove_tree(_ota_stage_path(self.settings_root))
+        _remove_tree(_ota_backup_path(self.settings_root))
         _remove_ota_tmp_files(self.settings_root)
+        _remove_file(_ota_manifest_path(self.settings_root))
+        _remove_file(_ota_transaction_path(self.settings_root))
         clear_ota_state(_ota_state_path(self.settings_root))
         self.ota_state = aborted
         self._log(
@@ -455,6 +481,7 @@ class OtaHttpController:
         except OSError:
             self._log("file rejected path={} error=file_stage_failed".format(safe_path))
             return _error_payload("file_stage_failed", "staging"), 503
+        self._touch_activity()
         self._log("file accepted path={} bytes={}".format(safe_path, actual_size))
         return (
             {
@@ -487,6 +514,7 @@ class OtaHttpController:
                 pass
         except OSError:
             return _error_payload("file_stage_failed", "staging"), 503
+        self._touch_activity()
         self._log("file begin path={} bytes={}".format(safe_path, entry.get("size", 0)))
         return (
             {
@@ -517,7 +545,9 @@ class OtaHttpController:
         stage_path = _join_root(self.settings_root, "_ota/stage/{}".format(safe_path))
         current_size = _file_size(stage_path)
         if current_size != int(offset):
-            return _error_payload("chunk_offset_mismatch", "staging"), 409
+            payload = _error_payload("chunk_offset_mismatch", "staging")
+            payload["offset"] = current_size
+            return payload, 409
         expected_size = int(entry.get("size", -1) or -1)
         next_offset = current_size + len(body)
         if next_offset > expected_size:
@@ -527,6 +557,7 @@ class OtaHttpController:
                 handle.write(body)
         except OSError:
             return _error_payload("chunk_stage_failed", "staging"), 503
+        self._touch_activity()
         _collect_garbage()
         return (
             {
@@ -554,19 +585,42 @@ class OtaHttpController:
         if entry is None:
             return _error_payload("file_not_in_manifest", "staging"), 400
         stage_path = _join_root(self.settings_root, "_ota/stage/{}".format(safe_path))
+        self._log("Verifying file... path={}".format(safe_path))
         verify_started = self._monotonic()
         size, actual_sha = _file_size_sha256(stage_path)
         verify_elapsed = self._elapsed_s(verify_started)
         expected_size = int(entry.get("size", -1) or -1)
         expected_sha = str(entry.get("sha256", "") or "")
         if size == _SHA256_UNAVAILABLE_SIZE:
+            self._log(
+                "Verification failed... path={} error=sha256_unavailable".format(
+                    safe_path
+                )
+            )
             return _error_payload("sha256_unavailable", "staging"), 503
         if size < 0:
+            self._log(
+                "Verification failed... path={} error=staged_file_missing".format(
+                    safe_path
+                )
+            )
             return _error_payload("staged_file_missing", "staging"), 400
         if size != expected_size:
+            self._log(
+                "Verification failed... path={} error=file_size_mismatch".format(
+                    safe_path
+                )
+            )
             return _error_payload("file_size_mismatch", "staging"), 400
         if actual_sha != expected_sha:
+            self._log(
+                "Verification failed... path={} error=sha256_mismatch".format(
+                    safe_path
+                )
+            )
             return _error_payload("sha256_mismatch", "staging"), 400
+        self._touch_activity()
+        self._log("Verified... path={}".format(safe_path))
         self._log(
             "file accepted path={} bytes={} verify_s={:.1f}".format(
                 safe_path,
@@ -606,10 +660,42 @@ class OtaHttpController:
         self._log("commit verify complete elapsed_s={:.1f}".format(verify_elapsed))
         apply_started = self._monotonic()
         _collect_garbage()
-        error = _apply_staged_manifest_files(self.settings_root, manifest)
+        transaction = _build_apply_transaction(self.settings_root, manifest)
+        try:
+            _write_json_file(_ota_transaction_path(self.settings_root), transaction)
+            applying_state = FwUpdateState(
+                prior_profile=getattr(state, "prior_profile", "") or "",
+                package_id=getattr(state, "package_id", "") or "",
+                phase="applying",
+            )
+            save_ota_state(applying_state, _ota_state_path(self.settings_root))
+            self.ota_state = applying_state
+            error = _apply_staged_manifest_files(
+                self.settings_root,
+                manifest,
+                transaction,
+            )
+        except OSError:
+            error = "apply_transaction_persist_failed"
         apply_elapsed = self._elapsed_s(apply_started)
         if error:
             self._log("commit rejected error={}".format(error))
+            rollback_error = _rollback_apply_transaction(
+                self.settings_root,
+                manifest,
+                transaction,
+            )
+            if rollback_error:
+                self._log("rollback failed error={}".format(rollback_error))
+                self._schedule_reboot()
+                return _error_payload(rollback_error, "applying"), 503
+            staging_state = FwUpdateState(
+                prior_profile=getattr(state, "prior_profile", "") or "",
+                package_id=getattr(state, "package_id", "") or "",
+                phase="staging",
+            )
+            save_ota_state(staging_state, _ota_state_path(self.settings_root))
+            self.ota_state = staging_state
             return _error_payload(error, "staging"), 503
         self._log("commit apply complete elapsed_s={:.1f}".format(apply_elapsed))
         _collect_garbage()
@@ -655,6 +741,36 @@ class OtaHttpController:
         self._reboot_due_at = now + float(self.reboot_delay_s)
         self._reboot_requested = True
         self._log("reboot scheduled delay_s={}".format(self.reboot_delay_s))
+
+    def _touch_activity(self):
+        self._last_activity_at = self._monotonic()
+
+    def _maybe_abort_inactive(self):
+        if self._reboot_requested:
+            return
+        state = load_ota_state(_ota_state_path(self.settings_root)) or self.ota_state
+        phase = str(getattr(state, "phase", "") or "")
+        timeout_s = (
+            OTA_WAIT_FOR_BEGIN_TIMEOUT_S
+            if phase in {"requested", "ready"}
+            else OTA_STAGING_IDLE_TIMEOUT_S
+            if phase == "staging"
+            else 0
+        )
+        if timeout_s <= 0:
+            return
+        if self._elapsed_s(self._last_activity_at) < float(timeout_s):
+            return
+        error = (
+            "ota_begin_timeout"
+            if phase in {"requested", "ready"}
+            else "ota_staging_timeout"
+        )
+        self._log(
+            "inactivity timeout phase={} error={} action=abort".format(phase, error)
+        )
+        self._abort_transfer_state(state, error)
+        self._schedule_reboot()
 
     def _maybe_reboot(self):
         if not self._reboot_requested or self.reboot_callback is None:
@@ -749,17 +865,49 @@ def _validate_manifest_for_begin(manifest, ota_state):
     files = manifest.get("files", ())
     if not isinstance(files, list):
         return "manifest_files_invalid"
+    preserve_raw = manifest.get("preserve", ()) or ()
+    if "preserve" in manifest and not isinstance(preserve_raw, list):
+        return "manifest_preserve_invalid"
+    preserve = set()
+    for raw_path in preserve_raw:
+        safe_path = _normalize_package_path(raw_path)
+        if not safe_path:
+            return "manifest_preserve_path_invalid"
+        preserve.add(safe_path)
+    seen = set()
     for entry in files:
         if not isinstance(entry, dict):
             return "manifest_file_invalid"
         if not str(entry.get("path", "") or "").strip():
             return "manifest_file_path_missing"
-        if not _normalize_package_path(entry.get("path", "")):
+        safe_path = _normalize_package_path(entry.get("path", ""))
+        if not safe_path:
             return "manifest_file_path_invalid"
+        if safe_path in seen:
+            return "manifest_file_duplicate"
+        if safe_path in preserve:
+            return "manifest_preserve_conflict"
+        seen.add(safe_path)
         if int(entry.get("size", -1) or -1) < 0:
             return "manifest_file_size_invalid"
         if len(str(entry.get("sha256", "") or "")) != 64:
             return "manifest_file_sha256_invalid"
+    delete_paths = manifest.get("delete", ()) or ()
+    if "delete" in manifest and not isinstance(delete_paths, list):
+        return "manifest_delete_invalid"
+    delete_seen = set()
+    for raw_path in delete_paths:
+        safe_path = _normalize_package_path(raw_path)
+        if not safe_path:
+            return "manifest_delete_path_invalid"
+        if safe_path in delete_seen:
+            return "manifest_delete_duplicate"
+        if safe_path in seen:
+            return "manifest_path_conflict"
+        if safe_path in preserve:
+            return "manifest_preserve_conflict"
+        delete_seen.add(safe_path)
+        seen.add(safe_path)
     return ""
 
 
@@ -898,9 +1046,61 @@ def _verify_staged_manifest_files(root, manifest):
     return ""
 
 
-def _apply_staged_manifest_files(root, manifest):
-    applied = []
-    backups = []
+def _manifest_storage_error(root, manifest):
+    required = 4096
+    paths = []
+    for entry in manifest.get("files", ()) or ():
+        # Staging and the same-directory apply temp coexist during commit.
+        required += 2 * max(0, int(entry.get("size", 0) or 0))
+        safe_path = _normalize_package_path(entry.get("path", ""))
+        if safe_path and safe_path not in paths:
+            paths.append(safe_path)
+    for raw_path in manifest.get("delete", ()) or ():
+        safe_path = _normalize_package_path(raw_path)
+        if safe_path and safe_path not in paths:
+            paths.append(safe_path)
+    for safe_path in paths:
+        live_size = _file_size(_join_root(root, safe_path))
+        if live_size > 0:
+            required += live_size
+    available = _filesystem_free_bytes(root)
+    if available >= 0 and available < required:
+        return "insufficient_storage"
+    return ""
+
+
+def _filesystem_free_bytes(root):
+    statvfs = getattr(os, "statvfs", None)
+    if not callable(statvfs):
+        return -1
+    try:
+        values = statvfs(root or ".")
+        block_size = int(values[1] or values[0])
+        return block_size * int(values[4])
+    except (OSError, IndexError, TypeError, ValueError):
+        return -1
+
+
+def _build_apply_transaction(root, manifest):
+    paths = []
+    existing = []
+    for entry in manifest.get("files", ()) or ():
+        safe_path = _normalize_package_path(entry.get("path", ""))
+        if safe_path and safe_path not in paths:
+            paths.append(safe_path)
+    for raw_path in manifest.get("delete", ()) or ():
+        safe_path = _normalize_package_path(raw_path)
+        if safe_path and safe_path not in paths:
+            paths.append(safe_path)
+    for safe_path in paths:
+        if _path_exists(_join_root(root, safe_path)):
+            existing.append(safe_path)
+    return {"paths": paths, "existing": existing}
+
+
+def _apply_staged_manifest_files(root, manifest, transaction=None):
+    transaction = transaction or _build_apply_transaction(root, manifest)
+    existing = set(transaction.get("existing", ()) or ())
     for entry in manifest.get("files", ()) or ():
         safe_path = _normalize_package_path(entry.get("path", ""))
         if not safe_path:
@@ -908,22 +1108,89 @@ def _apply_staged_manifest_files(root, manifest):
         staged_path = _join_root(root, "_ota/stage/{}".format(safe_path))
         live_path = _join_root(root, safe_path)
         backup_path = _join_root(root, "_ota/backup/{}".format(safe_path))
+        new_path = "{}.ota-new".format(live_path)
         try:
-            if _path_exists(live_path):
+            _copy_file(staged_path, new_path)
+            if safe_path in existing:
                 _copy_file(live_path, backup_path)
-                backups.append((backup_path, live_path))
-            _copy_file(staged_path, live_path)
-            applied.append(live_path)
+            _remove_file(live_path)
+            os.rename(new_path, live_path)
         except OSError:
-            _restore_backups(backups)
+            _remove_file(new_path)
             return "file_apply_failed"
+    for raw_path in manifest.get("delete", ()) or ():
+        safe_path = _normalize_package_path(raw_path)
+        if not safe_path:
+            return "manifest_delete_path_invalid"
+        live_path = _join_root(root, safe_path)
+        backup_path = _join_root(root, "_ota/backup/{}".format(safe_path))
+        try:
+            if safe_path in existing and _path_exists(live_path):
+                _copy_file(live_path, backup_path)
+                _remove_file(live_path)
+        except OSError:
+            return "file_delete_failed"
     return ""
+
+
+def _rollback_apply_transaction(root, manifest, transaction):
+    existing = set((transaction or {}).get("existing", ()) or ())
+    paths = list((transaction or {}).get("paths", ()) or ())
+    if not paths:
+        paths = list(_build_apply_transaction(root, manifest).get("paths", ()) or ())
+    failed = False
+    for safe_path in reversed(paths):
+        live_path = _join_root(root, safe_path)
+        backup_path = _join_root(root, "_ota/backup/{}".format(safe_path))
+        _remove_file("{}.ota-new".format(live_path))
+        try:
+            if safe_path in existing:
+                if _path_exists(backup_path):
+                    restore_path = "{}.ota-restore".format(live_path)
+                    _copy_file(backup_path, restore_path)
+                    _remove_file(live_path)
+                    os.rename(restore_path, live_path)
+            else:
+                _remove_file(live_path)
+        except OSError:
+            failed = True
+    if not failed:
+        _remove_file(_ota_transaction_path(root))
+        _remove_tree(_ota_backup_path(root))
+    return "apply_rollback_failed" if failed else ""
+
+
+def recover_interrupted_ota_apply(root):
+    """Restore the pre-update filesystem after a reset during apply."""
+    manifest = _read_json_file(_ota_manifest_path(root))
+    transaction = _read_json_file(_ota_transaction_path(root))
+    if manifest is None or transaction is None:
+        return "apply_recovery_metadata_missing"
+    error = _rollback_apply_transaction(root, manifest, transaction)
+    if error:
+        return error
+    _remove_tree(_ota_stage_path(root))
+    _remove_ota_tmp_files(root)
+    _remove_file(_ota_manifest_path(root))
+    clear_ota_state(_ota_state_path(root))
+    return ""
+
+
+def cleanup_abandoned_ota_session(root):
+    """Remove staging state left by an interrupted or rejected transfer."""
+    _remove_tree(_ota_stage_path(root))
+    _remove_tree(_ota_backup_path(root))
+    _remove_ota_tmp_files(root)
+    _remove_file(_ota_manifest_path(root))
+    _remove_file(_ota_transaction_path(root))
+    clear_ota_state(_ota_state_path(root))
 
 
 def _cleanup_package_workspace(root):
     _remove_tree(_ota_stage_path(root))
     _remove_tree(_ota_backup_path(root))
     _remove_ota_tmp_files(root)
+    _remove_file(_ota_transaction_path(root))
 
 
 def _remove_ota_tmp_files(root):
@@ -955,6 +1222,13 @@ def _remove_tree(path):
         _remove_tree(_join(path, name))
     try:
         os.rmdir(path)
+    except OSError:
+        pass
+
+
+def _remove_file(path):
+    try:
+        os.remove(path)
     except OSError:
         pass
 
@@ -1282,6 +1556,10 @@ def _ota_state_path(root):
 
 def _ota_manifest_path(root):
     return _join_root(root, "_ota/manifest.json")
+
+
+def _ota_transaction_path(root):
+    return _join_root(root, "_ota/transaction.json")
 
 
 def _ota_stage_path(root):

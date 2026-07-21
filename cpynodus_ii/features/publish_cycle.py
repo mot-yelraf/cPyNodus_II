@@ -20,7 +20,7 @@ from cpynodus_ii.features.payloads import (
     build_switch_state_payload,
     mqtt_topic,
 )
-from cpynodus_ii.ota.state import load_ota_state
+from cpynodus_ii.ota.state import FwUpdateState, load_ota_state, save_ota_state
 
 
 @dataclass(frozen=True)
@@ -386,7 +386,7 @@ def publish_ota_completion_report(transport, runtime_config, *, settings_root=No
             topics=(),
             errors=(),
         )
-    if getattr(state, "phase", "") != "applied":
+    if getattr(state, "phase", "") not in {"boot_pending", "applied"}:
         return PublishCycleResult(
             phase="skipped",
             published_count=0,
@@ -414,6 +414,23 @@ def publish_ota_completion_report(transport, runtime_config, *, settings_root=No
         published_count=1,
         topics=(message.topic,),
         errors=(),
+    )
+
+
+def mark_ota_completion_published(topic, *, settings_root=None):
+    """Mark OTA applied after its completion result reaches the MQTT client."""
+    if not settings_root or not str(topic or "").endswith("/fwupdate/result"):
+        return None
+    state = load_ota_state(_ota_state_path(settings_root))
+    if state is None or getattr(state, "phase", "") != "boot_pending":
+        return state
+    return save_ota_state(
+        FwUpdateState(
+            prior_profile=getattr(state, "prior_profile", "") or "",
+            package_id=getattr(state, "package_id", "") or "",
+            phase="applied",
+        ),
+        _ota_state_path(settings_root),
     )
 
 

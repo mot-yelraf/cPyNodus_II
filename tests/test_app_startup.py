@@ -12,7 +12,6 @@ from cpynodus_ii.app import (
     _is_mqtt_subscription_failure,
     _load_settings_for_startup,
     _load_startup_ota_state,
-    _mark_ota_applied_after_boot,
     _maybe_reboot_for_mqtt_failure_budget,
     _mqtt_client_init_memory_failed,
     _mqtt_connect_attempt_is_connack_timeout_pattern,
@@ -27,6 +26,7 @@ from cpynodus_ii.app import (
     _mqtt_sync_should_log_success,
     _ota_state_path,
     _persist_broker_ip_after_mqtt_connect,
+    _prepare_ota_boot_health_check,
     _recovery_reconnect_attempts,
     _recovery_reconnect_delay_s,
     _refresh_broker_ip_from_hostname,
@@ -1601,38 +1601,77 @@ def test_should_enter_ota_mode_requires_rwfs_and_requested_or_ready_state():
     assert _should_enter_ota_mode(None, True) is False
 
 
-def test_mark_ota_applied_after_boot_persists_success_state(tmp_path):
+def test_prepare_ota_boot_health_check_persists_pending_state(tmp_path):
     pending = FwUpdateState(
         prior_profile="homeassistant",
         package_id="ota-tagA-to-tagB",
         phase="applied_pending_boot",
     )
 
-    applied = _mark_ota_applied_after_boot(pending, tmp_path, True)
+    boot_pending = _prepare_ota_boot_health_check(pending, tmp_path, True)
     loaded = _load_startup_ota_state(tmp_path)
 
-    assert applied.phase == "applied"
-    assert applied.prior_profile == "homeassistant"
-    assert applied.package_id == "ota-tagA-to-tagB"
-    assert loaded == applied
+    assert boot_pending.phase == "boot_pending"
+    assert boot_pending.prior_profile == "homeassistant"
+    assert boot_pending.package_id == "ota-tagA-to-tagB"
+    assert loaded == boot_pending
 
 
-def test_mark_ota_applied_after_boot_leaves_non_pending_state_unchanged(tmp_path):
+def test_prepare_ota_boot_health_check_leaves_non_pending_state_unchanged(tmp_path):
     ready = FwUpdateState(package_id="ota-tagA-to-tagB", phase="ready")
 
-    result = _mark_ota_applied_after_boot(ready, tmp_path, True)
+    result = _prepare_ota_boot_health_check(ready, tmp_path, True)
 
     assert result is ready
     assert _load_startup_ota_state(tmp_path) is None
 
 
-def test_mark_ota_applied_after_boot_skips_write_on_rofs(tmp_path):
+def test_prepare_ota_boot_health_check_skips_write_on_rofs(tmp_path):
     pending = FwUpdateState(package_id="ota-tagA-to-tagB", phase="applied_pending_boot")
 
-    result = _mark_ota_applied_after_boot(pending, tmp_path, False)
+    result = _prepare_ota_boot_health_check(pending, tmp_path, False)
 
     assert result is pending
     assert _load_startup_ota_state(tmp_path) is None
+
+
+def test_prepare_ota_boot_health_check_rolls_back_unhealthy_second_boot(
+    tmp_path,
+    monkeypatch,
+):
+    from cpynodus_ii.ota import http as ota_http
+
+    boot_pending = FwUpdateState(
+        package_id="ota-tagA-to-tagB",
+        phase="boot_pending",
+    )
+    recovered = []
+    monkeypatch.setattr(
+        ota_http,
+        "recover_interrupted_ota_apply",
+        lambda root: recovered.append(root) or "",
+    )
+
+    result = _prepare_ota_boot_health_check(boot_pending, tmp_path, True)
+
+    assert result is None
+    assert recovered == [tmp_path]
+
+
+def test_prepare_ota_boot_health_check_accepts_entrypoint_armed_first_boot(tmp_path):
+    boot_pending = FwUpdateState(
+        package_id="ota-tagA-to-tagB",
+        phase="boot_pending",
+    )
+
+    result = _prepare_ota_boot_health_check(
+        boot_pending,
+        tmp_path,
+        True,
+        first_boot_armed=True,
+    )
+
+    assert result is boot_pending
 
 
 def test_clear_terminal_startup_ota_state_removes_invalid_state(tmp_path):
@@ -1649,6 +1688,15 @@ def test_clear_terminal_startup_ota_state_removes_invalid_state(tmp_path):
 
 
 def test_clear_terminal_startup_ota_state_removes_interrupted_staging(tmp_path):
+    for relative_path in (
+        "_ota/stage/partial.mpy",
+        "_ota/backup/original.mpy",
+        "_ota/manifest.json",
+        "_ota/transaction.json",
+    ):
+        path = tmp_path / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("leftover")
     save_ota_state(
         FwUpdateState(package_id="ota-tagA-to-tagB", phase="staging"),
         _ota_state_path(tmp_path),
@@ -1659,6 +1707,10 @@ def test_clear_terminal_startup_ota_state_removes_interrupted_staging(tmp_path):
 
     assert result is None
     assert _load_startup_ota_state(tmp_path) is None
+    assert not (tmp_path / "_ota/stage").exists()
+    assert not (tmp_path / "_ota/backup").exists()
+    assert not (tmp_path / "_ota/manifest.json").exists()
+    assert not (tmp_path / "_ota/transaction.json").exists()
 
 
 def test_clear_terminal_startup_ota_state_preserves_requested_state(tmp_path):
