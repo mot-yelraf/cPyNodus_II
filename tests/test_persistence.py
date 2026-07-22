@@ -20,7 +20,7 @@ def _repo_template_path(name):
 
 
 def test_device_config_message_persists_settings_toml_and_reloads_runtime_config():
-    docs_root = Path(__file__).resolve().parents[1] / "docs" / "switch_only"
+    docs_root = Path(__file__).resolve().parent / "fixtures" / "switch_only"
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for name in ("settings.toml", "switch.toml"):
@@ -50,7 +50,7 @@ def test_device_config_message_persists_settings_toml_and_reloads_runtime_config
 
 
 def test_switch_only_sensor_location_update_persists_switch_location():
-    docs_root = Path(__file__).resolve().parents[1] / "docs" / "switch_only"
+    docs_root = Path(__file__).resolve().parent / "fixtures" / "switch_only"
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for name in ("settings.toml", "switch.toml"):
@@ -87,7 +87,7 @@ def test_switch_only_sensor_location_update_persists_switch_location():
 
 
 def test_device_config_message_reports_pystack_persistence_failure(monkeypatch):
-    docs_root = Path(__file__).resolve().parents[1] / "docs" / "switch_only"
+    docs_root = Path(__file__).resolve().parent / "fixtures" / "switch_only"
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for name in ("settings.toml", "switch.toml"):
@@ -122,7 +122,7 @@ def test_device_config_message_reports_pystack_persistence_failure(monkeypatch):
 def test_calibration_message_persists_active_sensor_toml_without_runtime_reload(
     monkeypatch,
 ):
-    docs_root = Path(__file__).resolve().parents[1] / "docs" / "sensor+switch"
+    docs_root = Path(__file__).resolve().parent / "fixtures" / "sensor_switch"
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for name in ("settings.toml", "switch.toml", "sensor_i2c.toml"):
@@ -164,7 +164,7 @@ def test_calibration_message_persists_active_sensor_toml_without_runtime_reload(
 
 
 def test_calibration_message_reports_pystack_persistence_failure(monkeypatch):
-    docs_root = Path(__file__).resolve().parents[1] / "docs" / "sensor+switch"
+    docs_root = Path(__file__).resolve().parent / "fixtures" / "sensor_switch"
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for name in ("settings.toml", "switch.toml", "sensor_i2c.toml"):
@@ -286,7 +286,7 @@ def test_soil_npk_target_persists_without_runtime_reload(monkeypatch):
 
 
 def test_switch_command_persists_switch_toml_last_state():
-    docs_root = Path(__file__).resolve().parents[1] / "docs" / "switch_only"
+    docs_root = Path(__file__).resolve().parent / "fixtures" / "switch_only"
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for name in ("settings.toml", "switch.toml"):
@@ -342,7 +342,7 @@ def test_switch_command_persists_switch_toml_last_state():
 
 
 def test_switch_command_persists_without_reloading_runtime_config(monkeypatch):
-    docs_root = Path(__file__).resolve().parents[1] / "docs" / "switch_only"
+    docs_root = Path(__file__).resolve().parent / "fixtures" / "switch_only"
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for name in ("settings.toml", "switch.toml"):
@@ -404,7 +404,7 @@ def test_switch_command_persists_without_reloading_runtime_config(monkeypatch):
 def test_device_config_message_persists_sensor_location_without_runtime_reload(
     monkeypatch,
 ):
-    docs_root = Path(__file__).resolve().parents[1] / "docs" / "sensor+switch"
+    docs_root = Path(__file__).resolve().parent / "fixtures" / "sensor_switch"
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for name in ("settings.toml", "switch.toml", "sensor_i2c.toml"):
@@ -448,7 +448,7 @@ def test_device_config_message_persists_sensor_location_without_runtime_reload(
 
 
 def test_device_config_message_persists_display_metrics_with_backup(monkeypatch):
-    docs_root = Path(__file__).resolve().parents[1] / "docs" / "sensor+switch"
+    docs_root = Path(__file__).resolve().parent / "fixtures" / "sensor_switch"
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for name in ("settings.toml", "switch.toml", "sensor_i2c.toml"):

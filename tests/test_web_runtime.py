@@ -129,7 +129,7 @@ class _ScriptedSocket:
 
 
 def _runtime_config():
-    docs_root = Path(__file__).resolve().parents[1] / "docs" / "sensor+switch"
+    docs_root = Path(__file__).resolve().parent / "fixtures" / "sensor_switch"
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for name in ("settings.toml", "sensor_i2c.toml", "switch.toml"):

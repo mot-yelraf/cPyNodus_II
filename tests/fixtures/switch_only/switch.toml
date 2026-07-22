@@ -1,0 +1,13 @@
+[Switch]
+TYPE = "nodus"
+DEVICE = "switch"
+DEVICE_SERIAL_NUM = "w9umh8"
+SWITCH_DEVICE_ID = "switch-w9umh8"
+SWITCH_LOCATION = "TestSwitch"
+
+SWITCH_1_LABEL = "Fan"
+SWITCH_1_CHANNEL_ID = "S1-w9umh8"
+SWITCH_1_ENABLE_PIN = "GP5"
+SWITCH_1_PIN = "GP28"
+SWITCH_1_LAST_STATE = false
+SWITCH_1_OVERRIDE_SCRIPT = false

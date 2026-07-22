@@ -56,7 +56,7 @@ def test_runtime_config_normalizes_standalone_to_nodusweb():
 
 
 def test_settings_from_directory_loads_switch_only_runtime_config():
-    docs_root = Path(__file__).resolve().parents[1] / "docs" / "switch_only"
+    docs_root = Path(__file__).resolve().parent / "fixtures" / "switch_only"
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for name in ("settings.toml", "switch.toml"):
@@ -70,12 +70,12 @@ def test_settings_from_directory_loads_switch_only_runtime_config():
     assert runtime_config.active_profile == "sensorius"
     assert runtime_config.network.hostname == "switch-w9umh8"
     assert runtime_config.network.http_port == 8000
-    assert runtime_config.mqtt.broker == "sensoria-hub-0.local"
-    assert runtime_config.mqtt.broker_ip == "10.0.0.246"
+    assert runtime_config.mqtt.broker == "broker.example"
+    assert runtime_config.mqtt.broker_ip == "192.0.2.10"
     assert runtime_config.mqtt.port == 1883
-    assert runtime_config.mqtt.preferred_host == "10.0.0.246"
+    assert runtime_config.mqtt.preferred_host == "192.0.2.10"
     assert runtime_config.mqtt.connection_targets == (
-        "10.0.0.246",
+        "192.0.2.10",
     )
     assert runtime_config.homeassistant.discovery_prefix == "homeassistant"
     assert runtime_config.time.tz == "America/Denver"
@@ -145,7 +145,7 @@ def test_runtime_config_update_ignores_broker_ip_alt_writes():
 
 
 def test_settings_from_directory_loads_sensor_switch_runtime_config():
-    docs_root = Path(__file__).resolve().parents[1] / "docs" / "sensor+switch"
+    docs_root = Path(__file__).resolve().parent / "fixtures" / "sensor_switch"
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for name in ("settings.toml", "switch.toml", "sensor_i2c.toml"):
@@ -534,7 +534,7 @@ def test_time_config_normalizes_hour_offset_to_seconds():
 
 
 def test_switch_only_runtime_config_parses_single_channel_details():
-    docs_root = Path(__file__).resolve().parents[1] / "docs" / "switch_only"
+    docs_root = Path(__file__).resolve().parent / "fixtures" / "switch_only"
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for name in ("settings.toml", "switch.toml"):

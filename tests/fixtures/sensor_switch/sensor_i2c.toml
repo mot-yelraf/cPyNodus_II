@@ -1,0 +1,54 @@
+[Sensor]
+TYPE = "nodus"
+DEVICE = "aqi"
+SERIAL_NUM = "x943fm"
+SENSOR_ID = "aqi-x943fm"
+LOCATION = "TestLab"
+
+[Calibration]
+CALIBRATED = false
+CALIB_STATUS = "Not Calibrated"
+
+[Calibration.System]
+TEMP_OFFSET = 0.0
+RH_OFFSET = 0.0
+CO2_OFFSET = 0.0
+REF_SENSOR_ID = ""
+REF_RANGE_HOURS = 24
+REF_START_TS = 0
+REF_END_TS = 0
+REF_NOTE = ""
+
+[Calibration.Device]
+TEMP_OFFSET = 0.0
+RH_OFFSET = 0.0
+CO2_OFFSET = 0.0
+AQI_OFFSET = 0.0
+GAS_OFFSET = 0.0
+LUX_OFFSET = 0.0
+PPFD_OFFSET = 0.0
+APVPD_TEMP_CAL_VAL = 0.0
+APVPD_RH_CAL_VAL = 0.0
+ALTITUDE_METERS = 0.0
+
+[Display]
+METRIC_1 = "Air Quality"
+METRIC_2 = "Temperature"
+METRIC_3 = "Rel-Humidity"
+METRIC_4 = "Ambient VPD"
+METRIC_5 = "Dew Point Deficit"
+METRIC_6 = "dewVPD Risk"
+
+[Display.Style]
+METRIC_1 = "Graph24hr"
+METRIC_2 = "Graph24hr"
+METRIC_3 = "Graph24hr"
+METRIC_4 = "Graph24hr"
+METRIC_5 = "Graph24hr"
+METRIC_6 = "Graph24hr"
+
+[I2Cbus]
+I2C_BUS = 0
+I2C_SCL = "GP1"
+I2C_SDA = "GP0"
+I2C_ADDR = 119

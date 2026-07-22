@@ -210,7 +210,7 @@ class _FallbackBME680(_FakeBME680):
 
 
 def test_sensor_service_starts_bme680_for_aqi_config():
-    docs_root = Path(__file__).resolve().parents[1] / "docs" / "sensor+switch"
+    docs_root = Path(__file__).resolve().parent / "fixtures" / "sensor_switch"
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for name in ("settings.toml", "sensor_i2c.toml", "switch.toml"):
@@ -699,7 +699,7 @@ def test_scd30_snapshot_prefers_data_available_over_data_ready():
 
 
 def test_sensor_service_reads_legacy_aqi_snapshot():
-    docs_root = Path(__file__).resolve().parents[1] / "docs" / "sensor+switch"
+    docs_root = Path(__file__).resolve().parent / "fixtures" / "sensor_switch"
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for name in ("settings.toml", "sensor_i2c.toml", "switch.toml"):

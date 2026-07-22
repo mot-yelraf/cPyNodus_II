@@ -50,7 +50,7 @@ class _FakeDigitalInOut:
 
 
 def test_sensor_hardware_adapter_binds_i2c_transport():
-    docs_root = Path(__file__).resolve().parents[1] / "docs" / "sensor+switch"
+    docs_root = Path(__file__).resolve().parent / "fixtures" / "sensor_switch"
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for name in ("settings.toml", "sensor_i2c.toml", "switch.toml"):
@@ -226,7 +226,7 @@ def test_sensor_hardware_adapter_falls_back_when_preferred_i2c_bus_fails_open():
 
 
 def test_switch_hardware_adapter_binds_channel_pins():
-    docs_root = Path(__file__).resolve().parents[1] / "docs" / "sensor+switch"
+    docs_root = Path(__file__).resolve().parent / "fixtures" / "sensor_switch"
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for name in ("settings.toml", "sensor_i2c.toml", "switch.toml"):

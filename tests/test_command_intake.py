@@ -1605,7 +1605,7 @@ def test_process_calibration_message_updates_runtime_altitude():
 
 
 def test_process_inbound_messages_fast_calibration_apply_persists_offsets():
-    docs_root = Path(__file__).resolve().parents[1] / "docs" / "sensor+switch"
+    docs_root = Path(__file__).resolve().parent / "fixtures" / "sensor_switch"
     transport = MQTTTransport("broker.local", 1883)
     with TemporaryDirectory() as tmpdir:
         root = Path(tmpdir)
@@ -1646,7 +1646,7 @@ def test_process_inbound_messages_fast_calibration_apply_persists_offsets():
 
 
 def test_process_inbound_messages_fast_calibration_split_offsets_persist():
-    docs_root = Path(__file__).resolve().parents[1] / "docs" / "sensor+switch"
+    docs_root = Path(__file__).resolve().parent / "fixtures" / "sensor_switch"
     transport = MQTTTransport("broker.local", 1883)
     with TemporaryDirectory() as tmpdir:
         root = Path(tmpdir)
@@ -2102,7 +2102,7 @@ def test_process_inbound_messages_location_config_memory_error_is_contained(
 
 
 def test_process_inbound_messages_fast_calibration_handles_aqi_offset_batch():
-    docs_root = Path(__file__).resolve().parents[1] / "docs" / "sensor+switch"
+    docs_root = Path(__file__).resolve().parent / "fixtures" / "sensor_switch"
     transport = MQTTTransport("broker.local", 1883)
     with TemporaryDirectory() as tmpdir:
         root = Path(tmpdir)

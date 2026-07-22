@@ -1,106 +1,146 @@
 # cPyNodus_II
 
-`cPyNodus_II` is CircuitPython firmware for Nodus sensor/switch devices on
-verified `pico2w` and `xesp32s3` targets.
+`cPyNodus_II` is pre-1.0 CircuitPython firmware for small Wi-Fi sensor and
+relay devices. A Nodus can operate as a sensor, a switch, or a combined
+sensor-and-switch node. It supports local setup through NodusWeb as well as
+MQTT integrations with Sensorius, WeeWX, and Home Assistant.
 
-Verified target builds:
+Current firmware version: `v0.26.203.4`
 
-- `pico2w`: Raspberry Pi Pico 2 W running CircuitPython `9.2.8`
-- `xesp32s3`: Seeed Studio XIAO ESP32-S3 Sense running CircuitPython `10.2.1`
+![NodusWeb status page](assets/screenshots/nodusweb-status.png)
 
-`cPyNodus_II` is based on the earlier `cPyNodus` project. It was produced with
-AI-agent assistance from work previously done in `cPyNodus`, then substantially
-tested and modified by the human operator to reach the desired device behavior.
+## Project status
 
-## Principles
+The firmware is under active development and is intended for hobbyist,
+educational, and experimental IoT deployments. Configuration keys, MQTT
+contracts, and internal architecture may change before version 1.0.
 
-- Keep MQTT transport minimal and testable.
-- Add behavior in phases, not by bulk porting.
-- Separate transport, runtime orchestration, and feature modules.
-- Prefer explicit state transitions over implicit cross-module coupling.
-- Require host tests and on-device soak validation for each slice.
+The supported boards and core runtime paths have been tested on physical
+hardware. Host-side tests supplement, but do not replace, on-device validation.
 
-## Planned slices
+## Supported hardware
 
-1. Boot, settings, profile selection, and startup plan
-2. Wi-Fi and MQTT connect/reconnect lifecycle
-3. Sensor-only steady-state publish
-4. Switch-only command handling
-5. Combined sensor + switch runtime
-6. Config apply and metadata patching
-7. Calibration flows
-8. AP/onboarding and local web flows
+| Target | Board | Verified CircuitPython |
+| --- | --- | --- |
+| `pico2w` | Raspberry Pi Pico 2 W | `9.2.8` |
+| `xesp32s3` | Seeed Studio XIAO ESP32-S3 Sense | `10.2.1` |
 
-## Current status
+The original RP2040 Raspberry Pi Pico W is not supported.
 
-The repository is no longer just a scaffold. Current implemented slices include:
+Nodus supports optional I2C environmental sensors, UART/Modbus soil sensors,
+and up to two configured relay channels. See the [pinout guide](docs/pinout.md)
+for the current board mappings.
 
-- TOML-backed runtime configuration loading for `settings.toml`, `switch.toml`, `sensor_i2c.toml`, and `sensor_soil.toml`
-- startup planning and runtime capability detection
-- Wi-Fi bootstrap and MQTT client lifecycle
-- mDNS device hostname publishing for `nodusweb` and OTA HTTP; MQTT profiles
-  stay IP-literal and do not run mDNS in steady state
-- switch runtime initialization, MQTT command intake, retained state publish, `config/ack`, `config/result`, and `meta/patch`
-- config/calibration apply plumbing with TOML persistence support and ROFS-aware volatile mode
-- host-testable sensor, switch, payload, publish-cycle, and transport layers
-- host-side WeeWX 5 integration with an isolated installer, MQTTSubscribe
-  mapping, Nodus report skin, retained identity, and optional confirmed switch
-  automation; see [docs/weewx.md](docs/weewx.md)
-- NodusWeb-only local switch automations using the latest sampled metrics,
-  local time/timers, and Sensorius-compatible rule documents; MQTT profiles
-  remain headless and use their external automation controller
+## Features
 
-## Validated now
+- Sensor-only, switch-only, and combined sensor-plus-switch configurations
+- First-boot hardware detection and TOML configuration generation
+- Wi-Fi station startup with AP fallback for setup and network recovery
+- Lightweight NodusWeb status, setup, calibration, switch, and automation pages
+- MQTT telemetry, retained state, availability, configuration, and calibration
+- Sensorius onboarding and device-management contracts
+- WeeWX 5 integration and Nodus report skin
+- Home Assistant MQTT discovery
+- NodusWeb-local sensor, time, timer, and AND/OR switch automations
+- Bounded recovery and reboot diagnostics on writable filesystems
+- Target-specific compiled MPY firmware builds
+- OTA preparation, chunked HTTP transfer, verification, transactional apply,
+  and rollback support
 
-Validated on supported target hardware:
+## Runtime profiles
 
-- `pico2w`: Raspberry Pi Pico 2 W running CircuitPython `9.2.8`
-- `xesp32s3`: Seeed Studio XIAO ESP32-S3 Sense running CircuitPython `10.2.1`
+| Profile | Purpose |
+| --- | --- |
+| `nodusweb` | Local web UI and API without an MQTT broker; supports local switch automations |
+| `sensorius` | Headless MQTT operation managed by Sensorius |
+| `weewx` | Headless MQTT publishing for the included WeeWX integration |
+| `homeassistant` | Headless MQTT operation with Home Assistant discovery |
 
-Validated runtime behavior includes:
+AP mode remains available for initial setup and network recovery. Normal
+runtime web pages are intentionally disabled for the headless MQTT profiles.
 
-- switch-only `sensorius` profile boot and runtime
-- combined sensor + switch `sensorius` profile boot and runtime
-- Wi-Fi join from root `settings.toml`
-- MQTT connect to Sensorius broker by configured or startup-resolved broker IP
-- switch command handling on `nodus/<channel_id>/config/set`
-- relay toggle on-device from Sensorius commands
-- sensor telemetry publish on `nodus/<sensor_id>/data`
-- ordinary device `config/set` persistence, `config/result`, `meta/patch`, and
-  live runtime update
-- `calibration/set` persistence, `calibration/result`, `meta/patch`, and live
-  runtime offset update for supported calibration fields
-- root filesystem TOML read/write diagnostics through the same app persistence
-  path used for config and calibration writes
-- publish sequence for switch commands:
-  - `nodus/<channel_id>/config/ack`
-  - retained `nodus/<channel_id>/state`
-  - `nodus/<channel_id>/config/result`
-  - `nodus/<device_id>/meta/patch`
-  - retained clear on `nodus/<channel_id>/config/set`
-- multi-hour switch-only soak with stable MQTT connection and recovering heap usage
+## Quick start
 
-Current on-device diagnostics include:
+1. Install the verified CircuitPython version for your board.
+2. Clone this repository.
+3. Build target-specific MPY firmware when using compiled deployment:
 
-- boot summary with profile, network phase, MQTT phase, and feature state
-- network SSID, hostname, and IPv4 at startup
-- switch channel IDs and labels at startup
-- timestamped MQTT command logs for applied switch commands
-- timestamped MQTT command logs for applied config and calibration commands
-- periodic health lines with network state, broker, `free_mem`, and `mem_alloc`
+   ```bash
+   scripts/nodus_mpy.sh --target pico2w
+   # or
+   scripts/nodus_mpy.sh --target xesp32s3
+   ```
 
-## Still incomplete
+4. Deploy to the mounted `CIRCUITPY` drive:
 
-The following areas are still in progress:
+   ```bash
+   scripts/deploy_nodus.sh --target /Volumes/CIRCUITPY --content pico2w-mpy
+   # or
+   scripts/deploy_nodus.sh --target /Volumes/CIRCUITPY --content xesp32s3-mpy
+   ```
 
-- OTA prepare, temporary HTTP transfer mode, and post-update recovery validation
-- Sensorius `Add Device` onboarding regression validation
-- AP onboarding and local web flow validation for the current firmware slice
-- longer recovery and reconnect soak runs under adverse network conditions
+   Preview a deployment without writing by adding `--dry-run`.
 
-## Next steps
+5. Reboot the device. On a clean deployment, Nodus creates the live TOML files
+   required for the detected hardware.
+6. For initial setup, connect to the configured Nodus AP and open
+   `http://192.168.4.1:8000/setup`.
 
-- run an OTA prepare and HTTP transfer smoke test on a writable device
-- rerun the production Sensorius `Add Device` flow end to end
-- continue long-duration sensor + switch and switch-only soaks
-- tighten reconnect and recovery behavior only if soak logs show a real issue
+See the [user guide](docs/user_guide.md) for setup screens, Sensorius
+onboarding, profile behavior, calibration, switches, and automations. See the
+[technical reference](docs/README.md) for complete deployment options and
+runtime details.
+
+## Configuration and integration documentation
+
+- [User guide](docs/user_guide.md)
+- [Technical reference](docs/README.md)
+- [Configuration files and keys](docs/configuration.md)
+- [Architecture](docs/architecture.md)
+- [Board pinouts](docs/pinout.md)
+- [MQTT overview](docs/mqtt.md)
+- [Sensorius contract](docs/sensorius_contract.md)
+- [NodusWeb automations](docs/automations.md)
+- [Over-the-air updates](docs/ota.md)
+- [WeeWX integration](docs/weewx.md)
+- [Extending sensors and switches](docs/extending.md)
+
+## Security
+
+Nodus is intended for trusted-network, hobbyist, and educational deployments.
+Credentials written by onboarding are obfuscated rather than encrypted, and
+the firmware is not hardened against physical access to the CircuitPython
+filesystem. Review the [security policy](docs/SECURITY.md) before deployment
+in any environment where credential or device access would be consequential.
+
+Report suspected vulnerabilities privately using the process in the security
+policy rather than opening a public issue.
+
+## Development and testing
+
+Host-side verification uses Ruff and pytest:
+
+```bash
+ruff check .
+pytest -q
+```
+
+These checks run under CPython and do not execute the firmware on a
+CircuitPython board. Changes involving hardware, Wi-Fi, MQTT, recovery, OTA,
+filesystem behavior, or relay operation require relevant on-device validation.
+MQTT validation requires broker-visible evidence; serial output alone is not
+proof that a publish reached the broker.
+
+Read [CONTRIBUTING.md](docs/CONTRIBUTING.md) before proposing changes. The
+project's stability-sensitive areas and hardware-verification expectations are
+documented there.
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
+
+## Acknowledgments
+
+`cPyNodus_II` builds on work from the earlier `cPyNodus` project. Development
+included AI-agent assistance, followed by substantial human-directed testing,
+hardware validation, and revision to achieve the current device behavior.

@@ -9,7 +9,7 @@ from cpynodus_ii.features.command_intake import process_inbound_messages
 
 
 def _copy_docs(root, names, *, source="sensor+switch"):
-    docs_root = Path(__file__).resolve().parents[1] / "docs" / source
+    docs_root = Path(__file__).resolve().parent / "fixtures" / source.replace("+", "_")
     for name in names:
         (root / name).write_text((docs_root / name).read_text(), encoding="utf-8")
 

@@ -18,7 +18,7 @@ from cpynodus_ii.features.switch_runtime import build_switch_runtime
 
 
 def test_sensor_runtime_builds_ready_i2c_target_from_reference_config():
-    docs_root = Path(__file__).resolve().parents[1] / "docs" / "sensor+switch"
+    docs_root = Path(__file__).resolve().parent / "fixtures" / "sensor_switch"
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for name in ("settings.toml", "sensor_i2c.toml", "switch.toml"):
@@ -53,7 +53,7 @@ def test_sensor_runtime_is_blocked_when_initialization_is_not_ready():
 
 
 def test_switch_runtime_builds_ready_channels_from_reference_config():
-    docs_root = Path(__file__).resolve().parents[1] / "docs" / "sensor+switch"
+    docs_root = Path(__file__).resolve().parent / "fixtures" / "sensor_switch"
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for name in ("settings.toml", "sensor_i2c.toml", "switch.toml"):

@@ -17,7 +17,7 @@ from cpynodus_ii.features.switch import plan_switch_initialization
 
 
 def test_sensor_initialization_is_ready_for_i2c_sensor_config():
-    docs_root = Path(__file__).resolve().parents[1] / "docs" / "sensor+switch"
+    docs_root = Path(__file__).resolve().parent / "fixtures" / "sensor_switch"
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for name in ("settings.toml", "sensor_i2c.toml", "switch.toml"):
@@ -75,7 +75,7 @@ def test_sensor_initialization_reports_missing_i2c_fields():
 
 
 def test_switch_initialization_is_ready_for_parsed_switch_config():
-    docs_root = Path(__file__).resolve().parents[1] / "docs" / "sensor+switch"
+    docs_root = Path(__file__).resolve().parent / "fixtures" / "sensor_switch"
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for name in ("settings.toml", "sensor_i2c.toml", "switch.toml"):

@@ -14,7 +14,7 @@ from cpynodus_ii.features.web_config import (
 
 
 def _load_runtime_config():
-    docs_root = Path(__file__).resolve().parents[1] / "docs" / "sensor+switch"
+    docs_root = Path(__file__).resolve().parent / "fixtures" / "sensor_switch"
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for name in ("settings.toml", "sensor_i2c.toml", "switch.toml"):
@@ -120,7 +120,7 @@ def test_apply_web_config_updates_applies_live_display_location_and_switch_label
 def test_apply_web_config_updates_persists_restart_fields_without_live_change():
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
-        docs_root = Path(__file__).resolve().parents[1] / "docs" / "sensor+switch"
+        docs_root = Path(__file__).resolve().parent / "fixtures" / "sensor_switch"
         for name in ("settings.toml", "sensor_i2c.toml", "switch.toml"):
             (tmpdir_path / name).write_text(
                 (docs_root / name).read_text(), encoding="utf-8"

@@ -1,0 +1,95 @@
+name: Bug report
+description: Report a reproducible cPyNodus_II firmware or integration problem.
+title: "[Bug]: "
+labels: ["bug", "needs triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a problem. Remove Wi-Fi passwords, MQTT credentials, onboarding tokens, and other private data from logs and screenshots.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Include the smallest reliable sequence that triggers the problem.
+      placeholder: |
+        1. Configure ...
+        2. Boot ...
+        3. Publish or open ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What happened instead?
+    validations:
+      required: true
+  - type: dropdown
+    id: target
+    attributes:
+      label: Target board
+      options:
+        - Raspberry Pi Pico 2 W (pico2w)
+        - Seeed Studio XIAO ESP32-S3 Sense (xesp32s3)
+        - Host-side integration or tooling
+        - Not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: profile
+    attributes:
+      label: Active profile
+      options:
+        - nodusweb
+        - sensorius
+        - weewx
+        - homeassistant
+        - AP or recovery mode
+        - Not applicable or not sure
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Firmware version, CircuitPython version, sensor/switch hardware, filesystem mode, and MQTT broker type when relevant.
+      placeholder: |
+        cPyNodus_II version:
+        CircuitPython version:
+        Hardware:
+        Filesystem mode (ROFS/RWFS):
+        MQTT broker/profile:
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Sanitized evidence
+      description: Add relevant serial output, broker-visible MQTT evidence, recovery logs, or screenshots after removing credentials and private identifiers.
+      render: shell
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Submission checks
+      options:
+        - label: I removed credentials, tokens, private addresses, and other sensitive data.
+          required: true
+        - label: I searched existing issues and documentation for this problem.
+          required: true
