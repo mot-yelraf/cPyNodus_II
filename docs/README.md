@@ -213,6 +213,13 @@ Nodus uses intentional low-memory guards around the web UI to protect runtime st
 - HTML pages require at least 10 KB free after collection.
 - Configuration and automation code is imported only when its independent page is requested; it is not embedded in the initial status response.
 - Guarded requests return `503 Service Unavailable` with a retry message. This is a protective response, not necessarily a crash or reboot condition.
+- HTML responses use nonblocking accepted-client sockets. Failed response
+  sends close that client immediately and are collected; two consecutive send
+  timeouts restart only the HTTP listener.
+- Successfully completed responses are also collected before the next request
+  so closed Pico2 W client sockets do not remain allocated until periodic GC.
+- Accepted client sockets remain nonblocking through final close so an
+  abandoned browser request cannot hold the cooperative runtime.
 - Manual pacing still matters on weaker devices. Repeated rapid page loads or heavy configuration actions can still push the heap into protection windows.
 
 ## Normal Mode

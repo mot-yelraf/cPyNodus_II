@@ -7,11 +7,12 @@ to handler helpers, and reports availability back to the main application loop.
 
 import gc
 import json
+import sys
 from errno import EAGAIN, ECONNRESET, ETIMEDOUT
 from time import localtime, monotonic, sleep
 
 from cpynodus_ii.features.web_handlers import (
-    build_setup_payload,
+    build_config_page_payload,
     build_status_payload,
     handle_switch_state_request,
     handle_web_config_request,
@@ -44,6 +45,12 @@ _RESPONSE_SEND_CHUNK_BYTES = 256
 _RESPONSE_SEND_PACE_S = 0.025
 _SOCKET_RETRY_DELAY_S = 0.005
 _MAX_HEADER_BYTES = 2048
+_RESPONSE_TIMEOUT_RESTART_COUNT = 2
+_WEB_RENDER_MODULES = (
+    "cpynodus_ii.features.web_status_ui",
+    "cpynodus_ii.features.web_config_ui",
+    "cpynodus_ii.features.web_automation_ui",
+)
 
 
 class WebRuntimeController:
@@ -90,6 +97,8 @@ class WebRuntimeController:
         )
         self._response_cls = None
         self._json_response_cls = None
+        self._response_timeout_count = 0
+        self._listener_restart_count = 0
 
     def start(self):
         """Initialize the backing HTTP server and register routes."""
@@ -165,10 +174,14 @@ class WebRuntimeController:
                 )
             )
             return self
+        recovered = False
+        response_timeout = False
         try:
-            poll()
+            poll_result = poll()
         except Exception as exc:
             if _is_recoverable_web_poll_error(exc):
+                recovered = True
+                response_timeout = _is_response_send_timeout(exc)
                 self.errors = ()
                 if not _is_tls_client_hello_error(exc):
                     self._log_web_event(
@@ -179,18 +192,32 @@ class WebRuntimeController:
                             _free_mem_text(),
                         )
                     )
-                return self
-            self.phase = "error"
-            self.errors = ("web_poll_failed", str(exc))
-            self._log_web_event(
-                "phase=error reason=web_poll_failed type={} detail={} server={} free_mem={}".format(
-                    type(exc).__name__,
-                    self._error_text(exc),
-                    _server_state_text(self.server),
-                    _free_mem_text(),
+            else:
+                self.phase = "error"
+                self.errors = ("web_poll_failed", str(exc))
+                self._log_web_event(
+                    "phase=error reason=web_poll_failed type={} detail={} server={} free_mem={}".format(
+                        type(exc).__name__,
+                        self._error_text(exc),
+                        _server_state_text(self.server),
+                        _free_mem_text(),
+                    )
                 )
-            )
+        if recovered:
+            if response_timeout:
+                self._response_timeout_count += 1
+                self._collect_after_response_timeout()
+                if self._response_timeout_count >= _RESPONSE_TIMEOUT_RESTART_COUNT:
+                    self._restart_listener_after_timeout()
             return self
+        if self.phase == "error":
+            return self
+        if poll_result == "request_handled_response_sent":
+            self._response_timeout_count = 0
+            try:
+                gc.collect()
+            except Exception:
+                pass
         self._run_pending_reboot()
         return self
 
@@ -235,9 +262,7 @@ class WebRuntimeController:
         if server_cls is None:
             return None
         server_cls = _bounded_server_class(server_cls)
-        self._response_cls = _bounded_response_class(
-            getattr(module, "Response", None)
-        )
+        self._response_cls = _bounded_response_class(getattr(module, "Response", None))
         self._json_response_cls = _bounded_response_class(
             getattr(module, "JSONResponse", None)
         )
@@ -259,6 +284,56 @@ class WebRuntimeController:
         if callable(start):
             start("0.0.0.0", int(self.runtime_config.network.http_port or 8000))
         return server
+
+    def _collect_after_response_timeout(self):
+        """Release failed response objects before another browser request."""
+        before = _free_mem_text()
+        try:
+            gc.collect()
+        except Exception:
+            pass
+        self._log_web_event(
+            "response phase=timeout_cleanup count={} free_mem_before={} "
+            "free_mem_after={}".format(
+                self._response_timeout_count,
+                before,
+                _free_mem_text(),
+            )
+        )
+
+    def _restart_listener_after_timeout(self):
+        """Restart only the HTTP listener after repeated response stalls."""
+        server = self.server
+        stop = getattr(server, "stop", None)
+        start = getattr(server, "start", None)
+        if not callable(stop) or not callable(start):
+            self.phase = "error"
+            self.errors = ("web_listener_restart_unavailable",)
+            return False
+        try:
+            stop()
+            gc.collect()
+            start("0.0.0.0", int(self.runtime_config.network.http_port or 8000))
+        except Exception as exc:
+            self.phase = "error"
+            self.errors = ("web_listener_restart_failed", str(exc))
+            self._log_web_event(
+                "listener phase=error reason=timeout_restart type={} detail={} "
+                "free_mem={}".format(
+                    type(exc).__name__, self._error_text(exc), _free_mem_text()
+                )
+            )
+            return False
+        self._listener_restart_count += 1
+        self._response_timeout_count = 0
+        self._log_web_event(
+            "listener phase=ready reason=response_timeouts restarts={} "
+            "free_mem={}".format(
+                self._listener_restart_count,
+                _free_mem_text(),
+            )
+        )
+        return True
 
     def _register_routes(self):
         self._route_paths = tuple(route_paths(self.runtime_config))
@@ -554,46 +629,70 @@ class WebRuntimeController:
 
     def _status_page_response(self, request):
         """Render only current data and switch controls for the initial page."""
+        self._prepare_renderer("cpynodus_ii.features.web_status_ui")
         if not _heap_available(_STATUS_HEAP_FLOOR):
             return self._web_unavailable_response(request)
+        stage = "module_import"
         try:
             from cpynodus_ii.features.web_status_ui import render_status_html
 
-            return self._html_response(
-                request, render_status_html(self._build_status_payload())
-            )
+            stage = "payload_build"
+            payload = self._build_status_payload()
+            stage = "html_render"
+            html = render_status_html(payload)
+            stage = "utf8_encode"
+            return self._html_response(request, html)
         except MemoryError:
+            self._log_render_memory_error(request, "status", stage)
             return self._web_unavailable_response(request)
 
     def _config_page_response(self, request, page):
         """Lazily render one configuration or information page."""
+        self._prepare_renderer("cpynodus_ii.features.web_config_ui")
         if not _heap_available(_CONFIG_HEAP_FLOOR):
             return self._web_unavailable_response(request)
+        stage = "module_import"
         try:
             from cpynodus_ii.features.web_config_ui import render_config_html
 
-            setup = build_setup_payload(self.runtime_config, version=self.version)
-            status = self._build_status_payload() if page == "info" else None
-            return self._html_response(
-                request, render_config_html(page, setup, status_payload=status)
+            stage = "payload_build"
+            setup = build_config_page_payload(
+                self.runtime_config,
+                version=self.version,
+                page=page,
             )
+            stage = "status_payload"
+            status = self._build_status_payload() if page == "info" else None
+            stage = "html_render"
+            html = render_config_html(
+                page,
+                setup,
+                status_payload=status,
+                event_logger=self._log_web_event,
+            )
+            stage = "utf8_encode"
+            return self._html_response(request, html)
         except MemoryError:
+            self._log_render_memory_error(request, page, stage)
             return self._web_unavailable_response(request)
 
     def _automation_page_response(self, request):
         """Lazily render the local automation editor."""
+        self._prepare_renderer("cpynodus_ii.features.web_automation_ui")
         if not _heap_available(_CONFIG_HEAP_FLOOR):
             return self._web_unavailable_response(request)
+        stage = "module_import"
         try:
             from cpynodus_ii.features.web_automation_ui import (
                 render_automation_html,
             )
 
-            return self._html_response(
-                request,
-                render_automation_html(self.runtime_config.network.hostname),
-            )
+            stage = "html_render"
+            html = render_automation_html(self.runtime_config.network.hostname)
+            stage = "utf8_encode"
+            return self._html_response(request, html)
         except MemoryError:
+            self._log_render_memory_error(request, "automations", stage)
             return self._web_unavailable_response(request)
 
     def _web_unavailable_response(self, request):
@@ -603,6 +702,20 @@ class WebRuntimeController:
             content_type="text/plain; charset=utf-8",
             status_code=503,
         )
+
+    def _prepare_renderer(self, active_module):
+        _release_inactive_web_renderers(active_module)
+
+    def _log_render_memory_error(self, request, page, stage):
+        try:
+            self._log_web_event(
+                "request path={} page={} phase=render_memory_error stage={} "
+                "free_mem={}".format(
+                    _request_path(request), page, stage, _free_mem_text()
+                )
+            )
+        except Exception:
+            pass
 
     def _build_status_payload(self):
         """Return status from the latest main-loop sensor snapshot."""
@@ -669,9 +782,10 @@ class WebRuntimeController:
         )
 
     def _html_response(self, request, html, *, status_code=200):
+        body = html.encode("utf-8")
         return self._plain_response(
             request,
-            html,
+            body,
             content_type="text/html; charset=utf-8",
             status_code=status_code,
         )
@@ -769,6 +883,15 @@ def _is_recoverable_web_poll_error(exc):
     return False
 
 
+def _is_response_send_timeout(exc):
+    """Return True only for a deadline raised by the bounded response writer."""
+    return isinstance(exc, OSError) and "web_response_send_timeout" in str(exc)
+
+
+def _request_path(request):
+    return str(getattr(request, "path", "") or "unknown")
+
+
 def _is_tls_client_hello_error(exc):
     """Identify an HTTPS handshake sent to the plain HTTP listener."""
     if not _is_recoverable_web_poll_error(exc):
@@ -781,6 +904,45 @@ def _is_tls_client_hello_error(exc):
         if isinstance(value, (tuple, list)):
             pending.extend(value)
     return False
+
+
+def _release_inactive_web_renderers(active_module):
+    """Release cached page renderers other than the one about to be used."""
+    modules = getattr(sys, "modules", None)
+    if modules is None:
+        return 0
+    try:
+        features_package = modules["cpynodus_ii.features"]
+    except (KeyError, TypeError):
+        features_package = None
+    released = 0
+    for module_name in _WEB_RENDER_MODULES:
+        if module_name == active_module:
+            continue
+        try:
+            module = modules[module_name]
+        except (KeyError, TypeError):
+            continue
+        try:
+            del modules[module_name]
+        except (KeyError, TypeError):
+            continue
+        attribute = module_name.rsplit(".", 1)[-1]
+        if (
+            features_package is not None
+            and getattr(features_package, attribute, None) is module
+        ):
+            try:
+                delattr(features_package, attribute)
+            except (AttributeError, TypeError):
+                pass
+        released += 1
+    if released:
+        try:
+            gc.collect()
+        except Exception:
+            pass
+    return released
 
 
 def _bounded_server_class(server_cls):
@@ -809,8 +971,54 @@ def _bounded_response_class(response_cls):
 
     class BoundedResponse(response_cls):
         def _send_bytes(self, conn, buffer):
-            sent = _send_bounded_bytes(conn, buffer)
+            try:
+                sent = _send_bounded_bytes(conn, buffer)
+            except Exception as exc:
+                self._close_client_connection(conn)
+                if _is_response_send_timeout(exc):
+                    detail = (
+                        exc.args[1]
+                        if len(getattr(exc, "args", ()) or ()) > 1
+                        else "web_response_send_timeout"
+                    )
+                    raise OSError(
+                        ETIMEDOUT,
+                        "{} path={}".format(detail, _request_path(self._request)),
+                    )
+                raise
             self._size += sent
+
+        def _close_connection(self):
+            conn = getattr(getattr(self, "_request", None), "connection", None)
+            if conn is None:
+                return
+            self._close_client_connection(conn)
+
+        def _close_client_connection(self, conn):
+            if getattr(self, "_nodus_connection_closed", False):
+                return
+            self._nodus_connection_closed = True
+            configured = False
+            setter = getattr(conn, "setblocking", None)
+            if callable(setter):
+                try:
+                    setter(False)
+                    configured = True
+                except Exception:
+                    pass
+            if not configured:
+                setter = getattr(conn, "settimeout", None)
+                if callable(setter):
+                    try:
+                        setter(0)
+                    except Exception:
+                        pass
+            close = getattr(conn, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except (BrokenPipeError, OSError):
+                    pass
 
     return BoundedResponse
 
@@ -881,11 +1089,24 @@ def _send_bounded_bytes(conn, buffer):
     started = monotonic()
     stall_deadline = started + _RESPONSE_SEND_STALL_WINDOW_S
     total_deadline = started + _RESPONSE_SEND_TOTAL_WINDOW_S
-    _set_response_socket_nonblocking(conn)
+    if not _set_response_socket_nonblocking(conn):
+        raise OSError(
+            ETIMEDOUT,
+            "web_response_send_timeout nonblocking_unavailable sent=0/{} "
+            "chunk=1 elapsed_ms=0".format(len(buffer)),
+        )
     while sent < len(buffer):
         now = monotonic()
         if now >= stall_deadline or now >= total_deadline:
-            raise OSError(ETIMEDOUT)
+            raise OSError(
+                ETIMEDOUT,
+                "web_response_send_timeout sent={}/{} chunk={}".format(
+                    sent,
+                    len(buffer),
+                    (sent // _RESPONSE_SEND_CHUNK_BYTES) + 1,
+                )
+                + " elapsed_ms={}".format(int(max(0.0, now - started) * 1000)),
+            )
         try:
             end = min(sent + _RESPONSE_SEND_CHUNK_BYTES, len(buffer))
             count = conn.send(view[sent:end])
@@ -907,16 +1128,18 @@ def _send_bounded_bytes(conn, buffer):
 
 
 def _set_response_socket_nonblocking(sock):
-    """Apply both CircuitPython nonblocking socket controls for response writes."""
+    """Apply both CircuitPython controls required for nonblocking writes."""
     configured = _set_socket_nonblocking(sock)
     setter = getattr(sock, "settimeout", None)
-    if callable(setter):
-        try:
-            setter(0)
-            configured = True
-        except Exception:
-            pass
-    return configured
+    if not callable(setter):
+        return configured
+    try:
+        setter(0)
+        return True
+    except Exception:
+        # A socket exposing settimeout must accept zero; otherwise a native
+        # send may still inherit the positive server timeout and block.
+        return False
 
 
 def _set_socket_nonblocking(sock):

@@ -6,7 +6,8 @@ from types import SimpleNamespace
 
 from cpynodus_ii.core.network import build_network_stack
 from cpynodus_ii.core.settings import Settings
-from cpynodus_ii.features import web_runtime
+from cpynodus_ii.features import web_config_ui, web_runtime, web_ui_common
+from cpynodus_ii.features.web_handlers import build_config_page_payload
 from cpynodus_ii.features.web_runtime import WebRuntimeController
 
 
@@ -36,14 +37,20 @@ class _FakeConnMgr:
 
 
 class _FakeRequest:
-    def __init__(self, body=b""):
+    def __init__(self, body=b"", path=""):
         self.body = body
+        self.path = path
 
 
 class _FakeResponse:
     def __init__(self, request, body=None, content_type="", status=None):
         self.request = request
-        self.body = body
+        self.raw_body = body
+        self.body = (
+            body.decode("utf-8")
+            if isinstance(body, bytes) and content_type.startswith("text/html")
+            else body
+        )
         self.content_type = content_type
         self.status = status
 
@@ -94,6 +101,7 @@ class _ScriptedSocket:
         self.send_sizes = []
         self.blocking = []
         self.timeouts = []
+        self.close_count = 0
 
     def setblocking(self, value):
         self.blocking.append(value)
@@ -115,6 +123,9 @@ class _ScriptedSocket:
         if isinstance(value, Exception):
             raise value
         return min(int(value), len(buffer))
+
+    def close(self):
+        self.close_count += 1
 
 
 def _runtime_config():
@@ -209,6 +220,26 @@ def test_bounded_send_retries_and_rejects_zero_progress(monkeypatch):
         raise AssertionError("zero-progress send did not fail")
 
 
+def test_bounded_send_fails_closed_when_zero_timeout_is_rejected():
+    class _RejectZeroTimeoutSocket(_ScriptedSocket):
+        def settimeout(self, value):
+            self.timeouts.append(value)
+            raise OSError("timeout control unavailable")
+
+    sock = _RejectZeroTimeoutSocket()
+
+    try:
+        web_runtime._send_bounded_bytes(sock, b"hello")
+    except OSError as exc:
+        assert web_runtime._socket_error_number(exc) == web_runtime.ETIMEDOUT
+        assert "nonblocking_unavailable" in str(exc)
+        assert sock.blocking == [False]
+        assert sock.timeouts == [0]
+        assert sock.send_sizes == []
+    else:
+        raise AssertionError("response write used a socket without zero timeout")
+
+
 def test_bounded_send_limits_chunk_size_and_paces_progress(monkeypatch):
     sock = _ScriptedSocket()
     pauses = []
@@ -244,6 +275,8 @@ def test_bounded_send_expires_would_block_client(monkeypatch):
         web_runtime._send_bounded_bytes(sock, b"hello")
     except OSError as exc:
         assert web_runtime._socket_error_number(exc) == web_runtime.ETIMEDOUT
+        assert "web_response_send_timeout" in str(exc)
+        assert "elapsed_ms=1000" in str(exc)
     else:
         raise AssertionError("stalled send did not expire")
 
@@ -284,6 +317,117 @@ def test_bounded_adapters_wrap_real_server_shapes():
     assert web_runtime._bounded_response_class(_ResponseShape) is not _ResponseShape
 
 
+def test_inactive_page_renderers_are_removed_from_module_cache(monkeypatch):
+    active = object()
+    inactive_status = object()
+    inactive_automation = object()
+    features_package = SimpleNamespace(
+        web_status_ui=inactive_status,
+        web_config_ui=active,
+        web_automation_ui=inactive_automation,
+    )
+    modules = {
+        "cpynodus_ii.features": features_package,
+        "cpynodus_ii.features.web_status_ui": inactive_status,
+        "cpynodus_ii.features.web_config_ui": active,
+        "cpynodus_ii.features.web_automation_ui": inactive_automation,
+    }
+    collections = []
+    monkeypatch.setattr(web_runtime, "sys", SimpleNamespace(modules=modules))
+    monkeypatch.setattr(web_runtime.gc, "collect", lambda: collections.append(True))
+
+    released = web_runtime._release_inactive_web_renderers(
+        "cpynodus_ii.features.web_config_ui"
+    )
+
+    assert released == 2
+    assert modules["cpynodus_ii.features.web_config_ui"] is active
+    assert "cpynodus_ii.features.web_status_ui" not in modules
+    assert "cpynodus_ii.features.web_automation_ui" not in modules
+    assert not hasattr(features_package, "web_status_ui")
+    assert features_package.web_config_ui is active
+    assert not hasattr(features_package, "web_automation_ui")
+    assert collections == [True]
+
+
+def test_bounded_response_timeout_identifies_request_path(monkeypatch):
+    class _ResponseShape:
+        def _send_bytes(self, conn, buffer):
+            return None
+
+    response_cls = web_runtime._bounded_response_class(_ResponseShape)
+    response = response_cls()
+    sock = _ScriptedSocket()
+    response._request = _FakeRequest(path="/setup")
+    response._size = 0
+
+    def fail_send(_conn, _buffer):
+        raise OSError(
+            web_runtime.ETIMEDOUT,
+            "web_response_send_timeout sent=256/8705 chunk=2 elapsed_ms=1000",
+        )
+
+    monkeypatch.setattr(web_runtime, "_send_bounded_bytes", fail_send)
+
+    try:
+        response._send_bytes(sock, b"body")
+    except OSError as exc:
+        assert web_runtime._socket_error_number(exc) == web_runtime.ETIMEDOUT
+        assert "path=/setup" in str(exc)
+        assert "sent=256/8705" in str(exc)
+        assert "elapsed_ms=1000" in str(exc)
+        assert sock.blocking == [False]
+        assert sock.close_count == 1
+    else:
+        raise AssertionError("response timeout did not propagate diagnostics")
+
+
+def test_bounded_response_closes_client_after_unexpected_send_error(monkeypatch):
+    class _ResponseShape:
+        def _send_bytes(self, conn, buffer):
+            return None
+
+    response_cls = web_runtime._bounded_response_class(_ResponseShape)
+    response = response_cls()
+    sock = _ScriptedSocket()
+    response._request = _FakeRequest(path="/setup")
+    response._size = 0
+
+    def fail_send(_conn, _buffer):
+        raise RuntimeError("unexpected send failure")
+
+    monkeypatch.setattr(web_runtime, "_send_bounded_bytes", fail_send)
+
+    try:
+        response._send_bytes(sock, b"body")
+    except RuntimeError as exc:
+        assert str(exc) == "unexpected send failure"
+        assert sock.blocking == [False]
+        assert sock.close_count == 1
+    else:
+        raise AssertionError("unexpected send failure did not propagate")
+
+
+def test_bounded_response_closes_client_nonblocking_after_send():
+    class _ResponseShape:
+        def _send_bytes(self, conn, buffer):
+            return None
+
+    response_cls = web_runtime._bounded_response_class(_ResponseShape)
+    response = response_cls()
+    sock = _ScriptedSocket()
+    response._request = SimpleNamespace(connection=sock)
+
+    response._close_connection()
+
+    assert sock.blocking == [False]
+    assert sock.timeouts == []
+    assert sock.close_count == 1
+
+    response._close_connection()
+    assert sock.close_count == 1
+
+
 def test_ap_mode_network_stack_includes_socket_artifacts_for_web_runtime():
     runtime_config = _runtime_config()
     runtime_config.ap_mode = True
@@ -318,6 +462,39 @@ def test_web_runtime_controller_registers_and_polls_routes():
     assert controller.server.poll_count == 1
 
 
+def test_web_runtime_collects_after_successful_response(monkeypatch):
+    class _SuccessfulResponseServer(_FakeServer):
+        def poll(self):
+            self.poll_count += 1
+            return "request_handled_response_sent"
+
+    class _SuccessfulResponseModule(_FakeServerModule):
+        Server = _SuccessfulResponseServer
+
+    runtime_config = _runtime_config()
+    stack = build_network_stack(
+        runtime_config, wifi_radio=_FakeRadio(), connection_manager_module=_FakeConnMgr
+    )
+    collections = []
+    events = []
+    monkeypatch.setattr(web_runtime.gc, "collect", lambda: collections.append(True))
+    controller = WebRuntimeController(
+        runtime_config,
+        stack,
+        version="v0.26.202.4",
+        server_module=_SuccessfulResponseModule,
+        event_logger=events.append,
+    ).start()
+    controller._response_timeout_count = 1
+
+    controller.poll()
+
+    assert collections == [True]
+    assert controller._response_timeout_count == 0
+    assert controller.phase == "ready"
+    assert events == []
+
+
 def test_web_status_page_is_small_and_excludes_configuration_editors():
     runtime_config = _runtime_config()
     stack = build_network_stack(
@@ -333,6 +510,7 @@ def test_web_status_page_is_small_and_excludes_configuration_editors():
     response = controller.server.routes[("/", ("GET",))](_FakeRequest())
     html = response.body
 
+    assert isinstance(response.raw_body, bytes)
     assert "Status" in html
     assert 'rel="icon" href="data:image/svg+xml;base64,PHN2Zy' in html
     assert "grid-template-columns:220px minmax(0,900px)" in html
@@ -352,6 +530,58 @@ def test_web_status_page_is_small_and_excludes_configuration_editors():
     assert 'id="automation_script"' not in html
     assert "loadAutomations()" not in html
     assert len(html.encode("utf-8")) < 7000
+
+
+def test_config_page_payload_omits_values_unused_by_setup_renderer():
+    runtime_config = _runtime_config()
+
+    payload = build_config_page_payload(
+        runtime_config,
+        version="v0.26.202.1",
+        page="setup",
+    )
+
+    assert "routes" not in payload
+    assert "calibration_device" not in payload["sensor"]
+    assert "broker_ip" not in payload["mqtt"]
+    assert "base_topic" not in payload["mqtt"]
+    assert tuple(payload["sensor"]["display_metrics"]) == tuple(
+        runtime_config.sensor.display.metrics
+    )
+
+
+def test_config_renderer_collects_before_final_page_wrapper(monkeypatch):
+    runtime_config = _runtime_config()
+    payload = build_config_page_payload(
+        runtime_config,
+        version="v0.26.202.7",
+        page="setup",
+    )
+    events = []
+
+    monkeypatch.setattr(web_config_ui.gc, "collect", lambda: events.append("collect"))
+
+    def wrapped_page(*args, **kwargs):
+        events.append("render_page")
+        return "complete"
+
+    monkeypatch.setattr(web_config_ui, "render_page", wrapped_page)
+
+    assert web_config_ui.render_config_html("setup", payload) == "complete"
+    assert events == ["collect", "collect", "collect", "render_page"]
+
+
+def test_shared_page_wrapper_collects_before_document_allocation(monkeypatch):
+    collections = []
+    monkeypatch.setattr(
+        web_ui_common.gc, "collect", lambda: collections.append(True)
+    )
+
+    html = web_ui_common.render_page("nodus", "Setup", "body")
+
+    assert collections == [True]
+    assert html.startswith("<!doctype html>")
+    assert "<section class=\"panel\">body</section>" in html
 
 
 def test_web_configuration_surfaces_render_on_separate_routes():
@@ -408,11 +638,13 @@ def test_web_status_memory_error_returns_503(monkeypatch):
     stack = build_network_stack(
         runtime_config, wifi_radio=_FakeRadio(), connection_manager_module=_FakeConnMgr
     )
+    events = []
     controller = WebRuntimeController(
         runtime_config,
         stack,
         version="v0.26.193.1",
         server_module=_FakeServerModule,
+        event_logger=events.append,
     ).start()
 
     def fail_render(*args, **kwargs):
@@ -425,6 +657,68 @@ def test_web_status_memory_error_returns_503(monkeypatch):
 
     assert response.status == (503, "Service Unavailable")
     assert "retry" in response.body
+    assert any(
+        "phase=render_memory_error stage=html_render" in event for event in events
+    )
+
+
+def test_web_setup_payload_memory_error_reports_stage(monkeypatch):
+    runtime_config = _runtime_config()
+    stack = build_network_stack(
+        runtime_config, wifi_radio=_FakeRadio(), connection_manager_module=_FakeConnMgr
+    )
+    events = []
+    controller = WebRuntimeController(
+        runtime_config,
+        stack,
+        version="v0.26.202.6",
+        server_module=_FakeServerModule,
+        event_logger=events.append,
+    ).start()
+
+    def fail_payload(*args, **kwargs):
+        raise MemoryError
+
+    monkeypatch.setattr(web_runtime, "build_config_page_payload", fail_payload)
+    response = controller.server.routes[("/setup", ("GET",))](_FakeRequest())
+
+    assert response.status == (503, "Service Unavailable")
+    assert any(
+        "phase=render_memory_error stage=payload_build" in event for event in events
+    )
+
+
+def test_web_setup_encoding_memory_error_reports_stage(monkeypatch):
+    runtime_config = _runtime_config()
+    stack = build_network_stack(
+        runtime_config, wifi_radio=_FakeRadio(), connection_manager_module=_FakeConnMgr
+    )
+    events = []
+    controller = WebRuntimeController(
+        runtime_config,
+        stack,
+        version="v0.26.202.6",
+        server_module=_FakeServerModule,
+        event_logger=events.append,
+    ).start()
+
+    class _UnencodableHtml:
+        def __len__(self):
+            return 12
+
+        def encode(self, _encoding):
+            raise MemoryError
+
+    monkeypatch.setattr(
+        "cpynodus_ii.features.web_config_ui.render_config_html",
+        lambda *args, **kwargs: _UnencodableHtml(),
+    )
+    response = controller.server.routes[("/setup", ("GET",))](_FakeRequest())
+
+    assert response.status == (503, "Service Unavailable")
+    assert any(
+        "phase=render_memory_error stage=utf8_encode" in event for event in events
+    )
 
 
 def test_web_pages_enforce_heap_floors_after_collection(monkeypatch):
@@ -448,7 +742,9 @@ def test_web_pages_enforce_heap_floors_after_collection(monkeypatch):
 
     assert status.status == (503, "Service Unavailable")
     assert setup.status == (503, "Service Unavailable")
-    assert len(collections) == 2
+    # Two admission collections and one inactive Status-renderer release when
+    # switching to Setup.
+    assert len(collections) == 3
 
     monkeypatch.setattr(web_runtime.gc, "mem_free", lambda: 10000, raising=False)
     status = controller.server.routes[("/", ("GET",))](_FakeRequest())
@@ -456,7 +752,11 @@ def test_web_pages_enforce_heap_floors_after_collection(monkeypatch):
 
     assert status.status == (200, "OK")
     assert setup.status == (200, "OK")
-    assert len(collections) == 4
+    # The successful pair adds one renderer release, two admission
+    # collections, one Status wrapper collection, and four Setup
+    # profile/display/renderer/wrapper collections. The prior guarded Setup did
+    # not import its renderer, so Status has nothing to release first.
+    assert len(collections) == 11
 
 
 def test_web_dashboard_keeps_last_successful_sample_and_timestamp(monkeypatch):
@@ -647,6 +947,55 @@ def test_web_runtime_logs_other_unparseable_browser_requests():
     assert len(events) == 1
     assert "reason=web_poll_recovered" in events[0]
     assert "NOT_HTTP" in events[0]
+
+
+def test_web_runtime_collects_and_restarts_listener_after_two_send_timeouts(
+    monkeypatch,
+):
+    class _TimedOutResponseServer(_FakeServer):
+        def poll(self):
+            self.poll_count += 1
+            raise OSError(
+                web_runtime.ETIMEDOUT,
+                "web_response_send_timeout sent=0/8705 chunk=1",
+            )
+
+    class _TimedOutResponseModule(_FakeServerModule):
+        Server = _TimedOutResponseServer
+
+    runtime_config = _runtime_config()
+    stack = build_network_stack(
+        runtime_config, wifi_radio=_FakeRadio(), connection_manager_module=_FakeConnMgr
+    )
+    events = []
+    collections = []
+    monkeypatch.setattr(web_runtime.gc, "collect", lambda: collections.append(True))
+    controller = WebRuntimeController(
+        runtime_config,
+        stack,
+        version="v0.26.202.1",
+        server_module=_TimedOutResponseModule,
+        event_logger=events.append,
+    ).start()
+
+    controller.poll()
+    assert controller.server.stop_count == 0
+    assert controller._response_timeout_count == 1
+
+    controller.poll()
+
+    assert controller.phase == "ready"
+    assert controller.errors == ()
+    assert controller.server.stop_count == 1
+    assert controller.server.started == ("0.0.0.0", 8000)
+    assert controller._response_timeout_count == 0
+    assert controller._listener_restart_count == 1
+    assert len(collections) == 3
+    assert sum("response phase=timeout_cleanup" in event for event in events) == 2
+    assert any(
+        "listener phase=ready reason=response_timeouts restarts=1" in event
+        for event in events
+    )
 
 
 def test_web_runtime_logs_and_stops_polling_after_unexpected_error():

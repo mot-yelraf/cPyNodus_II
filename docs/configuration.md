@@ -252,6 +252,29 @@ HTML rendering collects garbage first and admits each page only with at least
 10 KB free heap. A request below that floor returns `503 Service Unavailable`
 with a retry message.
 
+Each page builds only the view data it renders, and HTML is encoded before the
+response object is returned so the sender does not retain both a full HTML
+string and a second encoded copy. A timed-out response triggers immediate
+garbage collection; two consecutive response timeouts restart the HTTP
+listener while retaining the active station connection and socket pool.
+Successfully completed responses also trigger collection before the next
+request so closed Pico2 W client sockets are released promptly.
+The response body uses both `setblocking(False)` and `settimeout(0)` on the
+accepted-client socket; Pico2 W response writes require both controls to avoid
+retaining the server's positive native timeout. Final close is also
+nonblocking. Would-block results are retried only within the bounded response
+deadlines, and any send failure immediately closes that client so it cannot
+hold the cooperative runtime or leak into the following request.
+After constructing a configuration page body, the renderer collects temporary
+formatting objects before allocating the full document. A second collection
+immediately before that allocation limits fragmentation from shared wrapper
+construction.
+Setup profile and display fragment lists are released and collected before the
+next larger allocation. A guarded `MemoryError` logs only its failing stage and
+free heap.
+Page-specific Status, Config, and Automation renderer modules are released when
+navigating to another page family.
+
 The JSON `/config` route accepts a broader supported update set than the
 rendered page:
 

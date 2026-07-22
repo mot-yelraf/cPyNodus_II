@@ -45,12 +45,37 @@ The architecture is split into three layers:
   other malformed requests remain visible in recovery diagnostics.
 - Accepted sockets use nonblocking request reads with a 250 ms header window
   and a 500 ms declared-body window. TLS is identified from its record prefix
-  and closed immediately. Response writes use explicitly nonblocking 256-byte
-  chunks with a 25 ms cooperative pause between successful chunks, a one-second
-  no-progress limit, and a five-second absolute deadline. An incomplete or
-  stopped client therefore cannot hold the cooperative main loop indefinitely.
-  Unexpected poll failures move the web controller to `error`; periodic web
-  health logging reports its phase, server presence, route count, and errors.
+  and closed immediately. Response writes apply both CircuitPython
+  `setblocking(False)` and `settimeout(0)` controls to the accepted client
+  socket and use 256-byte chunks with a 25 ms cooperative
+  pause between successful chunks, a one-second no-progress limit, and a
+  five-second absolute deadline. A response failure immediately closes that
+  client without blocking, logs the route, response progress, elapsed time,
+  and heap state, then collects garbage. Two consecutive response timeouts restart only the HTTP
+  listener on the current socket pool. Unexpected poll failures move the web
+  controller to `error`; periodic web health logging reports its phase, server
+  presence, route count, and errors.
+- After every successfully sent HTTP response, the web controller collects
+  garbage before accepting another request. On Pico2 W this promptly releases
+  closed client-socket resources that can otherwise remain unavailable until a
+  later periodic collection.
+- Response transmission and final client close both remain nonblocking,
+  preventing a stopped client or the Pico2 W TCP close path from holding
+  `server.poll()`.
+- Pico2 W hardware requires the explicit zero timeout in addition to
+  `setblocking(False)` for response writes; using only the blocking flag can
+  leave `send()` under the server's positive native timeout.
+- Configuration rendering explicitly collects page-specific temporary objects
+  after constructing the body and again before allocating the contiguous final
+  document. The response still uses a fixed content length and bounded
+  256-byte socket writes.
+- Setup rendering additionally joins and releases profile and display-row
+  fragments independently before formatting the body. A guarded
+  `MemoryError` reports only its failing stage and free heap.
+- Status, Config, and Automation renderer modules are mutually exclusive in
+  the module cache. Before rendering one page family, the runtime removes the
+  other page-specific modules from `sys.modules` and the features package,
+  then collects. Shared compact UI helpers remain resident.
 - In `nodusweb`, sensor acquisition runs from the shallow main loop on a
   60-second cadence. The web controller receives only the latest successful
   snapshot; HTTP request handlers never call sensor drivers. This avoids Pico2

@@ -203,6 +203,53 @@ When adding or changing switches:
 Host-side verification uses `pytest`. It does not execute on-device
 CircuitPython firmware.
 
+### Web UI Browser Verification
+
+- On the VS Code agent surface, do not attempt in-app Browser discovery or use
+  the `browser:control-in-app-browser` skill. The in-app Browser is unavailable
+  there; `IAB failed` and `No browser is available` are expected and do not
+  justify retries, extension installation, or browser-data resets.
+- Use paced, sequential `curl` requests as the default live-device web test.
+  `curl` is sufficient for reachability, HTTP status, response-size, timing,
+  endpoint-content, timeout, and listener-availability checks. Use a bounded
+  request such as:
+  `curl -sS --max-time 15 -o /dev/null -w 'status=%{http_code} bytes=%{size_download} connect=%{time_connect} start=%{time_starttransfer} total=%{time_total}\n' http://<device-ip>:8000/setup`.
+- Correlate each live request with the active serial capture, normally
+  `~/cu.usb*.log`. Check the boot version/profile first, then inspect render
+  begin/ready heap values, `ETIMEDOUT`, `web_response_send_timeout`, timeout
+  cleanup, listener restart, periodic GC, and web-health events. A browser or
+  `curl` success alone is not enough to characterize device-side behavior.
+- For a read-only NodusWeb sweep, request `/`, `/setup` twice, `/calibration`,
+  `/switch-setup`, `/automations-ui`, `/info`, and `/current-data` one at a
+  time. Allow each response and serial event to settle before the next request.
+  Use repeated `/current-data` requests only as an explicit socket-release or
+  listener-availability stress check, and report that pacing separately.
+- In VS Code, use terminal-based Playwright with its bundled Chromium/headless
+  shell only when DOM inspection, form interaction, responsive layout, or
+  screenshots are actually required. Do not launch
+  `/Applications/Google Chrome.app` directly with `--headless`, because doing
+  so can trigger macOS GUI-registration crashes and user-facing crash dialogs.
+- Safari-specific rendering remains an operator/manual validation unless an
+  approved Safari-control surface is explicitly available. Do not claim that
+  terminal Chromium verifies Safari behavior.
+- In station mode, a web-enabled device is normally available at
+  `http://<Network.HOSTNAME>.local:<Network.HTTPPORT>/setup`. In AP mode,
+  connect to the device AP and use `http://192.168.4.1:8000/setup`.
+- Normal MQTT profiles in cPyNodus II are intentionally headless. Do not treat
+  an unavailable normal-runtime web UI as a defect unless the active profile
+  is `nodusweb`, the device is in AP mode, or temporary OTA HTTP mode is
+  expected.
+- CircuitPython web servers are resource constrained. Use generous navigation
+  and response timeouts, avoid parallel page loads or rapid polling, wait for
+  the page to settle after each action, and retry a slow request only after the
+  device has had time to recover.
+- Begin with read-only inspection. Do not click Save, Restart, OTA, switch
+  controls, or other state-changing actions unless the task explicitly
+  authorizes them.
+- For visual verification, use a viewport large enough to show the intended
+  layout and capture expandable sections independently when documenting them.
+  Report which browser surface was used and anything left unverified.
+
 For changes, run applicable tests before claiming verification:
 
 - General host-side verification: `pytest tests`

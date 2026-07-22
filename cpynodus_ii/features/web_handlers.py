@@ -182,6 +182,89 @@ def build_setup_payload(runtime_config, *, version):
     }
 
 
+def build_config_page_payload(runtime_config, *, version, page):
+    """Build only the values needed to render one configuration page."""
+    sensor = runtime_config.sensor
+    switch = runtime_config.switch
+    payload = {
+        "version": str(version or ""),
+        "profile": runtime_config.active_profile,
+        "network": {"hostname": runtime_config.network.hostname},
+        "switch": {"present": bool(switch.present)},
+    }
+    if page == "setup":
+        payload["network"].update(
+            {
+                "ssid": runtime_config.network.ssid,
+                "password": runtime_config.network.password,
+            }
+        )
+        payload.update(
+            {
+                "sensor": {
+                    "location": sensor.location,
+                    "display_metrics": sensor.display.metrics,
+                    "display_styles": sensor.display.styles,
+                },
+                "time": {
+                    "tz": runtime_config.time.tz,
+                    "tz_offset": runtime_config.time.tz_offset,
+                    "tz_name": runtime_config.time.tz_name,
+                    "ntp_server": runtime_config.time.ntp_server,
+                    "ntp_server_ip": runtime_config.time.ntp_server_ip,
+                },
+                "mqtt": {
+                    "broker": runtime_config.mqtt.broker,
+                    "port": runtime_config.mqtt.port,
+                    "use_tls": bool(runtime_config.mqtt.use_tls),
+                    "username": runtime_config.mqtt.username,
+                    "password": runtime_config.mqtt.password,
+                },
+            }
+        )
+    elif page == "calibration":
+        payload["sensor"] = {
+            "device": sensor.device,
+            "calibration_device": _calibration_payload(sensor.calibration_device),
+        }
+    elif page == "switch":
+        payload["switch"].update(
+            {
+                "device_id": switch.device_id,
+                "serial_number": switch.serial_number,
+                "location": switch.location,
+                "channel_count": switch.channel_count,
+                "channels": tuple(
+                    {
+                        "key": channel.key,
+                        "channel_id": channel.channel_id,
+                        "label": channel.label,
+                    }
+                    for channel in switch.channels
+                ),
+            }
+        )
+    elif page == "info":
+        payload["network"]["ssid"] = runtime_config.network.ssid
+        payload.update(
+            {
+                "sensor": {
+                    "device": sensor.device,
+                    "hardware": sensor.hardware,
+                    "interface": sensor.interface,
+                    "sensor_id": sensor.sensor_id,
+                },
+            }
+        )
+        payload["switch"].update(
+            {
+                "device_id": switch.device_id,
+                "channel_count": switch.channel_count,
+            }
+        )
+    return payload
+
+
 def _calibration_payload(calibration):
     return {
         "TEMP_OFFSET": calibration.temp_offset,
