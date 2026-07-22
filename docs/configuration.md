@@ -238,7 +238,8 @@ the WeeWX web surfaces, without adding a favicon route or HTTP request.
   and a switch card with state controls and local automation ownership. A
   waiting or failed read keeps the prior sample; no history buffer is allocated.
 - `Setup`: network, time, profile/MQTT, sensor location, and display settings
-- `Switch Settings`: switch location, labels, identity, and manual controls
+- `Switch Settings`: two-column switch controls with the immediate state toggle
+  before a shortened editable label field
 - `Automations`: NodusWeb-local rules for enabled switch devices
 - `Calibration`: device-appropriate calibration fields
 - `Nodus Info`: current network, firmware, sensor, and switch identity
@@ -256,7 +257,10 @@ Each page builds only the view data it renders, and HTML is encoded before the
 response object is returned so the sender does not retain both a full HTML
 string and a second encoded copy. A timed-out response triggers immediate
 garbage collection; two consecutive response timeouts restart the HTTP
-listener while retaining the active station connection and socket pool.
+listener while retaining the active station connection and socket pool. A bad
+client descriptor is discarded with receive/send stage context in the serial
+log, while an unscoped bad descriptor restarts that listener without resetting
+the station connection.
 Successfully completed responses also trigger collection before the next
 request so closed Pico2 W client sockets are released promptly.
 The response body uses both `setblocking(False)` and `settimeout(0)` on the
@@ -274,6 +278,9 @@ next larger allocation. A guarded `MemoryError` logs only its failing stage and
 free heap.
 Page-specific Status, Config, and Automation renderer modules are released when
 navigating to another page family.
+Unexpected page-renderer failures return HTTP 500 and leave other web routes
+available. Heap-guard and render-allocation failures continue to return the
+temporary HTTP 503 response.
 
 The JSON `/config` route accepts a broader supported update set than the
 rendered page:

@@ -52,7 +52,9 @@ The architecture is split into three layers:
   five-second absolute deadline. A response failure immediately closes that
   client without blocking, logs the route, response progress, elapsed time,
   and heap state, then collects garbage. Two consecutive response timeouts restart only the HTTP
-  listener on the current socket pool. Unexpected poll failures move the web
+  listener on the current socket pool. Client-socket bad descriptors are logged with request-stage
+  context and discarded; an unscoped bad descriptor restarts the listener without resetting Wi-Fi.
+  Unexpected poll failures move the web
   controller to `error`; periodic web health logging reports its phase, server
   presence, route count, and errors.
 - After every successfully sent HTTP response, the web controller collects
@@ -76,6 +78,9 @@ The architecture is split into three layers:
   the module cache. Before rendering one page family, the runtime removes the
   other page-specific modules from `sys.modules` and the features package,
   then collects. Shared compact UI helpers remain resident.
+- A page-specific renderer exception returns HTTP 500 and logs that page's
+  failure without moving the web controller out of `ready`. Guarded heap
+  exhaustion continues to return HTTP 503.
 - In `nodusweb`, sensor acquisition runs from the shallow main loop on a
   60-second cadence. The web controller receives only the latest successful
   snapshot; HTTP request handlers never call sensor drivers. This avoids Pico2

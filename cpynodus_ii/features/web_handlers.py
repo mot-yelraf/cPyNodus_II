@@ -239,6 +239,7 @@ def build_config_page_payload(runtime_config, *, version, page):
                         "key": channel.key,
                         "channel_id": channel.channel_id,
                         "label": channel.label,
+                        "state": bool(channel.last_state),
                     }
                     for channel in switch.channels
                 ),

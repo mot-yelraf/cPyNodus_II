@@ -215,7 +215,8 @@ Nodus uses intentional low-memory guards around the web UI to protect runtime st
 - Guarded requests return `503 Service Unavailable` with a retry message. This is a protective response, not necessarily a crash or reboot condition.
 - HTML responses use nonblocking accepted-client sockets. Failed response
   sends close that client immediately and are collected; two consecutive send
-  timeouts restart only the HTTP listener.
+  timeouts restart only the HTTP listener. Bad client descriptors are isolated
+  to the affected request; an unscoped bad descriptor restarts the listener.
 - Successfully completed responses are also collected before the next request
   so closed Pico2 W client sockets do not remain allocated until periodic GC.
 - Accepted client sockets remain nonblocking through final close so an
@@ -738,6 +739,8 @@ persists `SWITCH_#_LAST_STATE` when the filesystem is writable.
 
 ## Documentation
 
+- `docs/user_guide.md`: AP setup, Sensorius onboarding, NodusWeb pages, and
+  profile expectations
 - `docs/architecture.md`: boot flow and task model
 - `docs/configuration.md`: configuration files and keys
 - `docs/onboarding.md`: AP provisioning behavior

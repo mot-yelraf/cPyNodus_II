@@ -317,6 +317,39 @@ def test_bounded_adapters_wrap_real_server_shapes():
     assert web_runtime._bounded_response_class(_ResponseShape) is not _ResponseShape
 
 
+def test_bounded_server_adds_stage_to_bad_descriptor():
+    class _ServerShape:
+        def __init__(self):
+            self._buffer = bytearray(32)
+            self._timeout = 1
+
+        def _receive_header_bytes(self, sock):
+            return b"base"
+
+        def _receive_body_bytes(self, sock, received, content_length):
+            return received
+
+    server = web_runtime._bounded_server_class(_ServerShape)()
+    header_sock = _ScriptedSocket(reads=(OSError(web_runtime.EBADF),))
+    body_sock = _ScriptedSocket(reads=(OSError(web_runtime.EBADF),))
+
+    try:
+        server._receive_header_bytes(header_sock)
+    except OSError as exc:
+        assert web_runtime._socket_error_number(exc) == web_runtime.EBADF
+        assert web_runtime._socket_error_stage(exc) == "header_receive"
+    else:
+        raise AssertionError("header EBADF did not include stage context")
+
+    try:
+        server._receive_body_bytes(body_sock, b"", 1)
+    except OSError as exc:
+        assert web_runtime._socket_error_number(exc) == web_runtime.EBADF
+        assert web_runtime._socket_error_stage(exc) == "body_receive"
+    else:
+        raise AssertionError("body EBADF did not include stage context")
+
+
 def test_inactive_page_renderers_are_removed_from_module_cache(monkeypatch):
     active = object()
     inactive_status = object()
@@ -406,6 +439,34 @@ def test_bounded_response_closes_client_after_unexpected_send_error(monkeypatch)
         assert sock.close_count == 1
     else:
         raise AssertionError("unexpected send failure did not propagate")
+
+
+def test_bounded_response_adds_stage_and_path_to_send_bad_descriptor(monkeypatch):
+    class _ResponseShape:
+        def _send_bytes(self, conn, buffer):
+            return None
+
+    response_cls = web_runtime._bounded_response_class(_ResponseShape)
+    response = response_cls()
+    sock = _ScriptedSocket()
+    response._request = _FakeRequest(path="/current-data")
+    response._size = 0
+
+    monkeypatch.setattr(
+        web_runtime,
+        "_send_bounded_bytes",
+        lambda _conn, _buffer: (_ for _ in ()).throw(OSError(web_runtime.EBADF)),
+    )
+
+    try:
+        response._send_bytes(sock, b"body")
+    except OSError as exc:
+        assert web_runtime._socket_error_number(exc) == web_runtime.EBADF
+        assert web_runtime._socket_error_stage(exc) == "response_send"
+        assert "path=/current-data" in str(exc)
+        assert sock.close_count == 1
+    else:
+        raise AssertionError("response EBADF did not include stage context")
 
 
 def test_bounded_response_closes_client_nonblocking_after_send():
@@ -571,6 +632,19 @@ def test_config_renderer_collects_before_final_page_wrapper(monkeypatch):
     assert events == ["collect", "collect", "collect", "render_page"]
 
 
+def test_calibration_labels_expand_device_abbreviations():
+    assert web_config_ui._calibration_label("TEMP_OFFSET") == "Temperature Offset"
+    assert (
+        web_config_ui._calibration_label("RH_OFFSET")
+        == "Relative Humidity Offset"
+    )
+    assert web_config_ui._calibration_label("CO2_OFFSET") == "CO2 Offset"
+    assert (
+        web_config_ui._calibration_label("SOIL_MOIST_CAL_VAL")
+        == "Soil Moisture"
+    )
+
+
 def test_shared_page_wrapper_collects_before_document_allocation(monkeypatch):
     collections = []
     monkeypatch.setattr(
@@ -615,9 +689,65 @@ def test_web_configuration_surfaces_render_on_separate_routes():
 
     assert "Save &amp; Restart" in setup
     assert 'id="wifi_password" type="password"' in setup
+    assert "grid-template-columns:1fr 1fr" in setup
+    assert (
+        '<div class="f loc"><label>Location</label>'
+        '<input id="location"' in setup
+    )
+    assert (
+        '<div class="g"><div class="f">'
+        '<label>Metric 1</label><input id="metric_1"' in setup
+    )
+    assert (
+        '<label>Metric 6</label><input id="metric_6"' in setup
+        and '<label>Style 6</label><input id="style_6"' in setup
+    )
+    assert setup.count('class="f"') == 12
+    assert len(setup.encode("utf-8")) < 8900
     assert "Device Calibration" in calibration
-    assert "AQI OFFSET" in calibration
+    assert "grid-template-columns:1fr 1fr" in calibration
+    assert ".cal{grid-column:1}" in calibration
+    assert (
+        '<div class="g"><div class="cal">'
+        '<label>Temperature Offset</label><input id="cal_TEMP_OFFSET"'
+        in calibration
+    )
+    assert (
+        '<label>Relative Humidity Offset</label>'
+        '<input id="cal_RH_OFFSET"' in calibration
+    )
+    assert "AQI Offset" in calibration
+    assert "AQI OFFSET" not in calibration
+    assert len(calibration.encode("utf-8")) < 6050
     assert "Switch Settings" in switch
+    assert "grid-template-columns:1fr 1fr" in switch
+    assert ".ctl input{width:90%}" in switch
+    assert (
+        '<div class="loc"><label>Location</label>'
+        '<input id="switch_location"' in switch
+    )
+    assert (
+        '<div class="g"><div class="sf"><label>SWITCH_1</label>'
+        '<div class="ctl"><button class="on"' in switch
+    )
+    assert (
+        '<div class="sf"><label>SWITCH_2</label><div class="ctl">'
+        in switch
+    )
+    assert (
+        'class="on" data-channel="S1-x943fm" data-state="true" '
+        'onclick="toggleSwitch(this)">ON</button>'
+        '<input id="SWITCH_1_label"' in switch
+    )
+    assert (
+        'class="off" data-channel="S2-x943fm" data-state="false" '
+        'onclick="toggleSwitch(this)">OFF</button>'
+        '<input id="SWITCH_2_label"' in switch
+    )
+    assert "Switch ID" not in switch
+    assert "Serial Number" not in switch
+    assert "Enabled Channels" not in switch
+    assert len(switch.encode("utf-8")) < 6450
     assert "Switch Automations" in automations
     assert 'id="automation_script"' in automations
     assert "loadAutomations()" in automations
@@ -718,6 +848,36 @@ def test_web_setup_encoding_memory_error_reports_stage(monkeypatch):
     assert response.status == (503, "Service Unavailable")
     assert any(
         "phase=render_memory_error stage=utf8_encode" in event for event in events
+    )
+
+
+def test_web_renderer_error_returns_500_without_disabling_other_routes(monkeypatch):
+    runtime_config = _runtime_config()
+    stack = build_network_stack(
+        runtime_config, wifi_radio=_FakeRadio(), connection_manager_module=_FakeConnMgr
+    )
+    events = []
+    controller = WebRuntimeController(
+        runtime_config,
+        stack,
+        version="v0.26.203.3",
+        server_module=_FakeServerModule,
+        event_logger=events.append,
+    ).start()
+
+    def fail_payload(*args, **kwargs):
+        raise AttributeError("unsupported renderer method")
+
+    monkeypatch.setattr(web_runtime, "build_config_page_payload", fail_payload)
+    failed = controller.server.routes[("/calibration", ("GET",))](_FakeRequest())
+    current = controller.server.routes[("/current-data", ("GET",))](_FakeRequest())
+
+    assert failed.status == (500, "Internal Server Error")
+    assert "serial log" in failed.body
+    assert current.status == (200, "OK")
+    assert controller.phase == "ready"
+    assert any(
+        "phase=render_failed type=AttributeError" in event for event in events
     )
 
 
@@ -994,6 +1154,74 @@ def test_web_runtime_collects_and_restarts_listener_after_two_send_timeouts(
     assert sum("response phase=timeout_cleanup" in event for event in events) == 2
     assert any(
         "listener phase=ready reason=response_timeouts restarts=1" in event
+        for event in events
+    )
+
+
+def test_web_runtime_recovers_scoped_client_bad_descriptor():
+    class _ClientBadDescriptorServer(_FakeServer):
+        def poll(self):
+            self.poll_count += 1
+            raise web_runtime._socket_stage_error(
+                OSError(web_runtime.EBADF), "response_send", path="/current-data"
+            )
+
+    class _ClientBadDescriptorModule(_FakeServerModule):
+        Server = _ClientBadDescriptorServer
+
+    runtime_config = _runtime_config()
+    stack = build_network_stack(
+        runtime_config, wifi_radio=_FakeRadio(), connection_manager_module=_FakeConnMgr
+    )
+    events = []
+    controller = WebRuntimeController(
+        runtime_config,
+        stack,
+        version="v0.26.203.4",
+        server_module=_ClientBadDescriptorModule,
+        event_logger=events.append,
+    ).start()
+
+    controller.poll()
+
+    assert controller.phase == "ready"
+    assert controller.errors == ()
+    assert controller.server.stop_count == 0
+    assert any("web_socket_stage=response_send" in event for event in events)
+    assert any("path=/current-data" in event for event in events)
+
+
+def test_web_runtime_restarts_listener_after_unscoped_bad_descriptor():
+    class _ListenerBadDescriptorServer(_FakeServer):
+        def poll(self):
+            self.poll_count += 1
+            raise OSError(web_runtime.EBADF)
+
+    class _ListenerBadDescriptorModule(_FakeServerModule):
+        Server = _ListenerBadDescriptorServer
+
+    runtime_config = _runtime_config()
+    stack = build_network_stack(
+        runtime_config, wifi_radio=_FakeRadio(), connection_manager_module=_FakeConnMgr
+    )
+    events = []
+    controller = WebRuntimeController(
+        runtime_config,
+        stack,
+        version="v0.26.203.4",
+        server_module=_ListenerBadDescriptorModule,
+        event_logger=events.append,
+    ).start()
+
+    controller.poll()
+
+    assert controller.phase == "ready"
+    assert controller.errors == ()
+    assert controller.server.stop_count == 1
+    assert controller.server.started == ("0.0.0.0", 8000)
+    assert controller._listener_restart_count == 1
+    assert any(
+        "listener phase=ready reason=bad_descriptor restarts=1" in event
         for event in events
     )
 

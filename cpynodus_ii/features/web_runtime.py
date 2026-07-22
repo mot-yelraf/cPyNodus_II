@@ -8,7 +8,7 @@ to handler helpers, and reports availability back to the main application loop.
 import gc
 import json
 import sys
-from errno import EAGAIN, ECONNRESET, ETIMEDOUT
+from errno import EAGAIN, EBADF, ECONNRESET, ETIMEDOUT
 from time import localtime, monotonic, sleep
 
 from cpynodus_ii.features.web_handlers import (
@@ -179,6 +179,10 @@ class WebRuntimeController:
         try:
             poll_result = poll()
         except Exception as exc:
+            if _is_listener_bad_descriptor(exc):
+                self.errors = ()
+                self._restart_listener("bad_descriptor")
+                return self
             if _is_recoverable_web_poll_error(exc):
                 recovered = True
                 response_timeout = _is_response_send_timeout(exc)
@@ -303,6 +307,10 @@ class WebRuntimeController:
 
     def _restart_listener_after_timeout(self):
         """Restart only the HTTP listener after repeated response stalls."""
+        return self._restart_listener("response_timeouts")
+
+    def _restart_listener(self, reason):
+        """Restart the HTTP listener without disturbing station networking."""
         server = self.server
         stop = getattr(server, "stop", None)
         start = getattr(server, "start", None)
@@ -318,17 +326,21 @@ class WebRuntimeController:
             self.phase = "error"
             self.errors = ("web_listener_restart_failed", str(exc))
             self._log_web_event(
-                "listener phase=error reason=timeout_restart type={} detail={} "
+                "listener phase=error reason={}_restart type={} detail={} "
                 "free_mem={}".format(
-                    type(exc).__name__, self._error_text(exc), _free_mem_text()
+                    reason,
+                    type(exc).__name__,
+                    self._error_text(exc),
+                    _free_mem_text(),
                 )
             )
             return False
         self._listener_restart_count += 1
         self._response_timeout_count = 0
         self._log_web_event(
-            "listener phase=ready reason=response_timeouts restarts={} "
+            "listener phase=ready reason={} restarts={} "
             "free_mem={}".format(
+                reason,
                 self._listener_restart_count,
                 _free_mem_text(),
             )
@@ -645,6 +657,8 @@ class WebRuntimeController:
         except MemoryError:
             self._log_render_memory_error(request, "status", stage)
             return self._web_unavailable_response(request)
+        except Exception as exc:
+            return self._web_render_error_response(request, "status", exc)
 
     def _config_page_response(self, request, page):
         """Lazily render one configuration or information page."""
@@ -675,6 +689,8 @@ class WebRuntimeController:
         except MemoryError:
             self._log_render_memory_error(request, page, stage)
             return self._web_unavailable_response(request)
+        except Exception as exc:
+            return self._web_render_error_response(request, page, exc)
 
     def _automation_page_response(self, request):
         """Lazily render the local automation editor."""
@@ -694,6 +710,8 @@ class WebRuntimeController:
         except MemoryError:
             self._log_render_memory_error(request, "automations", stage)
             return self._web_unavailable_response(request)
+        except Exception as exc:
+            return self._web_render_error_response(request, "automations", exc)
 
     def _web_unavailable_response(self, request):
         return self._plain_response(
@@ -701,6 +719,24 @@ class WebRuntimeController:
             "Web UI temporarily unavailable; retry shortly.",
             content_type="text/plain; charset=utf-8",
             status_code=503,
+        )
+
+    def _web_render_error_response(self, request, page, exc):
+        self._log_web_event(
+            "request path={} page={} phase=render_failed type={} detail={} "
+            "free_mem={}".format(
+                _request_path(request),
+                page,
+                type(exc).__name__,
+                self._error_text(exc),
+                _free_mem_text(),
+            )
+        )
+        return self._plain_response(
+            request,
+            "Web UI page failed; retry or inspect the serial log.",
+            content_type="text/plain; charset=utf-8",
+            status_code=500,
         )
 
     def _prepare_renderer(self, active_module):
@@ -879,8 +915,24 @@ def _is_recoverable_web_poll_error(exc):
     if isinstance(exc, ValueError):
         return "Unparseable raw_request" in str(exc or "")
     if isinstance(exc, OSError):
-        return _socket_error_number(exc) in (EAGAIN, ECONNRESET, ETIMEDOUT)
+        error = _socket_error_number(exc)
+        if error == EBADF:
+            return _socket_error_stage(exc) in (
+                "header_receive",
+                "body_receive",
+                "response_send",
+            )
+        return error in (EAGAIN, ECONNRESET, ETIMEDOUT)
     return False
+
+
+def _is_listener_bad_descriptor(exc):
+    """Identify an unscoped bad descriptor raised by server polling."""
+    return (
+        isinstance(exc, OSError)
+        and _socket_error_number(exc) == EBADF
+        and not _socket_error_stage(exc)
+    )
 
 
 def _is_response_send_timeout(exc):
@@ -952,12 +1004,18 @@ def _bounded_server_class(server_cls):
 
     class BoundedServer(server_cls):
         def _receive_header_bytes(self, sock):
-            return _receive_bounded_header(self, sock)
+            try:
+                return _receive_bounded_header(self, sock)
+            except OSError as exc:
+                raise _socket_stage_error(exc, "header_receive")
 
         def _receive_body_bytes(self, sock, received_body_bytes, content_length):
-            return _receive_bounded_body(
-                self, sock, received_body_bytes, content_length
-            )
+            try:
+                return _receive_bounded_body(
+                    self, sock, received_body_bytes, content_length
+                )
+            except OSError as exc:
+                raise _socket_stage_error(exc, "body_receive")
 
     return BoundedServer
 
@@ -984,6 +1042,12 @@ def _bounded_response_class(response_cls):
                     raise OSError(
                         ETIMEDOUT,
                         "{} path={}".format(detail, _request_path(self._request)),
+                    )
+                if isinstance(exc, OSError):
+                    raise _socket_stage_error(
+                        exc,
+                        "response_send",
+                        path=_request_path(self._request),
                     )
                 raise
             self._size += sent
@@ -1166,6 +1230,28 @@ def _socket_error_number(exc):
         return error
     args = getattr(exc, "args", ()) or ()
     return args[0] if args and isinstance(args[0], int) else None
+
+
+def _socket_stage_error(exc, stage, path=""):
+    """Preserve an OSError number while adding its web socket stage."""
+    detail = "web_socket_stage={} detail={}".format(stage, str(exc or "unknown"))
+    if path:
+        detail += " path={}".format(path)
+    return OSError(_socket_error_number(exc) or 0, detail)
+
+
+def _socket_error_stage(exc):
+    """Extract lightweight socket-stage context from an exception."""
+    marker = "web_socket_stage="
+    text = str(exc or "")
+    start = text.find(marker)
+    if start < 0:
+        return ""
+    start += len(marker)
+    end = text.find(" ", start)
+    if end < 0:
+        end = len(text)
+    return text[start:end]
 
 
 def _restore_socket_timeout(sock, timeout):

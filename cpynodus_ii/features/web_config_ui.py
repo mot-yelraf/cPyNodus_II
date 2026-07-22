@@ -38,7 +38,12 @@ def render_config_html(page, payload, *, status_payload=None, event_logger=None)
     except Exception:
         pass
     return render_page(
-        payload["network"]["hostname"], title, body, nav=nav, script=script
+        payload["network"]["hostname"],
+        title,
+        body,
+        nav=nav,
+        script=script,
+        style=_page_style(page),
     )
 
 
@@ -65,7 +70,7 @@ def _setup_page(payload, *, event_logger=None):
         display = []
         for index, metric in enumerate(sensor["display_metrics"], 1):
             display.append(
-                '<div class="row"><label>Metric {}</label><input id="metric_{}" value="{}"></div><div class="row"><label>Style {}</label><input id="style_{}" value="{}"></div>'.format(
+                '<div class="f"><label>Metric {}</label><input id="metric_{}" value="{}"></div><div class="f"><label>Style {}</label><input id="style_{}" value="{}"></div>'.format(
                     index,
                     index,
                     html_escape(metric),
@@ -82,7 +87,7 @@ def _setup_page(payload, *, event_logger=None):
         body = """<details open><summary>Network</summary><div class="group"><div class="row"><label>SSID</label><input id="ssid" value="{ssid}"></div><div class="row"><label>Password</label><input id="wifi_password" type="password" value="{password}"></div><div class="row"><label>Hostname</label><input id="hostname" value="{hostname}"></div></div></details>
 <details open><summary>Time</summary><div class="group"><div class="row"><label>Time Zone</label><input id="time_tz" value="{tz}"></div><div class="row"><label>TZ Offset</label><input id="time_offset" type="number" value="{offset}"></div><div class="row"><label>TZ Name</label><input id="time_name" value="{tz_name}"></div><div class="row"><label>NTP Server</label><input id="ntp_server" value="{ntp}"></div><div class="row"><label>NTP Server IP</label><input id="ntp_ip" value="{ntp_ip}"></div></div></details>
 <details><summary>Profile and MQTT</summary><div class="group"><div class="row"><label>Profile</label><select id="profile">{profiles}</select></div><div class="row"><label>Broker</label><input id="mqtt_broker" value="{broker}"></div><div class="row"><label>Username</label><input id="mqtt_user" value="{user}"></div><div class="row"><label>Password</label><input id="mqtt_password" type="password" value="{mqtt_password}"></div><div class="row"><label>Port</label><input id="mqtt_port" type="number" value="{port}"></div><div class="row"><label>Use TLS</label><input id="mqtt_tls" type="checkbox"{tls}></div></div></details>
-<details><summary>Sensor Display</summary><div class="group"><div class="row"><label>Location</label><input id="location" value="{location}"></div>{display}</div></details><div class="actions"><button onclick="saveSetup(true)">Save &amp; Restart</button><span id="setup_status" class="status"></span><button onclick="saveSetup(false)">Save</button></div>""".format(
+<details><summary>Sensor Display</summary><div class="group"><div class="f loc"><label>Location</label><input id="location" value="{location}"></div><div class="g">{display}</div></div></details><div class="actions"><button onclick="saveSetup(true)">Save &amp; Restart</button><span id="setup_status" class="status"></span><button onclick="saveSetup(false)">Save</button></div>""".format(
             ssid=html_escape(network["ssid"]),
             password=html_escape(network["password"]),
             hostname=html_escape(network["hostname"]),
@@ -136,13 +141,13 @@ def _calibration_page(payload):
     rows = []
     for key in _calibration_keys(sensor):
         rows.append(
-            '<div class="row"><label>{}</label><input id="cal_{}" type="number" step="any" value="{}"></div>'.format(
-                html_escape(key.replace("_", " ")),
+            '<div class="cal"><label>{}</label><input id="cal_{}" type="number" step="any" value="{}"></div>'.format(
+                html_escape(_calibration_label(key)),
                 html_escape(key),
                 html_escape(values.get(key, 0)),
             )
         )
-    body = '{}<div class="actions"><button class="danger" onclick="restartDevice()">Restart Device</button><span id="cal_status" class="status"></span><button onclick="saveCalibration()">Save</button></div>'.format(
+    body = '<div class="g">{}</div><div class="actions"><button class="danger" onclick="restartDevice()">Restart Device</button><span id="cal_status" class="status"></span><button onclick="saveCalibration()">Save</button></div>'.format(
         "".join(rows)
     )
     script = """async function post(path,p){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});return r.json()}async function saveCalibration(){const u=[];document.querySelectorAll('[id^=cal_]').forEach(e=>u.push({section:'Calibration.Device',key:e.id.slice(4),value:e.value}));const r=await post('/config',{updates:u});document.getElementById('cal_status').textContent=r.success?'Calibration saved.':JSON.stringify(r)}async function restartDevice(){await post('/restart',{mode:'soft'})}"""
@@ -153,23 +158,23 @@ def _switch_page(payload):
     switch = payload["switch"]
     controls = []
     for channel in switch["channels"]:
+        state = bool(channel["state"])
         controls.append(
-            '<div class="row"><label>{}</label><input id="{}_label" value="{}"></div><div class="actions"><button class="secondary" onclick="setSwitch(\'{}\',true)">On</button><button class="secondary" onclick="setSwitch(\'{}\',false)">Off</button></div>'.format(
+            '<div class="sf"><label>{}</label><div class="ctl"><button class="{}" data-channel="{}" data-state="{}" onclick="toggleSwitch(this)">{}</button><input id="{}_label" value="{}"></div></div>'.format(
                 html_escape(channel["key"]),
+                "on" if state else "off",
+                html_escape(channel["channel_id"]),
+                "true" if state else "false",
+                "ON" if state else "OFF",
                 html_escape(channel["key"]),
                 html_escape(channel["label"]),
-                html_escape(channel["channel_id"]),
-                html_escape(channel["channel_id"]),
             )
         )
-    body = '<div class="row"><label>Location</label><input id="switch_location" value="{}"></div>{}<table><tr><td>Switch ID</td><td>{}</td></tr><tr><td>Serial Number</td><td>{}</td></tr><tr><td>Enabled Channels</td><td>{}</td></tr></table><div id="switch_status" class="status"></div><div class="actions"><span id="save_status" class="status"></span><button onclick="saveSwitch()">Save</button></div>'.format(
+    body = '<div class="loc"><label>Location</label><input id="switch_location" value="{}"></div><div class="g">{}</div><div id="switch_status" class="status"></div><div class="actions"><span id="save_status" class="status"></span><button onclick="saveSwitch()">Save</button></div>'.format(
         html_escape(switch["location"]),
         "".join(controls),
-        html_escape(switch["device_id"]),
-        html_escape(switch["serial_number"]),
-        html_escape(switch["channel_count"]),
     )
-    script = """async function post(path,p){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});return r.json()}async function setSwitch(ch,state){const r=await post('/set-switch-state',{channel_id:ch,state:state});document.getElementById('switch_status').textContent=r.success?(state?'Switch turned on.':'Switch turned off.'):JSON.stringify(r)}async function saveSwitch(){const u=[{section:'Switch',key:'SWITCH_LOCATION',value:document.getElementById('switch_location').value}];for(let i=1;i<=2;i++){const e=document.getElementById('SWITCH_'+i+'_label');if(e)u.push({section:'Switch',key:'SWITCH_'+i+'_LABEL',value:e.value})}const r=await post('/config',{updates:u});document.getElementById('save_status').textContent=r.success?'Switch settings saved.':JSON.stringify(r)}"""
+    script = """async function post(path,p){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});return r.json()}async function toggleSwitch(b){const state=b.dataset.state!=='true',r=await post('/set-switch-state',{channel_id:b.dataset.channel,state:state});if(r.success){b.dataset.state=state?'true':'false';b.textContent=state?'ON':'OFF';b.className=state?'on':'off'}document.getElementById('switch_status').textContent=r.success?(state?'Switch turned on.':'Switch turned off.'):JSON.stringify(r)}async function saveSwitch(){const u=[{section:'Switch',key:'SWITCH_LOCATION',value:document.getElementById('switch_location').value}];for(let i=1;i<=2;i++){const e=document.getElementById('SWITCH_'+i+'_label');if(e)u.push({section:'Switch',key:'SWITCH_'+i+'_LABEL',value:e.value})}const r=await post('/config',{updates:u});document.getElementById('save_status').textContent=r.success?'Switch settings saved.':JSON.stringify(r)}"""
     return "Switch Settings", body, script
 
 
@@ -232,3 +237,47 @@ def _calibration_keys(sensor):
             "SOIL_EC_CAL_VAL",
         )
     return ("TEMP_OFFSET", "RH_OFFSET", "ALTITUDE_METERS")
+
+
+def _calibration_label(key):
+    """Return a compact human-readable calibration field label."""
+    if key == "TEMP_OFFSET":
+        return "Temperature Offset"
+    if key == "RH_OFFSET":
+        return "Relative Humidity Offset"
+    if key == "CO2_OFFSET":
+        return "CO2 Offset"
+    if key == "AQI_OFFSET":
+        return "AQI Offset"
+    if key == "GAS_OFFSET":
+        return "Gas Offset"
+    if key == "ALTITUDE_METERS":
+        return "Altitude Meters"
+    if key == "LUX_OFFSET":
+        return "Lux Offset"
+    if key == "PPFD_OFFSET":
+        return "PPFD Offset"
+    if key == "APVPD_TEMP_CAL_VAL":
+        return "APVPD Temperature"
+    if key == "APVPD_RH_CAL_VAL":
+        return "APVPD Relative Humidity"
+    if key == "SOIL_TEMP_CAL_VAL":
+        return "Soil Temperature"
+    if key == "SOIL_MOIST_CAL_VAL":
+        return "Soil Moisture"
+    if key == "SOIL_PH_CAL_VAL":
+        return "Soil pH"
+    if key == "SOIL_EC_CAL_VAL":
+        return "Soil EC"
+    return str(key).replace("_", " ")
+
+
+def _page_style(page):
+    """Return only the compact CSS needed by one configuration page."""
+    if page == "switch":
+        return ".loc{margin-bottom:9px}.loc label,.sf>label{display:block;margin-bottom:5px}.g{display:grid;grid-template-columns:1fr 1fr;gap:9px}.ctl{display:grid;grid-template-columns:auto minmax(0,1fr);gap:8px}.ctl input{width:90%}"
+    if page == "calibration":
+        return ".g{display:grid;grid-template-columns:1fr 1fr;gap:9px}.cal{grid-column:1}.cal label{display:block;margin-bottom:5px}"
+    if page == "setup":
+        return ".g{display:grid;grid-template-columns:1fr 1fr;gap:9px}.f label{display:block;margin-bottom:5px}.loc{margin-bottom:9px}"
+    return ""
