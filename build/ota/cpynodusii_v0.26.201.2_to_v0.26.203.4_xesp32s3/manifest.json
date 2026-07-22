@@ -1,0 +1,59 @@
+{
+  "created_at": "2026-07-22T13:25:51Z",
+  "delete": [
+    "cpynodus_ii/__init__.py",
+    "cpynodus_ii/features/web_config_ui.py",
+    "cpynodus_ii/features/web_handlers.py",
+    "cpynodus_ii/features/web_runtime.py",
+    "cpynodus_ii/features/web_ui_common.py"
+  ],
+  "files": [
+    {
+      "path": "cpynodus_ii/__init__.mpy",
+      "sha256": "3b3a3c6027f0d0b01eb1473acdab61e5f8770a6defa9c62869238425c4bb28c3",
+      "size": 71
+    },
+    {
+      "path": "cpynodus_ii/features/web_config_ui.mpy",
+      "sha256": "620c7de15f66c6ee2ea1b8584b1d4d7c11bcd7ac77dea9742b2a9aa885fa1013",
+      "size": 10210
+    },
+    {
+      "path": "cpynodus_ii/features/web_handlers.mpy",
+      "sha256": "7e3f0b98e9947aff09c1a2fc2e2454fde7dde04cc77232bef68f143ed1ab9373",
+      "size": 4734
+    },
+    {
+      "path": "cpynodus_ii/features/web_runtime.mpy",
+      "sha256": "29e569fd5703ed83a4d5782ea3e084bcf87ec681db2fb49540edeaf977a5fbb2",
+      "size": 16800
+    },
+    {
+      "path": "cpynodus_ii/features/web_ui_common.mpy",
+      "sha256": "d23dd622a49851607548c255aca2d5e6e9fbeee80d68debc73221cd95bfcac93",
+      "size": 5273
+    }
+  ],
+  "from_tag": "v0.26.201.2",
+  "package_id": "ota-v0.26.201.2-to-v0.26.203.4",
+  "post_apply": {
+    "reboot": true,
+    "reboot_delay_s": 5,
+    "resume_profile": "previous"
+  },
+  "preserve": [
+    "settings.toml",
+    "sensor_i2c.toml",
+    "sensor_soil.toml",
+    "switch.toml"
+  ],
+  "requires": {
+    "version": "v0.26.201.2"
+  },
+  "schema": "nodus-ota/v1",
+  "target": {
+    "circuitpython": "10.2.1",
+    "platform": "xesp32s3"
+  },
+  "to_tag": "v0.26.203.4"
+}
