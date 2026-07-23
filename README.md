@@ -137,7 +137,7 @@ documented there.
 
 ## License
 
-This project is licensed under the [MIT License](LICENSE).
+This project is licensed under the [BSD 2-Clause License](LICENSE).
 
 ## Acknowledgments
 
