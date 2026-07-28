@@ -189,6 +189,30 @@ the device:
   artifacts while the station link is still healthy. Plain broker outages are
   paced more slowly after the initial recovery window so Nodus does not spin on
   an offline broker.
+- MQTT CONNECT alone is not a recovery checkpoint. A connection generation is
+  operational only after its startup publishes and device/switch subscriptions
+  drain successfully. Recovery elapsed time and failure counters remain active
+  across connections that time out waiting for SUBACK.
+- Pre-operational MQTT recovery is bounded. Slow startup publishes, errno 119
+  socket-progress failures, errno 116 CONNECT/SUBACK timeouts, and associated
+  errno 12 allocation failures share the same recovery episode. The first
+  failure rebuilds MQTT, the second also cycles station/radio state and rebuilds
+  socket artifacts, and the third requests a soft reload so the warm-start
+  cleanup and conditioning path can run. An NVM counter permits at most two of
+  those targeted warm reloads. Continued failure after warm attempt two uses
+  hard reset. The counter clears only at the operational-generation checkpoint
+  or on a true power-on.
+  Pending startup queues are reused across those connection generations instead
+  of appending duplicate retained identity and data work.
+- A QoS 1 startup publish that times out waiting for PUBACK enters this ladder
+  immediately. Errno 12 reported by either TCP preflight or raw MQTT CONNECT
+  advances the same in-memory startup-failure count rather than remaining an
+  unclassified reconnect.
+- Retained startup publishes are paced by 350 ms. During the current hardware
+  diagnostic period, retained device `meta` and `meta/switch` use QoS 1 and
+  wait for PUBACK. Raw sends emit at most four slow-chunk records per packet,
+  and only for chunks taking at least 250 ms; records include topic, packet and
+  chunk sizes, chunk number, returned byte count, and elapsed time.
 - MQTT preflight distinguishes several cases before MiniMQTT connect:
   TCP failure, raw MQTT CONNACK timeout, and socket-progress/stuck-socket
   patterns. Those cases can trigger socket refresh, station reset, adapter

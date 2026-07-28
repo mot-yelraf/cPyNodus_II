@@ -674,7 +674,14 @@ persists `SWITCH_#_LAST_STATE` when the filesystem is writable.
 ## Recovery & Resilience
 
 - **Wi-Fi outage policy**: when station Wi‑Fi drops, Nodus pauses MQTT reconnect attempts and spends up to 15 minutes retrying SSID reassociation before soft rebooting.
-- **MQTT outage policy**: when Wi‑Fi is still up but MQTT is unhealthy, Nodus retries broker recovery for up to 3 minutes, including bounded socket-pool/MQTT rebuild attempts, before soft rebooting.
+- **MQTT outage policy**: when Wi-Fi is still up but MQTT is unhealthy, Nodus
+  keeps recovery active until startup publishes and subscriptions drain; MQTT
+  CONNECT alone is not considered recovered. Slow startup publishes, socket
+  progress failures, CONNECT/SUBACK timeouts, and related allocation failures
+  share one pre-operational recovery episode. Recovery escalates through MQTT
+  rebuild, station/radio reset, up to two NVM-counted warm reloads, and then
+  hard reset. Only a fully operational generation or true power-on clears the
+  warm-attempt counter.
 - **AP recovery policy**: if startup cannot join the configured station network, Nodus falls back into AP recovery mode and soft reboots again after 10 minutes of idle AP uptime.
 - **Restart policy**: `nodusweb` can use soft reload for ordinary runtime restarts; MQTT profiles and persistent recovery faults use hard reset paths when needed to clear board radio/socket state, especially on Pico2 W.
 - **Recovery diagnostics**: when the filesystem is writable, formal recovery phase changes and recovery actions are appended to `/_recovery.log` with timestamp, firmware version, and device ID headers. The file is capped at 10 KB for USB-powered postmortems.

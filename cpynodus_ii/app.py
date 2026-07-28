@@ -47,6 +47,10 @@ MQTT_MEMORY_FAILURE_REBOOT_S = 20.0
 MQTT_MEMORY_FAILURE_REBOOT_MIN_COUNT = 5
 MQTT_REPEATED_CONNECT_FAILURE_REBOOT_S = 60.0
 MQTT_REPEATED_CONNECT_FAILURE_MIN_COUNT = 3
+MQTT_SUBSCRIPTION_STATION_RESET_COUNT = 2
+MQTT_SUBSCRIPTION_WARM_RELOAD_COUNT = 3
+MQTT_WARM_RECOVERY_MAX_ATTEMPTS = 2
+MQTT_STARTUP_PUBLISH_PACING_S = 0.35
 MQTT_PLAIN_CONNECT_STATION_RESET_S = 180.0
 MQTT_PLAIN_CONNECT_STATION_RESET_INTERVAL_S = 180.0
 MQTT_PREFLIGHT_RETRIES = 3
@@ -92,6 +96,7 @@ RECOVERY_HARD_RESET_NVM_INDEX = 1
 RECOVERY_HARD_RESET_MQTT_MARKER = 77
 SOFT_RELOAD_CLEANUP_NVM_INDEX = 2
 SOFT_RELOAD_CLEANUP_MARKER = 31
+MQTT_SUBSCRIPTION_RECOVERY_NVM_INDEX = 3
 
 _SOFT_RELOAD_PREPARED = False
 
@@ -736,6 +741,35 @@ def _mqtt_connect_errors_indicate_raw_connack_timeout(errors):
             or "einprogress" in text
             or "operation now in progress" in text
         ):
+            return True
+    return False
+
+
+def _mqtt_error_indicates_allocation_failure(error):
+    """Return True for socket or MQTT heap-allocation failures."""
+    text = str(error or "").strip().lower()
+    return (
+        "errno 12" in text
+        or "enomem" in text
+        or "memory allocation failed" in text
+        or "cannot allocate memory" in text
+        or "memoryerror" in text
+    )
+
+
+def _mqtt_preoperational_connect_has_allocation_failure(
+    *,
+    tcp_preflight_error,
+    connect_probe_error,
+    connect_errors,
+):
+    """Return True when one pre-operational connect attempt hit allocation."""
+    errors = (
+        tcp_preflight_error,
+        connect_probe_error,
+    ) + tuple(connect_errors or ())
+    for error in errors:
+        if _mqtt_error_indicates_allocation_failure(error):
             return True
     return False
 
@@ -1457,6 +1491,83 @@ def _should_reboot_mqtt_memory_failures(
     )
 
 
+def _update_mqtt_subscription_failure_window(
+    failure_count,
+    first_failure_at,
+    now_monotonic,
+):
+    """Record one startup subscription failure without resetting its epoch."""
+    count = int(failure_count or 0) + 1
+    started_at = float(first_failure_at)
+    if count == 1 or started_at < 0.0:
+        started_at = float(now_monotonic or 0.0)
+    return count, started_at
+
+
+def _mqtt_subscription_recovery_state(recovery_state, now_monotonic):
+    """Keep MQTT recovery active from the first non-operational generation."""
+    now_value = float(now_monotonic or 0.0)
+    started_at = float(getattr(recovery_state, "phase_started_at", -1.0))
+    if getattr(recovery_state, "phase", "") != "mqtt" or started_at < 0.0:
+        started_at = now_value
+    return RecoveryState(
+        phase="mqtt",
+        phase_started_at=started_at,
+        last_wifi_attempt_at=float(
+            getattr(recovery_state, "last_wifi_attempt_at", -1.0)
+        ),
+        last_mqtt_rebuild_at=now_value,
+    )
+
+
+def _mqtt_subscription_failure_action(
+    failure_count,
+    station_reset_done,
+    nvm=None,
+):
+    """Return the next bounded recovery action for repeated SUBACK failures."""
+    count = int(failure_count or 0)
+    if count >= MQTT_SUBSCRIPTION_WARM_RELOAD_COUNT:
+        if _mqtt_subscription_recovery_marker_is_set(nvm):
+            return "hard_reset"
+        return "warm_reload"
+    if (
+        count >= MQTT_SUBSCRIPTION_STATION_RESET_COUNT
+        and not bool(station_reset_done)
+    ):
+        return "station_reset"
+    return "mqtt_rebuild"
+
+
+def _mqtt_generation_is_operational(
+    transport,
+    operational_generation,
+):
+    """Return True only after all startup work drained for this connection."""
+    return bool(
+        getattr(transport, "connected", False)
+        and int(getattr(transport, "connection_generation", 0) or 0) > 0
+        and int(operational_generation or 0)
+        == int(getattr(transport, "connection_generation", 0) or 0)
+    )
+
+
+def _steady_state_for_mqtt_connect(
+    steady_state,
+    transport,
+    subscription_recovery_pending,
+):
+    """Reuse pending startup work instead of queueing it for every reconnect."""
+    if not bool(subscription_recovery_pending):
+        return steady_state
+    return replace(
+        steady_state,
+        connection_generation=int(
+            getattr(transport, "connection_generation", 0) or 0
+        ),
+    )
+
+
 def _should_reboot_long_mqtt_recovery(
     recovery_state,
     now_monotonic,
@@ -1594,6 +1705,80 @@ def _clear_recovery_hard_reset_marker(reboot_reason, nvm=None):
         return True
     except Exception:
         return False
+
+
+def _mqtt_subscription_recovery_marker_value(nvm=None):
+    """Return the persistent pre-operational MQTT warm-reload count."""
+    if nvm is None:
+        try:
+            import microcontroller  # type: ignore
+
+            nvm = getattr(microcontroller, "nvm", None)
+        except ImportError:
+            nvm = None
+    try:
+        if nvm is None or len(nvm) <= MQTT_SUBSCRIPTION_RECOVERY_NVM_INDEX:
+            return -1
+        return int(nvm[MQTT_SUBSCRIPTION_RECOVERY_NVM_INDEX] or 0)
+    except Exception:
+        return -1
+
+
+def _mqtt_subscription_recovery_marker_is_set(nvm=None):
+    """Return True after both targeted MQTT warm reloads have been used."""
+    return _mqtt_subscription_recovery_marker_value(
+        nvm
+    ) >= MQTT_WARM_RECOVERY_MAX_ATTEMPTS
+
+
+def _mark_mqtt_subscription_recovery_requested(nvm=None):
+    """Reserve one of the bounded pre-operational MQTT warm reloads."""
+    if nvm is None:
+        try:
+            import microcontroller  # type: ignore
+
+            nvm = getattr(microcontroller, "nvm", None)
+        except ImportError:
+            nvm = None
+    try:
+        if nvm is None or len(nvm) <= MQTT_SUBSCRIPTION_RECOVERY_NVM_INDEX:
+            return False
+        current = int(nvm[MQTT_SUBSCRIPTION_RECOVERY_NVM_INDEX] or 0)
+        if current >= MQTT_WARM_RECOVERY_MAX_ATTEMPTS:
+            return False
+        nvm[MQTT_SUBSCRIPTION_RECOVERY_NVM_INDEX] = current + 1
+        return True
+    except Exception:
+        return False
+
+
+def _clear_mqtt_subscription_recovery_marker(nvm=None):
+    """Clear warm-reload attempts after an operational MQTT generation."""
+    if nvm is None:
+        try:
+            import microcontroller  # type: ignore
+
+            nvm = getattr(microcontroller, "nvm", None)
+        except ImportError:
+            nvm = None
+    try:
+        if nvm is None or len(nvm) <= MQTT_SUBSCRIPTION_RECOVERY_NVM_INDEX:
+            return False
+        if int(nvm[MQTT_SUBSCRIPTION_RECOVERY_NVM_INDEX] or 0) != 0:
+            nvm[MQTT_SUBSCRIPTION_RECOVERY_NVM_INDEX] = 0
+        return True
+    except Exception:
+        return False
+
+
+def _mqtt_preoperational_reboot_plan(reboot_reason, fs_writable, nvm=None):
+    """Reserve a warm attempt, or return the normal hard-reset plan."""
+    if _mark_mqtt_subscription_recovery_requested(nvm):
+        return "soft", _mqtt_subscription_recovery_marker_value(nvm)
+    return _recovery_reboot_kind(
+        reboot_reason,
+        fs_writable=fs_writable,
+    ), _mqtt_subscription_recovery_marker_value(nvm)
 
 
 def _should_rebuild_mqtt_adapter_for_recovery(mqtt_adapter, last_disconnect_reason):
@@ -1854,6 +2039,59 @@ def _is_mqtt_subscription_failure(sync_result):
     return False
 
 
+def _is_mqtt_preoperational_sync_failure(
+    sync_result,
+    transport,
+    operational_generation,
+):
+    """Classify startup publish, allocation, and subscription failures."""
+    if _mqtt_generation_is_operational(transport, operational_generation):
+        return False
+    if _is_mqtt_subscription_failure(sync_result):
+        return True
+    if getattr(sync_result, "phase", "") != "error":
+        return False
+    if str(getattr(sync_result, "operation", "") or "") != "publish":
+        return False
+    for error in tuple(getattr(sync_result, "errors", ()) or ()):
+        text = str(error or "").strip().lower()
+        if (
+            "mqtt_publish_slow:" in text
+            or (
+                "mqtt_publish_failed:" in text
+                and (
+                    "raw_publish_diag qos=1" in text
+                    or "mqtt_puback_stage=" in text
+                    or "errno 116" in text
+                    or "errno 119" in text
+                )
+            )
+            or "errno 12" in text
+            or "enomem" in text
+            or "memoryerror" in text
+        ):
+            return True
+    return False
+
+
+def _mqtt_startup_publish_pacing_s(
+    sync_result,
+    transport,
+    operational_generation,
+):
+    """Return pacing after one retained pre-operational startup publish."""
+    if _mqtt_generation_is_operational(transport, operational_generation):
+        return 0.0
+    if (
+        getattr(sync_result, "phase", "") == "synced"
+        and str(getattr(sync_result, "operation", "") or "") == "publish"
+        and bool(getattr(sync_result, "retain", False))
+        and int(getattr(sync_result, "published_count", 0) or 0) > 0
+    ):
+        return MQTT_STARTUP_PUBLISH_PACING_S
+    return 0.0
+
+
 def _ntp_allowed_for_startup(*, mqtt_enabled, transport, ntp_state=None):
     """Return True when startup NTP may attempt a sync."""
     if str(getattr(ntp_state, "phase", "") or "") == "synced":
@@ -1891,12 +2129,13 @@ def _recover_mqtt_subscription_failure(
     mqtt_adapter,
     transport,
     sync_result=None,
+    reset_station=False,
     fs_writable=False,
     start_monotonic,
 ):
-    """Close and rebuild MQTT after a subscribe timeout poisons the session."""
+    """Rebuild MQTT, optionally cycling station state after SUBACK failures."""
     topic = str(getattr(sync_result, "topic", "") or "none")
-    detail = "reason=subscribe_failure topic={} {}".format(
+    detail = "reason=startup_failure topic={} {}".format(
         topic,
         _transport_queue_summary(transport),
     )
@@ -1918,6 +2157,24 @@ def _recover_mqtt_subscription_failure(
             "mqtt close errors={}".format(",".join(close_result.errors)),
             start_monotonic=start_monotonic,
         )
+    if reset_station:
+        _collect_garbage()
+        _print_log(
+            "recovery",
+            "mqtt action=station_reset reason=startup_failure",
+            start_monotonic=start_monotonic,
+        )
+        network_stack = reconnect_network_stack(
+            runtime_config,
+            network_stack,
+            max_attempts=_recovery_reconnect_attempts(True),
+            retry_delay_s=_recovery_reconnect_delay_s(True),
+            rebuild_socket_artifacts=True,
+            reset_station=True,
+            cycle_radio=True,
+            force_station_reset=True,
+            log_start_monotonic=start_monotonic,
+        )
     rebuilt_adapter = build_mqtt_client_adapter(
         runtime_config,
         socket_pool=network_stack.socket_pool,
@@ -1925,13 +2182,112 @@ def _recover_mqtt_subscription_failure(
     )
     _print_log(
         "recovery",
-        "mqtt action=rebuild broker={} socket_pool={} station_reset=0".format(
+        "mqtt action=rebuild broker={} socket_pool={} station_reset={}".format(
             rebuilt_adapter.active_broker or rebuilt_adapter.broker or "none",
             "ready" if network_stack.socket_pool is not None else "none",
+            1 if reset_station else 0,
         ),
         start_monotonic=start_monotonic,
     )
-    return rebuilt_adapter
+    return network_stack, rebuilt_adapter
+
+
+def _handle_mqtt_subscription_failure(
+    *,
+    failure_count,
+    first_failure_at,
+    station_reset_done,
+    now_monotonic,
+    runtime_config,
+    network_stack,
+    mqtt_adapter,
+    transport,
+    sync_result,
+    fs_writable,
+    start_monotonic,
+    web_runtime=None,
+    sensor_service=None,
+    switch_service=None,
+):
+    """Apply the bounded pre-operational MQTT recovery ladder."""
+    action = _mqtt_subscription_failure_action(
+        failure_count,
+        station_reset_done,
+    )
+    elapsed_s = _mqtt_repeated_failure_elapsed_s(
+        first_failure_at,
+        now_monotonic,
+    )
+    _print_log(
+        "recovery",
+        "mqtt startup action={} count={} elapsed_s={} warm_attempts={}".format(
+            action,
+            int(failure_count or 0),
+            elapsed_s,
+            _mqtt_subscription_recovery_marker_value(),
+        ),
+        start_monotonic=start_monotonic,
+    )
+    if action == "warm_reload":
+        if _mark_mqtt_subscription_recovery_requested():
+            warm_attempt = _mqtt_subscription_recovery_marker_value()
+            _print_log(
+                "recovery",
+                "mqtt startup warm_attempt={} max_attempts={}".format(
+                    warm_attempt,
+                    MQTT_WARM_RECOVERY_MAX_ATTEMPTS,
+                ),
+                start_monotonic=start_monotonic,
+            )
+            _perform_recovery_reboot(
+                "mqtt_startup_not_operational",
+                "soft",
+                fs_writable=fs_writable,
+                start_monotonic=start_monotonic,
+                mqtt_adapter=mqtt_adapter,
+                transport=transport,
+                runtime_config=runtime_config,
+                network_stack=network_stack,
+                web_runtime=web_runtime,
+                sensor_service=sensor_service,
+                switch_service=switch_service,
+            )
+            return network_stack, mqtt_adapter, station_reset_done
+        action = "hard_reset"
+        _print_log(
+            "recovery",
+            "mqtt startup action=hard_reset reason=warm_counter_exhausted",
+            start_monotonic=start_monotonic,
+        )
+    if action == "hard_reset":
+        reboot_action = _maybe_reboot_for_mqtt_failure_budget(
+            failure_count=failure_count,
+            first_failure_at=first_failure_at,
+            now_monotonic=now_monotonic,
+            fs_writable=fs_writable,
+            start_monotonic=start_monotonic,
+            mqtt_adapter=mqtt_adapter,
+            transport=transport,
+            runtime_config=runtime_config,
+            network_stack=network_stack,
+            web_runtime=web_runtime,
+            sensor_service=sensor_service,
+            switch_service=switch_service,
+        )
+        if reboot_action != "none":
+            return network_stack, mqtt_adapter, station_reset_done
+    reset_station = action == "station_reset"
+    network_stack, mqtt_adapter = _recover_mqtt_subscription_failure(
+        runtime_config=runtime_config,
+        network_stack=network_stack,
+        mqtt_adapter=mqtt_adapter,
+        transport=transport,
+        sync_result=sync_result,
+        reset_station=reset_station,
+        fs_writable=fs_writable,
+        start_monotonic=start_monotonic,
+    )
+    return network_stack, mqtt_adapter, bool(station_reset_done or reset_station)
 
 
 def _resolve_broker_ip_from_hostname(runtime_config, network_stack):
@@ -2641,6 +2997,37 @@ def _maybe_reboot_for_mqtt_failure_budget(
         return "none"
 
     reboot_reason = "mqtt_repeated_connect_failures"
+    if _mark_mqtt_subscription_recovery_requested():
+        warm_attempt = _mqtt_subscription_recovery_marker_value()
+        _print_log(
+            "recovery",
+            (
+                "action=soft_reboot reason={} count={} elapsed_s={} "
+                "warm_attempt={} max_attempts={}"
+            ).format(
+                reboot_reason,
+                int(failure_count or 0),
+                _mqtt_repeated_failure_elapsed_s(first_failure_at, now_monotonic),
+                warm_attempt,
+                MQTT_WARM_RECOVERY_MAX_ATTEMPTS,
+            ),
+            start_monotonic=start_monotonic,
+        )
+        _perform_recovery_reboot(
+            reboot_reason,
+            "soft",
+            fs_writable=fs_writable,
+            start_monotonic=start_monotonic,
+            mqtt_adapter=mqtt_adapter,
+            transport=transport,
+            runtime_config=runtime_config,
+            network_stack=network_stack,
+            web_runtime=web_runtime,
+            sensor_service=sensor_service,
+            switch_service=switch_service,
+        )
+        return "reboot"
+
     if _recovery_hard_reset_marker_should_suppress(
         reboot_reason,
         first_failure_at,
@@ -3056,6 +3443,10 @@ async def main(*, startup_plan_override=None, ota_first_boot_armed=False):
     repeated_mqtt_connect_failure_started_at = -1.0
     mqtt_client_memory_failure_count = 0
     mqtt_client_memory_failure_started_at = -1.0
+    mqtt_subscription_failure_count = 0
+    mqtt_subscription_failure_started_at = -1.0
+    mqtt_subscription_station_reset_done = False
+    mqtt_operational_generation = 0
     mqtt_preflight_connect_delay_s = max(
         0.0,
         float(MQTT_PREFLIGHT_CONNECT_DELAY_S or 0.0),
@@ -3083,7 +3474,7 @@ async def main(*, startup_plan_override=None, ota_first_boot_armed=False):
         "cPyNodus_II",
         (
             "boot version={} profile={} ap_mode={} fs={} "
-            "persistence_mode={} free_mem={}"
+            "persistence_mode={} free_mem={} mqtt_warm_attempts={}"
         ).format(
             __version__,
             plan.profile,
@@ -3091,6 +3482,7 @@ async def main(*, startup_plan_override=None, ota_first_boot_armed=False):
             fs_mode,
             persistence_mode,
             _free_mem_text(),
+            _mqtt_subscription_recovery_marker_value(),
         ),
         start_monotonic=start_monotonic,
     )
@@ -3349,7 +3741,10 @@ async def main(*, startup_plan_override=None, ota_first_boot_armed=False):
                 ap_mode=(network_stack.phase == "ap"),
                 mqtt_enabled=bool(plan.mqtt_enabled),
                 wifi_link_ready=network_link_is_ready(network_stack),
-                transport_connected=transport.connected,
+                transport_connected=_mqtt_generation_is_operational(
+                    transport,
+                    mqtt_operational_generation,
+                ),
             )
             recovery_state = recovery_decision.state
             if recovery_state.phase != last_counted_recovery_phase:
@@ -3404,16 +3799,20 @@ async def main(*, startup_plan_override=None, ota_first_boot_armed=False):
                 )
             ):
                 reboot_reason = "mqtt_recovery_timeout"
-                reboot_kind = _recovery_reboot_kind(
+                reboot_kind, warm_attempt = _mqtt_preoperational_reboot_plan(
                     reboot_reason,
-                    fs_writable=fs_writable,
+                    fs_writable,
                 )
                 _print_log(
                     "recovery",
-                    "action={}_reboot reason={} elapsed_s={:.0f}".format(
+                    (
+                        "action={}_reboot reason={} elapsed_s={:.0f} "
+                        "warm_attempt={}"
+                    ).format(
                         reboot_kind,
                         reboot_reason,
                         _mqtt_recovery_elapsed_s(recovery_state, now_monotonic),
+                        warm_attempt,
                     ),
                     start_monotonic=start_monotonic,
                 )
@@ -3972,14 +4371,17 @@ async def main(*, startup_plan_override=None, ota_first_boot_armed=False):
                             now_monotonic,
                         ):
                             reboot_reason = "mqtt_memory_allocation_failures"
-                            reboot_kind = _recovery_reboot_kind(
-                                reboot_reason,
-                                fs_writable=fs_writable,
+                            reboot_kind, warm_attempt = (
+                                _mqtt_preoperational_reboot_plan(
+                                    reboot_reason,
+                                    fs_writable,
+                                )
                             )
                             _print_log(
                                 "recovery",
                                 (
-                                    "action={}_reboot reason={} count={} elapsed_s={}"
+                                    "action={}_reboot reason={} count={} "
+                                    "elapsed_s={} warm_attempt={}"
                                 ).format(
                                     reboot_kind,
                                     reboot_reason,
@@ -3993,6 +4395,7 @@ async def main(*, startup_plan_override=None, ota_first_boot_armed=False):
                                             ),
                                         )
                                     ),
+                                    warm_attempt,
                                 ),
                                 start_monotonic=start_monotonic,
                             )
@@ -4137,14 +4540,17 @@ async def main(*, startup_plan_override=None, ota_first_boot_armed=False):
                             now_monotonic,
                         ):
                             reboot_reason = "mqtt_memory_allocation_failures"
-                            reboot_kind = _recovery_reboot_kind(
-                                reboot_reason,
-                                fs_writable=fs_writable,
+                            reboot_kind, warm_attempt = (
+                                _mqtt_preoperational_reboot_plan(
+                                    reboot_reason,
+                                    fs_writable,
+                                )
                             )
                             _print_log(
                                 "recovery",
                                 (
-                                    "action={}_reboot reason={} count={} elapsed_s={}"
+                                    "action={}_reboot reason={} count={} "
+                                    "elapsed_s={} warm_attempt={}"
                                 ).format(
                                     reboot_kind,
                                     reboot_reason,
@@ -4158,6 +4564,7 @@ async def main(*, startup_plan_override=None, ota_first_boot_armed=False):
                                             ),
                                         )
                                     ),
+                                    warm_attempt,
                                 ),
                                 start_monotonic=start_monotonic,
                             )
@@ -4987,21 +5394,21 @@ async def main(*, startup_plan_override=None, ota_first_boot_armed=False):
                             start_monotonic=start_monotonic,
                         )
                     )
-                    repeated_mqtt_connect_failure_count = 0
-                    repeated_mqtt_connect_failure_started_at = -1.0
-                    mqtt_connack_timeout_recovery_pending = False
-                    mqtt_client_memory_failure_count = 0
-                    mqtt_client_memory_failure_started_at = -1.0
-                    last_mqtt_station_reset_at = -1.0
-                    if _recovery_hard_reset_marker_is_set(
-                        "mqtt_repeated_connect_failures"
-                    ):
-                        _clear_recovery_hard_reset_marker(
-                            "mqtt_repeated_connect_failures"
+                    if mqtt_subscribe_recovery_pending:
+                        steady_state = _steady_state_for_mqtt_connect(
+                            steady_state,
+                            transport,
+                            mqtt_subscribe_recovery_pending,
                         )
                         _print_log(
-                            "recovery",
-                            "action=clear_hard_reset_marker reason=mqtt_connected",
+                            "mqtt",
+                            (
+                                "recovery action=reuse_startup_queues gen={} "
+                                "{}"
+                            ).format(
+                                transport.connection_generation,
+                                _transport_queue_summary(transport),
+                            ),
                             start_monotonic=start_monotonic,
                         )
                     _print_log(
@@ -5061,6 +5468,13 @@ async def main(*, startup_plan_override=None, ota_first_boot_armed=False):
                             ),
                             start_monotonic=start_monotonic,
                         )
+                    startup_publish_pacing_s = _mqtt_startup_publish_pacing_s(
+                        sync_result,
+                        transport,
+                        mqtt_operational_generation,
+                    )
+                    if startup_publish_pacing_s > 0.0:
+                        await asyncio.sleep(startup_publish_pacing_s)
                     if (
                         mqtt_subscribe_recovery_pending
                         and _startup_subscription_recovery_drained(
@@ -5089,10 +5503,36 @@ async def main(*, startup_plan_override=None, ota_first_boot_armed=False):
                             ),
                             start_monotonic=start_monotonic,
                         )
-                    if _is_mqtt_subscription_failure(sync_result):
+                    if _is_mqtt_preoperational_sync_failure(
+                        sync_result,
+                        transport,
+                        mqtt_operational_generation,
+                    ):
                         mqtt_subscribe_recovery_pending = True
                         deferred_switch_subscription_generation = 0
-                        mqtt_adapter = _recover_mqtt_subscription_failure(
+                        (
+                            mqtt_subscription_failure_count,
+                            mqtt_subscription_failure_started_at,
+                        ) = _update_mqtt_subscription_failure_window(
+                            mqtt_subscription_failure_count,
+                            mqtt_subscription_failure_started_at,
+                            now_monotonic,
+                        )
+                        recovery_state = _mqtt_subscription_recovery_state(
+                            recovery_state,
+                            now_monotonic,
+                        )
+                        (
+                            network_stack,
+                            mqtt_adapter,
+                            mqtt_subscription_station_reset_done,
+                        ) = _handle_mqtt_subscription_failure(
+                            failure_count=mqtt_subscription_failure_count,
+                            first_failure_at=mqtt_subscription_failure_started_at,
+                            station_reset_done=(
+                                mqtt_subscription_station_reset_done
+                            ),
+                            now_monotonic=now_monotonic,
                             runtime_config=runtime_config,
                             network_stack=network_stack,
                             mqtt_adapter=mqtt_adapter,
@@ -5100,11 +5540,9 @@ async def main(*, startup_plan_override=None, ota_first_boot_armed=False):
                             sync_result=sync_result,
                             fs_writable=fs_writable,
                             start_monotonic=start_monotonic,
-                        )
-                        recovery_state = RecoveryState(
-                            phase="mqtt",
-                            phase_started_at=now_monotonic,
-                            last_mqtt_rebuild_at=now_monotonic,
+                            web_runtime=web_runtime,
+                            sensor_service=sensor_service,
+                            switch_service=switch_service,
                         )
                         last_mqtt_connect_attempt_at = float(now_monotonic) - 5.0
                         _collect_garbage()
@@ -5145,6 +5583,13 @@ async def main(*, startup_plan_override=None, ota_first_boot_armed=False):
                             connect_errors=connect_result.errors,
                         )
                     )
+                    allocation_failure_pattern = (
+                        _mqtt_preoperational_connect_has_allocation_failure(
+                            tcp_preflight_error=tcp_preflight_error,
+                            connect_probe_error=connect_probe_error,
+                            connect_errors=connect_result.errors,
+                        )
+                    )
                     _print_log(
                         "mqtt",
                         (
@@ -5154,8 +5599,19 @@ async def main(*, startup_plan_override=None, ota_first_boot_armed=False):
                         ).format(
                             mqtt_connect_attempt_count,
                             connect_finished_at - connect_started_at,
-                            "connack_timeout" if connack_timeout_candidate else "none",
-                            1 if connack_timeout_pattern else 0,
+                            "allocation"
+                            if allocation_failure_pattern
+                            else (
+                                "connack_timeout"
+                                if connack_timeout_candidate
+                                else "none"
+                            ),
+                            1
+                            if (
+                                connack_timeout_pattern
+                                or allocation_failure_pattern
+                            )
+                            else 0,
                             1 if _mqtt_client_socket_present(mqtt_adapter) else 0,
                             1 if network_link_is_ready(network_stack) else 0,
                             network_stack.ip_address or "none",
@@ -5163,6 +5619,49 @@ async def main(*, startup_plan_override=None, ota_first_boot_armed=False):
                         ),
                         start_monotonic=start_monotonic,
                     )
+                    if allocation_failure_pattern:
+                        mqtt_subscribe_recovery_pending = True
+                        deferred_switch_subscription_generation = 0
+                        (
+                            mqtt_subscription_failure_count,
+                            mqtt_subscription_failure_started_at,
+                        ) = _update_mqtt_subscription_failure_window(
+                            mqtt_subscription_failure_count,
+                            mqtt_subscription_failure_started_at,
+                            connect_finished_at,
+                        )
+                        recovery_state = _mqtt_subscription_recovery_state(
+                            recovery_state,
+                            connect_finished_at,
+                        )
+                        (
+                            network_stack,
+                            mqtt_adapter,
+                            mqtt_subscription_station_reset_done,
+                        ) = _handle_mqtt_subscription_failure(
+                            failure_count=mqtt_subscription_failure_count,
+                            first_failure_at=mqtt_subscription_failure_started_at,
+                            station_reset_done=(
+                                mqtt_subscription_station_reset_done
+                            ),
+                            now_monotonic=connect_finished_at,
+                            runtime_config=runtime_config,
+                            network_stack=network_stack,
+                            mqtt_adapter=mqtt_adapter,
+                            transport=transport,
+                            sync_result=connect_result,
+                            fs_writable=fs_writable,
+                            start_monotonic=start_monotonic,
+                            web_runtime=web_runtime,
+                            sensor_service=sensor_service,
+                            switch_service=switch_service,
+                        )
+                        last_mqtt_connect_attempt_at = (
+                            float(connect_finished_at) - 5.0
+                        )
+                        _collect_garbage()
+                        await asyncio.sleep(0.05)
+                        continue
                     if connack_timeout_pattern:
                         mqtt_connack_timeout_recovery_pending = True
                         if repeated_mqtt_connect_failure_count <= 0:
@@ -5211,60 +5710,12 @@ async def main(*, startup_plan_override=None, ota_first_boot_armed=False):
                                 last_mqtt_connect_attempt_at = -1.0
                                 await asyncio.sleep(0.05)
                                 continue
-                            reboot_reason = "mqtt_repeated_connect_failures"
-                            if _recovery_hard_reset_marker_should_suppress(
-                                reboot_reason,
-                                repeated_mqtt_connect_failure_started_at,
-                                connect_finished_at,
-                            ):
-                                _print_log(
-                                    "recovery",
-                                    (
-                                        "action=hard_reboot_deferred reason={} "
-                                        "marker=nvm count={} elapsed_s={}"
-                                    ).format(
-                                        reboot_reason,
-                                        repeated_mqtt_connect_failure_count,
-                                        _mqtt_repeated_failure_elapsed_s(
-                                            repeated_mqtt_connect_failure_started_at,
-                                            connect_finished_at,
-                                        ),
-                                    ),
-                                    start_monotonic=start_monotonic,
-                                )
-                                repeated_mqtt_connect_failure_count = 0
-                                repeated_mqtt_connect_failure_started_at = -1.0
-                                await asyncio.sleep(0.05)
-                                continue
-                            marker_status = (
-                                "set"
-                                if _mark_recovery_hard_reset_requested(reboot_reason)
-                                else "unavailable"
-                            )
-                            reboot_kind = _recovery_reboot_kind(
-                                reboot_reason,
-                                fs_writable=fs_writable,
-                            )
-                            _print_log(
-                                "recovery",
-                                (
-                                    "action={}_reboot reason={} count={} "
-                                    "elapsed_s={} marker={}"
-                                ).format(
-                                    reboot_kind,
-                                    reboot_reason,
-                                    repeated_mqtt_connect_failure_count,
-                                    _mqtt_repeated_failure_elapsed_s(
-                                        repeated_mqtt_connect_failure_started_at,
-                                        connect_finished_at,
-                                    ),
-                                    marker_status,
+                            reboot_action = _maybe_reboot_for_mqtt_failure_budget(
+                                failure_count=repeated_mqtt_connect_failure_count,
+                                first_failure_at=(
+                                    repeated_mqtt_connect_failure_started_at
                                 ),
-                                start_monotonic=start_monotonic,
-                            )
-                            _perform_recovery_reboot(
-                                reboot_reason,
-                                reboot_kind,
+                                now_monotonic=connect_finished_at,
                                 fs_writable=fs_writable,
                                 start_monotonic=start_monotonic,
                                 mqtt_adapter=mqtt_adapter,
@@ -5275,6 +5726,9 @@ async def main(*, startup_plan_override=None, ota_first_boot_armed=False):
                                 sensor_service=sensor_service,
                                 switch_service=switch_service,
                             )
+                            if reboot_action != "none":
+                                await asyncio.sleep(0.05)
+                                continue
                     else:
                         repeated_mqtt_connect_failure_count = 0
                         repeated_mqtt_connect_failure_started_at = -1.0
@@ -5573,10 +6027,41 @@ async def main(*, startup_plan_override=None, ota_first_boot_armed=False):
                         ),
                         start_monotonic=start_monotonic,
                     )
-                if _is_mqtt_subscription_failure(sync_result):
+                startup_publish_pacing_s = _mqtt_startup_publish_pacing_s(
+                    sync_result,
+                    transport,
+                    mqtt_operational_generation,
+                )
+                if startup_publish_pacing_s > 0.0:
+                    await asyncio.sleep(startup_publish_pacing_s)
+                if _is_mqtt_preoperational_sync_failure(
+                    sync_result,
+                    transport,
+                    mqtt_operational_generation,
+                ):
                     mqtt_subscribe_recovery_pending = True
                     deferred_switch_subscription_generation = 0
-                    mqtt_adapter = _recover_mqtt_subscription_failure(
+                    (
+                        mqtt_subscription_failure_count,
+                        mqtt_subscription_failure_started_at,
+                    ) = _update_mqtt_subscription_failure_window(
+                        mqtt_subscription_failure_count,
+                        mqtt_subscription_failure_started_at,
+                        now_monotonic,
+                    )
+                    recovery_state = _mqtt_subscription_recovery_state(
+                        recovery_state,
+                        now_monotonic,
+                    )
+                    (
+                        network_stack,
+                        mqtt_adapter,
+                        mqtt_subscription_station_reset_done,
+                    ) = _handle_mqtt_subscription_failure(
+                        failure_count=mqtt_subscription_failure_count,
+                        first_failure_at=mqtt_subscription_failure_started_at,
+                        station_reset_done=mqtt_subscription_station_reset_done,
+                        now_monotonic=now_monotonic,
                         runtime_config=runtime_config,
                         network_stack=network_stack,
                         mqtt_adapter=mqtt_adapter,
@@ -5584,11 +6069,9 @@ async def main(*, startup_plan_override=None, ota_first_boot_armed=False):
                         sync_result=sync_result,
                         fs_writable=fs_writable,
                         start_monotonic=start_monotonic,
-                    )
-                    recovery_state = RecoveryState(
-                        phase="mqtt",
-                        phase_started_at=now_monotonic,
-                        last_mqtt_rebuild_at=now_monotonic,
+                        web_runtime=web_runtime,
+                        sensor_service=sensor_service,
+                        switch_service=switch_service,
                     )
                     last_mqtt_connect_attempt_at = float(now_monotonic) - 5.0
                     _collect_garbage()
@@ -5617,6 +6100,45 @@ async def main(*, startup_plan_override=None, ota_first_boot_armed=False):
                             ),
                             start_monotonic=start_monotonic,
                         )
+                if (
+                    transport.connected
+                    and mqtt_operational_generation
+                    != transport.connection_generation
+                    and steady_state.connection_generation
+                    == transport.connection_generation
+                    and deferred_switch_subscription_generation == 0
+                    and not getattr(transport, "published_messages", ())
+                    and not getattr(transport, "subscriptions", ())
+                ):
+                    mqtt_operational_generation = transport.connection_generation
+                    mqtt_subscribe_recovery_pending = False
+                    mqtt_subscription_failure_count = 0
+                    mqtt_subscription_failure_started_at = -1.0
+                    mqtt_subscription_station_reset_done = False
+                    repeated_mqtt_connect_failure_count = 0
+                    repeated_mqtt_connect_failure_started_at = -1.0
+                    mqtt_connack_timeout_recovery_pending = False
+                    mqtt_client_memory_failure_count = 0
+                    mqtt_client_memory_failure_started_at = -1.0
+                    last_mqtt_station_reset_at = -1.0
+                    warm_marker_cleared = (
+                        _clear_mqtt_subscription_recovery_marker()
+                    )
+                    hard_marker_cleared = _clear_recovery_hard_reset_marker(
+                        "mqtt_repeated_connect_failures"
+                    )
+                    _print_log(
+                        "mqtt",
+                        (
+                            "operational gen={} subscriptions=drained "
+                            "warm_attempts_cleared={} hard_marker_cleared={}"
+                        ).format(
+                            mqtt_operational_generation,
+                            1 if warm_marker_cleared else 0,
+                            1 if hard_marker_cleared else 0,
+                        ),
+                        start_monotonic=start_monotonic,
+                    )
                 if reboot_request is not None:
                     reboot_mode = str(
                         getattr(reboot_request, "reboot_mode", "") or "soft"

@@ -99,6 +99,19 @@ current contract:
   drain before runtime command subscriptions. New compact `meta` payloads
   expose top-level `mcu`, `switch.meta_topic`, and current runtime
   `network.ipv4addr`; older payloads may still embed `switch.channels`.
+- A connection is operational only after its startup publish and subscription
+  queues drain. Slow startup publishes and errno 119, 116, and related errno 12
+  failures retain one recovery epoch across reconnects, reuse the pending
+  startup queues, and escalate through MQTT rebuild, station/radio reset, two
+  NVM-counted warm reload attempts, then hard-reset recovery. Only the
+  operational checkpoint or true power-on clears the warm-attempt count.
+  PUBACK timeouts and errno 12 from TCP preflight or raw MQTT CONNECT are
+  classified immediately instead of retrying with a zero failure count.
+- Retained startup publishes are separated by 350 ms. For temporary hardware
+  diagnosis, retained device `meta` and `meta/switch` publish at QoS 1 so PUBACK
+  distinguishes broker receipt from a stalled send or lost acknowledgement.
+  Slow raw-send chunk diagnostics are capped at four lines per packet and are
+  emitted only when an individual chunk takes at least 250 ms.
 - Current Nodus IPv4 is runtime state only. It is published in retained `meta`
   as `network.ipv4addr` when available and is not persisted in
   `settings.toml`.
