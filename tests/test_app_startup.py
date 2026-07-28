@@ -6,27 +6,40 @@ from types import SimpleNamespace
 import cpynodus_ii.app as app_module
 from cpynodus_ii.app import (
     _broker_ip_refresh_needed,
+    _clear_mqtt_subscription_recovery_marker,
     _clear_terminal_startup_ota_state,
     _defer_switch_subscriptions_until_after_startup_publish,
+    _handle_mqtt_subscription_failure,
     _increase_mqtt_preflight_connect_delay,
+    _is_mqtt_preoperational_sync_failure,
     _is_mqtt_subscription_failure,
     _load_settings_for_startup,
     _load_startup_ota_state,
+    _mark_mqtt_subscription_recovery_requested,
     _maybe_reboot_for_mqtt_failure_budget,
     _mqtt_client_init_memory_failed,
     _mqtt_connect_attempt_is_connack_timeout_pattern,
     _mqtt_connect_errors_are_repeated_failures,
     _mqtt_connect_retry_interval_s,
+    _mqtt_error_indicates_allocation_failure,
     _mqtt_error_indicates_socket_progress,
+    _mqtt_generation_is_operational,
     _mqtt_preconnect_has_socket_progress,
     _mqtt_preconnect_probe,
+    _mqtt_preoperational_connect_has_allocation_failure,
+    _mqtt_preoperational_reboot_plan,
     _mqtt_repeated_failure_budget_exhausted,
     _mqtt_repeated_failure_elapsed_s,
     _mqtt_repeated_failure_reboot_gate_tripped,
+    _mqtt_startup_publish_pacing_s,
+    _mqtt_subscription_failure_action,
+    _mqtt_subscription_recovery_marker_is_set,
+    _mqtt_subscription_recovery_state,
     _mqtt_sync_should_log_success,
     _ota_state_path,
     _persist_broker_ip_after_mqtt_connect,
     _prepare_ota_boot_health_check,
+    _recover_mqtt_subscription_failure,
     _recovery_reconnect_attempts,
     _recovery_reconnect_delay_s,
     _refresh_broker_ip_from_hostname,
@@ -57,7 +70,9 @@ from cpynodus_ii.app import (
     _startup_ap_fallback_reason,
     _startup_conditioning_enabled_for_current_run,
     _startup_subscription_recovery_drained,
+    _steady_state_for_mqtt_connect,
     _update_mqtt_memory_failure_window,
+    _update_mqtt_subscription_failure_window,
     _update_sensor_not_found_window,
     _wifi_signature_text,
     _wifi_station_reset_reason,
@@ -70,6 +85,7 @@ from cpynodus_ii.core.config import (
     SwitchConfig,
 )
 from cpynodus_ii.core.mqtt import MQTTTransport
+from cpynodus_ii.features.steady_state import SteadyState
 from cpynodus_ii.ota.state import FwUpdateState, save_ota_state
 
 
@@ -226,6 +242,253 @@ def test_subscription_recovery_drained_requires_empty_subscription_queue():
         )
         is False
     )
+
+
+def test_mqtt_subscription_failure_window_preserves_first_failure_epoch():
+    count, started_at = _update_mqtt_subscription_failure_window(0, -1.0, 100.0)
+    assert (count, started_at) == (1, 100.0)
+
+    count, started_at = _update_mqtt_subscription_failure_window(
+        count,
+        started_at,
+        114.0,
+    )
+    assert (count, started_at) == (2, 100.0)
+
+    state = _mqtt_subscription_recovery_state(
+        RecoveryState(
+            phase="mqtt",
+            phase_started_at=90.0,
+            last_mqtt_rebuild_at=95.0,
+        ),
+        120.0,
+    )
+    assert state.phase_started_at == 90.0
+    assert state.last_mqtt_rebuild_at == 120.0
+
+
+def test_mqtt_subscription_failure_actions_are_bounded_and_nvm_guarded():
+    nvm = bytearray(4)
+
+    assert _mqtt_subscription_failure_action(1, False, nvm) == "mqtt_rebuild"
+    assert _mqtt_subscription_failure_action(2, False, nvm) == "station_reset"
+    assert _mqtt_subscription_failure_action(2, True, nvm) == "mqtt_rebuild"
+    assert _mqtt_subscription_failure_action(3, True, nvm) == "warm_reload"
+
+    assert _mark_mqtt_subscription_recovery_requested(nvm) is True
+    assert _mqtt_subscription_recovery_marker_is_set(nvm) is False
+    assert _mqtt_subscription_failure_action(3, True, nvm) == "warm_reload"
+
+    assert _mark_mqtt_subscription_recovery_requested(nvm) is True
+    assert _mqtt_subscription_recovery_marker_is_set(nvm) is True
+    assert _mark_mqtt_subscription_recovery_requested(nvm) is False
+    assert _mqtt_subscription_failure_action(3, True, nvm) == "hard_reset"
+
+    assert _clear_mqtt_subscription_recovery_marker(nvm) is True
+    assert _mqtt_subscription_recovery_marker_is_set(nvm) is False
+
+
+def test_preoperational_reboot_plan_allows_two_warm_attempts():
+    nvm = bytearray(4)
+
+    assert _mqtt_preoperational_reboot_plan("mqtt_recovery_timeout", False, nvm) == (
+        "soft",
+        1,
+    )
+    assert _mqtt_preoperational_reboot_plan("mqtt_recovery_timeout", False, nvm) == (
+        "soft",
+        2,
+    )
+    assert _mqtt_preoperational_reboot_plan("mqtt_recovery_timeout", False, nvm) == (
+        "hard",
+        2,
+    )
+
+
+def test_slow_startup_publish_joins_preoperational_failure_episode():
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connected(now_monotonic=10.0)
+    result = SimpleNamespace(
+        phase="error",
+        operation="publish",
+        errors=("mqtt_publish_slow:nodus/device/meta/switch:elapsed_ms=29895",),
+    )
+
+    assert _is_mqtt_preoperational_sync_failure(result, transport, 0) is True
+    assert (
+        _is_mqtt_preoperational_sync_failure(
+            result,
+            transport,
+            transport.connection_generation,
+        )
+        is False
+    )
+
+
+def test_puback_timeout_joins_preoperational_failure_episode():
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connected(now_monotonic=10.0)
+    result = SimpleNamespace(
+        phase="error",
+        operation="publish",
+        errors=(
+            "mqtt_publish_failed:nodus/device/meta:bytes=1438:"
+            "raw_publish_diag qos=1 pkt_id=1 "
+            "error=mqtt_puback_stage=header:[Errno 116] ETIMEDOUT",
+        ),
+    )
+
+    assert _is_mqtt_preoperational_sync_failure(result, transport, 0) is True
+
+
+def test_errno_12_preflight_and_connect_are_allocation_failures():
+    assert _mqtt_error_indicates_allocation_failure(
+        "mqtt_tcp_preflight_failed:10.0.0.246:OSError:[Errno 12] ENOMEM"
+    )
+    assert _mqtt_preoperational_connect_has_allocation_failure(
+        tcp_preflight_error=(
+            "mqtt_tcp_preflight_failed:10.0.0.246:OSError:[Errno 12] ENOMEM"
+        ),
+        connect_probe_error="mqtt_connect_probe_skipped:tcp_preflight_error",
+        connect_errors=(
+            "mqtt_connect_failed:10.0.0.246:raw:OSError:[Errno 12] ENOMEM",
+        ),
+    )
+    assert not _mqtt_preoperational_connect_has_allocation_failure(
+        tcp_preflight_error="",
+        connect_probe_error="",
+        connect_errors=("mqtt_connect_failed:10.0.0.246:raw:OSError:[Errno 5]",),
+    )
+
+
+def test_retained_startup_publish_pacing_stops_after_operational_checkpoint():
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connected(now_monotonic=10.0)
+    result = SimpleNamespace(
+        phase="synced",
+        operation="publish",
+        retain=True,
+        published_count=1,
+    )
+
+    assert _mqtt_startup_publish_pacing_s(result, transport, 0) == 0.35
+    assert (
+        _mqtt_startup_publish_pacing_s(
+            result,
+            transport,
+            transport.connection_generation,
+        )
+        == 0.0
+    )
+
+
+def test_mqtt_generation_is_operational_only_after_checkpoint():
+    transport = MQTTTransport("broker.local", 1883)
+    assert _mqtt_generation_is_operational(transport, 0) is False
+
+    generation = transport.mark_connected(now_monotonic=10.0)
+    assert _mqtt_generation_is_operational(transport, 0) is False
+    assert _mqtt_generation_is_operational(transport, generation) is True
+
+    transport.mark_disconnected(now_monotonic=11.0, reason="test")
+    assert _mqtt_generation_is_operational(transport, generation) is False
+
+
+def test_subscription_reconnect_reuses_pending_startup_generation():
+    transport = MQTTTransport("broker.local", 1883)
+    generation = transport.mark_connected(now_monotonic=10.0)
+    state = SteadyState(connection_generation=0)
+
+    unchanged = _steady_state_for_mqtt_connect(state, transport, False)
+    reused = _steady_state_for_mqtt_connect(state, transport, True)
+
+    assert unchanged is state
+    assert reused.connection_generation == generation
+
+
+def test_subscription_failure_handler_uses_guarded_warm_reload(monkeypatch):
+    reboots = []
+    network_stack = SimpleNamespace()
+    mqtt_adapter = SimpleNamespace()
+
+    monkeypatch.setattr(
+        app_module,
+        "_mark_mqtt_subscription_recovery_requested",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_perform_recovery_reboot",
+        lambda *args, **kwargs: reboots.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_mqtt_subscription_recovery_marker_is_set",
+        lambda _nvm=None: False,
+    )
+
+    result = _handle_mqtt_subscription_failure(
+        failure_count=3,
+        first_failure_at=100.0,
+        station_reset_done=True,
+        now_monotonic=130.0,
+        runtime_config=RuntimeConfig(active_profile="sensorius"),
+        network_stack=network_stack,
+        mqtt_adapter=mqtt_adapter,
+        transport=MQTTTransport("broker.local", 1883),
+        sync_result=SimpleNamespace(topic="nodus/device/config/set"),
+        fs_writable=False,
+        start_monotonic=0.0,
+    )
+
+    assert result == (network_stack, mqtt_adapter, True)
+    assert reboots[0][0][:2] == ("mqtt_startup_not_operational", "soft")
+
+
+def test_subscription_station_reset_rebuilds_network_socket_artifacts(monkeypatch):
+    reconnects = []
+    rebuilt_stack = SimpleNamespace(socket_pool="new-pool", ssl_context="new-ssl")
+    rebuilt_adapter = SimpleNamespace(
+        active_broker="10.0.0.246",
+        broker="broker.local",
+    )
+
+    monkeypatch.setattr(
+        app_module,
+        "close_mqtt_client",
+        lambda *_args, **_kwargs: SimpleNamespace(errors=()),
+    )
+
+    def fake_reconnect(runtime_config, network_stack, **kwargs):
+        reconnects.append((runtime_config, network_stack, kwargs))
+        return rebuilt_stack
+
+    monkeypatch.setattr(app_module, "reconnect_network_stack", fake_reconnect)
+    monkeypatch.setattr(
+        app_module,
+        "build_mqtt_client_adapter",
+        lambda *_args, **_kwargs: rebuilt_adapter,
+    )
+    monkeypatch.setattr(app_module, "_collect_garbage", lambda: None)
+
+    original_stack = SimpleNamespace(socket_pool="old-pool", ssl_context="old-ssl")
+    result = _recover_mqtt_subscription_failure(
+        runtime_config=RuntimeConfig(active_profile="sensorius"),
+        network_stack=original_stack,
+        mqtt_adapter=SimpleNamespace(),
+        transport=MQTTTransport("broker.local", 1883),
+        sync_result=SimpleNamespace(topic="nodus/device/config/set"),
+        reset_station=True,
+        fs_writable=False,
+        start_monotonic=0.0,
+    )
+
+    assert result == (rebuilt_stack, rebuilt_adapter)
+    assert reconnects[0][1] is original_stack
+    assert reconnects[0][2]["rebuild_socket_artifacts"] is True
+    assert reconnects[0][2]["reset_station"] is True
+    assert reconnects[0][2]["cycle_radio"] is True
+    assert reconnects[0][2]["force_station_reset"] is True
 
 
 def test_refresh_broker_ip_uses_runtime_resolution_on_startup(tmp_path):

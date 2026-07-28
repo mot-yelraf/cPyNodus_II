@@ -26,7 +26,14 @@ def _module(name, **values):
     return module
 
 
-def _run_boot(monkeypatch, board_module, *, pin_values=None):
+def _run_boot(
+    monkeypatch,
+    board_module,
+    *,
+    pin_values=None,
+    nvm_values=None,
+    reset_reason="POWER_ON",
+):
     state = {"pins": [], "remounts": [], "disable_usb_drive": 0, "usb_enable": []}
     pin_values = dict(pin_values or {})
 
@@ -61,10 +68,11 @@ def _run_boot(monkeypatch, board_module, *, pin_values=None):
         disable_usb_drive=_disable_usb_drive,
         remount=_remount,
     )
+    nvm = bytearray(nvm_values or (0, 0, 0, 0))
     microcontroller_module = _module(
         "microcontroller",
-        nvm=bytearray(4),
-        cpu=SimpleNamespace(reset_reason="POWER_ON"),
+        nvm=nvm,
+        cpu=SimpleNamespace(reset_reason=reset_reason),
     )
     supervisor_module = _module("supervisor", runtime=SimpleNamespace(autoreload=True))
     usb_cdc_module = _module("usb_cdc", enable=_usb_enable)
@@ -83,6 +91,7 @@ def _run_boot(monkeypatch, board_module, *, pin_values=None):
         result = runpy.run_path(str(BOOT_PATH))
     finally:
         sys.meta_path.remove(blocker)
+    state["nvm"] = nvm
     return result, state, blocker
 
 
@@ -103,6 +112,43 @@ def test_boot_uses_pico_guard_pin_without_board_profile_import(monkeypatch):
     assert state["pins"] == ["pin-gp14"]
     assert state["usb_enable"] == [(True, True)]
     assert state["remounts"] == [("/", True)]
+
+
+def test_power_on_clears_all_runtime_recovery_markers(monkeypatch):
+    board_module = _module(
+        "board",
+        board_id="raspberry_pi_pico2_w",
+        GP0="pin-gp0",
+        GP14="pin-gp14",
+        GP28="pin-gp28",
+    )
+
+    _result, state, _blocker = _run_boot(
+        monkeypatch,
+        board_module,
+        nvm_values=(0, 77, 31, 47),
+    )
+
+    assert state["nvm"] == bytearray((0, 0, 0, 0))
+
+
+def test_warm_reload_preserves_mqtt_recovery_attempt_counter(monkeypatch):
+    board_module = _module(
+        "board",
+        board_id="raspberry_pi_pico2_w",
+        GP0="pin-gp0",
+        GP14="pin-gp14",
+        GP28="pin-gp28",
+    )
+
+    _result, state, _blocker = _run_boot(
+        monkeypatch,
+        board_module,
+        nvm_values=(0, 77, 31, 1),
+        reset_reason="SUPERVISOR_RELOAD",
+    )
+
+    assert state["nvm"] == bytearray((0, 77, 31, 1))
 
 
 def test_boot_honors_pico_grounded_guard(monkeypatch):

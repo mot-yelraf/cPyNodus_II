@@ -16,8 +16,10 @@ MQTT_PUBACK_SOCKET_TIMEOUT_S = MQTT_POLL_SOCKET_TIMEOUT_S
 MQTT_CONNECT_RETRIES = 1
 MQTT_SLOW_OPERATION_MS = 10000
 MQTT_RAW_SEND_CHUNK_BYTES = 256
-# Nonzero only for temporary diagnostics; normal runtime stays QoS0.
-MQTT_RAW_VERIFY_PUBLISH_BYTES = 0
+MQTT_RAW_SEND_SLOW_CHUNK_MS = 250
+MQTT_RAW_SEND_SLOW_CHUNK_LOG_LIMIT = 4
+# Temporary hardware diagnosis: retained device meta publishes require PUBACK.
+MQTT_RAW_VERIFY_PUBLISH_BYTES = 1
 MQTT_OPTIONAL_CLIENT_KWARGS = (
     "socket_timeout",
     "connect_retries",
@@ -525,7 +527,12 @@ def _publish_mqtt(client, topic, payload, retain, *, startup_meta_publish=False)
     ):
         return _publish_mqtt_qos1_verified(client, sock, topic, payload, retain)
     packet = _mqtt_qos0_publish_packet(topic, payload, retain)
-    _send_mqtt_packet(sock, packet, chunked=startup_meta_publish)
+    _send_mqtt_packet(
+        sock,
+        packet,
+        chunked=startup_meta_publish,
+        diagnostic_topic=topic if startup_meta_publish else "",
+    )
     return _mqtt_publish_result(0, 0, len(packet), -1, 0)
 
 
@@ -581,7 +588,12 @@ def _publish_mqtt_qos1_verified(client, sock, topic, payload, retain):
     operation_started = time.monotonic()
     puback_started = operation_started
     try:
-        _send_mqtt_packet(sock, packet, chunked=True)
+        _send_mqtt_packet(
+            sock,
+            packet,
+            chunked=True,
+            diagnostic_topic=topic,
+        )
         if float(runtime_timeout) != float(MQTT_PUBACK_SOCKET_TIMEOUT_S):
             puback_timeout_set = _set_mqtt_socket_timeout(
                 sock,
@@ -736,16 +748,59 @@ def _mqtt_remaining_length(value):
     return encoded
 
 
-def _send_mqtt_packet(sock, packet, *, chunked=False):
+def _send_mqtt_packet(sock, packet, *, chunked=False, diagnostic_topic=""):
     total = len(packet)
     sent_total = 0
+    chunk_number = 0
+    slow_chunk_logs = 0
     while sent_total < total:
+        chunk_number += 1
         if chunked:
             chunk_end = min(sent_total + MQTT_RAW_SEND_CHUNK_BYTES, total)
         else:
             chunk_end = total
         chunk = packet[sent_total:chunk_end]
-        sent = _send_socket_bytes(sock, chunk)
+        chunk_started = time.monotonic()
+        try:
+            sent = _send_socket_bytes(sock, chunk)
+        except Exception:
+            elapsed_ms = _elapsed_ms(chunk_started)
+            if (
+                elapsed_ms >= MQTT_RAW_SEND_SLOW_CHUNK_MS
+                and slow_chunk_logs < MQTT_RAW_SEND_SLOW_CHUNK_LOG_LIMIT
+            ):
+                print(
+                    (
+                        "mqtt send_chunk_slow topic={} packet_bytes={} chunk={} "
+                        "chunk_bytes={} bytes_returned=-1 elapsed_ms={}"
+                    ).format(
+                        str(diagnostic_topic or "none"),
+                        total,
+                        chunk_number,
+                        len(chunk),
+                        elapsed_ms,
+                    )
+                )
+            raise
+        elapsed_ms = _elapsed_ms(chunk_started)
+        if (
+            elapsed_ms >= MQTT_RAW_SEND_SLOW_CHUNK_MS
+            and slow_chunk_logs < MQTT_RAW_SEND_SLOW_CHUNK_LOG_LIMIT
+        ):
+            slow_chunk_logs += 1
+            print(
+                (
+                    "mqtt send_chunk_slow topic={} packet_bytes={} chunk={} "
+                    "chunk_bytes={} bytes_returned={} elapsed_ms={}"
+                ).format(
+                    str(diagnostic_topic or "none"),
+                    total,
+                    chunk_number,
+                    len(chunk),
+                    -1 if sent is None else int(sent or 0),
+                    elapsed_ms,
+                )
+            )
         if sent is None:
             if chunked:
                 sent_total = chunk_end

@@ -35,10 +35,10 @@ def _run_direct_tests():
         test_sync_transport_to_client_collects_after_retained_device_meta,
         test_sync_transport_to_client_publishes_qos0_packet_on_socket,
         test_sync_transport_to_client_chunks_large_qos0_publish_on_socket,
-        test_sync_transport_to_client_keeps_startup_meta_qos0_by_default,
+        test_sync_transport_to_client_verifies_startup_meta_qos1_during_diagnosis,
         test_sync_transport_to_client_can_verify_large_raw_publish_when_debug_enabled,
         test_sync_transport_to_client_keeps_large_non_startup_publish_qos0,
-        test_sync_transport_to_client_ignores_puback_timeout_by_default,
+        test_sync_transport_to_client_reports_startup_puback_timeout_by_default,
         test_sync_transport_to_client_reports_optional_puback_timeout_when_enabled,
         test_sync_transport_to_client_retries_partial_qos0_socket_sends,
         test_sync_transport_to_client_chunks_send_nbytes_only_socket,
@@ -1129,7 +1129,31 @@ def test_sync_transport_to_client_chunks_large_qos0_publish_on_socket():
     ]
 
 
-def test_sync_transport_to_client_keeps_startup_meta_qos0_by_default():
+def test_send_mqtt_packet_logs_only_bounded_slow_chunk_diagnostics(
+    monkeypatch,
+    capsys,
+):
+    sock = _SendingSocket()
+    packet = b"x" * (mqtt_client_module.MQTT_RAW_SEND_CHUNK_BYTES * 6)
+    monkeypatch.setattr(mqtt_client_module, "_elapsed_ms", lambda _started: 300)
+
+    mqtt_client_module._send_mqtt_packet(
+        sock,
+        packet,
+        chunked=True,
+        diagnostic_topic="nodus/device/meta/switch",
+    )
+
+    lines = capsys.readouterr().out.strip().splitlines()
+    assert len(lines) == mqtt_client_module.MQTT_RAW_SEND_SLOW_CHUNK_LOG_LIMIT
+    assert "packet_bytes=1536" in lines[0]
+    assert "chunk=1" in lines[0]
+    assert "chunk_bytes=256" in lines[0]
+    assert "bytes_returned=256" in lines[0]
+    assert "elapsed_ms=300" in lines[0]
+
+
+def test_sync_transport_to_client_verifies_startup_meta_qos1_during_diagnosis():
     runtime_config = _runtime_config()
     transport = MQTTTransport("broker.local", 1883)
     transport.mark_connect_requested()
@@ -1149,9 +1173,11 @@ def test_sync_transport_to_client_keeps_startup_meta_qos0_by_default():
     assert sync_result.phase == "synced"
     assert sync_result.published_count == 1
     assert transport.published_messages == []
-    expected = bytes(mqtt_client_module._mqtt_qos0_publish_packet(topic, payload, True))
+    expected = bytes(
+        mqtt_client_module._mqtt_qos1_publish_packet(topic, payload, True, 1)
+    )
     sock = connect_result.adapter.client._sock
-    assert len(expected) == 1462
+    assert len(expected) == 1464
     assert bytes(sock.sent) == expected
     chunk_size = mqtt_client_module.MQTT_RAW_SEND_CHUNK_BYTES
     assert [len(chunk) for chunk in sock.chunks] == [
@@ -1160,10 +1186,10 @@ def test_sync_transport_to_client_keeps_startup_meta_qos0_by_default():
         chunk_size,
         chunk_size,
         chunk_size,
-        182,
+        184,
     ]
-    assert sock.incoming == bytearray(b"\x40\x02\x00\x01")
-    assert transport.ack_diagnostic() == ""
+    assert sock.incoming == bytearray()
+    assert "last_ack_kind=puback" in transport.ack_diagnostic()
     assert sync_result.diagnostic == ""
 
 
@@ -1270,13 +1296,13 @@ def test_sync_transport_to_client_keeps_mid_size_raw_publish_qos0():
     )
     sock = connect_result.adapter.client._sock
     assert mqtt_client_module.MQTT_RAW_SEND_CHUNK_BYTES < len(expected)
-    assert mqtt_client_module.MQTT_RAW_VERIFY_PUBLISH_BYTES == 0
+    assert mqtt_client_module.MQTT_RAW_VERIFY_PUBLISH_BYTES == 1
     assert bytes(sock.sent) == expected
     assert [len(chunk) for chunk in sock.chunks] == [len(expected)]
     assert sock.incoming == bytearray(b"\x40\x02\x00\x01")
 
 
-def test_sync_transport_to_client_ignores_puback_timeout_by_default():
+def test_sync_transport_to_client_reports_startup_puback_timeout_by_default():
     runtime_config = _runtime_config()
     transport = MQTTTransport("broker.local", 1883)
     transport.mark_connect_requested()
@@ -1293,14 +1319,18 @@ def test_sync_transport_to_client_ignores_puback_timeout_by_default():
 
     sync_result = sync_transport_to_client(connect_result.adapter, transport)
 
-    assert sync_result.phase == "synced"
-    assert sync_result.published_count == 1
-    assert transport.connected is True
-    assert transport.published_messages == []
-    expected = bytes(mqtt_client_module._mqtt_qos0_publish_packet(topic, payload, True))
+    assert sync_result.phase == "error"
+    assert sync_result.published_count == 0
+    assert transport.connected is False
+    assert len(transport.published_messages) == 1
+    expected = bytes(
+        mqtt_client_module._mqtt_qos1_publish_packet(topic, payload, True, 1)
+    )
     sock = connect_result.adapter.client._sock
     assert bytes(sock.sent) == expected
     assert transport.ack_diagnostic() == ""
+    assert "raw_publish_diag qos=1" in sync_result.errors[0]
+    assert "mqtt_puback_stage=header" in sync_result.errors[0]
 
 
 def test_sync_transport_to_client_reports_optional_puback_timeout_when_enabled():

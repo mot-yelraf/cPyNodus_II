@@ -138,6 +138,8 @@ try:
             microcontroller.nvm[1] = 0
         if len(microcontroller.nvm) > 2 and microcontroller.nvm[2] != 0:
             microcontroller.nvm[2] = 0
+        if len(microcontroller.nvm) > 3 and microcontroller.nvm[3] != 0:
+            microcontroller.nvm[3] = 0
 except Exception as exc:
     _warn("cold-boot bounce marker reset failed: {err}".format(err=exc))
 
