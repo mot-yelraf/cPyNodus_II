@@ -42,6 +42,10 @@ class FwUpdateCommand:
     message_id: str
     command: str
     package_id: str = ""
+    schema: str = ""
+    session_id: str = ""
+    manifest_sha256: str = ""
+    key_id: str = ""
 
 
 @dataclass(frozen=True)

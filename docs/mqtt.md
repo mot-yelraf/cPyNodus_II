@@ -17,8 +17,9 @@ wins.
 - Calibration uses `nodus/<device_id>/calibration/set`.
 - Log retrieval uses `nodus/<device_id>/logs/get` and returns chunked MQTT
   payloads on `nodus/<device_id>/logs/chunk`.
-- OTA prepare uses `nodus/<device_id>/fwupdate`; files move over HTTP after
-  Nodus reboots into temporary OTA mode.
+- OTA prepare uses signed `nodus-fwupdate/v2` state on
+  `nodus/<device_id>/fwupdate`; signed package files move over HTTP after Nodus
+  reboots into temporary OTA mode.
 - Nodus publishes retained compact `nodus/<device_id>/meta` on
   connect/reconnect. The `sensor.hardware` field reports the concrete sensor
   family when known while logical device IDs remain unchanged.

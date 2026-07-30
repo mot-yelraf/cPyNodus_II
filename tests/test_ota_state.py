@@ -25,6 +25,9 @@ def test_save_and_load_ota_state_round_trip(tmp_path):
     state = FwUpdateState(
         prior_profile="sensorius",
         package_id="ota-tagA-to-tagB",
+        session_id="s" * 32,
+        manifest_sha256="a" * 64,
+        key_id="test-key",
         phase="requested",
     )
 

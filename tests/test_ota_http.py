@@ -2,19 +2,24 @@
 
 import hashlib
 import json
+import shutil
 from types import SimpleNamespace
+
+import pytest
 
 from cpynodus_ii.core.config import RuntimeConfig
 from cpynodus_ii.ota import http as ota_http
 from cpynodus_ii.ota.http import OtaHttpController
 from cpynodus_ii.ota.state import FwUpdateState, load_ota_state, save_ota_state
+from scripts.ota_signing import generate_signing_key, sign_manifest
 
 
 class _FakeRequest:
     def __init__(self, body=b"", query_params=None, headers=None):
         self.body = body
         self.query_params = dict(query_params or {})
-        self.headers = dict(headers or {})
+        self.headers = {"X-Nodus-OTA-Session": "s" * 32}
+        self.headers.update(headers or {})
 
 
 class _MappingLike:
@@ -99,7 +104,8 @@ def test_ota_status_returns_ready_payload(tmp_path):
 
     assert response.body["schema"] == "nodus-ota-status/v1"
     assert response.body["phase"] == "ready"
-    assert response.body["package_id"] == "ota-tagA-to-tagB"
+    assert response.body["package_id"] == ""
+    assert response.body["ota_protocol"] == "v2"
     assert response.body["network"]["ipv4addr"] == "10.0.0.213"
 
 
@@ -205,6 +211,7 @@ def test_ota_abort_rejects_after_commit_applied_pending_boot(tmp_path):
     pending = FwUpdateState(
         prior_profile="homeassistant",
         package_id="ota-tagA-to-tagB",
+        session_id="s" * 32,
         phase="applied_pending_boot",
     )
     save_ota_state(pending, str(tmp_path / "_ota" / "state.json"))
@@ -361,7 +368,12 @@ def test_ota_file_accepts_path_from_mapping_like_headers(tmp_path):
 
     begin_handler(_FakeRequest(json.dumps(manifest).encode("utf-8")))
     request = _FakeRequest(payload)
-    request.headers = _MappingLike({"x-nodus-file-path": "ota_test.py"})
+    request.headers = _MappingLike(
+        {
+            "x-nodus-file-path": "ota_test.py",
+            "x-nodus-ota-session": "s" * 32,
+        }
+    )
     response = file_handler(request)
 
     assert response.status == (200, "OK")
@@ -1154,10 +1166,130 @@ def test_ota_begin_rejects_preserve_conflict(tmp_path):
     assert response.body["error"] == "manifest_preserve_conflict"
 
 
+@pytest.mark.skipif(shutil.which("openssl") is None, reason="openssl unavailable")
+def test_ota_begin_authenticates_exact_v2_manifest(tmp_path):
+    private_key = tmp_path / "private.pem"
+    public_key = tmp_path / "ota-public-key.json"
+    key_document = generate_signing_key(private_key, public_key)
+    manifest = {
+        "schema": "nodus-ota/v2",
+        "package_id": "ota-tagA-to-tagB",
+        "target": {"platform": "pico2w", "circuitpython": "9.2.8"},
+        "requires": {"version": "v0.26.123.6"},
+        "files": [
+            {
+                "path": "code.py",
+                "size": 4,
+                "sha256": "a" * 64,
+            }
+        ],
+        "delete": [],
+        "preserve": ["settings.toml", "ota-public-key.json"],
+    }
+    manifest_path = tmp_path / "signed-manifest.json"
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    signature = sign_manifest(manifest_path, private_key)
+    raw_manifest = manifest_path.read_bytes()
+    state = FwUpdateState(
+        prior_profile="homeassistant",
+        package_id="ota-tagA-to-tagB",
+        session_id="s" * 32,
+        manifest_sha256=hashlib.sha256(raw_manifest).hexdigest(),
+        key_id=key_document["key_id"],
+        phase="ready",
+    )
+    controller = _controller(tmp_path)
+    controller.ota_state = state
+    controller._authorize_begin = OtaHttpController._authorize_begin.__get__(
+        controller, OtaHttpController
+    )
+    controller.manifest_validator = ota_http._validate_manifest_for_begin
+    handler = controller.server.routes[("/ota/begin", ("POST",))]
+
+    response = handler(
+        _FakeRequest(
+            raw_manifest,
+            headers={
+                "X-Nodus-OTA-Key-Id": key_document["key_id"],
+                "X-Nodus-OTA-Signature": signature["signature"],
+            },
+        )
+    )
+
+    assert response.status == (200, "OK")
+    assert response.body["accepted"] is True
+
+
+@pytest.mark.skipif(shutil.which("openssl") is None, reason="openssl unavailable")
+def test_ota_begin_rejects_bad_signature_and_preserves_prior_backup(tmp_path):
+    private_key = tmp_path / "private.pem"
+    public_key = tmp_path / "ota-public-key.json"
+    key_document = generate_signing_key(private_key, public_key)
+    raw_manifest = json.dumps(
+        {
+            "schema": "nodus-ota/v2",
+            "package_id": "ota-tagA-to-tagB",
+            "target": {"platform": "pico2w", "circuitpython": "9.2.8"},
+            "requires": {"version": "v0.26.123.6"},
+            "files": [],
+            "delete": [],
+            "preserve": ["settings.toml", "ota-public-key.json"],
+        },
+        sort_keys=True,
+    ).encode("utf-8")
+    state = FwUpdateState(
+        prior_profile="homeassistant",
+        package_id="ota-tagA-to-tagB",
+        session_id="s" * 32,
+        manifest_sha256=hashlib.sha256(raw_manifest).hexdigest(),
+        key_id=key_document["key_id"],
+        phase="ready",
+    )
+    controller = _controller(tmp_path)
+    controller.ota_state = state
+    controller._authorize_begin = OtaHttpController._authorize_begin.__get__(
+        controller, OtaHttpController
+    )
+    backup = tmp_path / "_ota" / "backup" / "cpynodus_ii" / "app.mpy"
+    backup.parent.mkdir(parents=True)
+    backup.write_bytes(b"prior firmware")
+
+    response = controller.server.routes[("/ota/begin", ("POST",))](
+        _FakeRequest(
+            raw_manifest,
+            headers={
+                "X-Nodus-OTA-Key-Id": key_document["key_id"],
+                "X-Nodus-OTA-Signature": "invalid",
+            },
+        )
+    )
+
+    assert response.status == (401, "Unauthorized")
+    assert response.body["error"] == "ota_signature_invalid"
+    assert load_ota_state(str(tmp_path / "_ota" / "state.json")) is None
+    assert backup.read_bytes() == b"prior firmware"
+
+
+def test_ota_mutating_route_rejects_wrong_session(tmp_path):
+    controller = _controller(tmp_path)
+    response = controller.server.routes[("/ota/commit", ("POST",))](
+        _FakeRequest(headers={"X-Nodus-OTA-Session": "wrong"})
+    )
+
+    assert response.status == (401, "Unauthorized")
+    assert response.body["error"] == "ota_session_mismatch"
+
+
 def _controller(tmp_path, **kwargs):
     state = FwUpdateState(
         prior_profile="homeassistant",
         package_id="ota-tagA-to-tagB",
+        session_id="s" * 32,
+        manifest_sha256="a" * 64,
+        key_id="test-key",
         phase="ready",
     )
     controller = OtaHttpController(
@@ -1175,4 +1307,42 @@ def _controller(tmp_path, **kwargs):
         server_module=_FakeServerModule,
         **kwargs,
     ).start()
+    controller._authorize_begin = lambda request, raw_manifest: ""
+    controller.manifest_validator = _legacy_manifest_validator
     return controller
+
+
+def _legacy_manifest_validator(manifest, state, **_kwargs):
+    if manifest.get("schema") != "nodus-ota/v1":
+        return "manifest_schema_invalid"
+    package_id = str(manifest.get("package_id", "") or "").strip()
+    if not package_id:
+        return "package_id_missing"
+    if package_id != str(getattr(state, "package_id", "") or ""):
+        return "package_id_mismatch"
+    files = manifest.get("files", ())
+    if not isinstance(files, list):
+        return "manifest_files_invalid"
+    preserve = set(manifest.get("preserve", ()) or ())
+    seen = set()
+    for entry in files:
+        if not isinstance(entry, dict):
+            return "manifest_file_invalid"
+        path = ota_http._normalize_package_path(entry.get("path", ""))
+        if not path:
+            return "manifest_file_path_invalid"
+        if path in preserve:
+            return "manifest_preserve_conflict"
+        if path in seen:
+            return "manifest_file_duplicate"
+        seen.add(path)
+    for raw_path in manifest.get("delete", ()) or ():
+        path = ota_http._normalize_package_path(raw_path)
+        if not path:
+            return "manifest_delete_path_invalid"
+        if path in preserve:
+            return "manifest_preserve_conflict"
+        if path in seen:
+            return "manifest_path_conflict"
+        seen.add(path)
+    return ""

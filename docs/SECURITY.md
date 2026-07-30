@@ -9,6 +9,12 @@ Care should be taken if the plan is to deploy this firmware in environments wher
 This project is not hardened against physical access to the device filesystem.
 If an attacker has access to the CIRCUITPY drive, credentials may be recoverable.
 
+OTA firmware packages require an RSA-2048/SHA-256 signature over the exact
+manifest bytes. Devices store only the trusted public key; release private keys
+must remain outside this repository and outside deployed devices. OTA package
+transport remains plain HTTP on the local network, so signing protects package
+authenticity and integrity but does not provide transport confidentiality.
+
 ## Reporting a vulnerability
 
 No formal security audit has been performed.

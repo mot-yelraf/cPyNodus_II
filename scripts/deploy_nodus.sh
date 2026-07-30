@@ -170,6 +170,10 @@ Options:
   --delete            Delete files on destination not present in source set.
                       Supported only with `--content full`.
   --prune-deprecated  Remove target paths listed in scripts/deprecated_target_files.txt.
+  --ota-public-key PATH
+                      Copy a trusted OTA public-key JSON to
+                      /ota-public-key.json. Existing keys are preserved when
+                      this option is omitted.
   --clear-reboot-log  Remove target postmortem logs after deploy (default).
   --keep-reboot-log   Preserve target postmortem logs.
   --help              Show this help.
@@ -192,6 +196,7 @@ FORCE=0
 DELETE_MODE=0
 PRUNE_DEPRECATED=0
 CLEAR_REBOOT_LOG=1
+OTA_PUBLIC_KEY_PATH=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -222,6 +227,10 @@ while [[ $# -gt 0 ]]; do
     --prune-deprecated)
       PRUNE_DEPRECATED=1
       shift
+      ;;
+    --ota-public-key)
+      OTA_PUBLIC_KEY_PATH="${2:-}"
+      shift 2
       ;;
     --clear-reboot-log)
       CLEAR_REBOOT_LOG=1
@@ -311,6 +320,7 @@ RSYNC_ARGS=(
   --exclude="*.pyc"
   --exclude="*.pyo"
   --exclude=".codex_write_test_*.tmp"
+  --exclude="/ota-public-key.json"
   --exclude="pyproject.toml"
 )
 
@@ -351,6 +361,26 @@ fi
 run_full_sync() {
   local destination="$1"
   rsync "${RSYNC_ARGS[@]}" "$SRC" "$destination"
+}
+
+sync_ota_public_key() {
+  local destination="$1"
+  local key_rsync_args=(-av --checksum --human-readable)
+  if [[ -z "$OTA_PUBLIC_KEY_PATH" ]]; then
+    return
+  fi
+  if [[ ! -f "$OTA_PUBLIC_KEY_PATH" ]]; then
+    echo "OTA public key file not found: $OTA_PUBLIC_KEY_PATH" >&2
+    exit 2
+  fi
+  if [[ $DRY_RUN -eq 1 ]]; then
+    key_rsync_args+=(--dry-run --itemize-changes)
+  fi
+  if [[ "$DEPLOY_MODE" == "drive" ]]; then
+    key_rsync_args+=(--inplace --no-perms --no-owner --no-group --omit-dir-times)
+  fi
+  rsync "${key_rsync_args[@]}" "$OTA_PUBLIC_KEY_PATH" \
+    "${destination%/}/ota-public-key.json"
 }
 
 find_mpy_rebuild_reason() {
@@ -757,6 +787,8 @@ else
     *) run_full_sync "$DEST" ;;
   esac
 fi
+
+sync_ota_public_key "$DEST"
 
 if [[ $PRUNE_DEPRECATED -eq 1 ]]; then
   prune_deprecated_targets "$DEST"

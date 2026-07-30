@@ -619,10 +619,13 @@ Canonical prepare payload:
 
 ```json
 {
-  "schema": "nodus-fwupdate/v1",
+  "schema": "nodus-fwupdate/v2",
   "message_id": "fw-20260504T193222Z",
   "command": "prepare",
-  "package_id": "ota-tagA-to-tagB"
+  "package_id": "ota-tagA-to-tagB",
+  "session_id": "32-or-more-random-hex-characters",
+  "manifest_sha256": "64-lowercase-hex-characters",
+  "key_id": "trusted-key-id"
 }
 ```
 
@@ -639,6 +642,11 @@ Implemented behavior:
   soft-reboots into temporary OTA mode.
 - OTA mode does not run MQTT. Sensorius or the CLI transfers package files
   over HTTP using the endpoints in `docs/ota.md`.
+- `/ota/begin` verifies the detached RSA/SHA-256 signature over the exact
+  manifest bytes before accepting content. Every mutating HTTP request must
+  carry the one-use `X-Nodus-OTA-Session` value established by prepare.
+- cPyNodus II does not accept unsigned v1 manifests after OTA signing is
+  installed.
 - OTA HTTP mode self-aborts and reboots after five minutes without
   `/ota/begin`, after 15 minutes without accepted staging activity, or after an
   unrecoverable HTTP poll failure.

@@ -177,11 +177,14 @@ history, then packaged with:
 python scripts/nodus_ota.py package \
   --from OTA-Verified---baseline \
   --to <release-tag> \
-  --out build/ota/OTA-Verified---baseline_to_<release-tag>
+  --target <pico2w-or-xesp32s3> \
+  --compiled-root build/firmware/<target> \
+  --out build/ota/cpynodusii_<from-version>_to_<to-version>_<target> \
+  --signing-key /secure/path/cpynodusii-ota-private.pem
 ```
 
 See [OTA](./ota.md) for the full tag workflow, manifest expectations, and
-MQTT-prepare plus HTTP-transfer push command.
+public-key provisioning, signed MQTT-prepare, and HTTP-transfer push command.
 
 ## Boot Flow
 

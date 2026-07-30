@@ -286,6 +286,9 @@ def process_fwupdate_message(
             FwUpdateState(
                 prior_profile=runtime_config.active_profile,
                 package_id=command.package_id,
+                session_id=command.session_id,
+                manifest_sha256=command.manifest_sha256,
+                key_id=command.key_id,
                 phase="requested",
             ),
             _ota_state_path(settings_root),
@@ -1300,17 +1303,29 @@ def parse_fwupdate_command(payload_text):
     if payload is None:
         return None
     message_id = str(payload.get("message_id", "") or "").strip()
+    schema = str(payload.get("schema", "") or "").strip()
     body = payload.get("payload") or {}
     command = str(payload.get("command", body.get("command", "")) or "").strip()
     package_id = str(
         payload.get("package_id", body.get("package_id", "")) or ""
     ).strip()
+    session_id = str(
+        payload.get("session_id", body.get("session_id", "")) or ""
+    ).strip()
+    manifest_sha256 = str(
+        payload.get("manifest_sha256", body.get("manifest_sha256", "")) or ""
+    ).strip().lower()
+    key_id = str(payload.get("key_id", body.get("key_id", "")) or "").strip()
     if not (message_id and command):
         return None
     return FwUpdateCommand(
         message_id=message_id,
         command=command.lower(),
         package_id=package_id,
+        schema=schema,
+        session_id=session_id,
+        manifest_sha256=manifest_sha256,
+        key_id=key_id,
     )
 
 
@@ -1396,15 +1411,43 @@ def _process_log_transfer_message(
 
 
 def _fwupdate_prepare_error(command, settings_root):
+    if command.schema != "nodus-fwupdate/v2":
+        return "fwupdate_schema_invalid"
     if command.command != "prepare":
         return "unsupported_fwupdate_command"
     if not command.package_id:
         return "package_id_missing"
+    if len(command.session_id) < 32:
+        return "ota_session_invalid"
+    if len(command.manifest_sha256) != 64 or not _is_hex_text(
+        command.manifest_sha256
+    ):
+        return "manifest_sha256_invalid"
+    if not _safe_ota_key_id(command.key_id):
+        return "ota_signing_key_missing"
     if not settings_root:
         return "read_only_filesystem"
     if _filesystem_writable(settings_root) is False:
         return "read_only_filesystem"
     return ""
+
+
+def _is_hex_text(value):
+    text = str(value or "").lower()
+    for character in text:
+        if character not in "0123456789abcdef":
+            return False
+    return bool(text)
+
+
+def _safe_ota_key_id(value):
+    text = str(value or "")
+    if not text or len(text) > 64:
+        return False
+    for character in text:
+        if not (character.isalnum() or character in {"_", "-", "."}):
+            return False
+    return True
 
 
 def _filesystem_writable(root):

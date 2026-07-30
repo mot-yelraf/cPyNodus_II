@@ -21,6 +21,10 @@ __pycache__/
 /switch.toml
 scripts/nodus_getlogs.toml
 
+# OTA release private keys must never be committed
+*ota-private*.pem
+*ota-signing*.pem
+
 # Retrieved device logs (OTA packages remain trackable)
 build/nodus-logs/
 

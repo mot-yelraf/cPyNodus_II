@@ -250,7 +250,7 @@ def build_runtime_meta_payload(
         },
         "mqtt": mqtt_payload,
         "fwupdate": {
-            "schema": "nodus-fwupdate/v1",
+            "schema": "nodus-fwupdate/v2",
             "transport": "http",
             "prepare_topic": mqtt_topic(runtime_config, device_id, "fwupdate"),
             "ack_topic": mqtt_topic(runtime_config, device_id, "fwupdate", "ack"),

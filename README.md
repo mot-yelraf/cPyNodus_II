@@ -44,8 +44,8 @@ for the current board mappings.
 - NodusWeb-local sensor, time, timer, and AND/OR switch automations
 - Bounded recovery and reboot diagnostics on writable filesystems
 - Target-specific compiled MPY firmware builds
-- OTA preparation, chunked HTTP transfer, verification, transactional apply,
-  and rollback support
+- Signed OTA preparation, authenticated chunked HTTP transfer, verification,
+  transactional apply, and rollback support
 
 ## Runtime profiles
 
@@ -112,6 +112,8 @@ Credentials written by onboarding are obfuscated rather than encrypted, and
 the firmware is not hardened against physical access to the CircuitPython
 filesystem. Review the [security policy](docs/SECURITY.md) before deployment
 in any environment where credential or device access would be consequential.
+OTA packages are authenticated with a device-held public key, but their
+temporary HTTP transport is not confidential.
 
 Report suspected vulnerabilities privately using the process in the security
 policy rather than opening a public issue.

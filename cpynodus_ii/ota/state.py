@@ -21,14 +21,18 @@ class FwUpdateState:
 
     `prior_profile` lets normal runtime resume the same profile after a
     successful update. `package_id` binds the MQTT prepare request to the
-    HTTP transfer, and `phase` records whether OTA is requested, ready,
-    staging, applying, applied_pending_boot, boot_pending, applied, aborted, or
-    invalid.
+    HTTP transfer. `session_id`, `manifest_sha256`, and `key_id` bind the
+    signed HTTP exchange to one MQTT prepare request. `phase` records whether
+    OTA is requested, ready, staging, applying, applied_pending_boot,
+    boot_pending, applied, aborted, or invalid.
     """
 
     mode: str = "ota"
     prior_profile: str = ""
     package_id: str = ""
+    session_id: str = ""
+    manifest_sha256: str = ""
+    key_id: str = ""
     phase: str = "requested"
     error: str = ""
 
@@ -38,6 +42,9 @@ class FwUpdateState:
             "mode": str(self.mode or "ota"),
             "prior_profile": str(self.prior_profile or ""),
             "package_id": str(self.package_id or ""),
+            "session_id": str(self.session_id or ""),
+            "manifest_sha256": str(self.manifest_sha256 or ""),
+            "key_id": str(self.key_id or ""),
             "phase": str(self.phase or "requested"),
         }
         if self.error:
@@ -69,6 +76,9 @@ def load_ota_state(path=OTA_STATE_FILE):
         mode=str(document.get("mode", "ota") or "ota"),
         prior_profile=str(document.get("prior_profile", "") or ""),
         package_id=str(document.get("package_id", "") or ""),
+        session_id=str(document.get("session_id", "") or ""),
+        manifest_sha256=str(document.get("manifest_sha256", "") or ""),
+        key_id=str(document.get("key_id", "") or ""),
         phase=str(document.get("phase", "requested") or "requested"),
         error=str(document.get("error", "") or ""),
     )
@@ -110,6 +120,9 @@ def _coerce_state(state):
             mode=str(state.get("mode", "ota") or "ota"),
             prior_profile=str(state.get("prior_profile", "") or ""),
             package_id=str(state.get("package_id", "") or ""),
+            session_id=str(state.get("session_id", "") or ""),
+            manifest_sha256=str(state.get("manifest_sha256", "") or ""),
+            key_id=str(state.get("key_id", "") or ""),
             phase=str(state.get("phase", "requested") or "requested"),
             error=str(state.get("error", "") or ""),
         )
