@@ -23,6 +23,7 @@ from cpynodus_ii.ota.state import (
 _HTTP_STATUS = {
     200: "OK",
     400: "Bad Request",
+    401: "Unauthorized",
     404: "Not Found",
     409: "Conflict",
     500: "Internal Server Error",
@@ -140,6 +141,19 @@ class OtaHttpController:
         self._reboot_due_at = -1.0
         self._reboot_requested = False
         self._last_activity_at = self._monotonic()
+        self.manifest_validator = _validate_manifest_for_begin
+        self.platform = "pico2w"
+        self.circuitpython = "9.2.8"
+        try:
+            from cpynodus_ii.core.board_profile import selected_board_profile
+
+            profile = selected_board_profile()
+            self.platform = str(getattr(profile, "key", "") or self.platform)
+            self.circuitpython = str(
+                getattr(profile, "circuitpython_version", "") or self.circuitpython
+            )
+        except Exception:
+            pass
 
     def start(self):
         """Initialize the backing HTTP server and register OTA routes."""
@@ -271,7 +285,14 @@ class OtaHttpController:
         @route("/ota/begin", methods=["POST"])
         def _begin(request):
             _collect_garbage()
-            manifest = _parse_json_body(request)
+            raw_manifest = _request_body_bytes(request)
+            error = self._authorize_begin(request, raw_manifest)
+            if error:
+                self._log("begin rejected error={} action=abort".format(error))
+                payload = self._reject_unauthorized_begin(error)
+                self._schedule_reboot()
+                return self._json_response(request, payload, status_code=401)
+            manifest = _parse_json_bytes(raw_manifest)
             if manifest is None:
                 self._log("begin rejected error=invalid_json action=abort")
                 payload, status_code = self._abort_transfer("invalid_json")
@@ -287,6 +308,11 @@ class OtaHttpController:
         @route("/ota/file", methods=["PUT"])
         def _file(request):
             try:
+                error = self._session_error(request)
+                if error:
+                    return self._json_response(
+                        request, _error_payload(error, "staging"), status_code=401
+                    )
                 path = _request_path_arg(request)
                 body = _request_body_bytes(request)
                 self._log("file received path={} bytes={}".format(path, len(body)))
@@ -302,6 +328,11 @@ class OtaHttpController:
 
         @route("/ota/file/begin", methods=["POST"])
         def _file_begin(request):
+            error = self._session_error(request)
+            if error:
+                return self._json_response(
+                    request, _error_payload(error, "staging"), status_code=401
+                )
             path = _request_path_arg(request)
             payload, status_code = self._handle_file_begin(path)
             return self._json_response(request, payload, status_code=status_code)
@@ -309,6 +340,11 @@ class OtaHttpController:
         @route("/ota/file/chunk", methods=["PUT"])
         def _file_chunk(request):
             try:
+                error = self._session_error(request)
+                if error:
+                    return self._json_response(
+                        request, _error_payload(error, "staging"), status_code=401
+                    )
                 path = _request_path_arg(request)
                 offset = _request_int_arg(request, "offset", -1)
                 body = _request_body_bytes(request)
@@ -331,6 +367,11 @@ class OtaHttpController:
         @route("/ota/file/end", methods=["POST"])
         def _file_end(request):
             try:
+                error = self._session_error(request)
+                if error:
+                    return self._json_response(
+                        request, _error_payload(error, "staging"), status_code=401
+                    )
                 _collect_garbage()
                 path = _request_path_arg(request)
                 payload, status_code = self._handle_file_end(path)
@@ -346,6 +387,11 @@ class OtaHttpController:
 
         @route("/ota/commit", methods=["POST"])
         def _commit(request):
+            error = self._session_error(request)
+            if error:
+                return self._json_response(
+                    request, _error_payload(error, "staging"), status_code=401
+                )
             _collect_garbage()
             payload, status_code = self._handle_commit()
             _collect_garbage()
@@ -353,6 +399,11 @@ class OtaHttpController:
 
         @route("/ota/abort", methods=["POST"])
         def _abort(request):
+            error = self._session_error(request)
+            if error:
+                return self._json_response(
+                    request, _error_payload(error, "aborted"), status_code=401
+                )
             state = (
                 load_ota_state(_ota_state_path(self.settings_root))
                 or self.ota_state
@@ -377,10 +428,64 @@ class OtaHttpController:
                 },
             )
 
+    def _authorize_begin(self, request, raw_manifest):
+        error = self._session_error(request)
+        if error:
+            return error
+        state = load_ota_state(_ota_state_path(self.settings_root)) or self.ota_state
+        from cpynodus_ii.ota.auth import (
+            load_public_key,
+            sha256_hex,
+            verify_manifest_signature,
+        )
+
+        self._log_memory("auth_before")
+        actual_sha = sha256_hex(raw_manifest)
+        expected_sha = str(getattr(state, "manifest_sha256", "") or "").lower()
+        if actual_sha != expected_sha:
+            return "manifest_sha256_mismatch"
+        key_id = _request_header(request, "X-Nodus-OTA-Key-Id")
+        signature = _request_header(request, "X-Nodus-OTA-Signature")
+        if key_id != str(getattr(state, "key_id", "") or ""):
+            return "ota_signing_key_mismatch"
+        key_path = _join_root(self.settings_root, "ota-public-key.json")
+        error = verify_manifest_signature(
+            raw_manifest,
+            signature,
+            load_public_key(key_path),
+            key_id,
+        )
+        self._log_memory("auth_after")
+        return error
+
+    def _session_error(self, request):
+        state = load_ota_state(_ota_state_path(self.settings_root)) or self.ota_state
+        expected = str(getattr(state, "session_id", "") or "")
+        supplied = _request_header(request, "X-Nodus-OTA-Session")
+        if not expected or not supplied or not _constant_time_text_equal(
+            expected, supplied
+        ):
+            return "ota_session_mismatch"
+        return ""
+
+    def _log_memory(self, phase):
+        _collect_garbage()
+        try:
+            free_mem = gc.mem_free()
+        except Exception:
+            free_mem = "unknown"
+        self._log("phase={} free_mem={}".format(phase, free_mem))
+
     def _handle_begin(self, manifest):
         _collect_garbage()
         state = load_ota_state(_ota_state_path(self.settings_root)) or self.ota_state
-        error = _validate_manifest_for_begin(manifest, state)
+        error = self.manifest_validator(
+            manifest,
+            state,
+            version=self.version,
+            platform=self.platform,
+            circuitpython=self.circuitpython,
+        )
         if error:
             self._log("begin rejected error={} action=abort".format(error))
             return self._abort_transfer(error)
@@ -391,6 +496,9 @@ class OtaHttpController:
         next_state = FwUpdateState(
             prior_profile=getattr(state, "prior_profile", "") or "",
             package_id=str(manifest.get("package_id", "") or ""),
+            session_id=getattr(state, "session_id", "") or "",
+            manifest_sha256=getattr(state, "manifest_sha256", "") or "",
+            key_id=getattr(state, "key_id", "") or "",
             phase="staging",
         )
         _cleanup_package_workspace(self.settings_root)
@@ -420,10 +528,31 @@ class OtaHttpController:
         self._abort_transfer_state(state, error)
         return _error_payload(error, "aborted"), 400
 
+    def _reject_unauthorized_begin(self, error):
+        """Clear the one-use request without touching prior rollback artifacts."""
+        state = load_ota_state(_ota_state_path(self.settings_root)) or self.ota_state
+        self.ota_state = FwUpdateState(
+            prior_profile=getattr(state, "prior_profile", "") or "",
+            package_id=getattr(state, "package_id", "") or "",
+            phase="aborted",
+            error=str(error or "ota_authentication_failed"),
+        )
+        clear_ota_state(_ota_state_path(self.settings_root))
+        self._log(
+            "authentication rejected package={} error={} state=cleared".format(
+                self.ota_state.package_id or "none",
+                self.ota_state.error,
+            )
+        )
+        return _error_payload(error, "aborted")
+
     def _abort_transfer_state(self, state, error):
         aborted = FwUpdateState(
             prior_profile=getattr(state, "prior_profile", "") or "",
             package_id=getattr(state, "package_id", "") or "",
+            session_id=getattr(state, "session_id", "") or "",
+            manifest_sha256=getattr(state, "manifest_sha256", "") or "",
+            key_id=getattr(state, "key_id", "") or "",
             phase="aborted",
             error=str(error or "ota_aborted"),
         )
@@ -666,6 +795,9 @@ class OtaHttpController:
             applying_state = FwUpdateState(
                 prior_profile=getattr(state, "prior_profile", "") or "",
                 package_id=getattr(state, "package_id", "") or "",
+                session_id=getattr(state, "session_id", "") or "",
+                manifest_sha256=getattr(state, "manifest_sha256", "") or "",
+                key_id=getattr(state, "key_id", "") or "",
                 phase="applying",
             )
             save_ota_state(applying_state, _ota_state_path(self.settings_root))
@@ -692,6 +824,9 @@ class OtaHttpController:
             staging_state = FwUpdateState(
                 prior_profile=getattr(state, "prior_profile", "") or "",
                 package_id=getattr(state, "package_id", "") or "",
+                session_id=getattr(state, "session_id", "") or "",
+                manifest_sha256=getattr(state, "manifest_sha256", "") or "",
+                key_id=getattr(state, "key_id", "") or "",
                 phase="staging",
             )
             save_ota_state(staging_state, _ota_state_path(self.settings_root))
@@ -704,6 +839,9 @@ class OtaHttpController:
         applied_state = FwUpdateState(
             prior_profile=getattr(state, "prior_profile", "") or "",
             package_id=getattr(state, "package_id", "") or "",
+            session_id=getattr(state, "session_id", "") or "",
+            manifest_sha256=getattr(state, "manifest_sha256", "") or "",
+            key_id=getattr(state, "key_id", "") or "",
             phase="applied_pending_boot",
         )
         save_ota_state(applied_state, _ota_state_path(self.settings_root))
@@ -829,7 +967,10 @@ def build_ota_status_payload(
         "schema": "nodus-ota-status/v1",
         "version": str(version or ""),
         "phase": state.phase,
-        "package_id": state.package_id,
+        "package_id": "",
+        "ota_protocol": "v2",
+        "authentication": "rsa-pkcs1v15-sha256",
+        "key_id": state.key_id,
         "prior_profile": state.prior_profile,
         "http": {
             "phase": str(http_phase or ""),
@@ -853,8 +994,15 @@ def build_ota_status_payload(
     }
 
 
-def _validate_manifest_for_begin(manifest, ota_state):
-    if manifest.get("schema") != "nodus-ota/v1":
+def _validate_manifest_for_begin(
+    manifest,
+    ota_state,
+    *,
+    version="",
+    platform="",
+    circuitpython="",
+):
+    if manifest.get("schema") != "nodus-ota/v2":
         return "manifest_schema_invalid"
     package_id = str(manifest.get("package_id", "") or "").strip()
     if not package_id:
@@ -862,10 +1010,22 @@ def _validate_manifest_for_begin(manifest, ota_state):
     expected_package_id = str(getattr(ota_state, "package_id", "") or "").strip()
     if expected_package_id and package_id != expected_package_id:
         return "package_id_mismatch"
+    target = manifest.get("target")
+    if not isinstance(target, dict):
+        return "manifest_target_invalid"
+    if str(target.get("platform", "") or "") != str(platform or ""):
+        return "manifest_platform_mismatch"
+    if str(target.get("circuitpython", "") or "") != str(circuitpython or ""):
+        return "manifest_circuitpython_mismatch"
+    requires = manifest.get("requires")
+    if not isinstance(requires, dict):
+        return "manifest_requires_invalid"
+    if str(requires.get("version", "") or "") != str(version or ""):
+        return "manifest_version_mismatch"
     files = manifest.get("files", ())
     if not isinstance(files, list):
         return "manifest_files_invalid"
-    preserve_raw = manifest.get("preserve", ()) or ()
+    preserve_raw = manifest.get("preserve", ())
     if "preserve" in manifest and not isinstance(preserve_raw, list):
         return "manifest_preserve_invalid"
     preserve = set()
@@ -883,16 +1043,22 @@ def _validate_manifest_for_begin(manifest, ota_state):
         safe_path = _normalize_package_path(entry.get("path", ""))
         if not safe_path:
             return "manifest_file_path_invalid"
+        if not _ota_payload_path_allowed(safe_path):
+            return "manifest_file_path_forbidden"
         if safe_path in seen:
             return "manifest_file_duplicate"
         if safe_path in preserve:
             return "manifest_preserve_conflict"
         seen.add(safe_path)
-        if int(entry.get("size", -1) or -1) < 0:
+        try:
+            size = int(entry.get("size", -1) or -1)
+        except (TypeError, ValueError):
             return "manifest_file_size_invalid"
-        if len(str(entry.get("sha256", "") or "")) != 64:
+        if size < 0:
+            return "manifest_file_size_invalid"
+        if not _is_sha256_text(entry.get("sha256", "")):
             return "manifest_file_sha256_invalid"
-    delete_paths = manifest.get("delete", ()) or ()
+    delete_paths = manifest.get("delete", ())
     if "delete" in manifest and not isinstance(delete_paths, list):
         return "manifest_delete_invalid"
     delete_seen = set()
@@ -900,6 +1066,8 @@ def _validate_manifest_for_begin(manifest, ota_state):
         safe_path = _normalize_package_path(raw_path)
         if not safe_path:
             return "manifest_delete_path_invalid"
+        if not _ota_delete_path_allowed(safe_path):
+            return "manifest_delete_path_forbidden"
         if safe_path in delete_seen:
             return "manifest_delete_duplicate"
         if safe_path in seen:
@@ -908,21 +1076,74 @@ def _validate_manifest_for_begin(manifest, ota_state):
             return "manifest_preserve_conflict"
         delete_seen.add(safe_path)
         seen.add(safe_path)
+    for entry in files:
+        safe_path = _normalize_package_path(entry.get("path", ""))
+        if safe_path.startswith("cpynodus_ii/") and safe_path.endswith(".mpy"):
+            source_path = "{}.py".format(safe_path[:-4])
+            if source_path not in delete_seen:
+                return "manifest_source_delete_missing"
     return ""
 
 
-def _parse_json_body(request):
+def _parse_json_bytes(raw):
     try:
-        raw = getattr(request, "body", b"")
-        if isinstance(raw, (bytes, bytearray)):
-            raw = raw.decode("utf-8")
-        text = str(raw or "").strip()
-        if not text:
-            return {}
+        text = bytes(raw).decode("utf-8")
         payload = json.loads(text)
     except Exception:
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def _ota_payload_path_allowed(path):
+    if path in {"boot.py", "code.py", "dataclass.py", "dataclasses.py"}:
+        return True
+    if path in {
+        "settings.toml.def",
+        "sensor_i2c.toml.def",
+        "sensor_soil.toml.def",
+        "switch.toml.def",
+    }:
+        return True
+    if path.startswith("cpynodus_ii/"):
+        return path.endswith(".mpy")
+    if path.startswith("boards/"):
+        return path.endswith(".toml.def")
+    return False
+
+
+def _ota_delete_path_allowed(path):
+    if path in {
+        "settings.toml.def",
+        "sensor_i2c.toml.def",
+        "sensor_soil.toml.def",
+        "switch.toml.def",
+    }:
+        return True
+    if path.startswith("cpynodus_ii/"):
+        return path.endswith(".py") or path.endswith(".mpy")
+    if path.startswith("boards/"):
+        return path.endswith(".toml.def")
+    return False
+
+
+def _is_sha256_text(value):
+    text = str(value or "").lower()
+    if len(text) != 64:
+        return False
+    for character in text:
+        if character not in "0123456789abcdef":
+            return False
+    return True
+
+
+def _constant_time_text_equal(left, right):
+    left_bytes = str(left or "").encode("utf-8")
+    right_bytes = str(right or "").encode("utf-8")
+    mismatch = len(left_bytes) ^ len(right_bytes)
+    limit = min(len(left_bytes), len(right_bytes))
+    for index in range(limit):
+        mismatch |= left_bytes[index] ^ right_bytes[index]
+    return mismatch == 0
 
 
 def _request_body_bytes(request):

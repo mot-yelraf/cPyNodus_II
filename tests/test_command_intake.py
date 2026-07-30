@@ -312,12 +312,19 @@ def test_process_log_transfer_session_publishes_chunks_then_result(tmp_path):
 
 def test_parse_fwupdate_command_accepts_prepare_payload():
     command = parse_fwupdate_command(
-        '{"message_id":"fw-1","command":"prepare","package_id":"ota-tagA-to-tagB"}'
+        '{"schema":"nodus-fwupdate/v2","message_id":"fw-1",'
+        '"command":"prepare","package_id":"ota-tagA-to-tagB",'
+        '"session_id":"ssssssssssssssssssssssssssssssss",'
+        '"manifest_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+        'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","key_id":"test-key"}'
     )
 
     assert command.message_id == "fw-1"
     assert command.command == "prepare"
     assert command.package_id == "ota-tagA-to-tagB"
+    assert command.session_id == "s" * 32
+    assert command.manifest_sha256 == "a" * 64
+    assert command.key_id == "test-key"
 
 
 def test_process_fwupdate_message_persists_prepare_state(tmp_path):
@@ -329,8 +336,11 @@ def test_process_fwupdate_message_persists_prepare_state(tmp_path):
         runtime_config,
         topic="nodus/switch-x943fm/fwupdate",
         payload_text=(
-            '{"message_id":"fw-1","command":"prepare",'
-            '"package_id":"ota-tagA-to-tagB"}'
+            '{"schema":"nodus-fwupdate/v2","message_id":"fw-1",'
+            '"command":"prepare","package_id":"ota-tagA-to-tagB",'
+            '"session_id":"ssssssssssssssssssssssssssssssss",'
+            '"manifest_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+            'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","key_id":"test-key"}'
         ),
         settings_root=tmp_path,
     )
@@ -344,6 +354,9 @@ def test_process_fwupdate_message_persists_prepare_state(tmp_path):
     assert result.reboot_requested is True
     assert state.prior_profile == runtime_config.active_profile
     assert state.package_id == "ota-tagA-to-tagB"
+    assert state.session_id == "s" * 32
+    assert state.manifest_sha256 == "a" * 64
+    assert state.key_id == "test-key"
     assert state.phase == "requested"
     assert [message.topic for message in transport.published_messages] == [
         "nodus/switch-x943fm/fwupdate/ack",
@@ -361,8 +374,11 @@ def test_process_fwupdate_message_rejects_missing_writable_root():
         _runtime_config(),
         topic="nodus/switch-x943fm/fwupdate",
         payload_text=(
-            '{"message_id":"fw-1","command":"prepare",'
-            '"package_id":"ota-tagA-to-tagB"}'
+            '{"schema":"nodus-fwupdate/v2","message_id":"fw-1",'
+            '"command":"prepare","package_id":"ota-tagA-to-tagB",'
+            '"session_id":"ssssssssssssssssssssssssssssssss",'
+            '"manifest_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+            'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","key_id":"test-key"}'
         ),
         settings_root=None,
     )
@@ -377,7 +393,11 @@ def test_process_inbound_messages_handles_fwupdate_prepare(tmp_path):
     transport = MQTTTransport("broker.local", 1883)
     transport.receive(
         "nodus/switch-x943fm/fwupdate",
-        '{"message_id":"fw-1","command":"prepare","package_id":"ota-tagA-to-tagB"}',
+        '{"schema":"nodus-fwupdate/v2","message_id":"fw-1",'
+        '"command":"prepare","package_id":"ota-tagA-to-tagB",'
+        '"session_id":"ssssssssssssssssssssssssssssssss",'
+        '"manifest_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+        'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","key_id":"test-key"}',
     )
 
     results = process_inbound_messages(

@@ -180,7 +180,7 @@ def test_runtime_meta_payload_includes_sensor_and_switch_topics():
     assert payload["capabilities"]["log_transfer"] is True
     assert "logs" not in payload
     assert payload["fwupdate"] == {
-        "schema": "nodus-fwupdate/v1",
+        "schema": "nodus-fwupdate/v2",
         "transport": "http",
         "prepare_topic": "nodus/aqi-x943fm/fwupdate",
         "ack_topic": "nodus/aqi-x943fm/fwupdate/ack",

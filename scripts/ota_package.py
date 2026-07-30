@@ -7,6 +7,7 @@ import hashlib
 import json
 import posixpath
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -17,9 +18,23 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
-SCHEMA = "nodus-ota/v1"
+try:
+    from .ota_signing import (
+        OTASigningError,
+        generate_signing_key,
+        load_signature,
+        sign_manifest,
+    )
+except ImportError:
+    from ota_signing import (  # type: ignore
+        OTASigningError,
+        generate_signing_key,
+        load_signature,
+        sign_manifest,
+    )
+
+SCHEMA = "nodus-ota/v2"
 DEFAULT_PLATFORM = "pico2w"
-DEFAULT_CIRCUITPYTHON = "9.2.8"
 TARGET_CIRCUITPYTHON = {
     "pico2w": "9.2.8",
     "xesp32s3": "10.2.1",
@@ -28,12 +43,14 @@ MPY_SOURCE_EXCEPTIONS = {
     "boot.py",
     "code.py",
     "dataclass.py",
+    "dataclasses.py",
 }
 PRESERVED_CONFIG_FILES = (
     "settings.toml",
     "sensor_i2c.toml",
     "sensor_soil.toml",
     "switch.toml",
+    "ota-public-key.json",
 )
 EXCLUDED_PREFIXES = (
     ".git/",
@@ -55,7 +72,6 @@ ROOT_DEPLOYABLE = {
     "code.py",
     "dataclass.py",
     "dataclasses.py",
-    "ota_test.py",
     "settings.toml.def",
     "sensor_i2c.toml.def",
     "sensor_soil.toml.def",
@@ -84,6 +100,8 @@ def build_ota_package(
     created_at=None,
     include=None,
     exclude=None,
+    signing_key="",
+    key_id="",
     target=DEFAULT_PLATFORM,
     compiled_root=None,
 ):
@@ -92,19 +110,15 @@ def build_ota_package(
     out_path = Path(out_dir)
     platform = _normalize_target(target)
     circuitpython = TARGET_CIRCUITPYTHON[platform]
-    compiled_path = Path(compiled_root) if compiled_root else None
+    compiled_path = (
+        Path(compiled_root)
+        if compiled_root
+        else repo_path / "build" / "firmware" / platform
+    )
     from_ref = str(from_tag)
     to_ref = str(to_tag)
     _require_git_ref(repo_path, from_ref)
     _require_git_ref(repo_path, to_ref)
-    if compiled_path is not None:
-        _validate_compiled_root(
-            compiled_path,
-            platform,
-            circuitpython,
-            _version_at_ref(repo_path, to_ref),
-        )
-
     changed_paths = _git_lines(
         repo_path,
         "diff",
@@ -138,7 +152,13 @@ def build_ota_package(
     packaged_paths = set()
     for path in sorted(selected):
         package_path = path
-        if compiled_path is not None and _is_python_module_path(path):
+        if _is_python_module_path(path):
+            _validate_compiled_root(
+                compiled_path,
+                platform,
+                circuitpython,
+                _version_at_ref(repo_path, to_ref),
+            )
             package_path = "{}.mpy".format(path[:-3])
             artifact_path = compiled_path / Path(package_path)
             if not artifact_path.is_file():
@@ -148,7 +168,7 @@ def build_ota_package(
             payload = artifact_path.read_bytes()
             if path not in deleted:
                 deleted.append(path)
-        elif compiled_path is not None and path.endswith(".py"):
+        elif path.endswith(".py"):
             if path not in MPY_SOURCE_EXCEPTIONS:
                 raise OTAPackageError("source_python_payload_forbidden:{}".format(path))
             payload = _git_file_bytes(repo_path, to_ref, path)
@@ -168,12 +188,11 @@ def build_ota_package(
             }
         )
 
-    if compiled_path is not None:
-        for path in tuple(deleted):
-            if _is_python_module_path(path):
-                compiled_delete = "{}.mpy".format(path[:-3])
-                if compiled_delete not in deleted and path not in selected:
-                    deleted.append(compiled_delete)
+    for path in tuple(deleted):
+        if _is_python_module_path(path):
+            compiled_delete = "{}.mpy".format(path[:-3])
+            if compiled_delete not in deleted and path not in selected:
+                deleted.append(compiled_delete)
 
     manifest = {
         "schema": SCHEMA,
@@ -201,6 +220,12 @@ def build_ota_package(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    if signing_key:
+        sign_manifest(
+            out_path / "manifest.json",
+            signing_key,
+            key_id=key_id,
+        )
     return manifest
 
 
@@ -212,10 +237,21 @@ def build_worktree_ota_package(
     created_at=None,
     include=None,
     exclude=None,
+    signing_key="",
+    key_id="",
+    target=DEFAULT_PLATFORM,
+    compiled_root=None,
 ):
     """Create an OTA package from files currently present in the worktree."""
     repo_path = Path(repo_root)
     out_path = Path(out_dir)
+    platform = _normalize_target(target)
+    circuitpython = TARGET_CIRCUITPYTHON[platform]
+    compiled_path = (
+        Path(compiled_root)
+        if compiled_root
+        else repo_path / "build" / "firmware" / platform
+    )
     selected = []
     excludes = set(str(path) for path in (exclude or ()))
     candidate_paths = include or _git_lines(
@@ -241,14 +277,42 @@ def build_worktree_ota_package(
     files_root.mkdir(parents=True, exist_ok=True)
 
     file_entries = []
+    deleted = []
+    packaged_paths = set()
     for path in sorted(selected):
-        payload = (repo_path / Path(path)).read_bytes()
-        target = files_root / Path(path)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(payload)
+        package_path = path
+        if _is_python_module_path(path):
+            _validate_compiled_root(
+                compiled_path,
+                platform,
+                circuitpython,
+                _version_from_worktree(repo_path),
+            )
+            package_path = "{}.mpy".format(path[:-3])
+            artifact_path = compiled_path / Path(package_path)
+            if not artifact_path.is_file():
+                raise OTAPackageError(
+                    "compiled_artifact_missing:{}".format(package_path)
+                )
+            payload = artifact_path.read_bytes()
+            deleted.append(path)
+        elif path.endswith(".py"):
+            if path not in MPY_SOURCE_EXCEPTIONS:
+                raise OTAPackageError(
+                    "source_python_payload_forbidden:{}".format(path)
+                )
+            payload = (repo_path / Path(path)).read_bytes()
+        else:
+            payload = (repo_path / Path(path)).read_bytes()
+        if package_path in packaged_paths:
+            raise OTAPackageError("duplicate_package_path:{}".format(package_path))
+        packaged_paths.add(package_path)
+        package_target = files_root / Path(package_path)
+        package_target.parent.mkdir(parents=True, exist_ok=True)
+        package_target.write_bytes(payload)
         file_entries.append(
             {
-                "path": path,
+                "path": package_path,
                 "size": len(payload),
                 "sha256": hashlib.sha256(payload).hexdigest(),
             }
@@ -262,14 +326,14 @@ def build_worktree_ota_package(
         "source": "working-tree",
         "created_at": created_at or _utc_timestamp(),
         "target": {
-            "platform": DEFAULT_PLATFORM,
-            "circuitpython": DEFAULT_CIRCUITPYTHON,
+            "platform": platform,
+            "circuitpython": circuitpython,
         },
         "requires": {
             "version": _version_from_worktree(repo_path),
         },
         "files": file_entries,
-        "delete": [],
+        "delete": sorted(deleted),
         "preserve": list(PRESERVED_CONFIG_FILES),
         "post_apply": {
             "reboot": True,
@@ -281,6 +345,12 @@ def build_worktree_ota_package(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    if signing_key:
+        sign_manifest(
+            out_path / "manifest.json",
+            signing_key,
+            key_id=key_id,
+        )
     return manifest
 
 
@@ -294,10 +364,27 @@ def push_ota_package(
     chunk_size=1024,
     ready_timeout_s=60,
     ready_interval_s=2,
+    session_id="",
 ):
     """Transfer an OTA package to one Nodus temporary OTA HTTP endpoint."""
     package_path = Path(package_dir)
     manifest = _read_manifest(package_path)
+    raw_manifest = (package_path / "manifest.json").read_bytes()
+    try:
+        signature = load_signature(package_path)
+    except OTASigningError as exc:
+        raise OTATransferError(str(exc)) from exc
+    if hashlib.sha256(raw_manifest).hexdigest() != signature.get("manifest_sha256"):
+        raise OTATransferError("manifest_signature_digest_mismatch")
+    ota_session = str(session_id or "").strip()
+    if len(ota_session) < 32:
+        raise OTATransferError("ota_session_missing")
+    auth_headers = {
+        "X-Nodus-OTA-Session": ota_session,
+    }
+    begin_headers = dict(auth_headers)
+    begin_headers["X-Nodus-OTA-Key-Id"] = str(signature.get("key_id") or "")
+    begin_headers["X-Nodus-OTA-Signature"] = str(signature.get("signature") or "")
     base_url = _normalize_device_url(device_url)
     http = opener or urlopen
     package_started = time.monotonic()
@@ -324,7 +411,9 @@ def push_ota_package(
             "POST",
             "{}/ota/begin".format(base_url),
             timeout_s,
-            payload=manifest,
+            body=raw_manifest,
+            content_type="application/json",
+            headers=begin_headers,
         )
         if begin.get("accepted") is not True:
             raise OTATransferError("begin_rejected:{}".format(begin.get("error", "")))
@@ -356,6 +445,7 @@ def push_ota_package(
                     payload,
                     timeout_s,
                     chunk_bytes,
+                    headers=auth_headers,
                     log_fn=log_fn,
                 )
             else:
@@ -366,7 +456,9 @@ def push_ota_package(
                     timeout_s,
                     body=payload,
                     content_type="application/octet-stream",
-                    headers={"X-Nodus-File-Path": path},
+                    headers=_merge_headers(
+                        auth_headers, {"X-Nodus-File-Path": path}
+                    ),
                 )
             if result.get("accepted") is not True:
                 if chunk_bytes > 0 and _file_retryable_rejection(result):
@@ -384,6 +476,7 @@ def push_ota_package(
                         payload,
                         timeout_s,
                         chunk_bytes,
+                        headers=auth_headers,
                         log_fn=log_fn,
                     )
                 if result.get("accepted") is not True:
@@ -408,11 +501,18 @@ def push_ota_package(
             "{}/ota/commit".format(base_url),
             timeout_s,
             payload={},
+            headers=auth_headers,
         )
         if commit.get("accepted") is not True:
             raise OTATransferError("commit_rejected:{}".format(commit.get("error", "")))
     except OTATransferError:
-        _abort_ota_transfer(http, base_url, timeout_s, log_fn=log_fn)
+        _abort_ota_transfer(
+            http,
+            base_url,
+            timeout_s,
+            headers=auth_headers,
+            log_fn=log_fn,
+        )
         raise
     commit_elapsed = time.monotonic() - commit_started
     _log(
@@ -449,7 +549,7 @@ def push_ota_package(
     }
 
 
-def _abort_ota_transfer(http, base_url, timeout_s, *, log_fn=None):
+def _abort_ota_transfer(http, base_url, timeout_s, *, headers=None, log_fn=None):
     _log(log_fn, "abort reason=transfer_failed")
     try:
         response = _request_json(
@@ -458,6 +558,7 @@ def _abort_ota_transfer(http, base_url, timeout_s, *, log_fn=None):
             "{}/ota/abort".format(base_url),
             timeout_s,
             payload={},
+            headers=headers,
         )
     except OTATransferError as exc:
         _log(log_fn, "abort failed reason={}".format(exc))
@@ -476,6 +577,7 @@ def _push_file_chunks(
     timeout_s,
     chunk_size,
     *,
+    headers=None,
     log_fn=None,
 ):
     encoded_path = quote(path, safe="/")
@@ -485,7 +587,7 @@ def _push_file_chunks(
         "{}/ota/file/begin?path={}".format(base_url, encoded_path),
         timeout_s,
         payload={},
-        headers={"X-Nodus-File-Path": path},
+        headers=_merge_headers(headers, {"X-Nodus-File-Path": path}),
     )
     if begin.get("accepted") is not True:
         return begin
@@ -506,7 +608,7 @@ def _push_file_chunks(
             timeout_s,
             body=chunk,
             content_type="application/octet-stream",
-            headers={"X-Nodus-File-Path": path},
+            headers=_merge_headers(headers, {"X-Nodus-File-Path": path}),
         )
         if result.get("accepted") is not True:
             return result
@@ -528,7 +630,7 @@ def _push_file_chunks(
         "{}/ota/file/end?path={}".format(base_url, encoded_path),
         timeout_s,
         payload={},
-        headers={"X-Nodus-File-Path": path},
+        headers=_merge_headers(headers, {"X-Nodus-File-Path": path}),
         retries=2,
         retry_delay_s=2,
         log_fn=log_fn,
@@ -611,6 +713,9 @@ def prepare_fwupdate(
     username="",
     password="",
     message_id="",
+    session_id="",
+    manifest_sha256="",
+    key_id="",
     mqtt_client_factory=None,
     log_fn=None,
 ):
@@ -619,13 +724,22 @@ def prepare_fwupdate(
     if not topic:
         raise OTATransferError("fwupdate_topic_invalid")
     payload = {
-        "schema": "nodus-fwupdate/v1",
+        "schema": "nodus-fwupdate/v2",
         "message_id": message_id or _message_id(),
         "command": "prepare",
         "package_id": str(package_id or ""),
+        "session_id": str(session_id or ""),
+        "manifest_sha256": str(manifest_sha256 or ""),
+        "key_id": str(key_id or ""),
     }
     if not payload["package_id"]:
         raise OTATransferError("package_id_missing")
+    if len(payload["session_id"]) < 32:
+        raise OTATransferError("ota_session_missing")
+    if len(payload["manifest_sha256"]) != 64:
+        raise OTATransferError("manifest_sha256_invalid")
+    if not payload["key_id"]:
+        raise OTATransferError("ota_signing_key_missing")
     client_factory = mqtt_client_factory or _paho_client_factory
     client = client_factory()
     _log(log_fn, "mqtt connect broker={} port={}".format(broker, int(port or 1883)))
@@ -679,6 +793,8 @@ def main(argv=None):
     common_package_args.add_argument("--repo", default=".")
     common_package_args.add_argument("--include", action="append")
     common_package_args.add_argument("--exclude", action="append")
+    common_package_args.add_argument("--signing-key", required=True)
+    common_package_args.add_argument("--key-id", default="")
 
     package_parser = subparsers.add_parser("package", parents=[common_package_args])
     package_parser.add_argument("--from", dest="from_tag", required=True)
@@ -693,6 +809,16 @@ def main(argv=None):
         "package-worktree", parents=[common_package_args]
     )
     worktree_parser.add_argument("--package-id", default="")
+    worktree_parser.add_argument(
+        "--target",
+        choices=tuple(sorted(TARGET_CIRCUITPYTHON)),
+        default=DEFAULT_PLATFORM,
+    )
+    worktree_parser.add_argument("--compiled-root")
+    keygen_parser = subparsers.add_parser("keygen")
+    keygen_parser.add_argument("--private-key", required=True)
+    keygen_parser.add_argument("--public-key", required=True)
+    keygen_parser.add_argument("--openssl", default="openssl")
     prepare_parser = subparsers.add_parser("prepare")
     prepare_parser.add_argument("package")
     prepare_parser.add_argument("--broker", required=True)
@@ -702,6 +828,7 @@ def main(argv=None):
     prepare_parser.add_argument("--username", default="")
     prepare_parser.add_argument("--password", default="")
     prepare_parser.add_argument("--message-id", default="")
+    prepare_parser.add_argument("--session-id", required=True)
     push_parser = subparsers.add_parser("push")
     push_parser.add_argument("package")
     push_parser.add_argument("--device", required=True)
@@ -714,6 +841,7 @@ def main(argv=None):
     push_parser.add_argument("--username", default="")
     push_parser.add_argument("--password", default="")
     push_parser.add_argument("--message-id", default="")
+    push_parser.add_argument("--session-id", default="")
     push_parser.add_argument("--wait-after-prepare", type=float, default=0.0)
     push_parser.add_argument("--ready-timeout", type=float, default=60.0)
     push_parser.add_argument("--ready-interval", type=float, default=2.0)
@@ -729,6 +857,8 @@ def main(argv=None):
             args.out,
             include=args.include or (),
             exclude=args.exclude or (),
+            signing_key=args.signing_key,
+            key_id=args.key_id,
             target=args.target,
             compiled_root=args.compiled_root,
         )
@@ -747,6 +877,10 @@ def main(argv=None):
             package_id=args.package_id,
             include=args.include or (),
             exclude=args.exclude or (),
+            signing_key=args.signing_key,
+            key_id=args.key_id,
+            target=args.target,
+            compiled_root=args.compiled_root,
         )
         log(
             "created {package_id} source=working-tree files={files}".format(
@@ -755,8 +889,28 @@ def main(argv=None):
             )
         )
         return 0
+    if args.command == "keygen":
+        document = generate_signing_key(
+            args.private_key,
+            args.public_key,
+            openssl=args.openssl,
+        )
+        log(
+            "created OTA signing key key_id={} public_key={}".format(
+                document["key_id"],
+                args.public_key,
+            )
+        )
+        return 0
     if args.command == "prepare":
-        manifest = _read_manifest(Path(args.package))
+        package_path = Path(args.package)
+        manifest = _read_manifest(package_path)
+        try:
+            signature = load_signature(package_path)
+        except OTASigningError as exc:
+            log("prepare failed: {}".format(exc))
+            return 1
+        ota_session = args.session_id
         try:
             prepare_fwupdate(
                 args.broker,
@@ -767,6 +921,9 @@ def main(argv=None):
                 username=args.username,
                 password=args.password,
                 message_id=args.message_id,
+                session_id=ota_session,
+                manifest_sha256=signature["manifest_sha256"],
+                key_id=signature["key_id"],
                 log_fn=log,
             )
         except OTATransferError as exc:
@@ -776,6 +933,13 @@ def main(argv=None):
         return 0
     if args.command == "push":
         try:
+            try:
+                signature = load_signature(Path(args.package))
+            except OTASigningError as exc:
+                raise OTATransferError(str(exc)) from exc
+            ota_session = args.session_id or (
+                secrets.token_hex(16) if args.prepare else ""
+            )
             if args.prepare:
                 if not args.broker or not args.device_id:
                     raise OTATransferError("prepare_requires_broker_and_device_id")
@@ -789,6 +953,9 @@ def main(argv=None):
                     username=args.username,
                     password=args.password,
                     message_id=args.message_id,
+                    session_id=ota_session,
+                    manifest_sha256=signature["manifest_sha256"],
+                    key_id=signature["key_id"],
                     log_fn=log,
                 )
                 _sleep_after_prepare(args.wait_after_prepare, log_fn=log)
@@ -799,6 +966,7 @@ def main(argv=None):
                 chunk_size=args.chunk_size,
                 ready_timeout_s=args.ready_timeout,
                 ready_interval_s=args.ready_interval,
+                session_id=ota_session,
                 log_fn=log,
             )
         except OTATransferError as exc:
@@ -906,6 +1074,12 @@ def _normalize_device_url(device_url):
     if "://" not in url:
         url = "http://{}".format(url)
     return url
+
+
+def _merge_headers(first, second):
+    merged = dict(first or {})
+    merged.update(second or {})
+    return merged
 
 
 def _request_json(

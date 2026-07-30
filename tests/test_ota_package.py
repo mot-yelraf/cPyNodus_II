@@ -20,6 +20,8 @@ from scripts.ota_package import (
     timestamp_logger,
 )
 
+TEST_SESSION = "s" * 32
+
 
 def test_build_ota_package_from_git_tag_range(tmp_path):
     repo = _init_repo(tmp_path / "repo")
@@ -38,6 +40,11 @@ def test_build_ota_package_from_git_tag_range(tmp_path):
     _git(repo, "add", ".")
     _git(repo, "commit", "-m", "tag b")
     _git(repo, "tag", "tagB")
+    compiled = tmp_path / "compiled"
+    compiled_payload = b"compiled-app"
+    (compiled / "cpynodus_ii").mkdir(parents=True)
+    (compiled / "cpynodus_ii" / "app.mpy").write_bytes(compiled_payload)
+    _write_build_info(compiled, project_version="v0.26.123.3")
 
     out_dir = tmp_path / "package"
     manifest = build_ota_package(
@@ -46,20 +53,22 @@ def test_build_ota_package_from_git_tag_range(tmp_path):
         "tagB",
         out_dir,
         created_at="2026-05-03T00:00:00Z",
+        compiled_root=compiled,
     )
 
-    assert manifest["schema"] == "nodus-ota/v1"
+    assert manifest["schema"] == "nodus-ota/v2"
     assert manifest["package_id"] == "ota-tagA-to-tagB"
     assert manifest["from_tag"] == "tagA"
     assert manifest["to_tag"] == "tagB"
     assert manifest["requires"]["version"] == "v0.26.123.3"
     assert manifest["target"] == {"platform": "pico2w", "circuitpython": "9.2.8"}
-    assert manifest["delete"] == []
+    assert manifest["delete"] == ["cpynodus_ii/app.py"]
     assert manifest["preserve"] == [
         "settings.toml",
         "sensor_i2c.toml",
         "sensor_soil.toml",
         "switch.toml",
+        "ota-public-key.json",
     ]
     assert manifest["post_apply"] == {
         "reboot": True,
@@ -69,14 +78,14 @@ def test_build_ota_package_from_git_tag_range(tmp_path):
 
     assert manifest["files"] == [
         {
-            "path": "cpynodus_ii/app.py",
-            "size": len(app_payload.encode("utf-8")),
-            "sha256": hashlib.sha256(app_payload.encode("utf-8")).hexdigest(),
+            "path": "cpynodus_ii/app.mpy",
+            "size": len(compiled_payload),
+            "sha256": hashlib.sha256(compiled_payload).hexdigest(),
         }
     ]
-    assert (out_dir / "files" / "cpynodus_ii" / "app.py").read_text(
-        encoding="utf-8"
-    ) == app_payload
+    assert (
+        out_dir / "files" / "cpynodus_ii" / "app.mpy"
+    ).read_bytes() == compiled_payload
 
     manifest_from_disk = json.loads(
         (out_dir / "manifest.json").read_text(encoding="utf-8")
@@ -100,7 +109,10 @@ def test_build_ota_package_records_deployable_deletes(tmp_path):
     manifest = build_ota_package(repo, "tagA", "tagB", tmp_path / "package")
 
     assert manifest["files"] == []
-    assert manifest["delete"] == ["cpynodus_ii/obsolete.py"]
+    assert manifest["delete"] == [
+        "cpynodus_ii/obsolete.mpy",
+        "cpynodus_ii/obsolete.py",
+    ]
 
 
 def test_build_ota_package_includes_root_runtime_file(tmp_path):
@@ -110,7 +122,7 @@ def test_build_ota_package_includes_root_runtime_file(tmp_path):
     _git(repo, "commit", "-m", "tag a")
     _git(repo, "tag", "tagA")
 
-    root_file = "ota_test.py"
+    root_file = "code.py"
     _write(repo / root_file, "VALUE = 1\n")
     _git(repo, "add", ".")
     _git(repo, "commit", "-m", "tag b")
@@ -275,6 +287,7 @@ def test_nodus_ota_cli_package_command(tmp_path):
 
     script = Path(__file__).resolve().parents[1] / "scripts" / "nodus_ota.py"
     out_dir = tmp_path / "package"
+    signing_key = _write_signing_key(tmp_path)
     result = subprocess.run(
         (
             sys.executable,
@@ -288,6 +301,8 @@ def test_nodus_ota_cli_package_command(tmp_path):
             "tagB",
             "--out",
             str(out_dir),
+            "--signing-key",
+            str(signing_key),
         ),
         check=True,
         capture_output=True,
@@ -296,6 +311,7 @@ def test_nodus_ota_cli_package_command(tmp_path):
 
     assert "created ota-tagA-to-tagB files=1 delete=0" in result.stdout
     assert (out_dir / "manifest.json").exists()
+    assert (out_dir / "manifest.sig").exists()
     assert (out_dir / "files" / "code.py").read_text(encoding="utf-8") == 'print("b")\n'
 
 
@@ -303,7 +319,7 @@ def test_nodus_ota_cli_package_command_supports_include_and_exclude(tmp_path):
     repo = _init_repo(tmp_path / "repo")
     _write(repo / "cpynodus_ii" / "__init__.py", '__version__ = "v0.26.123.3"\n')
     _write(repo / "code.py", 'print("a")\n')
-    _write(repo / "ota_test.py", "VALUE = 1\n")
+    _write(repo / "dataclasses.py", "VALUE = 1\n")
     _git(repo, "add", ".")
     _git(repo, "commit", "-m", "tag a")
     _git(repo, "tag", "tagA")
@@ -315,6 +331,7 @@ def test_nodus_ota_cli_package_command_supports_include_and_exclude(tmp_path):
 
     script = Path(__file__).resolve().parents[1] / "scripts" / "nodus_ota.py"
     out_dir = tmp_path / "package"
+    signing_key = _write_signing_key(tmp_path)
     subprocess.run(
         (
             sys.executable,
@@ -329,9 +346,11 @@ def test_nodus_ota_cli_package_command_supports_include_and_exclude(tmp_path):
             "--out",
             str(out_dir),
             "--include",
-            "ota_test.py",
+            "dataclasses.py",
             "--exclude",
             "code.py",
+            "--signing-key",
+            str(signing_key),
         ),
         check=True,
         capture_output=True,
@@ -339,19 +358,19 @@ def test_nodus_ota_cli_package_command_supports_include_and_exclude(tmp_path):
     )
 
     manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
-    assert [entry["path"] for entry in manifest["files"]] == ["ota_test.py"]
+    assert [entry["path"] for entry in manifest["files"]] == ["dataclasses.py"]
 
 
 def test_build_worktree_ota_package_includes_current_file(tmp_path):
     repo = _init_repo(tmp_path / "repo")
     _write(repo / "cpynodus_ii" / "__init__.py", '__version__ = "v0.26.123.13"\n')
-    _write(repo / "ota_test.py", "VALUE = 2\n")
+    _write(repo / "code.py", "VALUE = 2\n")
 
     manifest = build_worktree_ota_package(
         repo,
         tmp_path / "package",
         package_id="ota-working-test",
-        include=("ota_test.py",),
+        include=("code.py",),
         created_at="2026-05-03T00:00:00Z",
     )
 
@@ -359,8 +378,8 @@ def test_build_worktree_ota_package_includes_current_file(tmp_path):
     assert manifest["source"] == "working-tree"
     assert manifest["to_tag"] == "working-tree"
     assert manifest["requires"]["version"] == "v0.26.123.13"
-    assert manifest["files"][0]["path"] == "ota_test.py"
-    assert (tmp_path / "package" / "files" / "ota_test.py").read_text(
+    assert manifest["files"][0]["path"] == "code.py"
+    assert (tmp_path / "package" / "files" / "code.py").read_text(
         encoding="utf-8"
     ) == "VALUE = 2\n"
 
@@ -368,7 +387,8 @@ def test_build_worktree_ota_package_includes_current_file(tmp_path):
 def test_nodus_ota_cli_package_worktree_command(tmp_path):
     repo = _init_repo(tmp_path / "repo")
     _write(repo / "cpynodus_ii" / "__init__.py", '__version__ = "v0.26.123.13"\n')
-    _write(repo / "ota_test.py", "VALUE = 2\n")
+    _write(repo / "code.py", "VALUE = 2\n")
+    signing_key = _write_signing_key(tmp_path)
 
     exit_code = ota_package.main(
         [
@@ -380,7 +400,9 @@ def test_nodus_ota_cli_package_worktree_command(tmp_path):
             "--package-id",
             "ota-working-test",
             "--include",
-            "ota_test.py",
+            "code.py",
+            "--signing-key",
+            str(signing_key),
         ]
     )
 
@@ -389,7 +411,7 @@ def test_nodus_ota_cli_package_worktree_command(tmp_path):
         (tmp_path / "package" / "manifest.json").read_text(encoding="utf-8")
     )
     assert manifest["package_id"] == "ota-working-test"
-    assert [entry["path"] for entry in manifest["files"]] == ["ota_test.py"]
+    assert [entry["path"] for entry in manifest["files"]] == ["code.py"]
 
 
 def test_prepare_fwupdate_publishes_mqtt_prepare_payload():
@@ -402,6 +424,9 @@ def test_prepare_fwupdate_publishes_mqtt_prepare_payload():
         "ota-working-test",
         mqtt_client_factory=lambda: client,
         message_id="fw-1",
+        session_id=TEST_SESSION,
+        manifest_sha256="a" * 64,
+        key_id="test-key",
         log_fn=logs.append,
     )
 
@@ -410,10 +435,13 @@ def test_prepare_fwupdate_publishes_mqtt_prepare_payload():
     assert client.disconnected is True
     assert client.published[0][0] == "nodus/co2-ph244/fwupdate"
     assert json.loads(client.published[0][1]) == {
-        "schema": "nodus-fwupdate/v1",
+        "schema": "nodus-fwupdate/v2",
         "message_id": "fw-1",
         "command": "prepare",
         "package_id": "ota-working-test",
+        "session_id": TEST_SESSION,
+        "manifest_sha256": "a" * 64,
+        "key_id": "test-key",
     }
     assert client.published[0][2] == 1
     assert logs == [
@@ -451,6 +479,7 @@ def test_push_ota_package_sends_begin_files_and_commit(tmp_path):
         timeout_s=3,
         opener=opener,
         log_fn=logs.append,
+        session_id=TEST_SESSION,
     )
 
     assert result["package_id"] == "ota-tagA-to-tagB"
@@ -494,7 +523,12 @@ def test_push_ota_package_rejects_device_package_mismatch(tmp_path):
     opener = _FakeOtaOpener(package_id="ota-other")
 
     with pytest.raises(OTATransferError, match="device_package_mismatch"):
-        push_ota_package(package, "http://10.0.0.213:8000", opener=opener)
+        push_ota_package(
+            package,
+            "http://10.0.0.213:8000",
+            opener=opener,
+            session_id=TEST_SESSION,
+        )
 
 
 def test_nodus_ota_cli_push_command(tmp_path, monkeypatch, capsys):
@@ -510,6 +544,8 @@ def test_nodus_ota_cli_push_command(tmp_path, monkeypatch, capsys):
             "http://10.0.0.213:8000",
             "--timeout",
             "3",
+            "--session-id",
+            TEST_SESSION,
         ]
     )
 
@@ -528,6 +564,8 @@ def test_nodus_ota_cli_push_defaults_to_300_second_timeout(tmp_path, monkeypatch
             str(package),
             "--device",
             "http://10.0.0.213:8000",
+            "--session-id",
+            TEST_SESSION,
         ]
     )
 
@@ -584,6 +622,7 @@ def test_push_ota_package_waits_for_status_reachable(tmp_path, monkeypatch):
         opener=opener,
         log_fn=logs.append,
         ready_interval_s=1.5,
+        session_id=TEST_SESSION,
     )
 
     assert result["package_id"] == "ota-tagA-to-tagB"
@@ -609,6 +648,7 @@ def test_push_ota_package_retries_lost_file_end_response(tmp_path, monkeypatch):
         "http://10.0.0.213:8000",
         opener=opener,
         log_fn=logs.append,
+        session_id=TEST_SESSION,
     )
 
     assert result["package_id"] == "ota-tagA-to-tagB"
@@ -638,6 +678,7 @@ def test_push_ota_package_restarts_file_after_size_mismatch(tmp_path):
         "http://10.0.0.213:8000",
         opener=opener,
         log_fn=logs.append,
+        session_id=TEST_SESSION,
     )
 
     assert result["package_id"] == "ota-tagA-to-tagB"
@@ -664,6 +705,7 @@ def test_push_ota_package_aborts_after_file_end_invalid_json_response(tmp_path):
             "http://10.0.0.213:8000",
             opener=opener,
             log_fn=logs.append,
+            session_id=TEST_SESSION,
         )
 
     abort_requests = [
@@ -711,6 +753,25 @@ def _write_build_info(path, *, project_version):
     )
 
 
+def _write_signing_key(tmp_path):
+    key = Path(tmp_path) / "ota-private.pem"
+    subprocess.run(
+        (
+            "openssl",
+            "genpkey",
+            "-algorithm",
+            "RSA",
+            "-pkeyopt",
+            "rsa_keygen_bits:2048",
+            "-out",
+            str(key),
+        ),
+        check=True,
+        capture_output=True,
+    )
+    return key
+
+
 def _git(repo, *args):
     subprocess.run(
         ("git",) + args,
@@ -727,7 +788,7 @@ def _write_test_package(path):
     files.mkdir(parents=True)
     (files / "ota_test.py").write_bytes(payload)
     manifest = {
-        "schema": "nodus-ota/v1",
+        "schema": "nodus-ota/v2",
         "package_id": "ota-tagA-to-tagB",
         "files": [
             {
@@ -737,8 +798,19 @@ def _write_test_package(path):
             }
         ],
     }
-    (path / "manifest.json").write_text(
-        json.dumps(manifest, sort_keys=True),
+    manifest_path = path / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
+    manifest_sha256 = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    (path / "manifest.sig").write_text(
+        json.dumps(
+            {
+                "schema": "nodus-ota-signature/v1",
+                "algorithm": "rsa-pkcs1v15-sha256",
+                "key_id": "test-key",
+                "manifest_sha256": manifest_sha256,
+                "signature": "test-signature",
+            }
+        ),
         encoding="utf-8",
     )
     return path

@@ -1,10 +1,8 @@
 # Over-the-Air Updates
 
-This document describes the current Nodus over-the-air update implementation,
-the verified hardware baseline, and the remaining hardening plan. The target
-production flow is Sensorius-driven, one physical Nodus device at a time. The
-host-side command line tool is available now and uses the same MQTT prepare
-plus HTTP transfer flow that Sensorius should reuse.
+This document describes authenticated cPyNodus II over-the-air updates.
+Production OTA uses a signed `nodus-ota/v2` package, Sensorius or the host CLI
+as the sender, and one physical Nodus at a time.
 
 ## Goals
 
@@ -19,6 +17,7 @@ plus HTTP transfer flow that Sensorius should reuse.
   identity after a successful update.
 - Preserve a rollback path when download, validation, apply, or the first
   post-update boot fails.
+- Authenticate the exact manifest before accepting any package content.
 
 ## Non-Goals
 
@@ -34,8 +33,8 @@ plus HTTP transfer flow that Sensorius should reuse.
   CircuitPython `9.2.8` and `xesp32s3` on CircuitPython `10.2.1`.
 - OTA payloads must use target-specific compiled `.mpy` files for all
   CircuitPython modules except the required source-file exceptions `boot.py`,
-  `code.py`, and `dataclass.py`. No other `.py` file may appear in an OTA
-  package.
+  `code.py`, `dataclass.py`, and `dataclasses.py`. No other `.py` file may
+  appear in an OTA package.
 - When an OTA package installs a compiled module, its manifest must delete the
   matching `.py` source path. A device must not retain both `.py` and `.mpy`
   forms of the same module after apply.
@@ -72,6 +71,33 @@ plus HTTP transfer flow that Sensorius should reuse.
 - Packages that introduce this boot-health behavior must include the updated
   root `code.py`; it arms the first-boot checkpoint before importing the
   application, so an import/startup failure is recoverable on the next reboot.
+- `/ota-public-key.json` is device trust state. Normal deploys and OTA packages
+  preserve it unless an operator explicitly provisions a replacement.
+
+## Why Signing Is Required
+
+HTTPS and package signing protect different boundaries. HTTPS authenticates
+one network connection and hides its contents in transit. It does not prove
+that a package copied to Sensorius, retained on disk, or supplied by another
+authorized host was produced by the firmware release owner. A detached
+signature authenticates the package itself before Nodus writes staged files.
+
+cPyNodus II keeps temporary OTA transport on HTTP/8000 and requires RSA-2048
+PKCS#1 v1.5 with SHA-256 over the exact `manifest.json` bytes. The device
+contains only a compact public key in `/ota-public-key.json`; the private key
+remains off-device. The verifier is imported only in temporary OTA mode and
+runs once at `/ota/begin`. File hashes remain streaming, so signing does not
+add a TLS socket, certificate chain, or large long-lived buffer.
+
+HTTP still exposes package bytes and device addressing to the local network.
+Use an isolated management network when confidentiality is required. The
+signature is the mandatory code-integrity boundary, not a claim that HTTP is
+confidential.
+
+Each MQTT prepare creates a one-use session bound to package ID, manifest
+SHA-256, and signing key ID. The same session header is required on begin,
+file, commit, and abort requests. Failed authentication clears the request
+without deleting an earlier rollback backup.
 
 ## Hardware Verification Status
 
@@ -88,6 +114,8 @@ also exposed an out-of-memory condition when updating with a very large
 `cpynodus_ii/app.mpy`, so large-package behavior is not part of the baseline.
 Remaining hardware work is fault injection, profile/device matrix soak testing,
 large-package limits, and on-device validation of the boot-health rollback.
+The signed v2 authentication path still requires on-device timing and heap
+validation on both supported boards before broad field deployment.
 
 ## High-Level Architecture
 
@@ -152,20 +180,29 @@ range. For example, to update a Pico2 W already on the verified baseline to
 `v0.26.174.1`:
 
 ```text
+python scripts/nodus_ota.py keygen \
+  --private-key /secure/path/cpynodusii-ota-private.pem \
+  --public-key build/keys/ota-public-key.json
+
 python scripts/nodus_ota.py package \
   --from OTA-Verified---baseline \
   --to v0.26.174.1 \
   --target pico2w \
   --compiled-root build/firmware/pico2w \
-  --out build/ota/OTA-Verified---baseline_to_v0.26.174.1
+  --out build/ota/cpynodusii_v0.26.201.2_to_v0.26.174.1_pico2w \
+  --signing-key /secure/path/cpynodusii-ota-private.pem
 ```
 
-The package builder must support `--target` and `--compiled-root` before this
-production command is used. The current Git-range implementation reads source
-files directly from Git and therefore must not be used to create a deployable
-OTA package until it maps changed CircuitPython modules to the corresponding
-compiled `.mpy` artifacts and emits deletion entries for their `.py` paths. Do
-not fall back to a source-module OTA package.
+Provision the generated public document during an operator-owned deployment:
+
+```text
+scripts/deploy_nodus.sh --target <CIRCUITPY-or-staging-target> \
+  --content <pico2w-mpy-or-xesp32s3-mpy> \
+  --ota-public-key build/keys/ota-public-key.json
+```
+
+Normal deploys preserve an existing `/ota-public-key.json` when this option is
+omitted. Do not commit the private key.
 
 The resulting `manifest.json` records `from_tag`, `to_tag`, package id, file
 hashes, and the firmware version derived from the source tree at the `--from`
@@ -176,22 +213,27 @@ The required compiled tag-range package interface is:
 
 ```text
 nodus-ota package --from tagA --to tagB --target pico2w \
-  --compiled-root build/firmware/pico2w --out build/ota/tagA_tagB
-nodus-ota push build/ota/tagA_tagB --device http://co2-ykdvea.local:8000
+  --compiled-root build/firmware/pico2w --out build/ota/tagA_tagB \
+  --signing-key /secure/path/cpynodusii-ota-private.pem
+nodus-ota push build/ota/tagA_tagB \
+  --prepare --broker <broker> --device-id <device-id> \
+  --device http://co2-ykdvea.local:8000
 ```
 
 Required repository interface after compiled-artifact support is implemented:
 
 ```text
 python scripts/nodus_ota.py package --from tagA --to tagB --target pico2w \
-  --compiled-root build/firmware/pico2w --out build/ota/tagA_tagB
-python scripts/nodus_ota.py push build/ota/tagA_tagB --device http://co2-ykdvea.local:8000
+  --compiled-root build/firmware/pico2w --out build/ota/tagA_tagB \
+  --signing-key /secure/path/cpynodusii-ota-private.pem
+python scripts/nodus_ota.py push build/ota/tagA_tagB \
+  --prepare --broker <broker> --device-id co2-ykdvea \
+  --device http://co2-ykdvea.local:8000
 ```
 
-The former source-tree single-file and `package-worktree` flow is retired for
-device updates. Any replacement single-file or worktree workflow must compile
-`ota_test.mpy` or the selected modules for the target first and must enforce
-the same `.mpy` payload and matching `.py` deletion rules as a tag-range
+`package-worktree` is available for pre-tag validation. It uses the selected
+target's compiled artifact root for importable modules and enforces the same
+`.mpy` payload, matching `.py` deletion, signing, and path rules as a tag-range
 package.
 
 The `push --prepare` flow publishes `prepare` to
@@ -201,6 +243,9 @@ timestamp, including per-chunk offsets, per-file elapsed time, effective bytes
 per second, commit time, and a package summary. When running Nodus from the
 REPL, the device logs the prepare command, OTA-mode startup, HTTP
 begin/file/commit handling, verification/apply timing, and reboot scheduling.
+The combined flow creates the one-use session automatically. When `prepare`
+and `push` are run separately, supply the same 32-or-more-character
+`--session-id` to both commands.
 
 Recommended push command for current hardware testing:
 
@@ -226,7 +271,8 @@ The package command should:
 - require an explicit target and a complete, current compiled artifact root;
 - translate changed CircuitPython module paths from `.py` to the corresponding
   target-specific `.mpy` artifacts;
-- allow `.py` payloads only for `boot.py`, `code.py`, and `dataclass.py`;
+- allow `.py` payloads only for `boot.py`, `code.py`, `dataclass.py`, and
+  `dataclasses.py`;
 - add the matching `.py` path to `delete` whenever a compiled `.mpy` module is
   included;
 - reject a package containing any other `.py` path or containing both source
@@ -243,10 +289,11 @@ Recommended initial package layout:
 
 ```text
 manifest.json
+manifest.sig
 files/
   code.py
   boot.py
-  dataclass.py
+  dataclasses.py
   cpynodus_ii/app.mpy
   cpynodus_ii/core/settings.mpy
 ```
@@ -265,7 +312,7 @@ Example:
 
 ```json
 {
-  "schema": "nodus-ota/v1",
+  "schema": "nodus-ota/v2",
   "package_id": "ota-v0.26.123.3-to-v0.26.124.1",
   "from_tag": "v0.26.123.3",
   "to_tag": "v0.26.124.1",
@@ -291,7 +338,8 @@ Example:
     "settings.toml",
     "sensor_i2c.toml",
     "sensor_soil.toml",
-    "switch.toml"
+    "switch.toml",
+    "ota-public-key.json"
   ],
   "post_apply": {
     "reboot": true,
@@ -302,15 +350,23 @@ Example:
 
 Manifest rules:
 
-- `boot.py`, `code.py`, and `dataclass.py` are the only permitted `.py`
-  payload paths. Every other CircuitPython module must use its `.mpy` path.
+- `boot.py`, `code.py`, `dataclass.py`, and `dataclasses.py` are the only
+  permitted `.py` payload paths. Every other CircuitPython module must use its
+  `.mpy` path.
 - Each `.mpy` entry must have its matching `.py` source path in `delete` so
   stale source and compiled modules cannot coexist on the device.
 - `settings.toml`, `sensor_i2c.toml`, `sensor_soil.toml`, and `switch.toml`
   are preserved unless listed explicitly in `files`.
+- `ota-public-key.json` is preserved. Generated packages do not deploy or
+  delete device-specific OTA trust identity.
 - `target.platform` should match the deploy target, currently `pico2w` or
   `xesp32s3`; `target.circuitpython` should match that target's verified
   CircuitPython runtime.
+- `requires.version` must exactly match installed firmware. There is no force
+  or downgrade bypass.
+- `manifest.sig` signs the exact `manifest.json` bytes and identifies the
+  trusted key. Editing or reformatting the manifest after signing invalidates
+  it.
 - `delete` is allowed but should be used sparingly and must be tested.
 - The manifest contains both package identity and required current firmware
   version. The current device-side validation binds the package to the MQTT
@@ -359,6 +415,9 @@ Current OTA state shape:
   "mode": "ota",
   "prior_profile": "sensorius",
   "package_id": "ota-v0.26.123.3-to-v0.26.124.1",
+  "session_id": "32-or-more-random-hex-characters",
+  "manifest_sha256": "64-lowercase-hex-characters",
+  "key_id": "trusted-key-id",
   "phase": "requested"
 }
 ```
@@ -393,8 +452,10 @@ Current endpoints in OTA mode:
 Current chunked flow:
 
 1. Client waits for `/ota/status` to report `ready`.
-2. Client sends `/ota/begin` with a compact manifest.
-3. Nodus validates package identity and safe manifest paths.
+2. Client sends `/ota/begin` with the exact manifest bytes, detached signature,
+   trusted key ID, and one-use session header.
+3. Nodus authenticates the manifest, then validates package identity, installed
+   version, board/runtime target, MPY/source-deletion rules, and safe paths.
 4. For each file, client calls `/ota/file/begin`.
 5. Client sends 1024-byte chunks to `/ota/file/chunk` with the current offset.
 6. Nodus appends each chunk to `/_ota/stage/<relative-path>`. An offset
@@ -409,7 +470,11 @@ Current chunked flow:
     changes, records `applied_pending_boot`, waits less than 10 seconds, and
     reboots.
 
-The legacy whole-file upload endpoint follows the same validation result, but
+Every mutating request carries `X-Nodus-OTA-Session`. `/ota/begin` also carries
+`X-Nodus-OTA-Key-Id` and `X-Nodus-OTA-Signature`.
+
+The legacy whole-file upload endpoint follows the same authenticated session,
+but
 it requires one contiguous request-body allocation and should not be used for
 larger runtime modules.
 
@@ -507,25 +572,24 @@ five-minute begin or 15-minute staging inactivity timeout.
 
 ## Security Model
 
-Initial development can use network trust plus package hash validation. Before
-field use, add package authenticity:
-
-- sign the manifest on the host;
-- store the public verification key on Nodus;
-- reject unsigned or invalid manifests;
-- include nonce/session fields if replay becomes a practical risk.
-
-Do not include Wi-Fi or MQTT credentials in OTA packages.
+- Production packages use `nodus-ota/v2` and a detached RSA-2048
+  PKCS#1-v1.5/SHA-256 signature.
+- Nodus authenticates the exact manifest before staging package content.
+- MQTT prepare binds one random session to the package ID, manifest digest, and
+  trusted key ID.
+- All mutating HTTP requests require that session.
+- The device holds only `/ota-public-key.json`; private signing keys remain
+  off-device and outside Git.
+- HTTP provides no confidentiality. Use an isolated management network when
+  package contents or device addressing must not be observable.
+- Do not include Wi-Fi or MQTT credentials in OTA packages.
 
 ## Implementation Phases
 
 1. Package builder and tests.
-   - Implemented source-based tag-range and worktree package creation for
-     host-side development only; these paths are not valid for device OTA.
+   - Implemented target-specific compiled tag-range and worktree packages.
    - Implemented include/exclude behavior.
-   - Generates `manifest.json`.
-   - Remaining: require target-specific compiled artifacts, map changed modules
-     to `.mpy`, emit matching `.py` deletions, and reject other `.py` payloads.
+   - Generates signed `manifest.json` plus `manifest.sig`.
 2. Host-only OTA CLI.
    - Implemented package creation, prepare publish, and HTTP `push`.
    - Uses the same HTTP protocol Sensorius will use later.
@@ -568,7 +632,7 @@ Host tests:
 - worktree package creation for pre-tag validation;
 - target-specific `.mpy` artifact selection for changed source modules;
 - rejection of `.py` payloads other than `boot.py`, `code.py`, and
-  `dataclass.py`;
+  `dataclass.py`/`dataclasses.py`;
 - required matching `.py` deletion for every packaged `.mpy` module;
 - rejection when both `.py` and `.mpy` forms of a module are present;
 - manifest path normalization and exclusion rules;
@@ -579,6 +643,9 @@ Host tests:
 - chunked file staging and offset mismatch;
 - simulated SHA-256 mismatch;
 - simulated rollback state transitions.
+- exact signed-manifest verification and tamper rejection;
+- rejected unsigned v1 manifests, wrong targets, wrong installed versions,
+  missing source deletion, wrong sessions, and wrong signing keys.
 
 Hardware tests:
 
@@ -604,6 +671,9 @@ Hardware tests:
   each file upload, and apply;
 - remaining: capture CLI timing summary and serial timing for file verify and
   commit verify/apply phases.
+- remaining: verify RSA manifest authentication, wrong-signature rejection,
+  session rejection, heap headroom, and authentication time on both `pico2w`
+  and `xesp32s3`.
 
 ## Historical Characterization
 
@@ -642,4 +712,5 @@ large-package validation separate from the baseline success criteria above.
 
 - Whether commit can safely skip the second SHA-256 pass when `/ota/file/end`
   has already verified each staged file.
-- How signed-manifest public keys should be provisioned and rotated.
+- Whether a future release should support an overlap window with two trusted
+  public keys for key rotation.

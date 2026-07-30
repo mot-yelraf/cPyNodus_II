@@ -170,8 +170,9 @@ calibration code trying to manage the radio directly.
 - MQTT runtime supports startup `meta`, split `meta/switch`, heartbeat,
   availability, sensor data, device `config/set`, switch `config/set`,
   calibration commands, log transfer, and OTA prepare.
-- OTA uses MQTT only to request prepare mode; package bytes transfer through
-  the temporary HTTP-only OTA runtime.
+- OTA uses signed `nodus-fwupdate/v2` MQTT state only to request prepare mode.
+  The temporary HTTP-only runtime authenticates the exact signed manifest and
+  one-use session before accepting package bytes.
 - Recovery logic handles AP idle timeout, Wi-Fi reassociation windows, MQTT
   rebuild/reconnect windows, repeated MQTT connect failures, low-memory MQTT
   failures, and repeated sensor-not-found errors.

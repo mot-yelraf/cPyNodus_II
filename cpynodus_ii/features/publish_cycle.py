@@ -428,6 +428,9 @@ def mark_ota_completion_published(topic, *, settings_root=None):
         FwUpdateState(
             prior_profile=getattr(state, "prior_profile", "") or "",
             package_id=getattr(state, "package_id", "") or "",
+            session_id=getattr(state, "session_id", "") or "",
+            manifest_sha256=getattr(state, "manifest_sha256", "") or "",
+            key_id=getattr(state, "key_id", "") or "",
             phase="applied",
         ),
         _ota_state_path(settings_root),
