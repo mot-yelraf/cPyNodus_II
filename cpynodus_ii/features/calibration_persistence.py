@@ -1,4 +1,9 @@
-"""TOML persistence helper for calibration apply commands."""
+"""Persist calibration command updates to sensor TOML documents.
+
+``persist_calibration_updates`` preserves unrelated settings while replacing
+or adding supported calibration keys. Writes use temporary and backup files so
+an interrupted update does not directly overwrite the active document.
+"""
 
 
 def persist_calibration_updates(runtime_config, updates, *, settings_root):

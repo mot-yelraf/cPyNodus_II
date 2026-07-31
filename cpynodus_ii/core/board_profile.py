@@ -1,4 +1,9 @@
-"""Define board-specific pin defaults for supported Nodus targets."""
+"""Define board-specific pin defaults for supported Nodus targets.
+
+The profile lookup and detection helpers cover the verified Pico2 W and XIAO
+ESP32-S3 builds. Keep their filesystem guards, buses, and switch pins aligned
+with the corresponding board templates and CircuitPython releases.
+"""
 
 PICO2W_PROFILE = "pico2w"
 XESP32S3_PROFILE = "xesp32s3"

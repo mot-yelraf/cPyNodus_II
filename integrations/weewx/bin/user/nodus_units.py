@@ -1,4 +1,9 @@
-"""Register canonical Nodus observations and units with WeeWX."""
+"""Register canonical Nodus observations and units with WeeWX.
+
+``install_units`` updates WeeWX's global observation, format, label, and
+conversion tables; ``NodusUnits`` installs them as a service. Registration is
+idempotent so repeated service initialization does not duplicate converters.
+"""
 
 import weewx.units
 from weewx.engine import StdService

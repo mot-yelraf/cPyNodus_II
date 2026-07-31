@@ -1,5 +1,10 @@
 # ruff: noqa: E501
-"""Render configuration pages separately from the initial NodusWeb status."""
+"""Render NodusWeb setup, calibration, switch, and information pages.
+
+``render_config_html`` selects an independently loaded page and wraps it with
+the shared UI helpers. Page renderers collect temporary objects before the
+final document allocation to reduce fragmented-heap failures on Pico2 W.
+"""
 
 import gc
 

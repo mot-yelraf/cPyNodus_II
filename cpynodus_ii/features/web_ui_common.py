@@ -1,5 +1,10 @@
 # ruff: noqa: E501
-"""Shared compact HTML helpers loaded only by NodusWeb page requests."""
+"""Provide compact HTML helpers for independently loaded NodusWeb pages.
+
+``html_escape``, ``navigation``, and ``render_page`` form the shared rendering
+API. ``render_page`` performs garbage collection before allocating the final
+document because contiguous heap space is limited on supported boards.
+"""
 
 import gc
 

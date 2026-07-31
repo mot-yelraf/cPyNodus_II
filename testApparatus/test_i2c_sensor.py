@@ -1,5 +1,4 @@
-"""
-Standalone I2C sensor apparatus for Nodus CircuitPython devices.
+"""Probe supported I2C sensors on Nodus CircuitPython devices.
 
 Copy this file to the CIRCUITPY root and run it while the normal app is
 stopped:
@@ -18,8 +17,9 @@ An explicit bus list can be passed for ad-hoc testing:
 
     records = test_i2c_sensor.run(buses=(("I2C0", "SCL", "SDA"),))
 
-It then tries the supported Nodus I2C sensor drivers at detected addresses and
-prints a compact sampled data set. It does not write files or change settings.
+``run`` performs the complete scan and sampling flow; the remaining public
+helpers expose its diagnostic stages. The apparatus prints a compact sampled
+data set and does not write files or change settings.
 """
 
 import gc

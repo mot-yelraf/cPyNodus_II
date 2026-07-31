@@ -1,4 +1,9 @@
-"""Execute fixed root-owned Nodus WeeWX install/remove requests."""
+"""Execute fixed privileged Nodus WeeWX install and removal requests.
+
+``run`` and ``main`` validate manager documents and device identifiers before
+touching managed configuration or invoking system services. State documents
+and generated configuration are replaced atomically where supported.
+"""
 
 import argparse
 import glob

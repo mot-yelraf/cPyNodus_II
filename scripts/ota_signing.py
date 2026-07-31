@@ -1,4 +1,9 @@
-"""Host helpers for Nodus OTA RSA signing and verification."""
+"""Create and verify host-side Nodus OTA signing material.
+
+``generate_signing_key``, ``sign_manifest``, and ``verify_manifest`` implement
+the fixed RSA-2048 PKCS#1 v1.5/SHA-256 format; ``load_signature`` validates its
+detached document. Private-key operations require the OpenSSL executable.
+"""
 
 from __future__ import annotations
 

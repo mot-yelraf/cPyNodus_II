@@ -1,4 +1,9 @@
-"""Generate Skyfield-backed Sun and Moon data for the Nodus WeeWX skin."""
+"""Generate Sun and Moon data for the Nodus WeeWX skin.
+
+``build_astronomy_payload`` calculates the skin-ready values and
+``NodusAstronomy`` exposes them as a WeeWX search-list extension. Ephemeris
+availability and third-party astronomy dependencies are handled as optional.
+"""
 
 import base64
 import json

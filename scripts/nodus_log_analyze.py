@@ -1,4 +1,9 @@
-"""Analyze transferred Nodus recovery and reboot logs."""
+"""Analyze transferred Nodus recovery and reboot logs.
+
+The parsing and analysis helpers build per-device summaries from the bounded
+log formats, while ``format_text_report`` and ``main`` provide human-readable
+and JSON command-line output without modifying source logs.
+"""
 
 from __future__ import annotations
 

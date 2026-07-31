@@ -1,4 +1,9 @@
-"""Retrieve bounded Nodus log files over MQTT."""
+"""Retrieve bounded Nodus device logs over MQTT and store them locally.
+
+``retrieve_log`` and ``retrieve_logs`` implement the chunked transfer protocol;
+``load_config`` and ``main`` support command-line use. Files are finalized only
+after sequence, size, and digest validation succeeds.
+"""
 
 from __future__ import annotations
 

@@ -1,4 +1,9 @@
-"""Verify detached RSA signatures for OTA manifests."""
+"""Verify detached RSA signatures for OTA manifests.
+
+``load_public_key``, ``sha256_hex``, and ``verify_manifest_signature`` support
+the fixed RSA-2048 PKCS#1 v1.5/SHA-256 trust format used by Nodus OTA. The
+implementation stays compatible with CircuitPython's limited crypto modules.
+"""
 
 import binascii
 import hashlib

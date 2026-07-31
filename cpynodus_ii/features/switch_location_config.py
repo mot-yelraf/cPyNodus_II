@@ -1,4 +1,9 @@
-"""Low-stack device location config handling."""
+"""Apply device or switch location changes with bounded stack use.
+
+The two public processors handle their respective MQTT configuration topics,
+update live metadata, and report persistence and publication outcomes without
+loading the general command handler.
+"""
 
 from cpynodus_ii.features.command_models import CommandResult
 from cpynodus_ii.features.topics import mqtt_topic

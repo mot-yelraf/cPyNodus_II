@@ -1,4 +1,9 @@
-"""Single-key TOML persistence for calibration offsets."""
+"""Persist one calibration offset in the active sensor TOML file.
+
+``persist_single_calibration_offset`` rewrites through a temporary file and
+keeps the prior document as ``.bak``. It reports short error codes rather than
+raising for expected CircuitPython filesystem failures.
+"""
 
 
 def persist_single_calibration_offset(runtime_config, update, *, settings_root):

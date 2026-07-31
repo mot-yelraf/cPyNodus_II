@@ -1,4 +1,9 @@
-"""Run threshold-and-time Nodus switch automations from WeeWX."""
+"""Run threshold-and-time Nodus switch automations from WeeWX.
+
+``AutomationController`` evaluates persisted rules and coordinates switch
+requests; ``NodusAutomation`` and ``NodusAutomationStatus`` integrate control
+and status with WeeWX. Shared state is guarded for WeeWX's threaded runtime.
+"""
 
 import json
 import logging

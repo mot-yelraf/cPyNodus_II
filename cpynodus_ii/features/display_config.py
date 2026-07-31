@@ -1,4 +1,9 @@
-"""Low-stack device display config handling."""
+"""Apply device display configuration through a low-stack command path.
+
+``process_device_display_config_message`` validates the device configuration
+topic, updates display metrics and styles, and reports acknowledgement,
+persistence, and metadata publication through a ``CommandResult``.
+"""
 
 from cpynodus_ii.features.command_models import CommandResult
 from cpynodus_ii.features.topics import mqtt_topic

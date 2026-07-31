@@ -1,4 +1,9 @@
-"""Shared command data shapes for lazy command handlers."""
+"""Define shared result and payload shapes for runtime commands.
+
+The lightweight command classes cover switch, device configuration,
+calibration, firmware update, and soil-pH sessions. They remain separate from
+dispatch code so command intake can defer importing heavier handlers.
+"""
 
 from dataclasses import dataclass
 

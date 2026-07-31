@@ -1,4 +1,9 @@
-"""Persist lightweight onboarding runtime state outside TOML config."""
+"""Persist lightweight onboarding runtime state outside TOML config.
+
+``load_onboarding_state``, ``save_onboarding_state``, and
+``clear_onboarding_state`` manage the small reboot-spanning state document.
+Writes replace a temporary file so partially written JSON is not made active.
+"""
 
 import json
 import os

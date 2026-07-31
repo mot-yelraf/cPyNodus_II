@@ -1,4 +1,9 @@
-"""Small single-offset calibration apply handler."""
+"""Apply one sensor calibration offset with bounded heap use.
+
+``process_calibration_offsets_message`` handles duplicate message IDs,
+publishes calibration acknowledgements and results, updates the live runtime
+model, and attempts TOML persistence without requiring the heavier handler.
+"""
 
 from cpynodus_ii.features.command_models import CommandResult
 from cpynodus_ii.features.topics import mqtt_topic

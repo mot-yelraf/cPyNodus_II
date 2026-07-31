@@ -1,4 +1,9 @@
-"""Soil-only Modbus sensor startup and snapshot collection."""
+"""Start soil Modbus sensors and collect normalized snapshots.
+
+``SoilModbusClient`` provides the constrained RTU transport used by
+``start_soil_sensor_service`` and ``read_soil_sensor_snapshot``. Register
+layouts and serial settings come from the active soil configuration.
+"""
 
 from time import sleep
 

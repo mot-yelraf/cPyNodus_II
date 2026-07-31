@@ -1,4 +1,9 @@
-"""Limited authenticated setup UI for a Nodus WeeWX instance."""
+"""Serve the authenticated setup UI for a Nodus WeeWX instance.
+
+``NodusAdminHTTP`` exposes bounded status and configuration endpoints plus the
+static setup assets. Rule validation and atomic rule-file helpers are public
+for integration tests and companion management code.
+"""
 
 import base64
 import hmac
