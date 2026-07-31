@@ -1,5 +1,10 @@
 # ruff: noqa: E501
-"""Render the on-demand NodusWeb local automation editor."""
+"""Render the on-demand NodusWeb local automation editor.
+
+``render_automation_html`` returns one self-contained page for listing,
+editing, and deleting local rules. The renderer is imported only for this
+route to keep its HTML and script allocations out of normal device runtime.
+"""
 
 from cpynodus_ii.features.web_ui_common import navigation, render_page
 

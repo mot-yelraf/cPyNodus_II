@@ -1,4 +1,8 @@
-"""Control CircuitPython auto-reload behavior for device runtime."""
+"""Control CircuitPython auto-reload behavior for device runtime.
+
+``disable_auto_reload`` tolerates missing and version-specific ``supervisor``
+APIs so the same startup call is safe in host tests and on supported boards.
+"""
 
 
 def disable_auto_reload(supervisor_module=None):

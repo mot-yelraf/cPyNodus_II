@@ -1,4 +1,9 @@
-"""Persist bounded recovery diagnostics for post-mortem review."""
+"""Persist bounded recovery diagnostics for post-mortem review.
+
+``append_recovery_event`` writes to ``/_recovery.log`` by default, shares the
+reboot-log size cap, and returns failure instead of raising when the
+CircuitPython filesystem is unavailable or read-only.
+"""
 
 from cpynodus_ii.core.reboot_log import (
     REBOOT_LOG_MAX_BYTES,

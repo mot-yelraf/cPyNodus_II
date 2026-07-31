@@ -1,4 +1,9 @@
-"""Discover WeeWX-profile Nodus devices and maintain a passive registry."""
+"""Discover WeeWX-profile Nodus devices and maintain a passive registry.
+
+``DiscoveryManager`` consumes retained metadata, validates device identities
+and topics, and atomically updates the registry. The service, HTTP surface,
+settings helpers, and ``main`` entry point support WeeWX and host management.
+"""
 
 import argparse
 import json

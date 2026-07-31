@@ -1,4 +1,9 @@
-"""Build host-side OTA package manifests from Git tag ranges."""
+"""Build and transfer host-side OTA packages from Git revisions.
+
+The public build helpers enforce target-specific MPY packaging and manifest
+rules; signing, prepare, transfer, and ``main`` support the complete operator
+workflow. This module requires host Python and external Git/MPY tooling.
+"""
 
 from __future__ import annotations
 

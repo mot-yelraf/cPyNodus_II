@@ -1,4 +1,9 @@
-"""Small MQTT topic helpers safe to import from startup paths."""
+"""Build canonical MQTT topics without loading feature implementations.
+
+``mqtt_base_topic`` and ``mqtt_topic`` normalize configured base paths and
+device identifiers. Keep this module allocation-light because startup and
+low-stack command paths import it directly.
+"""
 
 
 def mqtt_base_topic(runtime_config):

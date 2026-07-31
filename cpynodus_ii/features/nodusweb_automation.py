@@ -1,4 +1,9 @@
-"""Run bounded local switch automations for the NodusWeb profile."""
+"""Run bounded local switch automations for the NodusWeb profile.
+
+``NodusWebAutomationService`` loads the persisted rule set, evaluates eligible
+conditions, and applies switch actions while tracking ownership. Automation is
+profile-gated and intentionally capped for predictable device resource use.
+"""
 
 import json
 import os

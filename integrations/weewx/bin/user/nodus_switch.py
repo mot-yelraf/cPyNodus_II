@@ -1,4 +1,9 @@
-"""Collect Nodus switch identity, state, and events for WeeWX skins."""
+"""Collect Nodus switch identity, state, and events for WeeWX skins.
+
+``SwitchStatusController`` maintains the bounded shared snapshot;
+``NodusSwitchStatus`` and ``NodusSwitchStatusSearchList`` connect it to WeeWX
+services and templates. Thread locks protect MQTT updates and skin reads.
+"""
 
 import json
 import logging

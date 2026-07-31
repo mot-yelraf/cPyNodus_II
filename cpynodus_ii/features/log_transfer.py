@@ -1,4 +1,9 @@
-"""Transfer bounded device log files over MQTT in small chunks."""
+"""Transfer bounded device log files over MQTT in small chunks.
+
+The public parsing, subscription, and session helpers implement the
+``nodus-log-transfer/v1`` request flow. Transfers stream approved log files as
+base64 chunks so firmware does not retain the entire file in constrained heap.
+"""
 
 import binascii
 import json

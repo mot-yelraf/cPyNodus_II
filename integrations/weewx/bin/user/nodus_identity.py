@@ -1,4 +1,9 @@
-"""Expose retained Nodus MQTT identity metadata to WeeWX skins."""
+"""Expose retained Nodus MQTT identity metadata to WeeWX skins.
+
+``NodusIdentity`` resolves the single configured device metadata topic and
+returns skin-ready identity values. Broker access is bounded by a short
+timeout, and missing metadata degrades to explicit unknown values.
+"""
 
 import json
 import logging

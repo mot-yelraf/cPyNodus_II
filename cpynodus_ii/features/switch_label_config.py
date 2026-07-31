@@ -1,4 +1,9 @@
-"""Low-stack device switch-label config handling."""
+"""Apply switch-label configuration through a low-stack command path.
+
+``process_device_switch_label_config_message`` validates the device topic,
+updates a channel label, and publishes acknowledgement, result, and metadata
+messages while preserving duplicate-command behavior.
+"""
 
 from cpynodus_ii.features.command_models import CommandResult
 from cpynodus_ii.features.switch_location_config import (

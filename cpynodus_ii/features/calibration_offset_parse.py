@@ -1,4 +1,9 @@
-"""Parse single-offset calibration apply payloads."""
+"""Parse single-offset calibration apply payloads.
+
+``parse_single_offset_payload`` deliberately accepts exactly one supported
+offset and uses a small string parser to avoid loading a full JSON document on
+memory-constrained boards.
+"""
 
 _SUPPORTED_KEYS = (
     "TEMP_OFFSET",

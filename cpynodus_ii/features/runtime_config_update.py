@@ -1,4 +1,9 @@
-"""Apply live-safe runtime configuration changes."""
+"""Apply configuration changes that are safe without rebuilding runtime.
+
+``apply_runtime_config_update`` handles one normalized section/key change;
+``apply_runtime_config_updates`` applies a sequence. Unsupported or
+startup-sensitive values remain unchanged and are reported to the caller.
+"""
 
 from dataclasses import replace
 

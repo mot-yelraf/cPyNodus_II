@@ -1,4 +1,9 @@
-"""Low-stack calibration apply handling for sensor offset updates."""
+"""Apply sensor calibration commands through a low-stack MQTT path.
+
+``process_calibration_apply_message`` validates the calibration topic, updates
+runtime offsets, publishes acknowledgement and result messages, and persists
+accepted values when the active filesystem permits it.
+"""
 
 from cpynodus_ii.features.command_models import CommandResult
 from cpynodus_ii.features.topics import mqtt_topic

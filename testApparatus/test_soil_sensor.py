@@ -1,14 +1,15 @@
-"""
-Minimal RS485 Modbus-RTU test for identifying soil probe registers.
-Checks both Waveshare Pico-2CH-RS485 HAT channels:
-  - CH1 (GP0/GP1)
-  - CH2 (GP4/GP5)
+"""Identify soil-probe registers over RS485 Modbus RTU.
+
+``main`` probes both Waveshare Pico-2CH-RS485 HAT channels, supported baud
+rates, addresses, and function codes before entering an optional measurement
+loop. Run it only while the normal firmware application is stopped.
 
 Workflow:
-1) Probe all channel/baud/address combinations.
-2) Detect profile (2-in-1, 4-in-1, or 7-in-1) from readable register counts.
-3) Sweep likely register ranges and compare candidate register layouts.
-4) Poll measurements every 10 seconds using the selected profile.
+
+1. Probe channel, baud, address, and function-code combinations.
+2. Detect 2-in-1, 4-in-1, or 7-in-1 profiles from readable register counts.
+3. Sweep likely register ranges and compare candidate layouts.
+4. Poll measurements using the selected profile.
 """
 
 import time

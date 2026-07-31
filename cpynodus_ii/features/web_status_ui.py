@@ -1,5 +1,10 @@
 # ruff: noqa: E501
-"""Render the minimal initial NodusWeb status page."""
+"""Render the minimal initial NodusWeb status page.
+
+``render_status_html`` emits current sensor metrics, switch controls, and the
+small polling script used to refresh them. The compact page is kept separate
+from configuration UI to limit the first response's heap demand.
+"""
 
 from cpynodus_ii.features.web_ui_common import (
     html_escape,

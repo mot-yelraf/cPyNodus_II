@@ -1,4 +1,9 @@
-"""Low-stack device time config handling."""
+"""Apply device time configuration through a low-stack command path.
+
+``process_device_time_config_message`` handles supported timezone and NTP
+updates, publishes the command outcome, and indicates when a persisted change
+requires later runtime reinitialization.
+"""
 
 from cpynodus_ii.features.command_models import CommandResult
 from cpynodus_ii.features.topics import mqtt_topic
