@@ -8,6 +8,7 @@ WEEWX_CONFIG="/etc/weewx/weewx.conf"
 WEEWX_BIN_ROOT="/etc/weewx/bin"
 WEEWX_USER_ROOT="/etc/weewx/bin/user"
 WEEWX_SKIN_ROOT="/etc/weewx/skins/Nodus"
+WEEWX_LEGACY_SKIN_ROOT="/etc/weewx/skins/NodusClean"
 WEEWX_PYTHON_ROOT="/usr/share/weewx"
 MQTTSUBSCRIBE_URL="https://github.com/weewx-mqtt/subscribe/archive/refs/tags/v3.1.1.zip"
 ASTRAL_VERSION="3.2"
@@ -51,6 +52,8 @@ Behavior:
   * Offers to install the WeeWX 5 Debian package when WeeWX is absent.
   * Preserves the primary WeeWX instance and creates
     /etc/weewx/nodus.conf, managed by weewx@nodus.service.
+  * Removes only the obsolete NodusClean report when it would overwrite the
+    managed Nodus dashboard, preserving recovery backups first.
   * Installs MQTTSubscribe 3.1.1 only when it is missing.
   * Installs Astral 3.2, Skyfield 1.54, and a local DE421 ephemeris.
   * Installs the Nodus skin, astronomy cards, identity, switch status, units, schema, and automation services.
@@ -868,6 +871,68 @@ PY
 )
 }
 
+cleanup_legacy_nodusclean_report() {
+  local config="${1:-$WEEWX_CONFIG}"
+  local skin_root="${2:-$WEEWX_LEGACY_SKIN_ROOT}"
+  local config_backup="${config}.pre-nodusclean"
+  local skin_backup="$(dirname "$config")/NodusClean.pre-removal.tar.gz"
+  local temp=""
+  local removed_report=0
+  local primary_was_active=0
+
+  if systemctl is-active --quiet weewx.service; then
+    primary_was_active=1
+  fi
+  if grep -Eq '^[[:space:]]*\[\[NodusClean\]\][[:space:]]*$' "$config"; then
+    log "Removing obsolete NodusClean report from $config."
+    temp="$(mktemp)"
+    python3 - "$config" "$temp" <<'PY'
+import sys
+
+source, target = sys.argv[1:]
+with open(source, encoding="utf-8") as handle:
+    lines = handle.readlines()
+
+output = []
+skipping = False
+section = ""
+for line in lines:
+    stripped = line.strip()
+    if stripped.startswith("[") and not stripped.startswith("[["):
+        section = stripped[1:-1]
+    if section == "StdReport" and stripped == "[[NodusClean]]":
+        skipping = True
+        continue
+    if skipping and stripped.startswith("["):
+        skipping = False
+    if not skipping:
+        output.append(line)
+
+with open(target, "w", encoding="utf-8") as handle:
+    handle.writelines(output)
+PY
+    if ! cmp -s "$config" "$temp"; then
+      if [[ ! -e "$config_backup" ]]; then
+        run_root cp -a "$config" "$config_backup"
+      fi
+      run_root install -o root -g weewx -m 0664 "$temp" "$config"
+      removed_report=1
+    fi
+    rm -f "$temp"
+  fi
+  if [[ -d "$skin_root" ]] && ! grep -q 'NodusClean' "$config"; then
+    log "Removing obsolete NodusClean skin: $skin_root"
+    if [[ ! -e "$skin_backup" ]]; then
+      run_root tar -C "$(dirname "$skin_root")" -czf "$skin_backup" \
+        "$(basename "$skin_root")"
+    fi
+    run_root rm -rf "$skin_root"
+  fi
+  if [[ $removed_report -eq 1 && $primary_was_active -eq 1 ]]; then
+    run_root systemctl restart weewx.service
+  fi
+}
+
 main() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -910,7 +975,7 @@ main() {
   systemctl cat weewx@.service >/dev/null 2>&1 || \
     die "The WeeWX package does not provide weewx@.service."
   log "Primary station detected: ${DETECTED_STATION_TYPE:-none} (${DETECTED_DRIVER:-none})"
-  log "The primary weewx.service and $WEEWX_CONFIG will not be modified."
+  log "The primary WeeWX instance will be preserved; only an exact legacy NodusClean report may be removed."
 
   local location=""
   local latitude="$DETECTED_LATITUDE"
@@ -1187,6 +1252,7 @@ PY
 
   log "Validating MQTTSubscribe driver configuration."
   validate_mqttsubscribe_driver "$target_config"
+  cleanup_legacy_nodusclean_report
   log "Generating the Nodus dashboard with the installed skin."
   if ! (cd /tmp && run_weewx weectl report run Nodus --config="$target_config"); then
     log "WARNING: initial dashboard generation failed; WeeWX will retry at the next archive interval."

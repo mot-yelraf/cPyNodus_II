@@ -30,6 +30,7 @@ def test_installer_is_valid_bash_and_has_help():
     assert "Skyfield 1.54" in output
     assert "--inspect-config PATH" in output
     assert "Preserves the primary WeeWX instance" in output
+    assert "obsolete NodusClean report" in output
     assert "persistent Nodus manager" in output
     assert "--device-id ID" in output
     assert "--update-profile" in output
@@ -132,6 +133,62 @@ disable_discovery_managed_instances "$2"
 
     assert "disable --now weewx@nodus-aht-yuk0nv.service" in output
     assert "weewx.service" not in output
+
+
+def test_installer_removes_only_legacy_nodusclean_report(tmp_path):
+    config = tmp_path / "weewx.conf"
+    skin = tmp_path / "skins" / "NodusClean"
+    skin.mkdir(parents=True)
+    (skin / "index.html.tmpl").write_text("legacy\n", encoding="utf-8")
+    config.write_text(
+        """[StdReport]
+    HTML_ROOT = /var/www/html/weewx
+
+    [[NodusClean]]
+        skin = NodusClean
+        HTML_ROOT = /var/www/html/weewx/nodus
+        enable = true
+
+    [[FTP]]
+        skin = Ftp
+        enable = false
+""",
+        encoding="utf-8",
+    )
+    command = r'''
+source "$1"
+SUDO=()
+systemctl() { return 0; }
+run_root() {
+  if [[ "$1" == "install" ]]; then
+    command cp "${@: -2:1}" "${@: -1}"
+  elif [[ "$1" == "systemctl" ]]; then
+    return 0
+  else
+    command "$@"
+  fi
+}
+cleanup_legacy_nodusclean_report "$2" "$3"
+'''
+    subprocess.run(
+        [
+            "bash",
+            "-c",
+            command,
+            "migration-test",
+            str(INSTALLER),
+            str(config),
+            str(skin),
+        ],
+        check=True,
+    )
+
+    updated = config.read_text(encoding="utf-8")
+    assert "NodusClean" not in updated
+    assert "[[FTP]]" in updated
+    assert (tmp_path / "weewx.conf.pre-nodusclean").is_file()
+    assert (tmp_path / "NodusClean.pre-removal.tar.gz").is_file()
+    assert not skin.exists()
 
 
 def test_installer_detects_physical_station_without_overwriting_it(tmp_path):
