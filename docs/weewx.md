@@ -101,7 +101,11 @@ The installer:
 The operational Nodus layout remains `/etc/weewx/nodus.conf`,
 `weewx@nodus.service`, `/var/lib/weewx/nodus.sdb`, and
 `/var/www/html/weewx/nodus/`. The installer does not modify or stop the primary
-`/etc/weewx/weewx.conf` or `weewx.service`.
+`/etc/weewx/weewx.conf` or `weewx.service`, except to remove an exact obsolete
+`[[NodusClean]]` report that targets the managed Nodus dashboard. Before that
+migration it saves `/etc/weewx/weewx.conf.pre-nodusclean` and archives the old
+skin as `/etc/weewx/NodusClean.pre-removal.tar.gz`; an active primary service is
+restarted so it cannot continue overwriting the current dashboard.
 
 `nodus-weewx-discovery.service` runs as the unprivileged `weewx` account and
 maintains `/var/lib/weewx/nodus_discovery.json`, the local system-settings
