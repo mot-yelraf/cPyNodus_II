@@ -113,6 +113,10 @@ current contract:
   distinguishes broker receipt from a stalled send or lost acknowledgement.
   Slow raw-send chunk diagnostics are capped at four lines per packet and are
   emitted only when an individual chunk takes at least 250 ms.
+- Any publish taking at least five seconds is classified as stalled and enters
+  MQTT recovery, even if the local socket eventually reports all bytes sent.
+  This prevents approximately ten-second Pico 2 W socket stalls from being
+  counted as successful while broker-visible traffic is absent.
 - Current Nodus IPv4 is runtime state only. It is published in retained `meta`
   as `network.ipv4addr` when available and is not persisted in
   `settings.toml`.

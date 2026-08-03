@@ -2336,6 +2336,40 @@ def test_sync_transport_to_client_disconnects_after_slow_publish():
     assert transport.published_messages == []
 
 
+def test_sync_transport_to_client_disconnects_after_observed_send_stall(monkeypatch):
+    runtime_config = _runtime_config()
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connect_requested()
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=object(),
+        modules={"mqtt_cls": _FakeMQTTClient},
+    )
+
+    connect_result = connect_mqtt_client(adapter, transport)
+    transport.publish(
+        "nodus/aqi-x943fm/availability",
+        {"status": "online"},
+        retain=True,
+    )
+    monkeypatch.setattr(mqtt_client_module, "_elapsed_ms", lambda _started: 9968)
+
+    sync_result = sync_transport_to_client(connect_result.adapter, transport)
+
+    assert mqtt_client_module.MQTT_SLOW_OPERATION_MS == 5000
+    assert sync_result.phase == "error"
+    assert sync_result.operation == "publish"
+    assert sync_result.elapsed_ms == 9968
+    assert sync_result.errors == (
+        "mqtt_publish_slow:nodus/aqi-x943fm/availability:bytes=19:elapsed_ms=9968",
+    )
+    assert transport.connected is False
+
+
+def test_mqtt_slow_operation_threshold_is_inclusive():
+    assert mqtt_client_module._operation_is_slow(5000, 5000) is True
+
+
 def test_close_mqtt_client_keeps_pending_publish_queue():
     runtime_config = _runtime_config()
     transport = MQTTTransport("broker.local", 1883)

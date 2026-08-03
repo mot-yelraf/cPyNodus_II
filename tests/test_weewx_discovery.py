@@ -105,6 +105,68 @@ def test_manager_records_devices_without_provisioning_services(tmp_path):
     assert "admin_port" not in saved["devices"]["aht-yuk0nv"]
 
 
+def test_manager_rate_limits_unchanged_registry_writes(tmp_path, monkeypatch):
+    module = _load_module()
+    manager = module.DiscoveryManager(
+        {
+            "registry_file": str(tmp_path / "registry.json"),
+            "max_devices": 32,
+        }
+    )
+    saves = []
+    monkeypatch.setattr(manager, "_save_registry", lambda: saves.append(True))
+    descriptor = module.parse_meta(_meta(), "nodus/aht-yuk0nv/meta", "nodus")
+
+    manager.register(descriptor)
+    manager.register(descriptor)
+
+    assert len(saves) == 1
+
+
+def test_discovery_subscribes_once_when_retained_meta_is_redelivered():
+    module = _load_module()
+
+    class Client:
+        def __init__(self, *_args, **_kwargs):
+            self.subscriptions = []
+            self.on_connect = None
+            self.on_message = None
+
+        def subscribe(self, topic, qos=0):
+            self.subscriptions.append((topic, qos))
+
+    MQTT = type("MQTT", (), {"Client": Client})
+
+    class Manager:
+        def register(self, descriptor):
+            return descriptor
+
+    service = module.DiscoveryService(
+        {"base_topic": "nodus"},
+        manager=Manager(),
+        mqtt_module=MQTT,
+    )
+    message = type(
+        "Message",
+        (),
+        {
+            "topic": "nodus/aht-yuk0nv/meta",
+            "payload": _meta().encode("utf-8"),
+            "retain": True,
+        },
+    )()
+
+    service._on_connect(service.client, None, None, 0)
+    service._on_message(service.client, None, message)
+    service._on_message(service.client, None, message)
+
+    topics = [topic for topic, _qos in service.client.subscriptions]
+    assert topics.count("nodus/+/meta") == 1
+    assert topics.count("nodus/aht-yuk0nv/#") == 1
+    assert topics.count("nodus/aht-yuk0nv/data") == 1
+    assert topics.count("nodus/aht-yuk0nv/meta/switch") == 1
+
+
 def test_manager_migrates_old_provisioning_entry_to_registry_only(tmp_path):
     module = _load_module()
     registry = tmp_path / "registry.json"

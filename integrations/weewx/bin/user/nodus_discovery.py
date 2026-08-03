@@ -23,6 +23,7 @@ log = logging.getLogger(__name__)
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 _SAFE_TOPIC = re.compile(r"^[A-Za-z0-9_./+-]{1,240}$")
+_SAFE_SUBSCRIPTION_TOPIC = re.compile(r"^[A-Za-z0-9_./+#-]{1,240}$")
 _COMMON_FIELDS = (
     ("Temperature", "inTemp"),
     ("Rel-Humidity", "inHumidity"),
@@ -64,6 +65,20 @@ def _clean_topic(value, name):
     topic = str(value or "").strip().strip("/")
     if not topic or not _SAFE_TOPIC.fullmatch(topic) or "//" in topic:
         raise ValueError("{} is invalid".format(name))
+    return topic
+
+
+def _clean_subscription_topic(value):
+    topic = str(value or "").strip().strip("/")
+    if not topic or not _SAFE_SUBSCRIPTION_TOPIC.fullmatch(topic) or "//" in topic:
+        raise ValueError("subscription topic is invalid")
+    levels = topic.split("/")
+    if any(("+" in level and level != "+") for level in levels):
+        raise ValueError("subscription topic is invalid")
+    if any(("#" in level and level != "#") for level in levels):
+        raise ValueError("subscription topic is invalid")
+    if "#" in levels and levels[-1] != "#":
+        raise ValueError("subscription topic is invalid")
     return topic
 
 
@@ -220,7 +235,12 @@ class DiscoveryManager:
         entry["first_seen"] = int(previous.get("first_seen") or now)
         entry["last_seen"] = now
         self.registry["devices"][device_id] = entry
-        self._save_registry()
+        descriptor_changed = any(
+            previous.get(key) != value for key, value in descriptor.items()
+        )
+        last_persisted = int(previous.get("last_seen") or 0)
+        if not previous or descriptor_changed or now - last_persisted >= 60:
+            self._save_registry()
         return entry
 
     def remove(self, device_id):
@@ -254,11 +274,22 @@ class DiscoveryService:
         self.client.on_connect = self._on_connect
         self.client.on_message = self._on_message
         self.manager_backend = None
+        self._subscriptions = set()
+
+    def subscribe_once(self, topic, qos=0):
+        """Subscribe once per broker connection to avoid retained-message loops."""
+        clean_topic = _clean_subscription_topic(topic)
+        if clean_topic in self._subscriptions:
+            return False
+        self.client.subscribe(clean_topic, qos=qos)
+        self._subscriptions.add(clean_topic)
+        return True
 
     def _on_connect(self, client, _userdata, _flags, reason_code, _properties=None):
         if int(reason_code) == 0:
             base = _clean_topic(self.settings.get("base_topic"), "base_topic")
-            client.subscribe("{}/+/meta".format(base), qos=0)
+            self._subscriptions.clear()
+            self.subscribe_once("{}/+/meta".format(base), qos=0)
         else:
             log.error("Nodus discovery MQTT connect failed: %s", reason_code)
 
@@ -271,7 +302,7 @@ class DiscoveryService:
                 descriptor = parse_meta(message.payload, message.topic, base)
                 entry = self.manager.register(descriptor)
                 device_id = descriptor["device_id"]
-                client.subscribe("{}/{}/#".format(base, device_id), qos=0)
+                self.subscribe_once("{}/{}/#".format(base, device_id), qos=0)
                 for topic in (
                     entry.get("data_topic"),
                     entry.get("sensor_event_topic"),
@@ -280,7 +311,7 @@ class DiscoveryService:
                     entry.get("heartbeat_topic"),
                 ):
                     if topic:
-                        client.subscribe(topic, qos=0)
+                        self.subscribe_once(topic, qos=0)
                 if self.manager_backend:
                     self.manager_backend.observe(device_id, message, entry)
             elif self.manager_backend:
@@ -507,9 +538,7 @@ class NodusManager:
                                         channel[key], "switch channel topic"
                                     )
                                     known.add(channel_topic)
-                                    self.discovery_service.client.subscribe(
-                                        channel_topic, qos=0
-                                    )
+                                    self.discovery_service.subscribe_once(channel_topic)
                     except Exception:
                         pass
                 break
