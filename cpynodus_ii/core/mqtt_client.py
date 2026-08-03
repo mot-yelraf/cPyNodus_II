@@ -14,7 +14,7 @@ MQTT_POLL_SOCKET_TIMEOUT_S = 1
 MQTT_SUBACK_SOCKET_TIMEOUT_S = MQTT_POLL_SOCKET_TIMEOUT_S
 MQTT_PUBACK_SOCKET_TIMEOUT_S = MQTT_POLL_SOCKET_TIMEOUT_S
 MQTT_CONNECT_RETRIES = 1
-MQTT_SLOW_OPERATION_MS = 10000
+MQTT_SLOW_OPERATION_MS = 5000
 MQTT_RAW_SEND_CHUNK_BYTES = 256
 MQTT_RAW_SEND_SLOW_CHUNK_MS = 250
 MQTT_RAW_SEND_SLOW_CHUNK_LOG_LIMIT = 4
@@ -2771,7 +2771,7 @@ def _slow_operation_threshold_ms(value):
 
 def _operation_is_slow(elapsed_ms, threshold_ms):
     try:
-        return int(threshold_ms) > 0 and int(elapsed_ms) > int(threshold_ms)
+        return int(threshold_ms) > 0 and int(elapsed_ms) >= int(threshold_ms)
     except Exception:
         return False
 

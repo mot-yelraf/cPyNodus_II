@@ -141,6 +141,9 @@ Discovery accepts only valid retained `nodus-meta/v1` messages whose
 `device_id`. It uses `sensor.hardware` to select the current stanza family;
 newer metadata may additionally provide a logical `sensor.device` hint. Topic
 and identifier values are constrained before they can enter the registry.
+Broker subscriptions are deduplicated for each connection so retained metadata
+cannot trigger a subscribe/redelivery loop, and unchanged registry metadata is
+persisted at most once per minute.
 
 The System Settings WeeWX information block uses a desktop 5-5-4 card layout.
 It resolves the configured MQTT broker to IPv4 when host DNS permits. Astral

@@ -214,6 +214,11 @@ the device:
   wait for PUBACK. Raw sends emit at most four slow-chunk records per packet,
   and only for chunks taking at least 250 ms; records include topic, packet and
   chunk sizes, chunk number, returned byte count, and elapsed time.
+- A publish taking at least five seconds is treated as a stalled MQTT
+  operation even when the socket eventually reports that it accepted every
+  byte. This catches poisoned Pico 2 W sessions whose blocking sends return
+  just below the CYW43 stack's approximately ten-second boundary and routes
+  them into the existing MQTT recovery ladder.
 - MQTT preflight distinguishes several cases before MiniMQTT connect:
   TCP failure, raw MQTT CONNACK timeout, and socket-progress/stuck-socket
   patterns. Those cases can trigger socket refresh, station reset, adapter
