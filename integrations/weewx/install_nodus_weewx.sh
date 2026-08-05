@@ -25,6 +25,8 @@ INSTALL_SERVICE_WAS_ACTIVE=0
 INSTALL_ROLLBACK_NEEDED=0
 DEVICE_ID_ARG=""
 UPDATE_PROFILE=0
+DISCOVERY_ONLY=0
+FAMILY_ARG=""
 INSTALL_BACKUP_DISCOVERY_CONFIG=""
 INSTALL_DISCOVERY_CONFIG_TOUCHED=0
 DISCOVERY_SERVICE_WAS_ACTIVE=0
@@ -45,6 +47,7 @@ Install the Nodus MQTT/WeeWX integration on a Debian or Raspberry Pi OS host.
 Usage:
   ./integrations/weewx/install_nodus_weewx.sh [--dry-run]
   ./integrations/weewx/install_nodus_weewx.sh [--device-id ID] [--update-profile]
+  ./integrations/weewx/install_nodus_weewx.sh --discovery-only --family FAMILY
   ./integrations/weewx/install_nodus_weewx.sh --inspect-config PATH
   ./integrations/weewx/install_nodus_weewx.sh --help
 
@@ -63,6 +66,9 @@ Options:
   --dry-run             Inspect and prompt, but do not modify the system.
   --device-id ID        Select integrations/weewx/ID.toml explicitly.
   --update-profile      Prompt using saved values, then update ID.toml.
+  --discovery-only      Install a family template and manager without selecting
+                        or starting an operational Nodus device.
+  --family FAMILY       Template family for --discovery-only.
   --inspect-config PATH Print the detected installation mode and exit.
 EOF
 }
@@ -216,6 +222,49 @@ elif value is not None:
 PY
 }
 
+discovery_config_value() {
+  local path="$1"
+  local key="$2"
+  [[ -e "$path" ]] || return 0
+  "${SUDO[@]}" python3 - "$path" "$key" <<'PY'
+import json
+import sys
+
+path, key = sys.argv[1:]
+with open(path, encoding="utf-8") as handle:
+    value = json.load(handle).get(key, "")
+if isinstance(value, bool):
+    print("true" if value else "false")
+elif value is not None:
+    print(value)
+PY
+}
+
+system_auto_provision_enabled() {
+  local path="$1"
+  [[ -e "$path" ]] || return 1
+  "${SUDO[@]}" python3 - "$path" <<'PY'
+import sys
+import tomllib
+
+with open(sys.argv[1], "rb") as handle:
+    enabled = bool((tomllib.load(handle).get("System") or {}).get("AUTO_PROVISION", True))
+raise SystemExit(0 if enabled else 1)
+PY
+}
+
+validate_cli_options() {
+  if [[ $DISCOVERY_ONLY -eq 1 ]]; then
+    [[ -n "$FAMILY_ARG" ]] || die "--discovery-only requires --family FAMILY."
+    [[ -z "$DEVICE_ID_ARG" ]] || die "--device-id cannot be used with --discovery-only."
+    [[ $UPDATE_PROFILE -eq 0 ]] || die "--update-profile cannot be used with --discovery-only."
+    [[ "$FAMILY_ARG" =~ ^(aht|avpd|apvpd|apvpd_aht|co2|aqi|soil)$ ]] || \
+      die "Unsupported sensor family: $FAMILY_ARG"
+  elif [[ -n "$FAMILY_ARG" ]]; then
+    die "--family is only valid with --discovery-only."
+  fi
+}
+
 write_device_profile() {
   local path="$1"
   local device_id="$2"
@@ -317,6 +366,25 @@ prompt_coordinate() {
       return 0
     fi
     echo "Invalid $kind: $current"
+    current=""
+  done
+}
+
+valid_altitude() {
+  local value="$1"
+  [[ "$value" =~ ^-?[0-9]+([.][0-9]+)?[[:space:]]*,[[:space:]]*(meter|foot)$ ]]
+}
+
+prompt_altitude() {
+  local current="${1:-}"
+  while true; do
+    prompt_value "Altitude with unit" "$current"
+    current="$PROMPT_VALUE"
+    if valid_altitude "$current"; then
+      PROMPT_VALUE="$current"
+      return 0
+    fi
+    echo "Use a WeeWX altitude such as 1781, meter or 5843, foot."
     current=""
   done
 }
@@ -729,9 +797,9 @@ ensure_paho() {
 ensure_astronomy() {
   local python_path="$WEEWX_BIN_ROOT:$WEEWX_PYTHON_ROOT"
   local packages_ok=0
-  if env "PYTHONPATH=$python_path" python3 -c \
+  if (cd /tmp && env "PYTHONPATH=$python_path" python3 -c \
     'import astral, skyfield; from astral import Observer, moon; from astral.sun import sun; assert astral.__version__ == "3.2"; assert skyfield.__version__ == "1.54"; assert all(hasattr(moon, name) for name in ("moonrise", "moonset", "azimuth", "elevation"))' \
-    >/dev/null 2>&1; then
+    >/dev/null 2>&1); then
     packages_ok=1
   fi
   if [[ $packages_ok -ne 1 ]]; then
@@ -749,8 +817,8 @@ ensure_astronomy() {
     run_weewx env "PYTHONPATH=$python_path" python3 -c \
       'from skyfield.api import Loader; Loader("/var/lib/weewx/skyfield")("de421.bsp")'
   fi
-  run_weewx env "PYTHONPATH=$python_path" python3 -c \
-    'import astral, skyfield; from skyfield.api import load_file; assert astral.__version__ == "3.2"; assert skyfield.__version__ == "1.54"; load_file("/var/lib/weewx/skyfield/de421.bsp")'
+  (cd /tmp && run_weewx env "PYTHONPATH=$python_path" python3 -c \
+    'import astral, skyfield; from skyfield.api import load_file; assert astral.__version__ == "3.2"; assert skyfield.__version__ == "1.54"; load_file("/var/lib/weewx/skyfield/de421.bsp")')
 }
 
 validate_integration_sources() {
@@ -943,6 +1011,12 @@ main() {
         shift 2
         ;;
       --update-profile) UPDATE_PROFILE=1; shift ;;
+      --discovery-only) DISCOVERY_ONLY=1; shift ;;
+      --family)
+        [[ $# -ge 2 ]] || die "--family requires a sensor family."
+        FAMILY_ARG="$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')"
+        shift 2
+        ;;
       --inspect-config)
         [[ $# -ge 2 ]] || die "--inspect-config requires a path."
         INSPECT_CONFIG="$2"
@@ -952,6 +1026,8 @@ main() {
       *) die "Unknown argument: $1" ;;
     esac
   done
+
+  validate_cli_options
 
   if [[ -n "$INSPECT_CONFIG" ]]; then
     print_detection "$INSPECT_CONFIG"
@@ -1000,36 +1076,53 @@ main() {
   local profile_path=""
   local profile_exists=0
 
-  device_id="$(resolve_profile_device_id)"
-  while [[ ! "$device_id" =~ ^[A-Za-z0-9_.-]+$ ]]; do
-    prompt_value "Nodus device ID, for example aht-va41ka"
-    device_id="$PROMPT_VALUE"
-    if [[ ! "$device_id" =~ ^[A-Za-z0-9_.-]+$ ]]; then
-      echo "Use only letters, digits, dot, underscore, and hyphen."
+  if [[ $DISCOVERY_ONLY -eq 1 ]]; then
+    family="$FAMILY_ARG"
+    if [[ -e "$DISCOVERY_CONFIG" ]]; then
+      location="$(discovery_config_value "$DISCOVERY_CONFIG" location)"
+      latitude="$(discovery_config_value "$DISCOVERY_CONFIG" latitude)"
+      longitude="$(discovery_config_value "$DISCOVERY_CONFIG" longitude)"
+      altitude="$(discovery_config_value "$DISCOVERY_CONFIG" altitude)"
+      broker="$(discovery_config_value "$DISCOVERY_CONFIG" broker)"
+      port="$(discovery_config_value "$DISCOVERY_CONFIG" port)"
+      base_topic="$(discovery_config_value "$DISCOVERY_CONFIG" base_topic)"
+      username="$(discovery_config_value "$DISCOVERY_CONFIG" username)"
+      password="$(discovery_config_value "$DISCOVERY_CONFIG" password)"
+      tls_enable="$(discovery_config_value "$DISCOVERY_CONFIG" use_tls)"
+      ca_certs="$(discovery_config_value "$DISCOVERY_CONFIG" ca_certs)"
     fi
-  done
-  profile_path="$ROOT_DIR/$device_id.toml"
-  if [[ -f "$profile_path" ]]; then
-    profile_exists=1
-    local stored_device_id=""
-    stored_device_id="$(profile_value "$profile_path" "" device_id)"
-    [[ "$stored_device_id" == "$device_id" ]] || \
-      die "Profile device_id does not match its filename: $profile_path"
-    family="$(profile_value "$profile_path" "" sensor_family)"
-    location="$(profile_value "$profile_path" station description)"
-    latitude="$(profile_value "$profile_path" station latitude)"
-    longitude="$(profile_value "$profile_path" station longitude)"
-    altitude="$(profile_value "$profile_path" station altitude)"
-    broker="$(profile_value "$profile_path" mqtt broker)"
-    port="$(profile_value "$profile_path" mqtt port)"
-    base_topic="$(profile_value "$profile_path" mqtt base_topic)"
-    username="$(profile_value "$profile_path" mqtt username)"
-    password="$(profile_value "$profile_path" mqtt password)"
-    tls_enable="$(profile_value "$profile_path" mqtt use_tls)"
-    ca_certs="$(profile_value "$profile_path" mqtt ca_certs)"
+  else
+    device_id="$(resolve_profile_device_id)"
+    while [[ ! "$device_id" =~ ^[A-Za-z0-9_.-]+$ ]]; do
+      prompt_value "Nodus device ID, for example aht-va41ka"
+      device_id="$PROMPT_VALUE"
+      if [[ ! "$device_id" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+        echo "Use only letters, digits, dot, underscore, and hyphen."
+      fi
+    done
+    profile_path="$ROOT_DIR/$device_id.toml"
+    if [[ -f "$profile_path" ]]; then
+      profile_exists=1
+      local stored_device_id=""
+      stored_device_id="$(profile_value "$profile_path" "" device_id)"
+      [[ "$stored_device_id" == "$device_id" ]] || \
+        die "Profile device_id does not match its filename: $profile_path"
+      family="$(profile_value "$profile_path" "" sensor_family)"
+      location="$(profile_value "$profile_path" station description)"
+      latitude="$(profile_value "$profile_path" station latitude)"
+      longitude="$(profile_value "$profile_path" station longitude)"
+      altitude="$(profile_value "$profile_path" station altitude)"
+      broker="$(profile_value "$profile_path" mqtt broker)"
+      port="$(profile_value "$profile_path" mqtt port)"
+      base_topic="$(profile_value "$profile_path" mqtt base_topic)"
+      username="$(profile_value "$profile_path" mqtt username)"
+      password="$(profile_value "$profile_path" mqtt password)"
+      tls_enable="$(profile_value "$profile_path" mqtt use_tls)"
+      ca_certs="$(profile_value "$profile_path" mqtt ca_certs)"
+    fi
   fi
 
-  if (( profile_exists == 1 && UPDATE_PROFILE == 0 )); then
+  if (( DISCOVERY_ONLY == 0 && profile_exists == 1 && UPDATE_PROFILE == 0 )); then
     log "Using saved device profile: $profile_path"
   else
     prompt_value "Station description" "${location:-Nodus Sensor}"
@@ -1038,7 +1131,7 @@ main() {
     latitude="$PROMPT_VALUE"
     prompt_coordinate longitude "$longitude"
     longitude="$PROMPT_VALUE"
-    prompt_value "Altitude with unit" "${altitude:-0, meter}"
+    prompt_altitude "${altitude:-0, meter}"
     altitude="$PROMPT_VALUE"
     prompt_value "MQTT broker hostname or address" "${broker:-localhost}"
     broker="$PROMPT_VALUE"
@@ -1046,9 +1139,11 @@ main() {
     port="$PROMPT_VALUE"
     prompt_value "MQTT base topic" "${base_topic:-nodus}"
     base_topic="${PROMPT_VALUE%/}"
-    family="${family:-$(infer_family "$device_id")}"
-    prompt_value "Sensor family (aht, avpd, apvpd, apvpd_aht, co2, aqi, or soil; lux requires manual setup)" "$family"
-    family="${PROMPT_VALUE,,}"
+    if [[ $DISCOVERY_ONLY -eq 0 ]]; then
+      family="${family:-$(infer_family "$device_id")}"
+      prompt_value "Sensor family (aht, avpd, apvpd, apvpd_aht, co2, aqi, or soil; lux requires manual setup)" "$family"
+      family="${PROMPT_VALUE,,}"
+    fi
     prompt_value "MQTT subscriber username" "$username"
     username="$PROMPT_VALUE"
     if [[ -n "$password" ]]; then
@@ -1076,6 +1171,7 @@ main() {
     die "Unsupported sensor family: $family"
   valid_coordinate "$latitude" latitude || die "Invalid latitude: $latitude"
   valid_coordinate "$longitude" longitude || die "Invalid longitude: $longitude"
+  valid_altitude "$altitude" || die "Invalid altitude: $altitude"
   [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 )) || \
     die "Invalid MQTT port: $port"
   base_topic="${base_topic%/}"
@@ -1087,7 +1183,7 @@ main() {
   if [[ -f "$WEEWX_USER_ROOT/mqttsubscribe.py" ]]; then
     mqtt_module="user.mqttsubscribe"
   fi
-  local topic="${base_topic}/${device_id}/data"
+  local topic="${base_topic}/${device_id:-__discovered__}/data"
   local version=""
   version="$(ini_value "$WEEWX_CONFIG" "" version || true)"
   if [[ -z "$version" ]]; then
@@ -1116,12 +1212,19 @@ PY
 
   log ""
   log "Installation plan:"
-  log "  mode:       $mode"
-  log "  config:     $target_config"
-  log "  service:    $target_service"
-  log "  database:   /var/lib/weewx/$database_name"
-  log "  report:     $html_root"
-  log "  MQTT topic: $topic"
+  if [[ $DISCOVERY_ONLY -eq 1 ]]; then
+    log "  mode:       discovery-only"
+    log "  family:     $family"
+    log "  template:   /etc/weewx/nodus-managed.conf.tmpl"
+    log "  installed:  none (awaiting discovery)"
+  else
+    log "  mode:       $mode"
+    log "  config:     $target_config"
+    log "  service:    $target_service"
+    log "  database:   /var/lib/weewx/$database_name"
+    log "  report:     $html_root"
+    log "  MQTT topic: $topic"
+  fi
   log "  manager:    $DISCOVERY_SERVICE (discovery, removal, reprovisioning)"
   log "  MQTT watch: ${base_topic}/+/meta"
   if ! ask_yes_no "Apply this installation?" no; then
@@ -1133,7 +1236,7 @@ PY
     exit 0
   fi
 
-  if (( profile_exists == 0 || UPDATE_PROFILE == 1 )); then
+  if (( DISCOVERY_ONLY == 0 && (profile_exists == 0 || UPDATE_PROFILE == 1) )); then
     write_device_profile "$profile_path" "$device_id" "$family" "$location" \
       "$latitude" "$longitude" "$altitude" "$broker" "$port" "$base_topic" \
       "$username" "$password" "$tls_enable" "$ca_certs"
@@ -1149,6 +1252,18 @@ PY
   fi
   if systemctl is-active --quiet "$DISCOVERY_SERVICE"; then
     DISCOVERY_SERVICE_WAS_ACTIVE=1
+  fi
+  if [[ $DISCOVERY_ONLY -eq 1 ]]; then
+    [[ ! -e /var/lib/weewx/nodus_installed.json ]] || \
+      die "Remove the installed Nodus before using --discovery-only."
+    [[ ! -e "$target_config" ]] || \
+      die "Remove the operational Nodus configuration before using --discovery-only."
+    if systemctl is-active --quiet "$target_service"; then
+      die "Stop and remove the operational Nodus before using --discovery-only."
+    fi
+    if system_auto_provision_enabled /var/lib/weewx/nodus_system.toml; then
+      die "Disable automatic provisioning before using --discovery-only."
+    fi
   fi
   if [[ -e "$target_config" ]]; then
     INSTALL_BACKUP_CONFIG="${target_config}.${stamp}.bak"
@@ -1238,24 +1353,30 @@ PY
     local system_temp=""
     system_temp="$(mktemp)"
     printf '%s\n' '[System]' 'TITLE = "Nodus Automation Instrumentorum"' \
-      'ONLINE_TIMEOUT_SECONDS = 150' 'AUTO_PROVISION = true' >"$system_temp"
+      'ONLINE_TIMEOUT_SECONDS = 150' \
+      "AUTO_PROVISION = $([[ $DISCOVERY_ONLY -eq 1 ]] && printf false || printf true)" \
+      >"$system_temp"
     run_root install -o weewx -g weewx -m 0664 "$system_temp" \
       /var/lib/weewx/nodus_system.toml
     rm -f "$system_temp"
   fi
-  local installed_temp=""
-  installed_temp="$(mktemp)"
-  printf '{"device_id":"%s","data_topic":"%s"}\n' "$device_id" "$topic" >"$installed_temp"
-  run_root install -o weewx -g weewx -m 0664 "$installed_temp" \
-    /var/lib/weewx/nodus_installed.json
-  rm -f "$installed_temp"
+  if [[ $DISCOVERY_ONLY -eq 0 ]]; then
+    local installed_temp=""
+    installed_temp="$(mktemp)"
+    printf '{"device_id":"%s","data_topic":"%s"}\n' "$device_id" "$topic" >"$installed_temp"
+    run_root install -o weewx -g weewx -m 0664 "$installed_temp" \
+      /var/lib/weewx/nodus_installed.json
+    rm -f "$installed_temp"
+  fi
 
   log "Validating MQTTSubscribe driver configuration."
   validate_mqttsubscribe_driver "$target_config"
   cleanup_legacy_nodusclean_report
-  log "Generating the Nodus dashboard with the installed skin."
-  if ! (cd /tmp && run_weewx weectl report run Nodus --config="$target_config"); then
-    log "WARNING: initial dashboard generation failed; WeeWX will retry at the next archive interval."
+  if [[ $DISCOVERY_ONLY -eq 0 ]]; then
+    log "Generating the Nodus dashboard with the installed skin."
+    if ! (cd /tmp && run_weewx weectl report run Nodus --config="$target_config"); then
+      log "WARNING: initial dashboard generation failed; WeeWX will retry at the next archive interval."
+    fi
   fi
   run_root systemctl daemon-reload
   if [[ -e /var/lib/weewx/nodus_discovery.json ]]; then
@@ -1263,7 +1384,12 @@ PY
     run_root chmod 0664 /var/lib/weewx/nodus_discovery.json
   fi
   disable_discovery_managed_instances
-  run_root systemctl enable --now "$target_service"
+  if [[ $DISCOVERY_ONLY -eq 1 ]]; then
+    run_root systemctl disable --now "$target_service" || true
+    run_root rm -f "$target_config"
+  else
+    run_root systemctl enable --now "$target_service"
+  fi
   run_root systemctl enable --now "$DISCOVERY_SERVICE"
   run_root systemctl enable --now "$MANAGER_ACTION_PATH"
   run_root systemctl status "$target_service" --no-pager -l || true
@@ -1271,10 +1397,16 @@ PY
   INSTALL_ROLLBACK_NEEDED=0
 
   log ""
-  log "Nodus WeeWX installation complete."
-  log "Configuration: $target_config"
-  log "Service log:  sudo journalctl -u $target_service -f"
-  log "Report output: $html_root/"
+  if [[ $DISCOVERY_ONLY -eq 1 ]]; then
+    log "Nodus WeeWX discovery bootstrap complete."
+    log "Managed template family: $family"
+    log "No operational device is installed."
+  else
+    log "Nodus WeeWX installation complete."
+    log "Configuration: $target_config"
+    log "Service log:  sudo journalctl -u $target_service -f"
+    log "Report output: $html_root/"
+  fi
   log "Manager UI: http://<host>:8768/system/"
   log "Discovery registry: /var/lib/weewx/nodus_discovery.json"
   log "Manager log: sudo journalctl -u $DISCOVERY_SERVICE -f"

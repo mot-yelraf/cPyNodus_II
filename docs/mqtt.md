@@ -28,6 +28,10 @@ wins.
 - Nodus publishes non-retained `nodus/<device_id>/meta/patch` after accepted
   runtime changes.
 - Nodus publishes retained heartbeat and availability online/offline payloads.
+- MQTT configures a retained offline Last Will on the device heartbeat topic.
+  Abrupt power, radio, or socket loss can therefore become broker-visible
+  without waiting for the next device heartbeat. Preflight probes omit the
+  Will and cannot mark the device offline when their temporary socket closes.
 - In `homeassistant`, Nodus also publishes retained Home Assistant discovery
   messages under `[HomeAssistant].DISCOVERY_PREFIX`.
 - In `weewx`, Nodus publishes the normal `nodus-sensor-data/v1` payload. The
@@ -108,6 +112,9 @@ current contract:
   operational checkpoint or true power-on clears the warm-attempt count.
   PUBACK timeouts and errno 12 from TCP preflight or raw MQTT CONNECT are
   classified immediately instead of retrying with a zero failure count.
+- During the bounded SUBACK wait, Nodus accepts and delivers up to eight
+  interleaved broker packets. This includes retained PUBLISH messages that can
+  arrive immediately after a subscription request.
 - Retained startup publishes are separated by 350 ms. For temporary hardware
   diagnosis, retained device `meta` and `meta/switch` publish at QoS 1 so PUBACK
   distinguishes broker receipt from a stalled send or lost acknowledgement.

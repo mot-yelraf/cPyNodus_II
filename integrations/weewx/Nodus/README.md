@@ -30,8 +30,10 @@ The generated metrics dashboard and its setup page share the visible
 and `setup/#switch`; the page uses Sensorius-style sensor and switch sidebars
 with a Dashboard return button. Sensor views cover Location, Device
 Calibration, and device/network information. Switch views cover location and
-channel labels, saved automations and their editor, and switch/network
-information. There is no System Calibration view. The switch-status service
+channel labels and switch/network information. There is no System Calibration
+view. Saved host-side automations and their editor belong to the System
+Settings navigation alongside System Settings, Install Device, and Remove
+Device. The switch-status service
 supplies its unauthenticated LAN API on TCP port 8767. The UI supports
 locations, switch labels, change-only calibration writes, and bounded host-side
 automations with AND/OR metric, timer, time/day, Astral, and switch-state
@@ -40,8 +42,10 @@ LAN exposure, and MQTT ACL requirements.
 Automation-card titles show `<automation name> : Enabled|Disabled`; disabled
 rules are display-only and do not control a channel.
 
-The system gear opens the persistent port-8768 manager. Its two menus are
-System Settings and Remove Device. It stores host settings in
+The system gear opens the persistent port-8768 manager. Its menus are System
+Settings, Automations, Install Device, and Remove Device. System Settings uses
+grouped WeeWX Preferences, Station & MQTT, and WeeWX Runtime & Files sections.
+It stores host settings in
 `/var/lib/weewx/nodus_system.toml`, displays explicit Installed/Discovered
 badges and live online/offline state, clears exact retained device/switch
 topics during confirmed removal, and reprovisions a returning device.
@@ -49,6 +53,13 @@ topics during confirmed removal, and reprovisions a returning device.
 The installer stores reusable operator answers in
 `integrations/weewx/<device_id>.toml`. These mode-`0600` profiles are ignored
 by Git because they can contain an MQTT password.
+
+To stage the manager and a supported family template without naming an
+operational device, use `install_nodus_weewx.sh --discovery-only --family
+FAMILY`. This mode requires automatic provisioning to be disabled and leaves
+`weewx@nodus.service` inactive until a matching discovered device is selected
+under System Settings > Install Device. Automatic provisioning chooses a
+device only when exactly one discovered entry matches the managed family.
 
 For a fresh installation, copy `index.html.tmpl`, `skin.conf`, `style.css`,
 `dashboard.js`, and `nodus-favicon.svg`
@@ -65,5 +76,6 @@ On a package-installed WeeWX host the destination is commonly:
 After copying the files, restart WeeWX or run the `Nodus` report manually
 from a directory readable by the `weewx` service account.
 
-See `docs/weewx.md` for complete Nodus provisioning, MQTTSubscribe, schema,
-report, transfer, validation, and troubleshooting instructions.
+Start with `docs/weewx_install.md` for the step-by-step installation and
+replacement runbook. See `docs/weewx.md` for the detailed MQTTSubscribe,
+schema, report, validation, automation, and troubleshooting reference.

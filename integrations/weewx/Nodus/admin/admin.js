@@ -9,20 +9,25 @@ let channelOptions = [];
 const apiOrigin = location.port === "8767"
   ? ""
   : `${location.protocol}//${location.hostname}:8767`;
+const systemOrigin = `${location.protocol}//${location.hostname}:8768`;
 
 function selectSetupView() {
   const aliases = {"#sensor": "sensor-settings", "#switch": "switch-settings"};
   let selected = aliases[location.hash] || location.hash.slice(1) || "sensor-settings";
   if (!$(selected)) selected = "sensor-settings";
-  const switchView = selected.startsWith("switch") || selected.startsWith("automation");
-  $("sensor-nav").hidden = switchView;
+  const automationView = selected.startsWith("automation");
+  const switchView = selected.startsWith("switch");
+  $("sensor-nav").hidden = switchView || automationView;
   $("switch-nav").hidden = !switchView;
-  $("dialog-title").textContent = switchView
-    ? "Edit Switch Settings"
-    : "Sensor Settings & Calibration";
-  $("context-title").textContent = switchView
-    ? (state.switch?.switch_device_id || state.device_id || "Switch")
-    : (state.device_id || "Sensor");
+  $("system-nav").hidden = !automationView;
+  $("dialog-title").textContent = automationView
+    ? "System Settings"
+    : switchView ? "Edit Switch Settings" : "Sensor Settings & Calibration";
+  $("context-title").textContent = automationView
+    ? `WeeWX Host Automation — ${state.device_id || "Device"}`
+    : switchView
+      ? (state.switch?.switch_device_id || state.device_id || "Switch")
+      : (state.device_id || "Sensor");
   document.querySelectorAll(".sidebar [data-view]").forEach(link => {
     const active = link.dataset.view === selected
       || (selected === "automation-editor" && link.dataset.view === "automations");
@@ -471,12 +476,16 @@ function displayValue(value, fallback = "Unknown") {
 }
 
 function infoGroup(title, content) {
-  const section = document.createElement("section");
-  section.className = "info-group";
-  const heading = document.createElement("h4");
-  heading.textContent = title;
-  section.append(heading, content);
-  return section;
+  const details = document.createElement("details");
+  details.className = "info-group";
+  details.open = true;
+  const summary = document.createElement("summary");
+  summary.textContent = title;
+  const body = document.createElement("div");
+  body.className = "info-group-body";
+  body.appendChild(content);
+  details.append(summary, body);
+  return details;
 }
 
 function renderInfo(target, includeChannels = false) {
@@ -577,6 +586,9 @@ function renderStatus() {
 }
 
 document.addEventListener("DOMContentLoaded", async () => {
+  $("system-settings-link").href = `${systemOrigin}/system/#system-settings`;
+  $("install-device-link").href = `${systemOrigin}/system/#install-device`;
+  $("remove-device-link").href = `${systemOrigin}/system/#remove-device`;
   selectSetupView();
   window.addEventListener("hashchange", selectSetupView);
   try {

@@ -14,6 +14,8 @@
     <aside class="sidebar">
       <nav aria-label="Nodus system setup">
         <a href="#system-settings" data-view="system-settings">System Settings</a>
+        <a id="automations-link" href="#automations">Automations</a>
+        <a href="#install-device" data-view="install-device">Install Device</a>
         <a href="#remove-device" data-view="remove-device">Remove Device</a>
       </nav>
     </aside>
@@ -22,16 +24,38 @@
       <section id="system-settings" class="view-card">
         <header><h2>System Settings</h2></header>
         <form id="system-form">
-          <div class="view-content">
-            <div class="form-grid editable">
-              <label>System title<input id="system-title" maxlength="80"></label>
-              <label>Online timeout (seconds)<input id="online-timeout" type="number" min="30" max="3600"></label>
-              <label>Automatic provisioning<select id="auto-provision"><option value="yes">Yes</option><option value="no">No</option></select></label>
-            </div>
-            <h3>WeeWX System</h3>
-            <div id="weewx-info" class="info-grid"></div>
+          <div class="view-content system-groups">
+            <details id="weewx-preferences" class="setup-group">
+              <summary>WeeWX Preferences</summary>
+              <div class="setup-group-body">
+                <div class="form-grid editable">
+                  <label>System title<input id="system-title" maxlength="80"></label>
+                  <label>Online timeout (seconds)<input id="online-timeout" type="number" min="30" max="3600"></label>
+                  <label>Automatic provisioning<select id="auto-provision"><option value="yes">Yes</option><option value="no">No</option></select></label>
+                </div>
+                <div class="setup-group-actions"><button class="primary" type="submit">Save</button></div>
+              </div>
+            </details>
+            <details id="station-mqtt-info" class="setup-group">
+              <summary>Station &amp; MQTT</summary>
+              <div class="setup-group-body"><div id="station-info" class="info-grid"></div></div>
+            </details>
+            <details id="weewx-runtime-info" class="setup-group">
+              <summary>WeeWX Runtime &amp; Files</summary>
+              <div class="setup-group-body"><div id="weewx-info" class="info-grid runtime-grid"></div></div>
+            </details>
           </div>
-          <footer><a class="button dashboard" href="http://localhost/">Dashboard</a><button class="primary" type="submit">Save</button></footer>
+          <footer><a class="button dashboard" href="http://localhost/">Dashboard</a></footer>
+        </form>
+      </section>
+      <section id="install-device" class="view-card" hidden>
+        <header><h2>Install Discovered Device</h2></header>
+        <form id="install-form">
+          <div class="view-content">
+            <p class="device-note">Select one discovered device after automatic provisioning has been disabled.</p>
+            <div id="install-device-list" class="device-list"></div>
+          </div>
+          <footer><a class="button dashboard" href="http://localhost/">Dashboard</a><button id="install-submit" class="primary" type="submit" disabled>Install Selected</button></footer>
         </form>
       </section>
       <section id="remove-device" class="view-card" hidden>

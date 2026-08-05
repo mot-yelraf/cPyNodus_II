@@ -12,6 +12,7 @@ from dataclasses import dataclass
 MQTT_CONNECT_SOCKET_TIMEOUT_S = 3
 MQTT_POLL_SOCKET_TIMEOUT_S = 1
 MQTT_SUBACK_SOCKET_TIMEOUT_S = MQTT_POLL_SOCKET_TIMEOUT_S
+MQTT_SUBACK_INTERLEAVED_LIMIT = 8
 MQTT_PUBACK_SOCKET_TIMEOUT_S = MQTT_POLL_SOCKET_TIMEOUT_S
 MQTT_CONNECT_RETRIES = 1
 MQTT_SLOW_OPERATION_MS = 5000
@@ -142,6 +143,7 @@ def build_mqtt_client_adapter(
     try:
         client_kwargs = dict(kwargs)
         client = _instantiate_client(client_class, client_kwargs, broker_targets[0])
+        _configure_mqtt_last_will(client, runtime_config)
     except Exception as exc:
         return MQTTClientAdapter(
             phase="error",
@@ -166,6 +168,20 @@ def build_mqtt_client_adapter(
         flexible_callback_enabled=flexible_callback_enabled,
         errors=(),
     )
+
+
+def _configure_mqtt_last_will(client, runtime_config):
+    """Configure retained device-offline status before the MQTT connect."""
+    will_set = getattr(client, "will_set", None)
+    if not callable(will_set):
+        return False
+    device_id = _runtime_mqtt_client_id(runtime_config)
+    if not device_id:
+        return False
+    base_topic = str(getattr(runtime_config.mqtt, "base_topic", "") or "nodus")
+    topic = "{}/{}/status/heartbeat".format(base_topic.strip("/"), device_id)
+    will_set(topic, '{"status":"offline"}', retain=True, qos=0)
+    return True
 
 
 def connect_mqtt_client(adapter, transport, *, preflight=True):
@@ -837,7 +853,9 @@ def _sync_subscriptions_to_client(
     for topic in pending_subscriptions:
         operation_started = time.monotonic()
         try:
-            subscribe_result = _subscribe_mqtt_qos0(adapter.client, topic)
+            subscribe_result = _subscribe_mqtt_qos0(
+                adapter.client, topic, transport
+            )
         except Exception as exc:
             elapsed_ms = _elapsed_ms(operation_started)
             if subscribed_count:
@@ -946,7 +964,7 @@ def _transport_float_attr(transport, attr_name, default):
         return float(default)
 
 
-def _subscribe_mqtt_qos0(client, topic):
+def _subscribe_mqtt_qos0(client, topic, transport):
     sock = getattr(client, "_sock", None)
     if (
         sock is None
@@ -974,7 +992,7 @@ def _subscribe_mqtt_qos0(client, topic):
                 MQTT_SUBACK_SOCKET_TIMEOUT_S,
             )
         suback_started = time.monotonic()
-        _read_mqtt_suback(sock, packet_id)
+        _read_mqtt_suback(sock, packet_id, transport)
         suback_elapsed_ms = _elapsed_ms(suback_started)
     except Exception as exc:
         suback_elapsed_ms = _elapsed_ms(suback_started)
@@ -1134,30 +1152,89 @@ def _read_mqtt_puback(sock, packet_id):
         raise OSError("mqtt_puback_stage={}:{}".format(stage, exc))
 
 
-def _read_mqtt_suback(sock, packet_id):
+def _read_mqtt_suback(sock, packet_id, transport):
     stage = "header"
     try:
-        header = _recv_mqtt_byte(sock)
-        if header != 0x90:
+        interleaved = 0
+        while True:
+            stage = "header"
+            header = _recv_mqtt_byte(sock)
+            stage = "remaining"
+            remaining = _recv_mqtt_remaining_length(sock)
+            stage = "payload"
+            payload = _recv_socket_exact(sock, remaining)
+            packet_type = (header >> 4) & 0x0F
+            if packet_type == 9:
+                if len(payload) < 3:
+                    raise OSError("mqtt_suback_short:{}".format(len(payload)))
+                stage = "packet_id"
+                received_id = (payload[0] << 8) | payload[1]
+                if received_id != packet_id:
+                    raise OSError(
+                        "mqtt_suback_packet_id:{}:{}".format(
+                            received_id, packet_id
+                        )
+                    )
+                stage = "return_code"
+                return_code = payload[2]
+                if return_code > 2:
+                    raise OSError("mqtt_suback_failed:{}".format(return_code))
+                return
+            if packet_type == 3:
+                if interleaved >= MQTT_SUBACK_INTERLEAVED_LIMIT:
+                    raise OSError(
+                        "mqtt_suback_interleaved_limit:{}".format(
+                            MQTT_SUBACK_INTERLEAVED_LIMIT
+                        )
+                    )
+                stage = "interleaved_publish"
+                _receive_subscribe_publish(sock, transport, header, payload)
+                interleaved += 1
+                continue
+            if packet_type == 13:
+                if interleaved >= MQTT_SUBACK_INTERLEAVED_LIMIT:
+                    raise OSError(
+                        "mqtt_suback_interleaved_limit:{}".format(
+                            MQTT_SUBACK_INTERLEAVED_LIMIT
+                        )
+                    )
+                interleaved += 1
+                continue
+            if packet_type == 14:
+                raise OSError("mqtt_disconnect_packet")
             raise OSError("mqtt_suback_unexpected:{:02x}".format(header))
-        stage = "remaining"
-        remaining = _recv_mqtt_remaining_length(sock)
-        stage = "payload"
-        payload = _recv_socket_exact(sock, remaining)
-        if len(payload) < 3:
-            raise OSError("mqtt_suback_short:{}".format(len(payload)))
-        stage = "packet_id"
-        received_id = (payload[0] << 8) | payload[1]
-        if received_id != packet_id:
-            raise OSError(
-                "mqtt_suback_packet_id:{}:{}".format(received_id, packet_id)
-            )
-        stage = "return_code"
-        return_code = payload[2]
-        if return_code > 2:
-            raise OSError("mqtt_suback_failed:{}".format(return_code))
     except Exception as exc:
         raise OSError("mqtt_suback_stage={}:{}".format(stage, exc))
+
+
+def _receive_subscribe_publish(sock, transport, header, packet):
+    """Deliver one PUBLISH encountered on the bounded SUBACK wait path."""
+    if len(packet) < 2:
+        raise OSError("mqtt_publish_short:{}".format(len(packet)))
+    topic_len = (packet[0] << 8) | packet[1]
+    topic_end = 2 + topic_len
+    if len(packet) < topic_end:
+        raise OSError("mqtt_publish_topic_short:{}:{}".format(len(packet), topic_len))
+    topic_data = packet[2:topic_end]
+    try:
+        topic = topic_data.decode("utf-8")
+    except Exception:
+        topic = bytes(topic_data).decode("utf-8", errors="ignore")
+    offset = topic_end
+    qos = (header >> 1) & 0x03
+    if qos:
+        if len(packet) < offset + 2:
+            raise OSError("mqtt_publish_packet_id_short")
+        packet_id = (packet[offset] << 8) | packet[offset + 1]
+        offset += 2
+        if qos == 1:
+            _send_mqtt_packet(sock, _mqtt_puback_packet(packet_id))
+    payload_data = packet[offset:]
+    try:
+        payload_text = payload_data.decode("utf-8")
+    except Exception:
+        payload_text = bytes(payload_data).decode("utf-8", errors="ignore")
+    transport.receive(topic, payload_text)
 
 
 def _recv_mqtt_remaining_length(sock):
@@ -2315,7 +2392,10 @@ def preflight_mqtt_broker_connect(
                 MQTT_CONNECT_SOCKET_TIMEOUT_S if timeout_s is None else timeout_s
             )
         sock.connect((connect_target, int(getattr(adapter, "port", 1883) or 1883)))
-        _send_mqtt_packet(sock, _mqtt_connect_packet(adapter, client_id))
+        _send_mqtt_packet(
+            sock,
+            _mqtt_connect_packet(adapter, client_id, include_will=False),
+        )
         header = _recv_mqtt_byte(sock)
         if header != 0x20:
             return (
@@ -2413,7 +2493,7 @@ def _mqtt_text(value):
     return str(value or "").strip() or "cpynodus-probe"
 
 
-def _mqtt_connect_packet(adapter, client_id):
+def _mqtt_connect_packet(adapter, client_id, *, include_will=True):
     client_id_bytes = _mqtt_bytes(client_id)
     username = ""
     password = ""
@@ -2422,13 +2502,26 @@ def _mqtt_connect_packet(adapter, client_id):
         password = adapter.client_kwargs.get("password") or ""
     username_bytes = _mqtt_bytes(username) if username else b""
     password_bytes = _mqtt_bytes(password) if password else b""
+    client = getattr(adapter, "client", None)
+    will_topic = getattr(client, "_lw_topic", None) if include_will else None
+    will_message = getattr(client, "_lw_msg", None) if include_will else None
+    will_topic_bytes = _mqtt_bytes(will_topic) if will_topic else b""
+    will_message_bytes = _mqtt_bytes(will_message) if will_message is not None else b""
+    will_qos = int(getattr(client, "_lw_qos", 0) or 0) & 0x03
+    will_retain = bool(getattr(client, "_lw_retain", False))
     connect_flags = 0x02
+    if will_topic_bytes:
+        connect_flags |= 0x04 | (will_qos << 3)
+        if will_retain:
+            connect_flags |= 0x20
     if username_bytes:
         connect_flags |= 0x80
     if password_bytes:
         connect_flags |= 0x40
     keep_alive = 60
     remaining = 10 + 2 + len(client_id_bytes)
+    if will_topic_bytes:
+        remaining += 4 + len(will_topic_bytes) + len(will_message_bytes)
     if username_bytes:
         remaining += 2 + len(username_bytes)
     if password_bytes:
@@ -2448,6 +2541,9 @@ def _mqtt_connect_packet(adapter, client_id):
     packet[offset + 3] = keep_alive & 0xFF
     offset += 4
     offset = _write_mqtt_utf8(packet, offset, client_id_bytes)
+    if will_topic_bytes:
+        offset = _write_mqtt_utf8(packet, offset, will_topic_bytes)
+        offset = _write_mqtt_utf8(packet, offset, will_message_bytes)
     if username_bytes:
         offset = _write_mqtt_utf8(packet, offset, username_bytes)
     if password_bytes:

@@ -8,6 +8,13 @@ The host-side WeeWX integration keeps its system UI preferences in
 title, online timeout, and automatic-provisioning gate. Broker, station,
 database, service, and dashboard details remain sourced from the root-managed
 WeeWX manager configuration and are displayed read-only in the system pane.
+The System Settings view groups these values into WeeWX Preferences, Station &
+MQTT, and WeeWX Runtime & Files sections. The host installer supports
+`--discovery-only --family FAMILY`, which stages a family-bounded managed
+template without selecting a device. With automatic provisioning disabled, an
+operator can then select the intended retained-metadata device from System
+Settings > Install Device. Automatic provisioning proceeds only when exactly
+one discovered device matches the managed family.
 
 Live configuration is stored as TOML files at the project root. Defaults are
 provided as `.def` templates under `boards/`.
