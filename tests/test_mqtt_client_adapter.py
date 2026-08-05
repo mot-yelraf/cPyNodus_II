@@ -115,6 +115,12 @@ class _FakeMQTTClient:
             )
         self.connected = True
 
+    def will_set(self, topic, msg, retain=False, qos=0):
+        self._lw_topic = topic
+        self._lw_msg = msg.encode("utf-8") if isinstance(msg, str) else msg
+        self._lw_retain = bool(retain)
+        self._lw_qos = int(qos)
+
     def publish(self, topic, payload, retain=False):
         self.published.append((topic, payload, retain))
 
@@ -481,6 +487,39 @@ class _SocketSubscribeMQTTClient(_FakeMQTTClient):
         raise AssertionError("MiniMQTT subscribe should not be called")
 
 
+class _InterleavedSubscribeMQTTClient(_FakeMQTTClient):
+    retained_topic = "nodus/aqi-x943fm/config/set"
+    retained_payload = '{"message_id":"retained-1","payload":{}}'
+
+    def connect(self):
+        super().connect()
+        self._sock = _SubscribeSocket()
+        self._sock.incoming = bytearray(
+            _mqtt_publish_packet(
+                self.retained_topic,
+                self.retained_payload,
+                retain=True,
+            )
+            + b"\x90\x03\x00\x01\x00"
+        )
+
+    def subscribe(self, topic):
+        raise AssertionError("MiniMQTT subscribe should not be called")
+
+
+class _ExcessInterleavedSubscribeMQTTClient(_FakeMQTTClient):
+    def connect(self):
+        super().connect()
+        self._sock = _SubscribeSocket()
+        self._sock.incoming = bytearray(
+            b"\xd0\x00" * (mqtt_client_module.MQTT_SUBACK_INTERLEAVED_LIMIT + 1)
+            + b"\x90\x03\x00\x01\x00"
+        )
+
+    def subscribe(self, topic):
+        raise AssertionError("MiniMQTT subscribe should not be called")
+
+
 class _SubscribeTimeoutSocket:
     def __init__(self):
         self.sent = bytearray()
@@ -506,14 +545,14 @@ class _SocketSubscribeTimeoutMQTTClient(_FakeMQTTClient):
         raise AssertionError("MiniMQTT subscribe should not be called")
 
 
-def _mqtt_publish_packet(topic, payload, qos=0, packet_id=1):
+def _mqtt_publish_packet(topic, payload, qos=0, packet_id=1, retain=False):
     topic_bytes = topic.encode("utf-8")
     payload_bytes = payload.encode("utf-8")
     qos_bytes = b""
     if qos:
         qos_bytes = bytes(((packet_id >> 8) & 0xFF, packet_id & 0xFF))
     remaining = 2 + len(topic_bytes) + len(qos_bytes) + len(payload_bytes)
-    header = 0x30 | ((qos & 0x03) << 1)
+    header = 0x30 | ((qos & 0x03) << 1) | (1 if retain else 0)
     return (
         bytes((header, remaining, 0, len(topic_bytes)))
         + topic_bytes
@@ -914,6 +953,10 @@ def test_build_mqtt_client_adapter_sets_runtime_client_id():
 
     assert adapter.phase == "ready"
     assert adapter.client.kwargs["client_id"] == "aqi-x943fm"
+    assert adapter.client._lw_topic == "nodus/aqi-x943fm/status/heartbeat"
+    assert adapter.client._lw_msg == b'{"status":"offline"}'
+    assert adapter.client._lw_retain is True
+    assert adapter.client._lw_qos == 0
 
 
 def test_connect_sync_poll_and_disconnect_flow():
@@ -1467,6 +1510,51 @@ def test_sync_transport_to_client_subscribes_qos0_packet_on_socket():
     assert "last_ack_packet_id=1" in ack_diagnostic
 
 
+def test_sync_subscription_delivers_interleaved_retained_publish():
+    runtime_config = _runtime_config()
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connect_requested()
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=object(),
+        modules={"mqtt_cls": _InterleavedSubscribeMQTTClient},
+    )
+
+    connect_result = connect_mqtt_client(adapter, transport)
+    transport.subscribe("nodus/aqi-x943fm/config/set")
+    sync_result = sync_transport_to_client(connect_result.adapter, transport)
+
+    assert sync_result.phase == "synced"
+    assert sync_result.subscribed_count == 1
+    assert transport.connected is True
+    assert len(transport.received_messages) == 1
+    message = transport.received_messages[0]
+    assert message.topic == _InterleavedSubscribeMQTTClient.retained_topic
+    assert message.payload_text == _InterleavedSubscribeMQTTClient.retained_payload
+    assert connect_result.adapter.client._sock.incoming == bytearray()
+
+
+def test_sync_subscription_bounds_interleaved_packets():
+    runtime_config = _runtime_config()
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connect_requested()
+    adapter = build_mqtt_client_adapter(
+        runtime_config,
+        socket_pool=object(),
+        modules={"mqtt_cls": _ExcessInterleavedSubscribeMQTTClient},
+    )
+
+    connect_result = connect_mqtt_client(adapter, transport)
+    topic = "nodus/aqi-x943fm/config/set"
+    transport.subscribe(topic)
+    sync_result = sync_transport_to_client(connect_result.adapter, transport)
+
+    assert sync_result.phase == "error"
+    assert sync_result.operation == "subscribe"
+    assert "mqtt_suback_interleaved_limit:8" in sync_result.errors[0]
+    assert transport.connected is False
+
+
 def test_sync_transport_to_client_reports_raw_subscribe_failure_diagnostics():
     runtime_config = _runtime_config()
     transport = MQTTTransport("broker.local", 1883)
@@ -1909,6 +1997,7 @@ def test_preflight_mqtt_broker_connect_reads_connack_and_disconnects():
     assert b"cpynodus-probe" in packet
     assert b"user" in packet
     assert b"secret" in packet
+    assert b'{"status":"offline"}' not in packet
     assert packet[-2:] == b"\xe0\x00"
 
 
@@ -1990,7 +2079,11 @@ def test_connect_mqtt_client_uses_raw_socket_when_available():
     assert transport.connected is True
     assert adapter.client.connected is True
     assert socket_pool.socket_calls == 1
-    assert bytes(socket_pool.socket_obj.sent).startswith(b"\x10")
+    packet = bytes(socket_pool.socket_obj.sent)
+    assert packet.startswith(b"\x10")
+    assert packet[9] & 0x24 == 0x24
+    assert b"nodus/aqi-x943fm/status/heartbeat" in packet
+    assert b'{"status":"offline"}' in packet
     assert connect_result.adapter.client._sock is socket_pool.socket_obj
 
 

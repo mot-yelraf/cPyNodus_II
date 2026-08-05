@@ -444,6 +444,7 @@ class NodusManager:
         self.discovery = discovery
         self.discovery_service = None
         self.lock = threading.RLock()
+        self.last_auto_candidates = None
         self.live_seen = {}
         self.topic_ids = {}
         self.system_file = str(
@@ -487,14 +488,38 @@ class NodusManager:
             )
             if topic
         )
-        installed = _read_json(self.installed_file, {}).get("device_id")
-        if not installed and read_system_settings(self.system_file)["auto_provision"]:
-            try:
-                self._action("install", device_id)
-            except Exception as exc:
-                log.error(
-                    "Automatic Nodus provisioning failed for %s: %s", device_id, exc
+        with self.lock:
+            installed = _read_json(self.installed_file, {}).get("device_id")
+            if not installed and read_system_settings(self.system_file)[
+                "auto_provision"
+            ]:
+                family = str(self.settings.get("template_family") or "").lower()
+                candidates = sorted(
+                    candidate_id
+                    for candidate_id, candidate in (
+                        self.discovery.registry.get("devices") or {}
+                    ).items()
+                    if not family
+                    or str((candidate or {}).get("family") or "").lower() == family
                 )
+                if candidates == [device_id]:
+                    self.last_auto_candidates = None
+                    try:
+                        self._action("install", device_id)
+                    except Exception as exc:
+                        log.error(
+                            "Automatic Nodus provisioning failed for %s: %s",
+                            device_id,
+                            exc,
+                        )
+                elif len(candidates) > 1:
+                    candidate_key = tuple(candidates)
+                    if self.last_auto_candidates != candidate_key:
+                        self.last_auto_candidates = candidate_key
+                        log.warning(
+                            "Automatic Nodus provisioning skipped; select one of: %s",
+                            ", ".join(candidates),
+                        )
 
     def observe_topic(self, message):
         """Track live traffic and exact switch/channel topics for removal."""
@@ -620,6 +645,26 @@ class NodusManager:
                 return result
             time.sleep(0.1)
         raise ValueError("manager action timed out")
+
+    def install_device(self, device_id):
+        """Install one explicitly selected, discovered device."""
+        device_id = str(device_id or "")
+        with self.lock:
+            if read_system_settings(self.system_file)["auto_provision"]:
+                raise ValueError(
+                    "disable automatic provisioning before selecting a device"
+                )
+            if _read_json(self.installed_file, {}).get("device_id"):
+                raise ValueError("a Nodus device is already installed")
+            entry = (self.discovery.registry.get("devices") or {}).get(device_id)
+            if not isinstance(entry, dict):
+                raise ValueError("selected device is not discovered")
+            action = self._action("install", device_id)
+        return {
+            "ok": True,
+            "message": "Installed {} from discovery.".format(device_id),
+            "action": action,
+        }
 
     def remove_devices(self, device_ids):
         """Clear exact retained topics, local records, and installed state."""
@@ -750,6 +795,8 @@ class NodusManager:
                     if path == "/api/system":
                         write_system_settings(outer.system_file, body)
                         data = {"ok": True, "message": "System settings saved."}
+                    elif path == "/api/install":
+                        data = outer.install_device(body.get("device_id"))
                     elif path == "/api/remove":
                         if body.get("confirm") is not True:
                             raise ValueError("removal confirmation is required")
@@ -773,6 +820,7 @@ class NodusManager:
         return Handler
 
     def shutdown(self):
+        """Stop the manager server and wait briefly for its thread to exit."""
         self.server.shutdown()
         self.server.server_close()
         self.thread.join(timeout=5)

@@ -1,4 +1,8 @@
-"""Host-side checks for the interactive WeeWX installer."""
+"""Test the interactive WeeWX installer on the host.
+
+The cases inspect generated configuration and command flow so installation and
+removal preserve the expected WeeWX service layout.
+"""
 
 import os
 import subprocess
@@ -7,6 +11,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "integrations" / "weewx" / "install_nodus_weewx.sh"
+COMPAT_INSTALLER = ROOT / "install_nodus_weewx.sh"
 
 
 def _run(*args):
@@ -34,6 +39,44 @@ def test_installer_is_valid_bash_and_has_help():
     assert "persistent Nodus manager" in output
     assert "--device-id ID" in output
     assert "--update-profile" in output
+    assert "--discovery-only" in output
+    assert "--family FAMILY" in output
+
+
+def test_discovery_only_requires_a_family_and_rejects_device_selection():
+    cases = (
+        (("--discovery-only",), "requires --family"),
+        (("--family", "avpd"), "only valid with --discovery-only"),
+        (
+            ("--discovery-only", "--family", "avpd", "--device-id", "avpd-test"),
+            "--device-id cannot be used",
+        ),
+        (
+            ("--discovery-only", "--family", "lux"),
+            "Unsupported sensor family",
+        ),
+    )
+    for arguments, message in cases:
+        result = subprocess.run(
+            [str(INSTALLER), *arguments],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode != 0
+        assert message in result.stderr
+
+
+def test_top_level_installer_remains_a_compatibility_entry_point():
+    subprocess.run(["bash", "-n", str(COMPAT_INSTALLER)], check=True)
+
+    output = subprocess.run(
+        [str(COMPAT_INSTALLER), "--help"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+    assert "persistent Nodus manager" in output
 
 
 def test_installer_only_prompts_for_optional_mqtt_secret():
@@ -52,6 +95,7 @@ def test_installer_pins_astronomy_libraries_and_caches_ephemeris():
     assert 'SKYFIELD_VERSION="1.54"' in script
     assert '"astral==$ASTRAL_VERSION" "skyfield==$SKYFIELD_VERSION"' in script
     assert 'Loader("/var/lib/weewx/skyfield")("de421.bsp")' in script
+    assert "(cd /tmp && run_weewx env" in script
     assert '"$USER_SOURCE/nodus_astronomy.py"' in script
 
 
@@ -104,6 +148,79 @@ def test_installer_configures_persistent_manager_and_action_path():
     assert "__NODUS_DATA_TOPIC__" in script
     assert '"$SKIN_SOURCE/nodus-favicon.svg"' in script
     assert '"$html_root/nodus-favicon.svg"' in script
+
+
+def test_discovery_only_bootstraps_without_an_installed_device():
+    script = INSTALLER.read_text(encoding="utf-8")
+
+    assert 'log "  mode:       discovery-only"' in script
+    assert 'log "  installed:  none (awaiting discovery)"' in script
+    assert 'if [[ $DISCOVERY_ONLY -eq 0 ]]; then\n    local installed_temp=""' in script
+    assert 'run_root systemctl disable --now "$target_service" || true' in script
+    assert 'run_root rm -f "$target_config"' in script
+    assert 'log "Nodus WeeWX discovery bootstrap complete."' in script
+
+
+def test_discovery_only_reuses_manager_values_and_checks_auto_provision(tmp_path):
+    discovery = tmp_path / "discovery.json"
+    system = tmp_path / "system.toml"
+    discovery.write_text(
+        '{"broker":"127.0.0.1","template_family":"aht","use_tls":false}\n',
+        encoding="utf-8",
+    )
+    system.write_text(
+        '[System]\nAUTO_PROVISION = false\n',
+        encoding="utf-8",
+    )
+    command = r'''
+source "$1"
+SUDO=(env)
+printf 'broker=%s\n' "$(discovery_config_value "$2" broker)"
+printf 'tls=%s\n' "$(discovery_config_value "$2" use_tls)"
+if system_auto_provision_enabled "$3"; then
+  printf 'auto=true\n'
+else
+  printf 'auto=false\n'
+fi
+'''
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            command,
+            "discovery-bootstrap-test",
+            str(INSTALLER),
+            str(discovery),
+            str(system),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.stdout.splitlines() == [
+        "broker=127.0.0.1",
+        "tls=false",
+        "auto=false",
+    ]
+
+
+def test_installer_requires_weewx_altitude_value_and_unit():
+    command = r'''
+source "$1"
+for value in "1781, meter" "5843, foot"; do
+  valid_altitude "$value"
+done
+for value in "1781" "1781 meters" "meter"; do
+  if valid_altitude "$value"; then
+    exit 1
+  fi
+done
+'''
+    subprocess.run(
+        ["bash", "-c", command, "altitude-test", str(INSTALLER)],
+        check=True,
+    )
 
 
 def test_installer_disables_only_registry_managed_obsolete_instances(tmp_path):

@@ -194,6 +194,13 @@ the device:
   operational only after its startup publishes and device/switch subscriptions
   drain successfully. Recovery elapsed time and failure counters remain active
   across connections that time out waiting for SUBACK.
+- The MQTT CONNECT packet carries a retained offline Last Will on the device
+  heartbeat topic. Raw preflight probes deliberately omit the Will so closing a
+  successful probe cannot create a false offline event.
+- The raw SUBACK wait accepts and delivers at most eight interleaved MQTT
+  packets, including retained PUBLISH messages. This prevents retained command
+  delivery from being misclassified as an unexpected SUBACK while keeping the
+  constrained startup path bounded.
 - Pre-operational MQTT recovery is bounded. Slow startup publishes, errno 119
   socket-progress failures, errno 116 CONNECT/SUBACK timeouts, and associated
   errno 12 allocation failures share the same recovery episode. The first

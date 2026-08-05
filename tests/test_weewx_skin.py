@@ -1,4 +1,8 @@
-"""Structural checks for the host-side Nodus WeeWX skin."""
+"""Test the structure of the host-side Nodus WeeWX skin.
+
+The assertions inspect templates, assets, configuration, and generated-data
+hooks so packaging changes preserve the intended dashboard contract.
+"""
 
 from pathlib import Path
 
@@ -103,6 +107,7 @@ def test_nodus_uses_shared_n_svg_favicon_on_every_html_surface():
 
 
 def test_system_info_uses_requested_five_five_four_grid():
+    page = (SKIN_ROOT / "system" / "index.html").read_text(encoding="utf-8")
     script = (SKIN_ROOT / "system" / "system.js").read_text(encoding="utf-8")
     stylesheet = (SKIN_ROOT / "system" / "system.css").read_text(encoding="utf-8")
     labels = (
@@ -124,10 +129,19 @@ def test_system_info_uses_requested_five_five_four_grid():
 
     positions = [script.index('["{}"'.format(label)) for label in labels]
     assert positions == sorted(positions)
+    assert '<details id="weewx-preferences" class="setup-group">' in page
+    assert '<summary>WeeWX Preferences</summary>' in page
+    assert '<summary>Station &amp; MQTT</summary>' in page
+    assert '<summary>WeeWX Runtime &amp; Files</summary>' in page
+    assert 'id="station-info" class="info-grid"' in page
+    assert 'id="weewx-info" class="info-grid runtime-grid"' in page
     assert "grid-template-columns:repeat(5,minmax(0,1fr));" in stylesheet
-    assert ".info-grid .info-card:nth-child(n+11) strong { font-size:70%; }" in (
-        stylesheet
-    )
+    assert "grid-template-columns:repeat(4,minmax(0,1fr));" in stylesheet
+    assert ".runtime-grid .info-card strong { font-size:70%; }" in stylesheet
+    assert 'data-view="install-device"' in page
+    assert 'id="install-form"' in page
+    assert 'id="install-device-list"' in page
+    assert 'api("/api/install"' in script
 
 
 def test_nodus_skin_uses_current_name_everywhere():
@@ -174,6 +188,7 @@ def test_nodus_shows_discovered_switches_without_automation_rules():
     template = (SKIN_ROOT / "index.html.tmpl").read_text(encoding="utf-8")
     skin_conf = (SKIN_ROOT / "skin.conf").read_text(encoding="utf-8")
     stylesheet = (SKIN_ROOT / "style.css").read_text(encoding="utf-8")
+    script = (SKIN_ROOT / "dashboard.js").read_text(encoding="utf-8")
 
     assert "user.nodus_switch.NodusSwitchStatusSearchList" in skin_conf
     assert "[NodusSwitchStatus]" in skin_conf
@@ -197,6 +212,10 @@ def test_nodus_shows_discovered_switches_without_automation_rules():
     assert "font-size: 75%;" in stylesheet
     assert "white-space: nowrap;" in stylesheet
     assert ".switch-panel" in stylesheet
+    assert "const nodusGuardUntil = {};" in script
+    assert 'nodusApi("/api/switch/toggle"' in script
+    assert "(result.guard_seconds || 5) * 1000" in script
+    assert 'element.addEventListener("click", nodusToggle)' in script
     assert SWITCH_EXTENSION.is_file()
 
 
@@ -310,6 +329,38 @@ def test_nodus_admin_ui_uses_sensorius_style_sensor_and_switch_views():
     assert "#switch-setting-fields { align-content: start;" in stylesheet
     assert "max-width: 980px;" in stylesheet
     assert "height: 44px;" in stylesheet
+
+
+def test_nodus_automations_use_system_navigation_context():
+    admin_page = (SKIN_ROOT / "admin" / "index.html").read_text(encoding="utf-8")
+    admin_script = (SKIN_ROOT / "admin" / "admin.js").read_text(encoding="utf-8")
+    system_page = (SKIN_ROOT / "system" / "index.html").read_text(encoding="utf-8")
+    system_script = (SKIN_ROOT / "system" / "system.js").read_text(
+        encoding="utf-8"
+    )
+
+    switch_nav = admin_page.split('id="switch-nav"', 1)[1].split("</nav>", 1)[0]
+    system_nav = admin_page.split('id="system-nav"', 1)[1].split("</nav>", 1)[0]
+    assert "Automations" not in switch_nav
+    assert "System Settings" in system_nav
+    assert 'data-view="automations"' in system_nav
+    assert "Install Device" in system_nav
+    assert "Remove Device" in system_nav
+    assert 'id="automations-link"' in system_page
+    assert "const automationView = selected.startsWith(\"automation\")" in admin_script
+    assert '$("system-nav").hidden = !automationView' in admin_script
+    assert "location.hostname}:8768`" in admin_script
+    assert "location.hostname}:8767`" in system_script
+
+
+def test_nodus_admin_info_groups_are_expandable():
+    script = (SKIN_ROOT / "admin" / "admin.js").read_text(encoding="utf-8")
+    stylesheet = (SKIN_ROOT / "admin" / "admin.css").read_text(encoding="utf-8")
+
+    assert 'document.createElement("details")' in script
+    assert "details.open = true" in script
+    assert 'document.createElement("summary")' in script
+    assert ".info-group[open] summary::before" in stylesheet
 
 
 def test_nodus_generates_24_hour_card_micrographs():

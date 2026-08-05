@@ -102,7 +102,8 @@ runtime details.
 - [Sensorius contract](docs/sensorius_contract.md)
 - [NodusWeb automations](docs/automations.md)
 - [Over-the-air updates](docs/ota.md)
-- [WeeWX integration](docs/weewx.md)
+- [WeeWX installation runbook](docs/weewx_install.md)
+- [Detailed WeeWX integration](docs/weewx.md)
 - [Extending sensors and switches](docs/extending.md)
 
 ## Security

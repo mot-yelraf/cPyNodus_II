@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import threading
 import time
 from pathlib import Path
 
@@ -253,6 +254,84 @@ def test_manager_resolves_broker_ipv4_and_prefers_configured_timezone(monkeypatc
 
     assert module._broker_ipv4("mqtt.local") == "10.0.0.248"
     assert module._host_timezone("America/Denver") == "America/Denver"
+
+
+def test_manager_requires_explicit_selection_when_family_has_multiple_devices(
+    tmp_path,
+):
+    module = _load_module()
+    system_file = tmp_path / "system.toml"
+    module.write_system_settings(
+        system_file,
+        {
+            "title": "Nodus Automation Instrumentorum",
+            "online_timeout_seconds": 150,
+            "auto_provision": True,
+        },
+    )
+    discovery = module.DiscoveryManager(
+        {"registry_file": str(tmp_path / "registry.json")}
+    )
+    discovery.registry["devices"] = {
+        "avpd-first": {"device_id": "avpd-first", "family": "avpd"},
+        "avpd-second": {"device_id": "avpd-second", "family": "avpd"},
+    }
+    manager = module.NodusManager.__new__(module.NodusManager)
+    manager.settings = {"base_topic": "nodus", "template_family": "avpd"}
+    manager.discovery = discovery
+    manager.system_file = str(system_file)
+    manager.installed_file = str(tmp_path / "installed.json")
+    manager.lock = threading.RLock()
+    manager.last_auto_candidates = None
+    manager.live_seen = {}
+    manager.topic_ids = {}
+    actions = []
+    manager._action = lambda action, device_id: actions.append((action, device_id))
+    message = type("Message", (), {"retain": True})()
+
+    manager.observe("avpd-first", message, discovery.registry["devices"]["avpd-first"])
+
+    assert actions == []
+    assert manager.last_auto_candidates == ("avpd-first", "avpd-second")
+
+
+def test_manager_installs_one_explicitly_selected_discovered_device(tmp_path):
+    module = _load_module()
+    system_file = tmp_path / "system.toml"
+    module.write_system_settings(
+        system_file,
+        {
+            "title": "Nodus Automation Instrumentorum",
+            "online_timeout_seconds": 150,
+            "auto_provision": False,
+        },
+    )
+    discovery = module.DiscoveryManager(
+        {"registry_file": str(tmp_path / "registry.json")}
+    )
+    discovery.registry["devices"] = {
+        "avpd-target": {
+            "device_id": "avpd-target",
+            "family": "avpd",
+            "data_topic": "nodus/avpd-target/data",
+        }
+    }
+    manager = module.NodusManager.__new__(module.NodusManager)
+    manager.discovery = discovery
+    manager.system_file = str(system_file)
+    manager.installed_file = str(tmp_path / "installed.json")
+    manager.lock = threading.RLock()
+    manager._action = lambda action, device_id: {
+        "ok": True,
+        "action": action,
+        "device_id": device_id,
+    }
+
+    result = manager.install_device("avpd-target")
+
+    assert result["ok"] is True
+    assert result["message"] == "Installed avpd-target from discovery."
+    assert result["action"]["device_id"] == "avpd-target"
 
 
 def test_manager_removes_exact_device_switch_and_channel_retained_topics(tmp_path):

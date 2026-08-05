@@ -1,5 +1,10 @@
 # Nodus integration with WeeWX
 
+For installation or device replacement, start with the short, linear
+[`WeeWX Nodus installation runbook`](weewx_install.md). Return to this document
+for the detailed MQTT, schema, automation, manual-installation, and
+troubleshooting reference.
+
 This guide provisions a Nodus sensor to publish to MQTT, integrates its data
 into a standard Raspberry Pi OS WeeWX package installation, and installs the
 optional Nodus report. The automated path can install WeeWX when it is
@@ -136,6 +141,29 @@ station coordinates, altitude, MQTT broker access, credentials, and TLS
 settings. The same broker settings are written to the root/weewx-readable
 `/etc/weewx/nodus-discovery.json`; credentials are not printed in the summary.
 
+For a discovery-first installation, bootstrap only the host and one supported
+sensor-family template without naming a device:
+
+```bash
+./integrations/weewx/install_nodus_weewx.sh \
+  --discovery-only \
+  --family avpd
+```
+
+Discovery-only mode requires that no operational Nodus is installed, its
+configuration is absent, `weewx@nodus.service` is inactive, and automatic
+provisioning is disabled. It installs or updates the skin, extensions, manager
+services, broker configuration, and family-bounded managed template without
+creating `/etc/weewx/nodus.conf`, an archive database, a device profile, or an
+installed-device record. After the intended `weewx` device appears as
+Discovered, select it under System Settings > Install Device. The
+`/api/install` endpoint provides the same explicit selection for scripts.
+
+Automatic provisioning remains available when exactly one discovered device
+matches the managed template family. When multiple matching devices exist, the
+manager refuses to choose based on retained-message replay order and requires
+explicit selection.
+
 Discovery accepts only valid retained `nodus-meta/v1` messages whose
 `profile.active_profile` is `weewx` and whose topic matches the advertised
 `device_id`. It uses `sensor.hardware` to select the current stanza family;
@@ -172,6 +200,15 @@ without changing the system:
 
 ```bash
 ./integrations/weewx/install_nodus_weewx.sh --dry-run
+```
+
+The discovery-first plan can likewise be validated without changes:
+
+```bash
+./integrations/weewx/install_nodus_weewx.sh \
+  --discovery-only \
+  --family avpd \
+  --dry-run
 ```
 
 After installation, inspect the operational Nodus service, persistent manager,
@@ -720,10 +757,11 @@ Automations, and Switch Info. The UI provides:
 multi-switch action support.
 
 The dashboard title is `Nodus AI`. Its adjacent system gear opens the
-persistent manager at `http://<weewx-host>:8768/system/`. That sidebar has only
-System Settings and Remove Device. System Settings are stored separately in
-`/var/lib/weewx/nodus_system.toml` and show the active WeeWX host, broker,
-station, database, service, and output paths. The dashboard shows a live
+persistent manager at `http://<weewx-host>:8768/system/`. Its navigation has
+System Settings, Automations, Install Device, and Remove Device. System
+Settings are stored separately in `/var/lib/weewx/nodus_system.toml` and group
+the active WeeWX host, broker, station, database, service, and output paths.
+The dashboard shows a live
 online/offline dot before `Device:` and Installed/Discovered badges after the
 device ID. Online state requires recent non-retained MQTT traffic.
 
@@ -732,6 +770,10 @@ requires both a device selection and the independent confirmation checkbox.
 The pending/success/error notification reports the same way as other saves.
 An offline removed device is discoverable and installable again after it is
 powered on and republishes its metadata.
+
+Install Device lists discovered devices and performs an explicit selection
+while automatic provisioning is disabled. This prevents an older retained
+record from being selected merely because the broker replays it first.
 
 Metric selectors show the canonical unit used by the separate Nodus WeeWX
 instance. The ON/OFF threshold labels and saved-rule summaries repeat that

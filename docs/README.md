@@ -269,6 +269,9 @@ In normal mode the device:
     timer, time/day, Astral, and switch-state automations, with sensor/switch
     information panes. See
     [WeeWX](./weewx.md).
+  - Discovery-first installation can stage a sensor-family template without
+    naming a device, then explicitly install the intended discovered device;
+    see the [WeeWX installation runbook](./weewx_install.md).
   - Periodic NTP sync is started after normal network bring-up.
 - `homeassistant` is a networked MQTT profile using the shared `[MQTT]` connection settings.
   - MQTT is enabled.
@@ -755,6 +758,8 @@ persists `SWITCH_#_LAST_STATE` when the filesystem is writable.
 - `docs/configuration.md`: configuration files and keys
 - `docs/onboarding.md`: AP provisioning behavior
 - `docs/mqtt.md`: topics and Home Assistant notes
+- `docs/weewx_install.md`: step-by-step WeeWX installation and replacement
+- `docs/weewx.md`: detailed WeeWX integration reference
 - `docs/pinout.md`: Nodus board pin mappings
 - `docs/extending.md`: adding sensors or switches
 - `docs/debug-notes/`: dated investigation logs retained as archival context,
