@@ -333,6 +333,9 @@ pressure. BME680 also seeds driver sea-level pressure at startup, and
 SCD30/SCD4x drivers use the value for CO2 altitude compensation at driver
 startup.
 
+Published `Baro-Pressure` and `Plant Baro-Pressure` values use one decimal
+place, providing consistent `0.1 hPa` resolution for BME280 and BME680 devices.
+
 Soil sensor `[Calibration.Device]` keys are:
 
 - `SOIL_TEMP_CAL_VAL`
