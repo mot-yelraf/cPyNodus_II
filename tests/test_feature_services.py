@@ -304,7 +304,7 @@ def test_sensor_service_reports_bme680_baro_pressure_from_altitude():
 
     assert snapshot.phase == "ready"
     assert snapshot.metrics["Baro-Pressure"] != 818.2
-    assert snapshot.metrics["Baro-Pressure"] == 1015.0
+    assert snapshot.metrics["Baro-Pressure"] == 1015.2
 
 
 def test_sensor_service_reports_missing_i2c_sensor_at_startup():
@@ -732,7 +732,7 @@ def test_sensor_service_reads_legacy_aqi_snapshot():
     assert snapshot.metrics["Temperature_F"] == 76.1
     assert snapshot.metrics["Rel-Humidity"] == 55.0
     assert snapshot.metrics["Humidity"] > 0
-    assert snapshot.metrics["Baro-Pressure"] == 1008.0
+    assert snapshot.metrics["Baro-Pressure"] == 1008.5
     assert snapshot.metrics["Gas"] == 12345.0
     assert snapshot.metrics["Air Quality"] >= 0
     assert snapshot.metrics["Ambient VPD"] > 0
@@ -1395,7 +1395,7 @@ def test_sensor_service_reports_bme280_baro_pressure_from_altitude():
 
     assert snapshot.phase == "ready"
     assert snapshot.metrics["Baro-Pressure"] != 818.2
-    assert abs(snapshot.metrics["Baro-Pressure"] - 1015.1956686948852) < 0.001
+    assert snapshot.metrics["Baro-Pressure"] == 1015.2
 
 
 def test_sensor_service_reads_aht_snapshot_with_temp_humidity_derivatives():

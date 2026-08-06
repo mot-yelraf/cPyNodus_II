@@ -135,7 +135,7 @@ def _read_ready_sensor_snapshot(sensor_service, runtime_config, sensor):
                 "Rel-Humidity": _maybe_round(rh_pct, 0),
                 "Baro-Pressure": _maybe_round(
                     _bme_baro_pressure_hpa(sensor_service.driver, sensor),
-                    0,
+                    1,
                 ),
                 "Gas": _maybe_round(gas_ohms, 0),
             }
@@ -242,7 +242,7 @@ def _read_ready_sensor_snapshot(sensor_service, runtime_config, sensor):
                 "Rel-Humidity": _maybe_round(rh_pct, 0),
                 "Baro-Pressure": _maybe_round(
                     _bme_baro_pressure_hpa(ambient_driver, sensor),
-                    None,
+                    1,
                 ),
             }
         )
@@ -268,7 +268,7 @@ def _read_ready_sensor_snapshot(sensor_service, runtime_config, sensor):
                         ),
                         "Plant Baro-Pressure": _maybe_round(
                             _bme_baro_pressure_hpa(driver.plant, sensor),
-                            None,
+                            1,
                         ),
                     }
                 )
