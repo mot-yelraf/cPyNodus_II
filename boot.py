@@ -134,12 +134,12 @@ try:
         or ("power" in reset_text)
         or ("brownout" in reset_text)
     ):
-        if len(microcontroller.nvm) > 1 and microcontroller.nvm[1] != 0:
-            microcontroller.nvm[1] = 0
-        if len(microcontroller.nvm) > 2 and microcontroller.nvm[2] != 0:
-            microcontroller.nvm[2] = 0
-        if len(microcontroller.nvm) > 3 and microcontroller.nvm[3] != 0:
-            microcontroller.nvm[3] = 0
+        for marker_index in (1, 2, 3, 4):
+            if (
+                len(microcontroller.nvm) > marker_index
+                and microcontroller.nvm[marker_index] != 0
+            ):
+                microcontroller.nvm[marker_index] = 0
 except Exception as exc:
     _warn("cold-boot bounce marker reset failed: {err}".format(err=exc))
 

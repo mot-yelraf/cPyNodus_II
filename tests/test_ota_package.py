@@ -23,6 +23,10 @@ from scripts.ota_package import (
 TEST_SESSION = "s" * 32
 
 
+def test_safemode_hook_is_a_deployable_root_runtime_file():
+    assert ota_package._is_deployable_path("safemode.py") is True
+
+
 def test_build_ota_package_from_git_tag_range(tmp_path):
     repo = _init_repo(tmp_path / "repo")
     _write(repo / "code.py", 'print("boot-a")\n')

@@ -86,6 +86,7 @@ STATION_RESET_RECONNECT_DELAY_S = 2.0
 HARD_RECOVERY_REBOOT_REASONS = (
     "ap_idle_timeout",
     "mqtt_memory_allocation_failures",
+    "mqtt_native_socket_poison",
     "mqtt_recovery_timeout",
     "mqtt_repeated_connect_failures",
     "sensor_not_found",
@@ -97,6 +98,8 @@ RECOVERY_HARD_RESET_MQTT_MARKER = 77
 SOFT_RELOAD_CLEANUP_NVM_INDEX = 2
 SOFT_RELOAD_CLEANUP_MARKER = 31
 MQTT_SUBSCRIPTION_RECOVERY_NVM_INDEX = 3
+HARD_FAULT_RECOVERY_NVM_INDEX = 4
+HARD_FAULT_RECOVERY_STABLE_S = 60.0
 
 _SOFT_RELOAD_PREPARED = False
 
@@ -1771,6 +1774,42 @@ def _clear_mqtt_subscription_recovery_marker(nvm=None):
         return False
 
 
+def _hard_fault_recovery_marker_value(nvm=None):
+    """Return the safe-mode hard-fault recovery attempt count."""
+    if nvm is None:
+        try:
+            import microcontroller  # type: ignore
+
+            nvm = getattr(microcontroller, "nvm", None)
+        except ImportError:
+            nvm = None
+    try:
+        if nvm is None or len(nvm) <= HARD_FAULT_RECOVERY_NVM_INDEX:
+            return -1
+        return int(nvm[HARD_FAULT_RECOVERY_NVM_INDEX] or 0)
+    except Exception:
+        return -1
+
+
+def _clear_hard_fault_recovery_marker(nvm=None):
+    """Clear safe-mode recovery attempts after stable runtime."""
+    if nvm is None:
+        try:
+            import microcontroller  # type: ignore
+
+            nvm = getattr(microcontroller, "nvm", None)
+        except ImportError:
+            nvm = None
+    try:
+        if nvm is None or len(nvm) <= HARD_FAULT_RECOVERY_NVM_INDEX:
+            return False
+        if int(nvm[HARD_FAULT_RECOVERY_NVM_INDEX] or 0) != 0:
+            nvm[HARD_FAULT_RECOVERY_NVM_INDEX] = 0
+        return True
+    except Exception:
+        return False
+
+
 def _mqtt_preoperational_reboot_plan(reboot_reason, fs_writable, nvm=None):
     """Reserve a warm attempt, or return the normal hard-reset plan."""
     if _mark_mqtt_subscription_recovery_requested(nvm):
@@ -2122,6 +2161,32 @@ def _startup_subscription_recovery_drained(sync_result, transport):
         return False
 
 
+def _mqtt_sync_indicates_stalled_publish(sync_result):
+    """Return True when MQTT reported a publish stalled in native send."""
+    if str(getattr(sync_result, "operation", "") or "") != "publish":
+        return False
+    for error in tuple(getattr(sync_result, "errors", ()) or ()):
+        if "mqtt_publish_slow:" in str(error or "").strip().lower():
+            return True
+    return False
+
+
+def _mqtt_close_indicates_native_socket_poison(close_result):
+    """Return True when MQTT close reports invalid native socket ownership."""
+    for error in tuple(getattr(close_result, "errors", ()) or ()):
+        text = str(error or "").strip().lower()
+        if "socket not managed" in text or "out of sockets" in text:
+            return True
+    return False
+
+
+def _mqtt_native_socket_poison_detected(sync_result, close_result):
+    """Identify the stalled-send plus invalid-socket hard-reset signature."""
+    return _mqtt_sync_indicates_stalled_publish(
+        sync_result
+    ) and _mqtt_close_indicates_native_socket_poison(close_result)
+
+
 def _recover_mqtt_subscription_failure(
     *,
     runtime_config,
@@ -2129,6 +2194,7 @@ def _recover_mqtt_subscription_failure(
     mqtt_adapter,
     transport,
     sync_result=None,
+    close_result=None,
     reset_station=False,
     fs_writable=False,
     start_monotonic,
@@ -2150,13 +2216,14 @@ def _recover_mqtt_subscription_failure(
         fs_writable=fs_writable,
         device_id=_runtime_device_id(runtime_config),
     )
-    close_result = close_mqtt_client(mqtt_adapter, transport)
-    if close_result.errors:
-        _print_log(
-            "recovery",
-            "mqtt close errors={}".format(",".join(close_result.errors)),
-            start_monotonic=start_monotonic,
-        )
+    if close_result is None:
+        close_result = close_mqtt_client(mqtt_adapter, transport)
+        if close_result.errors:
+            _print_log(
+                "recovery",
+                "mqtt close errors={}".format(",".join(close_result.errors)),
+                start_monotonic=start_monotonic,
+            )
     if reset_station:
         _collect_garbage()
         _print_log(
@@ -2228,6 +2295,35 @@ def _handle_mqtt_subscription_failure(
         ),
         start_monotonic=start_monotonic,
     )
+    close_result = None
+    if _mqtt_sync_indicates_stalled_publish(sync_result):
+        close_result = close_mqtt_client(mqtt_adapter, transport)
+        if close_result.errors:
+            _print_log(
+                "recovery",
+                "mqtt close errors={}".format(",".join(close_result.errors)),
+                start_monotonic=start_monotonic,
+            )
+        if _mqtt_native_socket_poison_detected(sync_result, close_result):
+            _print_log(
+                "recovery",
+                "mqtt startup action=hard_reset reason=native_socket_poison",
+                start_monotonic=start_monotonic,
+            )
+            _perform_recovery_reboot(
+                "mqtt_native_socket_poison",
+                "hard",
+                fs_writable=fs_writable,
+                start_monotonic=start_monotonic,
+                mqtt_adapter=mqtt_adapter,
+                transport=transport,
+                runtime_config=runtime_config,
+                network_stack=network_stack,
+                web_runtime=web_runtime,
+                sensor_service=sensor_service,
+                switch_service=switch_service,
+            )
+            return network_stack, mqtt_adapter, station_reset_done
     if action == "warm_reload":
         if _mark_mqtt_subscription_recovery_requested():
             warm_attempt = _mqtt_subscription_recovery_marker_value()
@@ -2283,6 +2379,7 @@ def _handle_mqtt_subscription_failure(
         mqtt_adapter=mqtt_adapter,
         transport=transport,
         sync_result=sync_result,
+        close_result=close_result,
         reset_station=reset_station,
         fs_writable=fs_writable,
         start_monotonic=start_monotonic,
@@ -3437,6 +3534,8 @@ async def main(*, startup_plan_override=None, ota_first_boot_armed=False):
     next_nodusweb_sensor_at = float(start_monotonic) + NODUSWEB_SENSOR_INTERVAL_S
     next_periodic_gc_at = float(start_monotonic) + 60.0
     periodic_gc_count = 0
+    hard_fault_recovery_attempts = _hard_fault_recovery_marker_value()
+    hard_fault_recovery_marker_cleared = hard_fault_recovery_attempts <= 0
     mqtt_connect_attempt_count = 0
     last_mqtt_connect_attempt_at = float(start_monotonic)
     repeated_mqtt_connect_failure_count = 0
@@ -5978,6 +6077,22 @@ async def main(*, startup_plan_override=None, ota_first_boot_armed=False):
                         )
                 while float(next_periodic_gc_at) <= float(now_monotonic):
                     next_periodic_gc_at += 60.0
+            if (
+                not hard_fault_recovery_marker_cleared
+                and float(now_monotonic) - float(start_monotonic)
+                >= HARD_FAULT_RECOVERY_STABLE_S
+            ):
+                hard_fault_recovery_marker_cleared = (
+                    _clear_hard_fault_recovery_marker()
+                )
+                if hard_fault_recovery_marker_cleared:
+                    _print_log(
+                        "runtime",
+                        "safe_mode_recovery attempts_cleared={}".format(
+                            hard_fault_recovery_attempts
+                        ),
+                        start_monotonic=start_monotonic,
+                    )
             if transport.connected:
                 sync_before = _transport_queue_summary(transport)
                 sync_result = sync_transport_to_client(

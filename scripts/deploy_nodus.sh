@@ -692,6 +692,7 @@ run_runtime_sync() {
   for f in \
     "$ROOT_DIR/boot.py" \
     "$ROOT_DIR/code.py" \
+    "$ROOT_DIR/safemode.py" \
     "$ROOT_DIR/dataclasses.py"; do
     if [[ -f "$f" ]]; then
       root_runtime_files+=("$f")
@@ -733,6 +734,7 @@ run_mpy_sync() {
   for f in \
     "$ROOT_DIR/boot.py" \
     "$ROOT_DIR/code.py" \
+    "$ROOT_DIR/safemode.py" \
     "$ROOT_DIR/dataclasses.py"; do
     if [[ -f "$f" ]]; then
       root_runtime_files+=("$f")

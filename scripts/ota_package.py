@@ -47,6 +47,7 @@ TARGET_CIRCUITPYTHON = {
 MPY_SOURCE_EXCEPTIONS = {
     "boot.py",
     "code.py",
+    "safemode.py",
     "dataclass.py",
     "dataclasses.py",
 }
@@ -75,6 +76,7 @@ EXCLUDED_NAMES = {
 ROOT_DEPLOYABLE = {
     "boot.py",
     "code.py",
+    "safemode.py",
     "dataclass.py",
     "dataclasses.py",
     "settings.toml.def",
