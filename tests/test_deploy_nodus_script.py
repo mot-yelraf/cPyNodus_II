@@ -47,3 +47,4 @@ def test_deploy_script_provisions_ota_public_key(tmp_path):
     assert (target / "ota-public-key.json").read_text(
         encoding="utf-8"
     ) == public_key.read_text(encoding="utf-8")
+    assert (target / "safemode.py").is_file()

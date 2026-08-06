@@ -68,7 +68,7 @@ def _run_boot(
         disable_usb_drive=_disable_usb_drive,
         remount=_remount,
     )
-    nvm = bytearray(nvm_values or (0, 0, 0, 0))
+    nvm = bytearray(nvm_values or (0, 0, 0, 0, 0))
     microcontroller_module = _module(
         "microcontroller",
         nvm=nvm,
@@ -126,10 +126,10 @@ def test_power_on_clears_all_runtime_recovery_markers(monkeypatch):
     _result, state, _blocker = _run_boot(
         monkeypatch,
         board_module,
-        nvm_values=(0, 77, 31, 47),
+        nvm_values=(0, 77, 31, 47, 2),
     )
 
-    assert state["nvm"] == bytearray((0, 0, 0, 0))
+    assert state["nvm"] == bytearray((0, 0, 0, 0, 0))
 
 
 def test_warm_reload_preserves_mqtt_recovery_attempt_counter(monkeypatch):
@@ -144,11 +144,11 @@ def test_warm_reload_preserves_mqtt_recovery_attempt_counter(monkeypatch):
     _result, state, _blocker = _run_boot(
         monkeypatch,
         board_module,
-        nvm_values=(0, 77, 31, 1),
+        nvm_values=(0, 77, 31, 1, 2),
         reset_reason="SUPERVISOR_RELOAD",
     )
 
-    assert state["nvm"] == bytearray((0, 77, 31, 1))
+    assert state["nvm"] == bytearray((0, 77, 31, 1, 2))
 
 
 def test_boot_honors_pico_grounded_guard(monkeypatch):

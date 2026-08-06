@@ -6,10 +6,12 @@ from types import SimpleNamespace
 import cpynodus_ii.app as app_module
 from cpynodus_ii.app import (
     _broker_ip_refresh_needed,
+    _clear_hard_fault_recovery_marker,
     _clear_mqtt_subscription_recovery_marker,
     _clear_terminal_startup_ota_state,
     _defer_switch_subscriptions_until_after_startup_publish,
     _handle_mqtt_subscription_failure,
+    _hard_fault_recovery_marker_value,
     _increase_mqtt_preflight_connect_delay,
     _is_mqtt_preoperational_sync_failure,
     _is_mqtt_subscription_failure,
@@ -24,6 +26,7 @@ from cpynodus_ii.app import (
     _mqtt_error_indicates_allocation_failure,
     _mqtt_error_indicates_socket_progress,
     _mqtt_generation_is_operational,
+    _mqtt_native_socket_poison_detected,
     _mqtt_preconnect_has_socket_progress,
     _mqtt_preconnect_probe,
     _mqtt_preoperational_connect_has_allocation_failure,
@@ -323,6 +326,131 @@ def test_slow_startup_publish_joins_preoperational_failure_episode():
         )
         is False
     )
+
+
+def test_hard_fault_recovery_marker_clears_after_stable_runtime_checkpoint():
+    nvm = bytearray((0, 0, 0, 0, 2))
+
+    assert _hard_fault_recovery_marker_value(nvm) == 2
+    assert _clear_hard_fault_recovery_marker(nvm) is True
+    assert _hard_fault_recovery_marker_value(nvm) == 0
+
+
+def test_native_socket_poison_requires_slow_publish_and_invalid_close():
+    slow_publish = SimpleNamespace(
+        operation="publish",
+        errors=("mqtt_publish_slow:nodus/device/status/heartbeat",),
+    )
+    normal_publish = SimpleNamespace(
+        operation="publish",
+        errors=("mqtt_publish_failed:nodus/device/data:32",),
+    )
+    poisoned_close = SimpleNamespace(
+        errors=("mqtt_close_failed:Socket not managed",),
+    )
+    clean_close = SimpleNamespace(errors=())
+
+    assert _mqtt_native_socket_poison_detected(slow_publish, poisoned_close)
+    assert not _mqtt_native_socket_poison_detected(normal_publish, poisoned_close)
+    assert not _mqtt_native_socket_poison_detected(slow_publish, clean_close)
+
+
+def test_native_socket_poison_handler_hard_resets_before_rebuild(monkeypatch):
+    reboots = []
+    network_stack = SimpleNamespace()
+    mqtt_adapter = SimpleNamespace()
+    transport = MQTTTransport("broker.local", 1883)
+    sync_result = SimpleNamespace(
+        operation="publish",
+        topic="nodus/device/status/heartbeat",
+        errors=("mqtt_publish_slow:nodus/device/status/heartbeat",),
+    )
+
+    monkeypatch.setattr(
+        app_module,
+        "close_mqtt_client",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            errors=("mqtt_close_failed:Socket not managed",)
+        ),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_perform_recovery_reboot",
+        lambda *args, **kwargs: reboots.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_recover_mqtt_subscription_failure",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("poisoned socket must not rebuild in-process")
+        ),
+    )
+
+    result = _handle_mqtt_subscription_failure(
+        failure_count=1,
+        first_failure_at=100.0,
+        station_reset_done=False,
+        now_monotonic=100.0,
+        runtime_config=RuntimeConfig(active_profile="sensorius"),
+        network_stack=network_stack,
+        mqtt_adapter=mqtt_adapter,
+        transport=transport,
+        sync_result=sync_result,
+        fs_writable=False,
+        start_monotonic=0.0,
+    )
+
+    assert result == (network_stack, mqtt_adapter, False)
+    assert reboots[0][0][:2] == ("mqtt_native_socket_poison", "hard")
+
+
+def test_slow_publish_with_clean_close_rebuilds_without_second_close(monkeypatch):
+    closes = []
+    rebuilds = []
+    network_stack = SimpleNamespace()
+    rebuilt_stack = SimpleNamespace()
+    mqtt_adapter = SimpleNamespace()
+    rebuilt_adapter = SimpleNamespace()
+    close_result = SimpleNamespace(errors=())
+    transport = MQTTTransport("broker.local", 1883)
+    sync_result = SimpleNamespace(
+        operation="publish",
+        topic="nodus/device/status/heartbeat",
+        errors=("mqtt_publish_slow:nodus/device/status/heartbeat",),
+    )
+
+    def fake_close(*_args, **_kwargs):
+        closes.append(True)
+        return close_result
+
+    def fake_recover(**kwargs):
+        rebuilds.append(kwargs)
+        return rebuilt_stack, rebuilt_adapter
+
+    monkeypatch.setattr(app_module, "close_mqtt_client", fake_close)
+    monkeypatch.setattr(
+        app_module,
+        "_recover_mqtt_subscription_failure",
+        fake_recover,
+    )
+
+    result = _handle_mqtt_subscription_failure(
+        failure_count=1,
+        first_failure_at=100.0,
+        station_reset_done=False,
+        now_monotonic=100.0,
+        runtime_config=RuntimeConfig(active_profile="sensorius"),
+        network_stack=network_stack,
+        mqtt_adapter=mqtt_adapter,
+        transport=transport,
+        sync_result=sync_result,
+        fs_writable=False,
+        start_monotonic=0.0,
+    )
+
+    assert result == (rebuilt_stack, rebuilt_adapter, False)
+    assert len(closes) == 1
+    assert rebuilds[0]["close_result"] is close_result
 
 
 def test_puback_timeout_joins_preoperational_failure_episode():

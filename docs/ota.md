@@ -33,7 +33,7 @@ as the sender, and one physical Nodus at a time.
   CircuitPython `9.2.8` and `xesp32s3` on CircuitPython `10.2.1`.
 - OTA payloads must use target-specific compiled `.mpy` files for all
   CircuitPython modules except the required source-file exceptions `boot.py`,
-  `code.py`, `dataclass.py`, and `dataclasses.py`. No other `.py` file may
+  `safemode.py`, `code.py`, `dataclass.py`, and `dataclasses.py`. No other `.py` file may
   appear in an OTA package.
 - When an OTA package installs a compiled module, its manifest must delete the
   matching `.py` source path. A device must not retain both `.py` and `.mpy`
@@ -271,8 +271,8 @@ The package command should:
 - require an explicit target and a complete, current compiled artifact root;
 - translate changed CircuitPython module paths from `.py` to the corresponding
   target-specific `.mpy` artifacts;
-- allow `.py` payloads only for `boot.py`, `code.py`, `dataclass.py`, and
-  `dataclasses.py`;
+- allow `.py` payloads only for `boot.py`, `safemode.py`, `code.py`,
+  `dataclass.py`, and `dataclasses.py`;
 - add the matching `.py` path to `delete` whenever a compiled `.mpy` module is
   included;
 - reject a package containing any other `.py` path or containing both source
@@ -293,6 +293,7 @@ manifest.sig
 files/
   code.py
   boot.py
+  safemode.py
   dataclasses.py
   cpynodus_ii/app.mpy
   cpynodus_ii/core/settings.mpy
@@ -350,7 +351,7 @@ Example:
 
 Manifest rules:
 
-- `boot.py`, `code.py`, `dataclass.py`, and `dataclasses.py` are the only
+- `boot.py`, `safemode.py`, `code.py`, `dataclass.py`, and `dataclasses.py` are the only
   permitted `.py` payload paths. Every other CircuitPython module must use its
   `.mpy` path.
 - Each `.mpy` entry must have its matching `.py` source path in `delete` so
@@ -631,7 +632,7 @@ Host tests:
 - package creation from two temporary Git tags;
 - worktree package creation for pre-tag validation;
 - target-specific `.mpy` artifact selection for changed source modules;
-- rejection of `.py` payloads other than `boot.py`, `code.py`, and
+- rejection of `.py` payloads other than `boot.py`, `safemode.py`, `code.py`, and
   `dataclass.py`/`dataclasses.py`;
 - required matching `.py` deletion for every packaged `.mpy` module;
 - rejection when both `.py` and `.mpy` forms of a module are present;

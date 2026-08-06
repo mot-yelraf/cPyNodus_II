@@ -9,7 +9,7 @@ The architecture is split into three layers:
 
 - `core`: transport, startup planning, settings, scheduling primitives
 - `features`: sensor, switch, config, calibration, onboarding behavior
-- entrypoints: `boot.py`, `code.py`, and `cpynodus_ii.app`
+- entrypoints: `boot.py`, `safemode.py`, `code.py`, and `cpynodus_ii.app`
 
 ## Constraints
 
@@ -226,6 +226,10 @@ the device:
   byte. This catches poisoned Pico 2 W sessions whose blocking sends return
   just below the CYW43 stack's approximately ten-second boundary and routes
   them into the existing MQTT recovery ladder.
+- A stalled MQTT publish followed by `Socket not managed` or `Out of sockets`
+  during client close is treated as native socket corruption. The runtime hard
+  resets immediately instead of reconnecting on socket state that has already
+  lost ownership consistency.
 - MQTT preflight distinguishes several cases before MiniMQTT connect:
   TCP failure, raw MQTT CONNACK timeout, and socket-progress/stuck-socket
   patterns. Those cases can trigger socket refresh, station reset, adapter
@@ -250,8 +254,15 @@ fully reset. Current hard-reset recovery reasons are:
 - Wi-Fi after-ready failure
 - MQTT recovery timeout
 - repeated MQTT connect failures
+- stalled MQTT publish with invalid native socket ownership
 - MQTT client memory allocation failures
 - repeated sensor-not-found errors
+
+CircuitPython hard faults occur below the Python exception boundary and enter
+safe mode without running `boot.py` or `code.py`. Root `safemode.py` permits at
+most two automatic resets for `SafeModeReason.HARD_FAULT`, tracked in NVM. The
+normal runtime clears that attempt count only after 60 seconds of stable
+execution. Other safe-mode reasons remain stopped for operator inspection.
 
 For repeated MQTT connect failures, Nodus also uses an NVM marker to avoid an
 immediate hard-reset loop. The first persistent stuck-socket/CONNACK failure can

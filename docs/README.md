@@ -134,7 +134,7 @@ Notes:
 - The script excludes development files (`tests/`, `docs/`, `.git/`, caches, etc.).
 - `--content` options are `full` (default), `runtime`, `pico2w-mpy`, or
   `xesp32s3-mpy`. `mpy` remains a compatibility alias for `pico2w-mpy`.
-- `runtime` syncs `boot.py`, `code.py`, `dataclasses.py`, board TOML
+- `runtime` syncs `boot.py`, `safemode.py`, `code.py`, `dataclasses.py`, board TOML
   templates, and `cpynodus_ii/`. It does not manage CircuitPython libraries.
 - Target MPY deploys require a complete, current
   `build/firmware/<target>/cpynodus_ii/` tree plus staged
@@ -188,15 +188,18 @@ public-key provisioning, signed MQTT-prepare, and HTTP-transfer push command.
 
 ## Boot Flow
 
-1. `boot.py` configures USB/FS access based on a guard pin.
-2. `code.py` disables runtime autoreload, loads `cpynodus_ii.app`, and records fatal tracebacks when possible.
-3. Network logic chooses AP mode or normal mode:
+1. `safemode.py` runs only after CircuitPython enters safe mode. It permits two
+   automatic resets for core hard faults, while leaving other safe-mode causes
+   stopped for operator inspection.
+2. `boot.py` configures USB/FS access based on a guard pin during normal boots.
+3. `code.py` disables runtime autoreload, loads `cpynodus_ii.app`, and records fatal tracebacks when possible.
+4. Network logic chooses AP mode or normal mode:
    - **AP mode**: starts an AP SSID named `Nodus_Setup` password is `password` (default channel `6`, configurable with `Network.AP_CHANNEL`).
    After connecting to the AP, use `POST /itaot-init` for Sensorius bootstrap or browse to `http://192.168.4.1:8000/setup` for the lightweight local setup page.
    - **Normal mode**: connects to Wi‑Fi and starts profile-specific runtime
      services. `nodusweb` publishes mDNS immediately; MQTT profiles do not
      start mDNS.
-4. The runtime starts its asynchronous sensor, MQTT, recovery, and memory-management loops.
+5. The runtime starts its asynchronous sensor, MQTT, recovery, and memory-management loops.
 
 ## AP Mode (Factory / Recovery)
 
@@ -741,6 +744,7 @@ persists `SWITCH_#_LAST_STATE` when the filesystem is writable.
 ## Project Layout
 
 - `boot.py`: board-specific filesystem/USB guard and startup-mode setup
+- `safemode.py`: bounded automatic restart hook for CircuitPython core hard faults
 - `code.py`: CircuitPython entrypoint and fatal traceback/reload wrapper
 - `cpynodus_ii/app.py`: main async runtime orchestration, recovery, startup, and steady state
 - `cpynodus_ii/core/`: board profiles, settings, config models, network, MQTT client adapter, NTP, recovery, reboot logs

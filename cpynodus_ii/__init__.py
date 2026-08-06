@@ -5,4 +5,4 @@ services, and configuration helpers used by Nodus sensor and switch firmware
 on supported Pico2 W and XIAO ESP32-S3 CircuitPython boards.
 """
 
-__version__ = "v0.26.217.1"
+__version__ = "v0.26.218.1"
