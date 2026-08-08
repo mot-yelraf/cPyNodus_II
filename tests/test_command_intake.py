@@ -734,7 +734,7 @@ def test_process_inbound_messages_fast_switch_location_pystack_is_volatile(
     monkeypatch,
     tmp_path,
 ):
-    from cpynodus_ii.features import switch_location_config
+    from cpynodus_ii.features import scalar_persistence
 
     transport = MQTTTransport("broker.local", 1883)
     (tmp_path / "switch.toml").write_text(
@@ -745,7 +745,7 @@ def test_process_inbound_messages_fast_switch_location_pystack_is_volatile(
     def raise_pystack(*args, **kwargs):
         raise RuntimeError("pystack exhausted")
 
-    monkeypatch.setattr(switch_location_config, "_write_location_file", raise_pystack)
+    monkeypatch.setattr(scalar_persistence, "write_toml_scalar", raise_pystack)
     transport.receive(
         "nodus/switch-x943fm/config/set",
         (
@@ -765,7 +765,7 @@ def test_process_inbound_messages_fast_switch_location_pystack_is_volatile(
     assert len(results) == 1
     assert results[0].phase == "published"
     assert results[0].published_count == 3
-    assert results[0].errors == ("location_persist_pystack",)
+    assert results[0].errors == ("config_persist_pystack",)
     assert results[0].persistence_mode == "volatile"
     assert results[0].runtime_config.switch.location == "Switch#1"
     assert transport.published_messages[1].payload == {
@@ -1047,8 +1047,7 @@ def test_process_device_config_message_accepts_restart_only_command():
         _runtime_config(),
         topic="nodus/switch-x943fm/config/set",
         payload_text=(
-            '{"message_id":"rst-1","payload":{},'
-            '"restart":true,"restart_mode":"soft"}'
+            '{"message_id":"rst-1","payload":{},"restart":true,"restart_mode":"soft"}'
         ),
     )
 
@@ -1086,8 +1085,7 @@ def test_process_device_config_message_does_not_reboot_duplicate_restart():
         _runtime_config(),
         topic="nodus/switch-x943fm/config/set",
         payload_text=(
-            '{"message_id":"rst-1","payload":{},'
-            '"restart":true,"restart_mode":"hard"}'
+            '{"message_id":"rst-1","payload":{},"restart":true,"restart_mode":"hard"}'
         ),
         duplicate_message_ids=("rst-1",),
     )
@@ -1211,7 +1209,7 @@ def test_process_inbound_messages_fast_time_config_pystack_is_volatile(
     monkeypatch,
     tmp_path,
 ):
-    from cpynodus_ii.features import time_config
+    from cpynodus_ii.features import scalar_persistence
 
     transport = MQTTTransport("broker.local", 1883)
     runtime_config = _sensor_switch_runtime_config()
@@ -1224,7 +1222,7 @@ def test_process_inbound_messages_fast_time_config_pystack_is_volatile(
     def raise_pystack(*args, **kwargs):
         raise RuntimeError("pystack exhausted")
 
-    monkeypatch.setattr(time_config, "_write_time_file", raise_pystack)
+    monkeypatch.setattr(scalar_persistence, "write_toml_scalar", raise_pystack)
     transport.receive(
         "nodus/co2-ykdvea/config/set",
         (
@@ -1244,7 +1242,7 @@ def test_process_inbound_messages_fast_time_config_pystack_is_volatile(
     assert len(results) == 1
     assert results[0].phase == "published"
     assert results[0].published_count == 3
-    assert results[0].errors == ("time_persist_pystack",)
+    assert results[0].errors == ("config_persist_pystack",)
     assert results[0].persistence_mode == "volatile"
     assert results[0].ntp_resync_requested is True
     assert results[0].runtime_config.time.tz == "America/Denver"
@@ -1286,10 +1284,8 @@ def test_process_inbound_messages_fast_display_config_persists(
         "nodus/co2-ykdvea/config/set",
         (
             '{"message_id":"cfg-display","payload":{"updates":['
-            '{"section":"Display","key":"METRIC_6","value":"Temperature_F",'
-            '"name":"sensor_i2c.toml"},'
-            '{"section":"Display.Style","key":"METRIC_6","value":"Gauge",'
-            '"name":"sensor_i2c.toml"}'
+            '{"section":"Display","key":"METRIC_6",'
+            '"value":"Temperature_F","name":"sensor_i2c.toml"}'
             ']},"restart":false}'
         ),
     )
@@ -1309,9 +1305,9 @@ def test_process_inbound_messages_fast_display_config_persists(
     assert results[0].errors == ()
     assert results[0].persistence_mode == "persisted"
     assert results[0].runtime_config.sensor.display.metrics[5] == "Temperature_F"
-    assert results[0].runtime_config.sensor.display.styles[5] == "Gauge"
+    assert results[0].runtime_config.sensor.display.styles[5] == "Graph24hr"
     assert 'METRIC_6 = "Temperature_F"' in sensor_text
-    assert 'METRIC_6 = "Gauge"' in sensor_text
+    assert 'METRIC_6 = "Graph24hr"' in sensor_text
     assert backup_text == original_text
     assert [message.topic for message in transport.published_messages] == [
         "nodus/co2-ykdvea/config/ack",
@@ -1321,7 +1317,7 @@ def test_process_inbound_messages_fast_display_config_persists(
     assert transport.published_messages[1].payload == {
         "message_id": "cfg-display",
         "applied": True,
-        "updated": 2,
+        "updated": 1,
         "duplicate": False,
         "error": "",
     }
@@ -1331,11 +1327,6 @@ def test_process_inbound_messages_fast_display_config_persists(
             "key": "METRIC_6",
             "value": "Temperature_F",
         },
-        {
-            "section": "Display.Style",
-            "key": "METRIC_6",
-            "value": "Gauge",
-        },
     ]
 
 
@@ -1343,7 +1334,7 @@ def test_process_inbound_messages_fast_display_config_pystack_is_volatile(
     monkeypatch,
     tmp_path,
 ):
-    from cpynodus_ii.features import display_config
+    from cpynodus_ii.features import scalar_persistence
 
     transport = MQTTTransport("broker.local", 1883)
     runtime_config = _sensor_switch_runtime_config()
@@ -1355,7 +1346,7 @@ def test_process_inbound_messages_fast_display_config_pystack_is_volatile(
     def raise_pystack(*args, **kwargs):
         raise RuntimeError("pystack exhausted")
 
-    monkeypatch.setattr(display_config, "_write_display_file", raise_pystack)
+    monkeypatch.setattr(scalar_persistence, "write_toml_scalar", raise_pystack)
     transport.receive(
         "nodus/co2-ykdvea/config/set",
         (
@@ -1375,7 +1366,7 @@ def test_process_inbound_messages_fast_display_config_pystack_is_volatile(
     assert len(results) == 1
     assert results[0].phase == "published"
     assert results[0].published_count == 3
-    assert results[0].errors == ("display_persist_pystack",)
+    assert results[0].errors == ("config_persist_pystack",)
     assert results[0].persistence_mode == "volatile"
     assert results[0].runtime_config.sensor.display.metrics[5] == "Temperature_F"
     assert transport.published_messages[1].payload == {
@@ -1403,11 +1394,7 @@ def test_process_inbound_messages_fast_switch_label_config_persists(
     transport = MQTTTransport("broker.local", 1883)
     runtime_config = _sensor_switch_runtime_config()
     switch_path = tmp_path / "switch.toml"
-    original_text = (
-        "[Switch]\n"
-        'SWITCH_1_LABEL = "Fan"\n'
-        'SWITCH_2_LABEL = "Humidifier"\n'
-    )
+    original_text = '[Switch]\nSWITCH_1_LABEL = "Fan"\nSWITCH_2_LABEL = "Humidifier"\n'
     switch_path.write_text(original_text, encoding="utf-8")
     transport.receive(
         "nodus/co2-ykdvea/config/set",
@@ -1461,7 +1448,7 @@ def test_process_inbound_messages_fast_switch_label_config_pystack_is_volatile(
     monkeypatch,
     tmp_path,
 ):
-    from cpynodus_ii.features import switch_label_config
+    from cpynodus_ii.features import scalar_persistence
 
     transport = MQTTTransport("broker.local", 1883)
     runtime_config = _sensor_switch_runtime_config()
@@ -1473,11 +1460,7 @@ def test_process_inbound_messages_fast_switch_label_config_pystack_is_volatile(
     def raise_pystack(*args, **kwargs):
         raise RuntimeError("pystack exhausted")
 
-    monkeypatch.setattr(
-        switch_label_config,
-        "_write_switch_label_file",
-        raise_pystack,
-    )
+    monkeypatch.setattr(scalar_persistence, "write_toml_scalar", raise_pystack)
     transport.receive(
         "nodus/co2-ykdvea/config/set",
         (
@@ -1497,7 +1480,7 @@ def test_process_inbound_messages_fast_switch_label_config_pystack_is_volatile(
     assert len(results) == 1
     assert results[0].phase == "published"
     assert results[0].published_count == 3
-    assert results[0].errors == ("switch_label_persist_pystack",)
+    assert results[0].errors == ("config_persist_pystack",)
     assert results[0].persistence_mode == "volatile"
     assert results[0].runtime_config.switch.channels[1].label == "AC"
     assert transport.published_messages[1].payload == {
@@ -1602,12 +1585,12 @@ def test_process_calibration_message_updates_runtime_calibration_offsets():
         transport,
         _runtime_config(),
         topic="nodus/switch-x943fm/calibration/set",
-        payload_text='{"message_id":"cal-2","action":"apply","payload":{"offsets":[{"key":"Calibration.System.CO2_OFFSET","value":-400.0},{"key":"Calibration.Device.TEMP_OFFSET","value":1.5}]}}',
+        payload_text='{"message_id":"cal-2","action":"apply","payload":{"offsets":[{"key":"Calibration.System.CO2_OFFSET","value":-400.0}]}}',
     )
 
     assert result.phase == "published"
     assert result.runtime_config.sensor.calibration_system.co2_offset == -400.0
-    assert result.runtime_config.sensor.calibration_device.temp_offset == 1.5
+    assert result.runtime_config.sensor.calibration_device.temp_offset == 0.0
 
 
 def test_process_calibration_message_updates_runtime_altitude():
@@ -1636,8 +1619,7 @@ def test_process_inbound_messages_fast_calibration_apply_persists_offsets():
             "nodus/co2-ykdvea/calibration/set",
             (
                 '{"message_id":"cal-1","action":"apply","payload":{"offsets":['
-                '{"key":"Calibration.Device.TEMP_OFFSET","value":-2.5},'
-                '{"key":"Calibration.Device.ALTITUDE_METERS","value":1783.0}'
+                '{"key":"Calibration.Device.TEMP_OFFSET","value":-2.5}'
                 "]}}"
             ),
         )
@@ -1655,12 +1637,11 @@ def test_process_inbound_messages_fast_calibration_apply_persists_offsets():
     assert results[0].command_type == "calibration"
     assert results[0].published_count == 3
     assert results[0].runtime_config.sensor.calibration_device.temp_offset == -2.5
-    assert results[0].runtime_config.sensor.calibration_device.altitude_meters == 1783.0
+    assert results[0].runtime_config.sensor.calibration_device.altitude_meters == 0.0
     assert sensor_doc["Calibration"]["Device"]["TEMP_OFFSET"] == -2.5
-    assert sensor_doc["Calibration"]["Device"]["ALTITUDE_METERS"] == 1783.0
     assert transport.published_messages[0].topic == "nodus/co2-ykdvea/calibration/ack"
     assert transport.published_messages[1].payload["applied"] is True
-    assert transport.published_messages[1].payload["updated"] == 2
+    assert transport.published_messages[1].payload["updated"] == 1
     assert transport.published_messages[2].topic == "nodus/co2-ykdvea/meta/patch"
     assert transport.published_messages[2].payload["source"] == "calibration_set"
 
@@ -1827,8 +1808,7 @@ def test_process_inbound_messages_fast_calibration_memory_error_is_contained(
         "accepted": True,
     }
     assert (
-        transport.published_messages[1].topic
-        == "nodus/co2-ykdvea/calibration/result"
+        transport.published_messages[1].topic == "nodus/co2-ykdvea/calibration/result"
     )
     assert transport.published_messages[1].payload == {
         "message_id": "cal-oom",
@@ -1883,18 +1863,15 @@ def test_fast_calibration_offset_persistence_import_memory_is_reported(
     monkeypatch,
     tmp_path,
 ):
-    import builtins
+    from cpynodus_ii.features import scalar_persistence
 
     transport = MQTTTransport("broker.local", 1883)
     runtime_config = _sensor_switch_runtime_config()
-    real_import = builtins.__import__
 
-    def import_with_memory_error(name, *args, **kwargs):
-        if name == "cpynodus_ii.features.calibration_offset_persistence":
-            raise MemoryError("memory allocation failed")
-        return real_import(name, *args, **kwargs)
+    def raise_memory(*args, **kwargs):
+        raise MemoryError("memory allocation failed")
 
-    monkeypatch.setattr(builtins, "__import__", import_with_memory_error)
+    monkeypatch.setattr(scalar_persistence, "write_toml_scalar", raise_memory)
     transport.receive(
         "nodus/co2-ykdvea/calibration/set",
         (
@@ -1915,7 +1892,7 @@ def test_fast_calibration_offset_persistence_import_memory_is_reported(
     assert len(results) == 1
     assert results[0].phase == "published"
     assert results[0].published_count == 3
-    assert results[0].errors == ("calibration_offset_persist_import_memory",)
+    assert results[0].errors == ("calibration_offset_persist_memory",)
     assert results[0].persistence_mode == "volatile"
     assert results[0].requested_state == "offset_fast:applied"
     assert results[0].runtime_config.sensor.calibration_device.co2_offset == -100.0
@@ -1933,7 +1910,7 @@ def test_fast_calibration_offset_persistence_pystack_is_nonfatal(
     monkeypatch,
     tmp_path,
 ):
-    from cpynodus_ii.features import calibration_offset_persistence
+    from cpynodus_ii.features import scalar_persistence
 
     transport = MQTTTransport("broker.local", 1883)
     runtime_config = _sensor_switch_runtime_config()
@@ -1941,11 +1918,7 @@ def test_fast_calibration_offset_persistence_pystack_is_nonfatal(
     def raise_pystack(*args, **kwargs):
         raise RuntimeError("pystack exhausted")
 
-    monkeypatch.setattr(
-        calibration_offset_persistence,
-        "persist_single_calibration_offset",
-        raise_pystack,
-    )
+    monkeypatch.setattr(scalar_persistence, "write_toml_scalar", raise_pystack)
     transport.receive(
         "nodus/co2-ykdvea/calibration/set",
         (
@@ -1985,22 +1958,18 @@ def test_fast_calibration_persistence_import_memory_error_is_reported(
     monkeypatch,
     tmp_path,
 ):
-    import builtins
-
+    from cpynodus_ii.features import scalar_persistence
     from cpynodus_ii.features.calibration_config import (
         process_calibration_apply_message,
     )
 
     transport = MQTTTransport("broker.local", 1883)
     runtime_config = _sensor_switch_runtime_config()
-    real_import = builtins.__import__
 
-    def import_with_memory_error(name, *args, **kwargs):
-        if name == "cpynodus_ii.features.calibration_persistence":
-            raise MemoryError("memory allocation failed")
-        return real_import(name, *args, **kwargs)
+    def raise_memory(*args, **kwargs):
+        raise MemoryError("memory allocation failed")
 
-    monkeypatch.setattr(builtins, "__import__", import_with_memory_error)
+    monkeypatch.setattr(scalar_persistence, "write_toml_scalar", raise_memory)
 
     result = process_calibration_apply_message(
         transport,
@@ -2015,7 +1984,7 @@ def test_fast_calibration_persistence_import_memory_error_is_reported(
     )
 
     assert result.phase == "published"
-    assert result.errors == ("calibration_persist_import_memory",)
+    assert result.errors == ("calibration_persist_memory",)
     assert result.published_count == 3
     assert result.persistence_mode == "volatile"
     assert result.runtime_config.sensor.calibration_device.co2_offset == -100.0
@@ -2047,30 +2016,18 @@ def test_process_inbound_messages_ignores_empty_calibration_clear(monkeypatch):
     assert transport.published_messages == []
 
 
-def test_process_inbound_messages_calibration_status_uses_heavy_handler(monkeypatch):
+def test_process_inbound_messages_calibration_status_avoids_heavy_handler(monkeypatch):
     transport = MQTTTransport("broker.local", 1883)
     runtime_config = _sensor_switch_runtime_config()
     transport.receive(
         "nodus/co2-ykdvea/calibration/set",
         '{"message_id":"cal-status","action":"status"}',
     )
-    calls = []
-
-    class Handlers:
-        def process_inbound_messages(self, *args, **kwargs):
-            calls.append(args[0].received_messages[0].payload_text)
-            args[0].received_messages.clear()
-            return (
-                command_intake.CommandResult(
-                    phase="published",
-                    topic="nodus/co2-ykdvea/calibration/set",
-                    command_type="calibration",
-                    published_count=2,
-                    runtime_config=runtime_config,
-                ),
-            )
-
-    monkeypatch.setattr(command_intake, "_handlers", lambda: Handlers())
+    monkeypatch.setattr(
+        command_intake,
+        "_handlers",
+        lambda: (_ for _ in ()).throw(AssertionError("heavy handler imported")),
+    )
 
     results = process_inbound_messages(
         transport,
@@ -2080,7 +2037,7 @@ def test_process_inbound_messages_calibration_status_uses_heavy_handler(monkeypa
 
     assert len(results) == 1
     assert results[0].phase == "published"
-    assert calls == ['{"message_id":"cal-status","action":"status"}']
+    assert results[0].published_count == 3
 
 
 def test_process_inbound_messages_location_config_memory_error_is_contained(
@@ -2102,7 +2059,7 @@ def test_process_inbound_messages_location_config_memory_error_is_contained(
 
     monkeypatch.setattr(
         command_intake,
-        "_process_location_config_message",
+        "_process_device_config_message",
         raise_memory_error,
     )
 
@@ -2115,10 +2072,10 @@ def test_process_inbound_messages_location_config_memory_error_is_contained(
     assert len(results) == 1
     assert results[0].phase == "error"
     assert results[0].command_type == "config"
-    assert results[0].published_count == 0
-    assert results[0].errors == ("config_location_handler_memory",)
+    assert results[0].published_count == 2
+    assert results[0].errors == ("config_handler_memory",)
     assert transport.received_messages == []
-    assert transport.published_messages == []
+    assert transport.published_messages[1].payload["applied"] is False
 
 
 def test_process_inbound_messages_fast_calibration_handles_aqi_offset_batch():
@@ -2151,26 +2108,12 @@ def test_process_inbound_messages_fast_calibration_handles_aqi_offset_batch():
         sensor_doc = Settings._read_toml_file(root / Settings.SENSOR_I2C_FILE)
 
     assert len(results) == 1
-    assert results[0].phase == "published"
-    assert results[0].published_count == 3
-    assert results[0].runtime_config.sensor.calibration_system.temp_offset == 0.6
-    assert results[0].runtime_config.sensor.calibration_system.rh_offset == 0.1
-    assert results[0].runtime_config.sensor.calibration_device.aqi_offset == 0.0
-    assert results[0].runtime_config.sensor.calibration_device.gas_offset == 0.0
-    assert results[0].runtime_config.sensor.calibration_device.altitude_meters == 1783.0
-    assert sensor_doc["Calibration"]["System"]["TEMP_OFFSET"] == 0.6
-    assert sensor_doc["Calibration"]["System"]["RH_OFFSET"] == 0.1
-    assert sensor_doc["Calibration"]["Device"]["AQI_OFFSET"] == 0.0
-    assert sensor_doc["Calibration"]["Device"]["GAS_OFFSET"] == 0.0
-    assert sensor_doc["Calibration"]["Device"]["ALTITUDE_METERS"] == 1783.0
+    assert results[0].phase == "error"
+    assert results[0].published_count == 2
+    assert results[0].errors == ("single_update_required",)
+    assert sensor_doc["Calibration"]["System"]["TEMP_OFFSET"] != 0.6
     assert transport.published_messages[0].topic == "nodus/aqi-x943fm/calibration/ack"
-    assert transport.published_messages[1].payload["applied"] is True
-    assert transport.published_messages[1].payload["updated"] == 5
-    assert transport.published_messages[2].payload["updates"][-1] == {
-        "section": "Calibration.Device",
-        "key": "ALTITUDE_METERS",
-        "value": 1783.0,
-    }
+    assert transport.published_messages[1].payload["applied"] is False
 
 
 def test_process_inbound_messages_handles_device_topics_before_switch_topics():

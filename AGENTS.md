@@ -81,6 +81,7 @@ Before changing behavior, the agent must:
 - Avoid CPython-only modules, reflection-heavy patterns, threads, subprocesses,
   and filesystem assumptions that do not hold on CircuitPython.
 - Avoid large inline HTML or JSON blobs.
+- Add module docstring with one line short description and a more detailed description below
 - Add short docstrings to public functions and classes.
 - Do not use concatenated multiline f-strings; use a single f-string or
   `.format(...)`.

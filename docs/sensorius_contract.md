@@ -432,6 +432,11 @@ Canonical replies:
 {"message_id":"cfg-123","applied":true,"updated":1,"duplicate":false,"error":""}
 ```
 
+Each ordinary MQTT `config/set` command must contain exactly one update.
+Nodus rejects a multi-key mutation after acknowledgement with
+`error = "single_update_required"`. Sensorius sends the next key only after
+the correlated successful result for the preceding key.
+
 Canonical standalone restart request:
 
 ```json
@@ -452,6 +457,15 @@ Canonical restart replies:
 
 Implemented behavior:
 
+- Device configuration is dispatched through a shallow single-scalar handler;
+  it does not load the general command handler or full TOML document writer.
+- Scalar persistence streams the active TOML file to a temporary file, verifies
+  the temporary file, retains the prior file as `.bak`, and renames the
+  temporary file into place. Passwords are obfuscated before persistence and
+  before inclusion in `meta/patch`.
+- Restart-required `Network`, `MQTT`, `Profile`, and `HomeAssistant` writes are
+  reported as applied only after durable persistence succeeds. Stack, memory,
+  read-only, or filesystem failures return `applied = false`.
 - Nodus publishes `config/ack` after a valid envelope is accepted for
   handling.
 - Duplicate `message_id` values produce `config/ack` with
@@ -534,6 +548,9 @@ Forward-only rule:
 
 Implemented behavior:
 
+- Switch commands use the already-loaded shallow command path and a flat
+  scalar writer for `SWITCH_<n>_LAST_STATE`; they do not enter the general
+  configuration handler.
 - Empty payloads on `nodus/<channel_id>/config/set` are ignored. This allows
   Sensorius retained command cleanup publishes to be received safely after
   reconnect.
@@ -582,6 +599,10 @@ Canonical replies:
 
 Implemented behavior:
 
+- Calibration mutations contain exactly one offset per command. Multi-offset
+  mutations are acknowledged and rejected with `single_update_required`.
+- Apply, status, soil-session start, and soil-session cancel all use shallow
+  handlers and never fall through to the general command handler.
 - Nodus publishes `calibration/ack` after a valid calibration envelope is
   accepted for handling.
 - Duplicate `message_id` values produce `calibration/ack` and

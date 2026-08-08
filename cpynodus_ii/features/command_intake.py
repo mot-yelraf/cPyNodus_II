@@ -74,14 +74,11 @@ def process_inbound_messages(
             )
             continue
 
-        fast_result = None
-        if _should_try_location_config_fast_path(
-            message.topic,
-            runtime_config,
-            message.payload_text,
-        ):
+        if _is_device_config_topic(message.topic, runtime_config):
+            if not str(message.payload_text or "").strip():
+                continue
             try:
-                fast_result = _process_location_config_message(
+                fast_result = _process_device_config_message(
                     transport,
                     runtime_config,
                     topic=message.topic,
@@ -90,138 +87,26 @@ def process_inbound_messages(
                     settings_root=settings_root,
                 )
             except MemoryError:
-                _restore_received_messages(transport, messages[index + 1 :])
-                results.append(
-                    CommandResult(
-                        phase="error",
-                        topic=message.topic,
-                        command_type="config",
-                        published_count=0,
-                        errors=("config_location_handler_memory",),
-                        runtime_config=runtime_config,
-                    )
-                )
-                return tuple(results)
-        if fast_result is not None:
-            if fast_result.runtime_config is not None:
-                runtime_config = fast_result.runtime_config
-            results.append(fast_result)
-            continue
-
-        fast_result = None
-        if _should_try_time_config_fast_path(
-            message.topic,
-            runtime_config,
-            message.payload_text,
-        ):
-            try:
-                fast_result = _process_time_config_message(
+                fast_result = _publish_minimal_config_failure(
                     transport,
                     runtime_config,
                     topic=message.topic,
                     payload_text=message.payload_text,
-                    handled_message_ids=handled_message_ids,
-                    settings_root=settings_root,
+                    error="config_handler_memory",
                 )
-            except MemoryError:
-                _restore_received_messages(transport, messages[index + 1 :])
-                results.append(
-                    _publish_minimal_config_failure(
-                        transport,
-                        runtime_config,
-                        topic=message.topic,
-                        payload_text=message.payload_text,
-                        error="time_config_handler_memory",
-                    )
-                )
-                return tuple(results)
-        if fast_result is not None:
-            if fast_result.runtime_config is not None:
-                runtime_config = fast_result.runtime_config
-            results.append(fast_result)
-            continue
-
-        fast_result = None
-        if _should_try_switch_label_config_fast_path(
-            message.topic,
-            runtime_config,
-            message.payload_text,
-        ):
-            try:
-                fast_result = _process_switch_label_config_message(
+            except RuntimeError as exc:
+                if "pystack exhausted" not in str(exc).lower():
+                    raise
+                fast_result = _publish_minimal_config_failure(
                     transport,
                     runtime_config,
                     topic=message.topic,
                     payload_text=message.payload_text,
-                    handled_message_ids=handled_message_ids,
-                    settings_root=settings_root,
+                    error="config_handler_pystack",
                 )
-            except MemoryError:
-                _restore_received_messages(transport, messages[index + 1 :])
-                results.append(
-                    _publish_minimal_config_failure(
-                        transport,
-                        runtime_config,
-                        topic=message.topic,
-                        payload_text=message.payload_text,
-                        error="switch_label_config_handler_memory",
-                    )
-                )
-                return tuple(results)
-        if fast_result is not None:
             if fast_result.runtime_config is not None:
                 runtime_config = fast_result.runtime_config
             results.append(fast_result)
-            continue
-
-        fast_result = None
-        if _should_try_display_config_fast_path(
-            message.topic,
-            runtime_config,
-            message.payload_text,
-        ):
-            try:
-                fast_result = _process_display_config_message(
-                    transport,
-                    runtime_config,
-                    topic=message.topic,
-                    payload_text=message.payload_text,
-                    handled_message_ids=handled_message_ids,
-                    settings_root=settings_root,
-                )
-            except MemoryError:
-                _restore_received_messages(transport, messages[index + 1 :])
-                results.append(
-                    _publish_minimal_config_failure(
-                        transport,
-                        runtime_config,
-                        topic=message.topic,
-                        payload_text=message.payload_text,
-                        error="display_config_handler_memory",
-                    )
-                )
-                return tuple(results)
-        if fast_result is not None:
-            if fast_result.runtime_config is not None:
-                runtime_config = fast_result.runtime_config
-            results.append(fast_result)
-            continue
-
-        config_schema_error = _device_config_fast_schema_error(
-            message.topic, runtime_config, message.payload_text
-        )
-        if config_schema_error == "empty":
-            continue
-        if config_schema_error:
-            results.append(
-                CommandResult(
-                    phase="error",
-                    topic=message.topic,
-                    command_type="config",
-                    published_count=0,
-                    errors=(config_schema_error,),
-                )
-            )
             continue
 
         if _is_empty_payload(message.payload_text) and _is_sensor_calibration_topic(
@@ -258,6 +143,20 @@ def process_inbound_messages(
                         )
                     )
                     return tuple(results)
+                except RuntimeError as exc:
+                    if "pystack exhausted" not in str(exc).lower():
+                        raise
+                    _restore_received_messages(transport, messages[index + 1 :])
+                    results.append(
+                        _publish_minimal_calibration_failure(
+                            transport,
+                            runtime_config,
+                            topic=message.topic,
+                            payload_text=message.payload_text,
+                            error="calibration_offsets_pystack",
+                        )
+                    )
+                    return tuple(results)
             if fast_result is not None:
                 if fast_result.runtime_config is not None:
                     runtime_config = fast_result.runtime_config
@@ -285,9 +184,54 @@ def process_inbound_messages(
                     )
                 )
                 return tuple(results)
+            except RuntimeError as exc:
+                if "pystack exhausted" not in str(exc).lower():
+                    raise
+                _restore_received_messages(transport, messages[index + 1 :])
+                results.append(
+                    _publish_minimal_calibration_failure(
+                        transport,
+                        runtime_config,
+                        topic=message.topic,
+                        payload_text=message.payload_text,
+                        error="calibration_handler_pystack",
+                    )
+                )
+                return tuple(results)
         if fast_result is not None:
             if fast_result.runtime_config is not None:
                 runtime_config = fast_result.runtime_config
+            results.append(fast_result)
+            continue
+
+        if _is_sensor_calibration_topic(message.topic, runtime_config):
+            try:
+                fast_result = _process_calibration_control_message(
+                    transport,
+                    runtime_config,
+                    topic=message.topic,
+                    payload_text=message.payload_text,
+                    handled_message_ids=handled_message_ids,
+                    settings_root=settings_root,
+                )
+            except MemoryError:
+                fast_result = _publish_minimal_calibration_failure(
+                    transport,
+                    runtime_config,
+                    topic=message.topic,
+                    payload_text=message.payload_text,
+                    error="calibration_control_memory",
+                )
+            except RuntimeError as exc:
+                if "pystack exhausted" not in str(exc).lower():
+                    raise
+                fast_result = _publish_minimal_calibration_failure(
+                    transport,
+                    runtime_config,
+                    topic=message.topic,
+                    payload_text=message.payload_text,
+                    error="calibration_control_pystack",
+                )
             results.append(fast_result)
             continue
 
@@ -420,23 +364,54 @@ def process_switch_command_message(
         _build_config_ack_payload(command.message_id, accepted=True, duplicate=False),
         retain=False,
     )
-    apply_result = _apply_switch_state(
-        switch_service,
-        channel_id=command.channel_id,
-        state=command.desired_state,
-    )
-    publish_result = _publish_switch_result(
-        transport,
-        runtime_config,
-        apply_result,
-        message_id=command.message_id,
-    )
-    meta_result = _publish_switch_meta_patch(
-        transport,
-        runtime_config,
-        apply_result,
-        message_id=command.message_id,
-    )
+    try:
+        apply_result = _apply_switch_state(
+            switch_service,
+            channel_id=command.channel_id,
+            state=command.desired_state,
+        )
+        publish_result = _publish_switch_result(
+            transport,
+            runtime_config,
+            apply_result,
+            message_id=command.message_id,
+        )
+        meta_result = _publish_switch_meta_patch(
+            transport,
+            runtime_config,
+            apply_result,
+            message_id=command.message_id,
+        )
+    except (MemoryError, RuntimeError) as exc:
+        if (
+            not isinstance(exc, MemoryError)
+            and "pystack exhausted" not in str(exc).lower()
+        ):
+            raise
+        error = (
+            "switch_command_memory"
+            if isinstance(exc, MemoryError)
+            else "switch_command_pystack"
+        )
+        transport.publish(
+            mqtt_topic(runtime_config, command.channel_id, "config", "result"),
+            _build_config_result_payload(
+                command.message_id,
+                applied=False,
+                updated=0,
+                error=error,
+            ),
+            retain=False,
+        )
+        return CommandResult(
+            phase="error",
+            topic=topic,
+            command_type="switch",
+            published_count=2,
+            errors=(error,),
+            message_id=command.message_id,
+            requested_state="ON" if command.desired_state else "OFF",
+        )
     persistence_errors = _persist_switch_state(
         runtime_config,
         command,
@@ -472,12 +447,24 @@ def process_device_config_message(
     settings_root=None,
 ):
     """Parse, apply, and publish one device config command."""
-    return _handlers().process_device_config_message(
+    if not str(payload_text or "").strip():
+        return CommandResult(
+            phase="ignored",
+            topic=topic,
+            command_type="config",
+            published_count=0,
+            runtime_config=runtime_config,
+        )
+    from cpynodus_ii.features.device_config import (
+        process_device_config_message as process,
+    )
+
+    return process(
         transport,
         runtime_config,
         topic=topic,
         payload_text=payload_text,
-        duplicate_message_ids=duplicate_message_ids,
+        handled_message_ids=duplicate_message_ids,
         settings_root=settings_root,
     )
 
@@ -492,12 +479,41 @@ def process_calibration_message(
     settings_root=None,
 ):
     """Parse and respond to one device calibration command."""
-    return _handlers().process_calibration_message(
+    if not str(payload_text or "").strip():
+        return CommandResult(
+            phase="ignored",
+            topic=topic,
+            command_type="calibration",
+            published_count=0,
+            runtime_config=runtime_config,
+        )
+    if _payload_may_apply_calibration_offsets(payload_text):
+        result = _process_calibration_offsets_message(
+            transport,
+            runtime_config,
+            topic=topic,
+            payload_text=payload_text,
+            handled_message_ids=duplicate_message_ids,
+            settings_root=settings_root,
+        )
+        if result is not None:
+            return result
+    result = _process_calibration_apply_message(
         transport,
         runtime_config,
         topic=topic,
         payload_text=payload_text,
-        duplicate_message_ids=duplicate_message_ids,
+        handled_message_ids=duplicate_message_ids,
+        settings_root=settings_root,
+    )
+    if result is not None:
+        return result
+    return _process_calibration_control_message(
+        transport,
+        runtime_config,
+        topic=topic,
+        payload_text=payload_text,
+        handled_message_ids=duplicate_message_ids,
         settings_root=settings_root,
     )
 
@@ -585,7 +601,7 @@ def _clear_received_messages(transport):
         transport.received_messages = []
 
 
-def _process_location_config_message(
+def _process_device_config_message(
     transport,
     runtime_config,
     *,
@@ -600,96 +616,9 @@ def _process_location_config_message(
         gc.collect()
     except Exception:
         pass
-    from cpynodus_ii.features.switch_location_config import (
-        process_device_location_config_message,
-    )
+    from cpynodus_ii.features.device_config import process_device_config_message
 
-    return process_device_location_config_message(
-        transport,
-        runtime_config,
-        topic=topic,
-        payload_text=payload_text,
-        handled_message_ids=handled_message_ids,
-        settings_root=settings_root,
-    )
-
-
-def _process_time_config_message(
-    transport,
-    runtime_config,
-    *,
-    topic,
-    payload_text,
-    handled_message_ids=(),
-    settings_root=None,
-):
-    try:
-        import gc
-
-        gc.collect()
-    except Exception:
-        pass
-    from cpynodus_ii.features.time_config import process_device_time_config_message
-
-    return process_device_time_config_message(
-        transport,
-        runtime_config,
-        topic=topic,
-        payload_text=payload_text,
-        handled_message_ids=handled_message_ids,
-        settings_root=settings_root,
-    )
-
-
-def _process_display_config_message(
-    transport,
-    runtime_config,
-    *,
-    topic,
-    payload_text,
-    handled_message_ids=(),
-    settings_root=None,
-):
-    try:
-        import gc
-
-        gc.collect()
-    except Exception:
-        pass
-    from cpynodus_ii.features.display_config import (
-        process_device_display_config_message,
-    )
-
-    return process_device_display_config_message(
-        transport,
-        runtime_config,
-        topic=topic,
-        payload_text=payload_text,
-        handled_message_ids=handled_message_ids,
-        settings_root=settings_root,
-    )
-
-
-def _process_switch_label_config_message(
-    transport,
-    runtime_config,
-    *,
-    topic,
-    payload_text,
-    handled_message_ids=(),
-    settings_root=None,
-):
-    try:
-        import gc
-
-        gc.collect()
-    except Exception:
-        pass
-    from cpynodus_ii.features.switch_label_config import (
-        process_device_switch_label_config_message,
-    )
-
-    return process_device_switch_label_config_message(
+    return process_device_config_message(
         transport,
         runtime_config,
         topic=topic,
@@ -757,6 +686,35 @@ def _process_calibration_offsets_message(
     )
 
 
+def _process_calibration_control_message(
+    transport,
+    runtime_config,
+    *,
+    topic,
+    payload_text,
+    handled_message_ids=(),
+    settings_root=None,
+):
+    try:
+        import gc
+
+        gc.collect()
+    except Exception:
+        pass
+    from cpynodus_ii.features.calibration_control import (
+        process_calibration_control_message,
+    )
+
+    return process_calibration_control_message(
+        transport,
+        runtime_config,
+        topic=topic,
+        payload_text=payload_text,
+        handled_message_ids=handled_message_ids,
+        settings_root=settings_root,
+    )
+
+
 def _is_switch_command_topic(topic, runtime_config):
     text = str(topic or "").strip()
     if not text.endswith("/config/set"):
@@ -767,99 +725,11 @@ def _is_switch_command_topic(topic, runtime_config):
     return False
 
 
-def _is_location_config_topic(topic, runtime_config):
+def _is_device_config_topic(topic, runtime_config):
     device_id = _device_id(runtime_config)
     return bool(
-        device_id
-        and (runtime_config.sensor.present or runtime_config.switch.present)
-        and topic == mqtt_topic(runtime_config, device_id, "config", "set")
+        device_id and topic == mqtt_topic(runtime_config, device_id, "config", "set")
     )
-
-
-def _should_try_location_config_fast_path(topic, runtime_config, payload_text):
-    if not _is_location_config_topic(topic, runtime_config):
-        return False
-    return _payload_may_update_location(payload_text)
-
-
-def _should_try_time_config_fast_path(topic, runtime_config, payload_text):
-    if not _is_location_config_topic(topic, runtime_config):
-        return False
-    return _payload_may_update_time(payload_text)
-
-
-def _should_try_display_config_fast_path(topic, runtime_config, payload_text):
-    if not _is_location_config_topic(topic, runtime_config):
-        return False
-    if not runtime_config.sensor.present:
-        return False
-    return _payload_may_update_display(payload_text)
-
-
-def _should_try_switch_label_config_fast_path(topic, runtime_config, payload_text):
-    if not _is_location_config_topic(topic, runtime_config):
-        return False
-    if not runtime_config.switch.present:
-        return False
-    return _payload_may_update_switch_label(payload_text)
-
-
-def _device_config_fast_schema_error(topic, runtime_config, payload_text):
-    if not _is_location_config_topic(topic, runtime_config):
-        return ""
-    text = str(payload_text or "").strip()
-    if not text:
-        return "empty"
-    lower = text.lower()
-    if not (text.startswith("{") and text.endswith("}")):
-        return "schema_invalid"
-    if '"message_id"' not in lower:
-        return "schema_invalid"
-    if '"restart"' in lower:
-        return ""
-    if '"payload"' not in lower:
-        return "schema_invalid"
-    if '"updates"' not in lower and '"settings"' not in lower:
-        return "schema_invalid"
-    return ""
-
-
-def _payload_may_update_location(payload_text):
-    text = str(payload_text or "").strip()
-    if not text:
-        return False
-    upper = text.upper()
-    return "LOCATION" in upper or "SWITCH_LOCATION" in upper
-
-
-def _payload_may_update_time(payload_text):
-    text = str(payload_text or "").strip()
-    if not text:
-        return False
-    upper = text.upper()
-    return (
-        '"TIME"' in upper
-        or '"TZ"' in upper
-        or "TZ_OFFSET" in upper
-        or "TZ_NAME" in upper
-        or "NTP_SERVER" in upper
-    )
-
-
-def _payload_may_update_display(payload_text):
-    text = str(payload_text or "").strip()
-    if not text:
-        return False
-    upper = text.upper()
-    return "DISPLAY" in upper and "METRIC_" in upper
-
-
-def _payload_may_update_switch_label(payload_text):
-    text = str(payload_text or "").strip()
-    if not text:
-        return False
-    upper = text.upper()
-    return "SWITCH_" in upper and "_LABEL" in upper
 
 
 def _should_try_calibration_apply_fast_path(topic, runtime_config, payload_text):
@@ -900,7 +770,6 @@ def _is_sensor_calibration_topic(topic, runtime_config):
     device_id = _device_id(runtime_config)
     return bool(
         device_id
-        and runtime_config.sensor.present
         and topic == mqtt_topic(runtime_config, device_id, "calibration", "set")
     )
 
@@ -1156,102 +1025,9 @@ def _persist_switch_state(runtime_config, command, *, settings_root=None):
 
 
 def _write_switch_state_file(path, key, state):
-    import os
+    from cpynodus_ii.features.scalar_persistence import write_toml_scalar
 
-    path_text = str(path or "")
-    tmp_path = "{}.tmp".format(path_text)
-    backup_path = "{}.bak".format(path_text)
-    key_text = str(key or "").strip().upper()
-    value_text = "true" if state else "false"
-    current_section = ""
-    section_seen = False
-    found = False
-    source = None
-    target = None
-    try:
-        source = open(path_text, "r")
-        target = open(tmp_path, "w")
-        while True:
-            raw_line = source.readline()
-            if raw_line == "":
-                break
-            stripped = str(raw_line or "").split("#", 1)[0].strip()
-            if stripped.startswith("[") and stripped.endswith("]"):
-                if current_section == "Switch" and not found:
-                    target.write("{} = {}\n".format(key_text, value_text))
-                    found = True
-                current_section = stripped[1:-1].strip()
-                if current_section == "Switch":
-                    section_seen = True
-                target.write(raw_line)
-                continue
-            line_key = ""
-            if current_section == "Switch":
-                line_body = str(raw_line or "").split("#", 1)[0]
-                equal_index = line_body.find("=")
-                if equal_index >= 0:
-                    line_key = line_body[:equal_index].strip().upper()
-            if current_section == "Switch" and line_key == key_text:
-                line_end = ""
-                if str(raw_line or "").endswith("\r\n"):
-                    line_end = "\r\n"
-                elif str(raw_line or "").endswith("\n"):
-                    line_end = "\n"
-                target.write(
-                    "{} = {}{}".format(
-                        key_text,
-                        value_text,
-                        line_end,
-                    )
-                )
-                found = True
-                continue
-            target.write(raw_line)
-        if current_section == "Switch" and not found:
-            target.write("{} = {}\n".format(key_text, value_text))
-            found = True
-        if not section_seen:
-            target.write("\n[Switch]\n{} = {}\n".format(key_text, value_text))
-            found = True
-        try:
-            target.flush()
-        except AttributeError:
-            pass
-        try:
-            source.close()
-        except AttributeError:
-            pass
-        source = None
-        try:
-            target.close()
-        except AttributeError:
-            pass
-        target = None
-        if not found:
-            _remove_path(tmp_path, os)
-            return ("switch_state_key_missing",)
-        if _path_size(tmp_path, os) <= 0:
-            _remove_path(tmp_path, os)
-            return ("toml_write_empty_tmp",)
-        if _path_exists(backup_path, os):
-            os.remove(backup_path)
-        if _path_exists(path_text, os):
-            os.rename(path_text, backup_path)
-        os.rename(tmp_path, path_text)
-    except OSError as exc:
-        if source is not None:
-            try:
-                source.close()
-            except AttributeError:
-                pass
-        if target is not None:
-            try:
-                target.close()
-            except AttributeError:
-                pass
-        _remove_path(tmp_path, os)
-        return (_persistence_error(exc),)
-    return ()
+    return write_toml_scalar(path, "Switch", str(key or "").strip().upper(), state)
 
 
 def _join_settings_path(root, filename):
@@ -1259,42 +1035,6 @@ def _join_settings_path(root, filename):
     if root_text.endswith("/"):
         return "{}{}".format(root_text, filename)
     return "{}/{}".format(root_text, filename)
-
-
-def _path_exists(path, os_module):
-    try:
-        os_module.stat(str(path or ""))
-        return True
-    except OSError:
-        return False
-
-
-def _path_size(path, os_module):
-    try:
-        stat_result = os_module.stat(str(path or ""))
-    except OSError:
-        return 0
-    try:
-        return int(stat_result.st_size)
-    except AttributeError:
-        try:
-            return int(stat_result[6])
-        except (IndexError, TypeError, ValueError):
-            return 0
-
-
-def _remove_path(path, os_module):
-    try:
-        os_module.remove(str(path or ""))
-    except OSError:
-        pass
-
-
-def _persistence_error(exc):
-    text = str(exc or "").strip().replace(" ", "_")
-    if not text:
-        return "persistence_error"
-    return "persistence_error:{}".format(text)
 
 
 def _build_config_ack_payload(message_id, *, accepted=True, duplicate=False):

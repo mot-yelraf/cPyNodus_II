@@ -34,14 +34,22 @@ def test_device_config_message_persists_settings_toml_and_reloads_runtime_config
             transport,
             runtime_config,
             topic="nodus/switch-w9umh8/config/set",
-            payload_text='{"message_id":"cfg-1","payload":{"updates":[{"section":"Network","key":"HOSTNAME","value":"switch-new"},{"section":"MQTT","key":"BROKER","value":"broker2.local"}]}}',
+            payload_text='{"message_id":"cfg-1","payload":{"updates":[{"section":"Network","key":"HOSTNAME","value":"switch-new"}]}}',
+            settings_root=tmpdir_path,
+        )
+        second = process_device_config_message(
+            transport,
+            result.runtime_config,
+            topic="nodus/switch-w9umh8/config/set",
+            payload_text='{"message_id":"cfg-2","payload":{"updates":[{"section":"MQTT","key":"BROKER","value":"broker2.local"}]}}',
             settings_root=tmpdir_path,
         )
         reloaded = Settings.from_directory(tmpdir_path).runtime_config()
 
     assert result.phase == "published"
-    assert result.runtime_config.network.hostname == "switch-new"
-    assert result.runtime_config.mqtt.broker == "broker2.local"
+    assert second.phase == "published"
+    assert second.runtime_config.network.hostname == "switch-new"
+    assert second.runtime_config.mqtt.broker == "broker2.local"
     assert reloaded.network.hostname == "switch-new"
     assert reloaded.mqtt.broker == "broker2.local"
     assert "nodus/switch-w9umh8/meta/patch" in [
@@ -87,6 +95,8 @@ def test_switch_only_sensor_location_update_persists_switch_location():
 
 
 def test_device_config_message_reports_pystack_persistence_failure(monkeypatch):
+    from cpynodus_ii.features import scalar_persistence
+
     docs_root = Path(__file__).resolve().parent / "fixtures" / "switch_only"
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
@@ -98,12 +108,10 @@ def test_device_config_message_reports_pystack_persistence_failure(monkeypatch):
         runtime_config = Settings.from_directory(tmpdir_path).runtime_config()
         transport = MQTTTransport("broker.local", 1883)
 
-        def _raise_pystack(cls, root, runtime_config, updates, *, reload_runtime=True):
+        def _raise_pystack(*args, **kwargs):
             raise RuntimeError("pystack exhausted")
 
-        monkeypatch.setattr(
-            Settings, "apply_updates_to_directory", classmethod(_raise_pystack)
-        )
+        monkeypatch.setattr(scalar_persistence, "write_toml_scalar", _raise_pystack)
         result = process_device_config_message(
             transport,
             runtime_config,
@@ -112,11 +120,11 @@ def test_device_config_message_reports_pystack_persistence_failure(monkeypatch):
             settings_root=tmpdir_path,
         )
 
-    assert result.phase == "error"
-    assert result.errors == ("pystack_exhausted",)
-    assert result.published_count == 2
+    assert result.phase == "published"
+    assert result.errors == ("config_persist_pystack",)
+    assert result.published_count == 3
     assert transport.published_messages[0].payload["accepted"] is True
-    assert transport.published_messages[1].payload["error"] == "pystack_exhausted"
+    assert transport.published_messages[1].payload["applied"] is True
 
 
 def test_calibration_message_persists_active_sensor_toml_without_runtime_reload(
@@ -147,7 +155,7 @@ def test_calibration_message_persists_active_sensor_toml_without_runtime_reload(
             transport,
             runtime_config,
             topic="nodus/aqi-x943fm/calibration/set",
-            payload_text='{"message_id":"cal-1","action":"apply","payload":{"offsets":[{"key":"Calibration.System.RH_OFFSET","value":-0.5},{"key":"Calibration.Device.TEMP_OFFSET","value":1.5},{"key":"Calibration.Device.ALTITUDE_METERS","value":1609.3}]}}',
+            payload_text='{"message_id":"cal-1","action":"apply","payload":{"offsets":[{"key":"Calibration.System.RH_OFFSET","value":-0.5}]}}',
             settings_root=tmpdir_path,
         )
         sensor_doc = Settings._read_toml_file(tmpdir_path / Settings.SENSOR_I2C_FILE)
@@ -155,15 +163,13 @@ def test_calibration_message_persists_active_sensor_toml_without_runtime_reload(
     assert result.phase == "published"
     assert result.persistence_mode == "persisted"
     assert result.runtime_config.sensor.calibration_system.rh_offset == -0.5
-    assert result.runtime_config.sensor.calibration_device.temp_offset == 1.5
-    assert result.runtime_config.sensor.calibration_device.altitude_meters == 1609.3
     assert sensor_doc["Calibration"]["System"]["RH_OFFSET"] == -0.5
-    assert sensor_doc["Calibration"]["Device"]["TEMP_OFFSET"] == 1.5
-    assert sensor_doc["Calibration"]["Device"]["ALTITUDE_METERS"] == 1609.3
     assert transport.published_messages[-1].payload["updates"][0]["value"] == -0.5
 
 
 def test_calibration_message_reports_pystack_persistence_failure(monkeypatch):
+    from cpynodus_ii.features import scalar_persistence
+
     docs_root = Path(__file__).resolve().parent / "fixtures" / "sensor_switch"
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
@@ -175,12 +181,10 @@ def test_calibration_message_reports_pystack_persistence_failure(monkeypatch):
         runtime_config = Settings.from_directory(tmpdir_path).runtime_config()
         transport = MQTTTransport("broker.local", 1883)
 
-        def _raise_pystack(cls, root, runtime_config, updates, *, reload_runtime=True):
+        def _raise_pystack(*args, **kwargs):
             raise RuntimeError("pystack exhausted")
 
-        monkeypatch.setattr(
-            Settings, "apply_updates_to_directory", classmethod(_raise_pystack)
-        )
+        monkeypatch.setattr(scalar_persistence, "write_toml_scalar", _raise_pystack)
         result = process_calibration_message(
             transport,
             runtime_config,
@@ -190,7 +194,7 @@ def test_calibration_message_reports_pystack_persistence_failure(monkeypatch):
         )
 
     assert result.phase == "published"
-    assert result.errors == ("pystack_exhausted",)
+    assert result.errors == ("calibration_offset_persist_pystack",)
     assert result.published_count == 3
     assert result.persistence_mode == "volatile"
     assert result.runtime_config.sensor.calibration_device.temp_offset == 1.5
@@ -210,9 +214,9 @@ def test_soil_ph_calibration_persists_without_recursive_toml_dump(monkeypatch):
             target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
         soil_path = tmpdir_path / Settings.SENSOR_SOIL_FILE
         soil_path.write_text(
-            soil_path.read_text(encoding="utf-8").replace(
-                'DEVICE = ""', 'DEVICE = "soil"'
-            ),
+            soil_path.read_text(encoding="utf-8")
+            .replace('DEVICE = ""', 'DEVICE = "soil"')
+            .replace('SENSOR_ID = ""', 'SENSOR_ID = "soil-bd1234"'),
             encoding="utf-8",
         )
 
@@ -472,8 +476,7 @@ def test_device_config_message_persists_display_metrics_with_backup(monkeypatch)
             topic="nodus/aqi-x943fm/config/set",
             payload_text=(
                 '{"message_id":"cfg-1","payload":{"updates":['
-                '{"section":"Display","key":"METRIC_1","value":"Plant VPD"},'
-                '{"section":"Display.Style","key":"METRIC_1","value":"Graph24hr"}'
+                '{"section":"Display","key":"METRIC_1","value":"Plant VPD"}'
                 "]}}"
             ),
             settings_root=tmpdir_path,
