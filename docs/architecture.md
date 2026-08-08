@@ -170,6 +170,10 @@ calibration code trying to manage the radio directly.
 - MQTT runtime supports startup `meta`, split `meta/switch`, heartbeat,
   availability, sensor data, device `config/set`, switch `config/set`,
   calibration commands, log transfer, and OTA prepare.
+- MQTT device config, calibration, and channel switch mutations are dispatched
+  through lazy shallow handlers. Sensorius mutations carry one scalar key per
+  command; persistence streams one TOML file through a transactional temporary
+  file and does not load or serialize a full TOML document.
 - OTA uses signed `nodus-fwupdate/v2` MQTT state only to request prepare mode.
   The temporary HTTP-only runtime authenticates the exact signed manifest and
   one-use session before accepting package bytes.

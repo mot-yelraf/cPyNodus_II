@@ -40,7 +40,6 @@ def process_calibration_offsets_message(
     device_id = _device_id(runtime_config)
     if not (
         device_id
-        and runtime_config.sensor.present
         and topic == mqtt_topic(runtime_config, device_id, "calibration", "set")
     ):
         return None
@@ -130,16 +129,25 @@ def _persist_single_offset(runtime_config, update, settings_root):
     if settings_root is None:
         return ()
     try:
-        from cpynodus_ii.features.calibration_offset_persistence import (
-            persist_single_calibration_offset,
-        )
+        from cpynodus_ii.features.scalar_persistence import write_toml_scalar
     except MemoryError:
         return ("calibration_offset_persist_import_memory",)
+    sensor = runtime_config.sensor
+    filename = str(getattr(sensor, "active_config_file", "") or "").strip()
+    if not filename:
+        filename = "sensor_soil.toml" if sensor.family == "soil" else "sensor_i2c.toml"
+    root = str(settings_root or ".")
+    path = (
+        "{}{}".format(root, filename)
+        if root.endswith("/")
+        else "{}/{}".format(root, filename)
+    )
     try:
-        return persist_single_calibration_offset(
-            runtime_config,
-            update,
-            settings_root=settings_root,
+        return write_toml_scalar(
+            path,
+            update.get("section"),
+            update.get("key"),
+            update.get("value"),
         )
     except MemoryError:
         return ("calibration_offset_persist_memory",)

@@ -22,7 +22,6 @@ def process_calibration_apply_message(
     device_id = _device_id(runtime_config)
     if not (
         device_id
-        and runtime_config.sensor.present
         and topic == mqtt_topic(runtime_config, device_id, "calibration", "set")
     ):
         return None
@@ -37,6 +36,26 @@ def process_calibration_apply_message(
     duplicate = bool(message_id and message_id in tuple(handled_message_ids or ()))
     ack_topic = mqtt_topic(runtime_config, device_id, "calibration", "ack")
     result_topic = mqtt_topic(runtime_config, device_id, "calibration", "result")
+
+    if len(updates) != 1:
+        _publish_calibration_ack(transport, ack_topic, message_id)
+        _publish_calibration_result(
+            transport,
+            result_topic,
+            message_id,
+            applied=False,
+            updated=0,
+            error="single_update_required",
+        )
+        return CommandResult(
+            phase="error",
+            topic=topic,
+            command_type="calibration",
+            published_count=2,
+            errors=("single_update_required",),
+            runtime_config=runtime_config,
+            message_id=message_id,
+        )
 
     if duplicate:
         _publish_calibration_ack(transport, ack_topic, message_id)
@@ -178,9 +197,7 @@ def _calibration_updates_from_body(body):
                     key = "SOIL_MOIST_CAL_VAL"
                 if not _supported_calibration_key(target_section, key):
                     return None
-                updates.append(
-                    {"section": target_section, "key": key, "value": value}
-                )
+                updates.append({"section": target_section, "key": key, "value": value})
         return updates
     return None
 
@@ -189,16 +206,28 @@ def _persist_calibration_updates_fast(runtime_config, updates, *, settings_root=
     if settings_root is None:
         return ()
     try:
-        from cpynodus_ii.features.calibration_persistence import (
-            persist_calibration_updates,
-        )
+        from cpynodus_ii.features.scalar_persistence import write_toml_scalar
     except MemoryError:
         return ("calibration_persist_import_memory",)
+    if len(updates) != 1:
+        return ("single_update_required",)
+    update = updates[0]
+    sensor = runtime_config.sensor
+    filename = str(sensor.active_config_file or "").strip()
+    if not filename:
+        filename = "sensor_soil.toml" if sensor.family == "soil" else "sensor_i2c.toml"
+    root = str(settings_root or ".")
+    path = (
+        "{}{}".format(root, filename)
+        if root.endswith("/")
+        else "{}/{}".format(root, filename)
+    )
     try:
-        return persist_calibration_updates(
-            runtime_config,
-            updates,
-            settings_root=settings_root,
+        return write_toml_scalar(
+            path,
+            update.get("section"),
+            update.get("key"),
+            update.get("value"),
         )
     except MemoryError:
         return ("calibration_persist_memory",)
@@ -296,12 +325,16 @@ def _calibration_section_for_branch(branch):
 def _supported_calibration_key(section, key):
     section = str(section or "").strip()
     key = str(key or "").strip()
-    return bool(key and section in {
-        "Calibration.System",
-        "Calibration.Device",
-        "Calibration.Soil",
-        "Calibration",
-    })
+    return bool(
+        key
+        and section
+        in {
+            "Calibration.System",
+            "Calibration.Device",
+            "Calibration.Soil",
+            "Calibration",
+        }
+    )
 
 
 def _publish_calibration_ack(transport, topic, message_id, *, accepted=True):

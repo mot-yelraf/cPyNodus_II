@@ -47,6 +47,11 @@ wins.
   handling.
 - Sensorius paces ordinary runtime config writes one key at a time per
   physical Nodus host and waits for `ack` plus successful `result`.
+- Nodus enforces that pacing: multi-key `config/set` and multi-offset
+  `calibration/set` mutations return `single_update_required`.
+- Device config, calibration, and channel switch mutations use shallow
+  dispatch and streaming scalar TOML persistence; they do not enter the
+  general command handler or full-document TOML serializer.
 
 ## Current Topic Families
 

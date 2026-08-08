@@ -397,6 +397,15 @@ attempting TOML persistence. If persistence fails from memory or Python-stack
 pressure, the live change remains active until reboot and the serial command
 log reports `persistence_mode=volatile`.
 
+All MQTT configuration mutations use the same shallow-stack boundary.
+Sensorius sends exactly one key in each `config/set` command and waits for its
+correlated acknowledgement and successful result before sending the next key.
+Nodus rejects multi-key MQTT mutations with `single_update_required`.
+Restart-required `Network`, `MQTT`, `Profile`, and `HomeAssistant` values are
+persisted through a streaming scalar writer before success is reported; these
+updates are never reported as successful volatile changes. Live-safe values
+retain their apply-first, best-effort-persistence semantics.
+
 ## Soil RS485 channels
 
 `sensor_soil.toml` supports one or two soil sensors on a dual-channel RS485 hat.

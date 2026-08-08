@@ -39,14 +39,20 @@ def test_sensor_only_calibration_set_persists_sensor_toml():
         root = Path(tmpdir)
         _copy_docs(root, ("settings.toml", "sensor_i2c.toml"))
 
+        first_result, first_transport = _run_one(
+            root,
+            "nodus/aqi-x943fm/calibration/set",
+            (
+                '{"message_id":"cal-sensor-1","action":"apply","payload":{"offsets":['
+                '{"key":"Calibration.Device.TEMP_OFFSET","value":-2.5}]}}'
+            ),
+        )
         result, transport = _run_one(
             root,
             "nodus/aqi-x943fm/calibration/set",
             (
-                '{"message_id":"cal-sensor","action":"apply","payload":{"offsets":['
-                '{"key":"Calibration.Device.TEMP_OFFSET","value":-2.5},'
-                '{"key":"Calibration.Device.ALTITUDE_METERS","value":1783.0}'
-                "]}}"
+                '{"message_id":"cal-sensor-2","action":"apply","payload":{"offsets":['
+                '{"key":"Calibration.Device.ALTITUDE_METERS","value":1783.0}]}}'
             ),
         )
         sensor_doc = Settings._read_toml_file(root / Settings.SENSOR_I2C_FILE)
@@ -55,7 +61,9 @@ def test_sensor_only_calibration_set_persists_sensor_toml():
     assert result.runtime_config.sensor.calibration_device.altitude_meters == 1783.0
     assert sensor_doc["Calibration"]["Device"]["TEMP_OFFSET"] == -2.5
     assert sensor_doc["Calibration"]["Device"]["ALTITUDE_METERS"] == 1783.0
-    assert transport.published_messages[1].payload["updated"] == 2
+    assert first_result.runtime_config.sensor.calibration_device.temp_offset == -2.5
+    assert first_transport.published_messages[1].payload["updated"] == 1
+    assert transport.published_messages[1].payload["updated"] == 1
     assert transport.published_messages[2].payload["source"] == "calibration_set"
 
 
@@ -70,7 +78,7 @@ def test_sensor_only_config_set_persists_sensor_location():
             (
                 '{"message_id":"cfg-sensor","payload":{"updates":['
                 '{"section":"Sensor","key":"LOCATION","value":"SensorOnly"}'
-                ']}}'
+                "]}}"
             ),
         )
         sensor_doc = Settings._read_toml_file(root / Settings.SENSOR_I2C_FILE)
@@ -94,7 +102,7 @@ def test_switch_only_config_set_persists_switch_location():
             (
                 '{"message_id":"cfg-switch","payload":{"updates":['
                 '{"section":"Switch","key":"SWITCH_LOCATION","value":"SwitchOnly"}'
-                ']}}'
+                "]}}"
             ),
         )
         switch_doc = Settings._read_toml_file(root / Settings.SWITCH_FILE)
@@ -112,14 +120,20 @@ def test_sensor_switch_calibration_set_persists_sensor_toml():
         root = Path(tmpdir)
         _copy_docs(root, ("settings.toml", "switch.toml", "sensor_i2c.toml"))
 
+        first_result, first_transport = _run_one(
+            root,
+            "nodus/aqi-x943fm/calibration/set",
+            (
+                '{"message_id":"cal-combo-1","action":"apply","payload":{"offsets":['
+                '{"key":"Calibration.System.RH_OFFSET","value":-0.75}]}}'
+            ),
+        )
         result, transport = _run_one(
             root,
             "nodus/aqi-x943fm/calibration/set",
             (
-                '{"message_id":"cal-combo","action":"apply","payload":{"offsets":['
-                '{"key":"Calibration.System.RH_OFFSET","value":-0.75},'
-                '{"key":"Calibration.Device.TEMP_OFFSET","value":1.25}'
-                "]}}"
+                '{"message_id":"cal-combo-2","action":"apply","payload":{"offsets":['
+                '{"key":"Calibration.Device.TEMP_OFFSET","value":1.25}]}}'
             ),
         )
         sensor_doc = Settings._read_toml_file(root / Settings.SENSOR_I2C_FILE)
@@ -128,7 +142,9 @@ def test_sensor_switch_calibration_set_persists_sensor_toml():
     assert result.runtime_config.sensor.calibration_device.temp_offset == 1.25
     assert sensor_doc["Calibration"]["System"]["RH_OFFSET"] == -0.75
     assert sensor_doc["Calibration"]["Device"]["TEMP_OFFSET"] == 1.25
-    assert transport.published_messages[1].payload["updated"] == 2
+    assert first_result.runtime_config.sensor.calibration_system.rh_offset == -0.75
+    assert first_transport.published_messages[1].payload["updated"] == 1
+    assert transport.published_messages[1].payload["updated"] == 1
     assert transport.published_messages[2].payload["source"] == "calibration_set"
 
 
@@ -137,14 +153,20 @@ def test_sensor_switch_config_set_persists_sensor_and_switch_locations():
         root = Path(tmpdir)
         _copy_docs(root, ("settings.toml", "switch.toml", "sensor_i2c.toml"))
 
+        first_result, first_transport = _run_one(
+            root,
+            "nodus/aqi-x943fm/config/set",
+            (
+                '{"message_id":"cfg-combo-1","payload":{"updates":['
+                '{"section":"Sensor","key":"LOCATION","value":"SensorCombo"}]}}'
+            ),
+        )
         result, transport = _run_one(
             root,
             "nodus/aqi-x943fm/config/set",
             (
-                '{"message_id":"cfg-combo","payload":{"updates":['
-                '{"section":"Sensor","key":"LOCATION","value":"SensorCombo"},'
-                '{"section":"Switch","key":"SWITCH_LOCATION","value":"SwitchCombo"}'
-                ']}}'
+                '{"message_id":"cfg-combo-2","payload":{"updates":['
+                '{"section":"Switch","key":"SWITCH_LOCATION","value":"SwitchCombo"}]}}'
             ),
         )
         sensor_doc = Settings._read_toml_file(root / Settings.SENSOR_I2C_FILE)
@@ -154,8 +176,12 @@ def test_sensor_switch_config_set_persists_sensor_and_switch_locations():
     assert result.runtime_config.switch.location == "SwitchCombo"
     assert sensor_doc["Sensor"]["LOCATION"] == "SensorCombo"
     assert switch_doc["Switch"]["SWITCH_LOCATION"] == "SwitchCombo"
-    assert transport.published_messages[1].payload["updated"] == 2
+    assert first_result.runtime_config.sensor.location == "SensorCombo"
+    assert first_transport.published_messages[1].payload["updated"] == 1
+    assert transport.published_messages[1].payload["updated"] == 1
+    assert first_transport.published_messages[2].payload["updates"] == [
+        {"section": "Sensor", "key": "LOCATION", "value": "SensorCombo"}
+    ]
     assert transport.published_messages[2].payload["updates"] == [
-        {"section": "Sensor", "key": "LOCATION", "value": "SensorCombo"},
-        {"section": "Switch", "key": "SWITCH_LOCATION", "value": "SwitchCombo"},
+        {"section": "Switch", "key": "SWITCH_LOCATION", "value": "SwitchCombo"}
     ]

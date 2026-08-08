@@ -26,6 +26,8 @@ Nodus is a headless IoT node with the following core responsibilities:
 - Fall back to AP mode when credentials are missing or invalid.
 - Provide AP bootstrap routes and a minimal `nodusweb` local UI/API.
 - Support MQTT publishing, config, calibration, log retrieval, switch control, and OTA prepare.
+- Process MQTT config, calibration, and switch mutations through shallow-stack
+  handlers with one scalar update per command.
 - Publish Sensorius metadata and optional Home Assistant MQTT discovery.
 - Auto-detect supported sensors and factory-enabled switches on first boot.
 - Maintain sensor data collection and publish loops.
