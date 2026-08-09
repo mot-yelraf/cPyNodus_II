@@ -196,7 +196,11 @@ public-key provisioning, signed MQTT-prepare, and HTTP-transfer push command.
 2. `boot.py` configures USB/FS access based on a guard pin during normal boots.
 3. `code.py` disables runtime autoreload, loads `cpynodus_ii.app`, and records fatal tracebacks when possible.
 4. Network logic chooses AP mode or normal mode:
-   - **AP mode**: starts an AP SSID named `Nodus_Setup` password is `password` (default channel `6`, configurable with `Network.AP_CHANNEL`).
+   - **AP mode**: on a new factory bootstrap, starts an AP SSID named
+     `Nodus-<sn>` with password `password`, where `<sn>` is the same
+     six-character suffix used by the device identities (default channel `6`,
+     configurable with `Network.AP_CHANNEL`). Existing configured AP names are
+     retained.
    After connecting to the AP, use `POST /itaot-init` for Sensorius bootstrap or browse to `http://192.168.4.1:8000/setup` for the lightweight local setup page.
    - **Normal mode**: connects to Wi‑Fi and starts profile-specific runtime
      services. `nodusweb` publishes mDNS immediately; MQTT profiles do not
@@ -208,7 +212,7 @@ public-key provisioning, signed MQTT-prepare, and HTTP-transfer push command.
 AP mode is used when:
 
 - SSID or password is missing,
-- SSID equals `Nodus_Setup`, or
+- the saved station SSID equals the configured AP SSID, or
 - Wi‑Fi connection fails.
 
 AP mode exposes `/itaot-init`, `/itaot-meta`, `/setup`, `/config`, `/current-data`, `/set-switch-state`, and `/restart` when enough memory is available. Sensorius provisioning uses `/itaot-init`; manual JSON posts to `/config` can persist supported settings and then `/restart` can reboot into normal mode.
@@ -290,7 +294,16 @@ In normal mode the device:
 
 ## Sensor Auto-Detect
 
-`Settings.bootstrap_factory_defaults()` probes I2C buses and the RS485 soil channels on a clean factory deploy. It creates only the detected live sensor TOML file and seeds display defaults, serial numbers, sensor IDs, switch channel IDs, and hostname. On later boots, existing sensor TOML files are treated as the source of truth; switch channels also require their configured enable pin to be grounded at boot.
+`Settings.bootstrap_factory_defaults()` probes I2C buses and the RS485 soil
+channels on a clean factory deploy. It creates only the detected live sensor
+TOML file and seeds display defaults, serial numbers, sensor IDs, switch
+channel IDs, hostname, and a `Nodus-<sn>` AP name. The AP, sensor, switch, and
+hostname identities use the same six-character suffix. If hardware is detected
+on a later boot, its missing identity fields reuse a canonical suffix already
+stored in the AP name. Existing `settings.toml` AP names, including
+`Nodus_Setup` and custom names, are not migrated. On later boots, existing
+sensor TOML files are treated as the source of truth; switch channels also
+require their configured enable pin to be grounded at boot.
 
 ## Boot-Time Factory Reset
 

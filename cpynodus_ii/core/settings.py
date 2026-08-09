@@ -317,6 +317,20 @@ class Settings:
         chars = "abcdefghijklmnopqrstuvwxyz0123456789"
         return "".join(random.choice(chars) for _ in range(max(1, int(n or 6))))
 
+    @staticmethod
+    def _serial_suffix_from_ap_ssid(value):
+        """Return the suffix from a canonical factory-generated AP SSID."""
+        text = str(value or "").strip()
+        prefix = "Nodus-"
+        if len(text) != len(prefix) + 6 or not text.startswith(prefix):
+            return ""
+        suffix = text[len(prefix) :]
+        allowed = "abcdefghijklmnopqrstuvwxyz0123456789"
+        for char in suffix:
+            if char not in allowed:
+                return ""
+        return suffix
+
     @classmethod
     def bootstrap_factory_defaults(
         cls,
@@ -329,12 +343,17 @@ class Settings:
     ):
         """Create first-boot TOML files and seed IDs for detected hardware."""
         root_path = str(root or ".")
-        cls._ensure_file_from_def(
+        settings_created = cls._ensure_file_from_def(
             root_path,
             cls.SETTINGS_DEF_FILE,
             cls.SETTINGS_FILE,
             board_module=board_module,
         )
+        if settings_created:
+            cls._ensure_seeded_ids_and_hostname(
+                root_path,
+                seed_ap_ssid=True,
+            )
 
         is_first_bootstrap = not any(
             _path_exists(_join_path(root_path, path))
@@ -551,7 +570,12 @@ class Settings:
         cls._write_toml_file(path, document)
 
     @classmethod
-    def _ensure_seeded_ids_and_hostname(cls, root):
+    def _ensure_seeded_ids_and_hostname(cls, root, *, seed_ap_ssid=False):
+        settings_path = _join_path(root, cls.SETTINGS_FILE)
+        settings_doc = cls._read_toml_file(settings_path)
+        network_doc = settings_doc.setdefault("Network", {})
+        ap_suffix = cls._serial_suffix_from_ap_ssid(network_doc.get("AP_SSID", ""))
+
         sensor_doc = {}
         sensor_path = ""
         for candidate in (cls.SENSOR_SOIL_FILE, cls.SENSOR_I2C_FILE):
@@ -574,15 +598,6 @@ class Settings:
         sensor_device = str(sensor_section.get("DEVICE", "") or "").strip().lower()
         sensor_serial = str(sensor_section.get("SERIAL_NUM", "") or "").strip().lower()
         sensor_id = str(sensor_section.get("SENSOR_ID", "") or "").strip().lower()
-        if sensor_device:
-            if not sensor_serial:
-                sensor_serial = cls.make_serial_number()
-                sensor_section["SERIAL_NUM"] = sensor_serial
-            if not sensor_id:
-                sensor_id = "{}-{}".format(sensor_device, sensor_serial)
-                sensor_section["SENSOR_ID"] = sensor_id
-            if sensor_path:
-                cls._write_toml_file(sensor_path, sensor_doc)
 
         switch_path = _join_path(root, cls.SWITCH_FILE)
         switch_doc = cls._read_toml_file(switch_path)
@@ -595,12 +610,29 @@ class Settings:
             ).strip()
             for index in (1, 2)
         )
+        switch_serial = (
+            str(switch_section.get("DEVICE_SERIAL_NUM", "") or "").strip().lower()
+        )
+
+        shared_suffix = sensor_serial or switch_serial or ap_suffix
+        if not shared_suffix and (sensor_device or has_switch or seed_ap_ssid):
+            shared_suffix = cls.make_serial_number()
+        if seed_ap_ssid:
+            network_doc["AP_SSID"] = "Nodus-{}".format(shared_suffix)
+
+        if sensor_device:
+            if not sensor_serial:
+                sensor_serial = shared_suffix
+                sensor_section["SERIAL_NUM"] = sensor_serial
+            if not sensor_id:
+                sensor_id = "{}-{}".format(sensor_device, sensor_serial)
+                sensor_section["SENSOR_ID"] = sensor_id
+            if sensor_path:
+                cls._write_toml_file(sensor_path, sensor_doc)
+
         if has_switch:
-            switch_serial = (
-                str(switch_section.get("DEVICE_SERIAL_NUM", "") or "").strip().lower()
-            )
             if not switch_serial:
-                switch_serial = sensor_serial or cls.make_serial_number()
+                switch_serial = sensor_serial or shared_suffix
                 switch_section["DEVICE_SERIAL_NUM"] = switch_serial
             if not str(switch_section.get("SWITCH_DEVICE_ID", "") or "").strip():
                 switch_section["SWITCH_DEVICE_ID"] = "switch-{}".format(switch_serial)
@@ -615,9 +647,6 @@ class Settings:
                     switch_section[id_key] = "{}{}".format(prefix, switch_serial)
             cls._write_toml_file(switch_path, switch_doc)
 
-        settings_path = _join_path(root, cls.SETTINGS_FILE)
-        settings_doc = cls._read_toml_file(settings_path)
-        network_doc = settings_doc.setdefault("Network", {})
         if not str(network_doc.get("HOSTNAME", "") or "").strip():
             if sensor_id:
                 network_doc["HOSTNAME"] = sensor_id

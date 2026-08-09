@@ -1,7 +1,7 @@
 [Network]
 SSID = ""
 PASSWORD = ""
-AP_SSID = "Nodus_Setup"
+AP_SSID = ""
 AP_PASSWORD = "password"
 AP_CHANNEL = 6
 HOSTNAME = ""

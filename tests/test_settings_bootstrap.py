@@ -224,7 +224,114 @@ def test_factory_bootstrap_creates_i2c_sensor_and_switch_tomls_with_seeded_ids()
     assert switch_section["SWITCH_DEVICE_ID"] == "switch-{}".format(serial)
     assert switch_section["SWITCH_1_CHANNEL_ID"] == "S1-{}".format(serial)
     assert switch_section["SWITCH_2_CHANNEL_ID"] == "S2-{}".format(serial)
+    assert runtime_config.network.ap_ssid == "Nodus-{}".format(serial)
+    assert settings_doc["Network"]["AP_SSID"] == "Nodus-{}".format(serial)
     assert settings_doc["Network"]["HOSTNAME"] == "co2-{}".format(serial)
+
+
+def test_factory_bootstrap_seeds_ap_identity_before_hardware_is_detected():
+    with TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        _copy_defs(tmpdir_path)
+        digitalio_module = SimpleNamespace(
+            DigitalInOut=_ProbePin,
+            Direction=SimpleNamespace(INPUT="input"),
+            Pull=SimpleNamespace(UP="up"),
+        )
+
+        Settings.bootstrap_factory_defaults(
+            tmpdir_path,
+            detect_fn=lambda: ("", {}),
+            board_module=SimpleNamespace(),
+            digitalio_module=digitalio_module,
+        )
+        first_settings = Settings._read_toml_file(tmpdir_path / "settings.toml")
+        ap_ssid = first_settings["Network"]["AP_SSID"]
+        suffix = ap_ssid.split("-", 1)[1]
+
+        Settings.bootstrap_factory_defaults(
+            tmpdir_path,
+            detect_fn=lambda: (
+                "co2",
+                {"i2c": {"bus": 1, "scl": "GP3", "sda": "GP2", "addr": 0x61}},
+            ),
+            board_module=SimpleNamespace(),
+            digitalio_module=digitalio_module,
+        )
+        second_settings = Settings._read_toml_file(tmpdir_path / "settings.toml")
+        sensor_doc = Settings._read_toml_file(tmpdir_path / "sensor_i2c.toml")
+
+    assert ap_ssid == "Nodus-{}".format(suffix)
+    assert len(suffix) == 6
+    assert second_settings["Network"]["AP_SSID"] == ap_ssid
+    assert sensor_doc["Sensor"]["SERIAL_NUM"] == suffix
+    assert sensor_doc["Sensor"]["SENSOR_ID"] == "co2-{}".format(suffix)
+    assert second_settings["Network"]["HOSTNAME"] == "co2-{}".format(suffix)
+
+
+def test_factory_bootstrap_preserves_existing_legacy_and_custom_ap_ssids():
+    for ap_ssid in ("Nodus_Setup", "Greenhouse Setup", ""):
+        with TemporaryDirectory() as tmpdir:
+            tmpdir_path = Path(tmpdir)
+            _copy_defs(tmpdir_path)
+            (tmpdir_path / "settings.toml").write_text(
+                '[Network]\nAP_SSID = "{}"\nHOSTNAME = ""\n'.format(ap_ssid),
+                encoding="utf-8",
+            )
+
+            Settings.bootstrap_factory_defaults(
+                tmpdir_path,
+                detect_fn=lambda: (
+                    "co2",
+                    {
+                        "i2c": {
+                            "bus": 1,
+                            "scl": "GP3",
+                            "sda": "GP2",
+                            "addr": 0x61,
+                        }
+                    },
+                ),
+                board_module=SimpleNamespace(),
+                digitalio_module=SimpleNamespace(
+                    DigitalInOut=_ProbePin,
+                    Direction=SimpleNamespace(INPUT="input"),
+                    Pull=SimpleNamespace(UP="up"),
+                ),
+            )
+            settings_doc = Settings._read_toml_file(tmpdir_path / "settings.toml")
+
+        assert settings_doc["Network"]["AP_SSID"] == ap_ssid
+
+
+def test_later_hardware_detection_reuses_canonical_existing_ap_suffix():
+    with TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        _copy_defs(tmpdir_path)
+        (tmpdir_path / "settings.toml").write_text(
+            '[Network]\nAP_SSID = "Nodus-abc123"\nHOSTNAME = ""\n',
+            encoding="utf-8",
+        )
+
+        Settings.bootstrap_factory_defaults(
+            tmpdir_path,
+            detect_fn=lambda: (
+                "co2",
+                {"i2c": {"bus": 1, "scl": "GP3", "sda": "GP2", "addr": 0x61}},
+            ),
+            board_module=SimpleNamespace(),
+            digitalio_module=SimpleNamespace(
+                DigitalInOut=_ProbePin,
+                Direction=SimpleNamespace(INPUT="input"),
+                Pull=SimpleNamespace(UP="up"),
+            ),
+        )
+        settings_doc = Settings._read_toml_file(tmpdir_path / "settings.toml")
+        sensor_doc = Settings._read_toml_file(tmpdir_path / "sensor_i2c.toml")
+
+    assert settings_doc["Network"]["AP_SSID"] == "Nodus-abc123"
+    assert settings_doc["Network"]["HOSTNAME"] == "co2-abc123"
+    assert sensor_doc["Sensor"]["SERIAL_NUM"] == "abc123"
 
 
 def test_factory_bootstrap_prefers_detected_board_template_over_legacy_root_def():
@@ -599,7 +706,7 @@ def test_write_toml_file_preserves_template_section_and_key_order():
     assert (
         text.index('SSID = ""')
         < text.index("PASSWORD = ")
-        < text.index('AP_SSID = "Nodus_Setup"')
+        < text.index('AP_SSID = ""')
         < text.index("AP_PASSWORD = ")
         < text.index("AP_CHANNEL = 6")
         < text.index('HOSTNAME = "apvpd-uv9he6"')
