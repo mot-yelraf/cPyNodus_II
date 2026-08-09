@@ -128,7 +128,7 @@ class _FakeBME280:
         self.address = address
         if getattr(transport, "scl", "") == "pin-gp3":
             self.temperature = 22.0
-            self.relative_humidity = 61.0
+            self.relative_humidity = 61.26
             self.pressure = 100650.0
         else:
             self.temperature = 24.5
@@ -142,7 +142,7 @@ class _FakeAHTx0:
         self.address = address
         if getattr(transport, "scl", "") == "pin-gp3":
             self.temperature = 22.0
-            self.relative_humidity = 61.0
+            self.relative_humidity = 61.26
         else:
             self.temperature = 24.5
             self.relative_humidity = 55.25
@@ -730,7 +730,7 @@ def test_sensor_service_reads_legacy_aqi_snapshot():
     assert snapshot.sensor_id == "aqi-x943fm"
     assert snapshot.metrics["Temperature"] == 24.5
     assert snapshot.metrics["Temperature_F"] == 76.1
-    assert snapshot.metrics["Rel-Humidity"] == 55.0
+    assert snapshot.metrics["Rel-Humidity"] == 55.2
     assert snapshot.metrics["Humidity"] > 0
     assert snapshot.metrics["Baro-Pressure"] == 1008.5
     assert snapshot.metrics["Gas"] == 12345.0
@@ -1394,6 +1394,7 @@ def test_sensor_service_reports_bme280_baro_pressure_from_altitude():
     snapshot = read_sensor_snapshot(sensor_service, runtime_config)
 
     assert snapshot.phase == "ready"
+    assert snapshot.metrics["Rel-Humidity"] == 55.2
     assert snapshot.metrics["Baro-Pressure"] != 818.2
     assert snapshot.metrics["Baro-Pressure"] == 1015.2
 
@@ -1432,7 +1433,7 @@ def test_sensor_service_reads_aht_snapshot_with_temp_humidity_derivatives():
     assert sensor_service.driver.address == 0x38
     assert snapshot.phase == "ready"
     assert snapshot.metrics["Temperature"] == 24.5
-    assert snapshot.metrics["Rel-Humidity"] == 55.0
+    assert snapshot.metrics["Rel-Humidity"] == 55.2
     assert snapshot.metrics["Temperature_F"] == 76.1
     assert snapshot.metrics["Ambient VPD"] > 0
     assert snapshot.metrics["Dew Point"] < snapshot.metrics["Temperature"]
@@ -1481,9 +1482,10 @@ def test_sensor_service_reads_dual_bme280_snapshot_for_apvpd():
     assert sensor_adapter.i2c_fallbacks == ()
     assert snapshot.phase == "ready"
     assert snapshot.metrics["Temperature"] == 24.5
+    assert snapshot.metrics["Rel-Humidity"] == 55.2
     assert snapshot.metrics["Ambient VPD"] > 0
     assert snapshot.metrics["Plant Temperature"] == 22.5
-    assert snapshot.metrics["Plant Rel-Humidity"] == 60.0
+    assert snapshot.metrics["Plant Rel-Humidity"] == 60.3
     assert snapshot.metrics["Plant Baro-Pressure"] == 1006.5
     assert snapshot.metrics["Plant VPD"] > 0
     assert snapshot.metrics["Plant DewVPD Risk"] >= 0
@@ -1538,10 +1540,11 @@ def test_sensor_service_reads_dual_aht_snapshot_for_apvpd_aht():
     assert sensor_adapter.i2c_fallbacks == ()
     assert snapshot.phase == "ready"
     assert snapshot.metrics["Temperature"] == 24.5
+    assert snapshot.metrics["Rel-Humidity"] == 55.2
     assert snapshot.metrics["Ambient VPD"] > 0
     assert "Baro-Pressure" not in snapshot.metrics
     assert snapshot.metrics["Plant Temperature"] == 22.5
-    assert snapshot.metrics["Plant Rel-Humidity"] == 60.0
+    assert snapshot.metrics["Plant Rel-Humidity"] == 60.3
     assert "Plant Baro-Pressure" not in snapshot.metrics
     assert snapshot.metrics["Plant VPD"] > 0
     assert snapshot.metrics["Plant DewVPD Risk"] >= 0
@@ -1605,7 +1608,7 @@ def test_sensor_service_uses_keyword_snapshot_construction_for_co2(monkeypatch):
         def __init__(self):
             self.CO2 = 845.4
             self.temperature = 23.5
-            self.relative_humidity = 47.0
+            self.relative_humidity = 47.26
 
     runtime_config = RuntimeConfig(
         sensor=DetectedSensor(
@@ -1640,6 +1643,7 @@ def test_sensor_service_uses_keyword_snapshot_construction_for_co2(monkeypatch):
         }
     ]
     assert snapshot.metrics["CO2"] == 845.0
+    assert snapshot.metrics["Rel-Humidity"] == 47.3
 
 
 def test_sensor_service_applies_system_and_device_calibration_offsets_for_co2():
@@ -1647,7 +1651,7 @@ def test_sensor_service_applies_system_and_device_calibration_offsets_for_co2():
         def __init__(self):
             self.CO2 = 845.4
             self.temperature = 23.5
-            self.relative_humidity = 47.0
+            self.relative_humidity = 47.26
 
     runtime_config = RuntimeConfig(
         sensor=DetectedSensor(
@@ -1669,7 +1673,7 @@ def test_sensor_service_applies_system_and_device_calibration_offsets_for_co2():
 
     assert snapshot.metrics["CO2"] == 445.0
     assert snapshot.metrics["Temperature"] == 24.0
-    assert snapshot.metrics["Rel-Humidity"] == 49.0
+    assert snapshot.metrics["Rel-Humidity"] == 49.3
 
 
 def test_sensor_service_applies_device_calibration_offsets_for_aqi_and_lux():
