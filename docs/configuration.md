@@ -92,6 +92,15 @@ and `xesp32s3`. Nodus prefers the detected board's templates, then the shared
 It creates `settings.toml` and then creates only the live sensor and switch TOML
 files needed for the detected hardware.
 
+The shared `settings.toml.def` leaves `Network.AP_SSID` blank. When Nodus
+creates `settings.toml` for the first time, factory bootstrap persists
+`AP_SSID = "Nodus-<sn>"`. The six-character `<sn>` suffix is shared with the
+sensor serial and ID, switch device and channel IDs, and generated hostname.
+If hardware is first detected on a later boot, bootstrap reuses a canonical
+six-character suffix already stored in `AP_SSID`. A pre-existing
+`settings.toml` is never migrated: legacy `Nodus_Setup`, custom, and blank AP
+names remain unchanged.
+
 ## Switch bootstrap behavior
 
 - `switch.toml` plus at least one populated and grounded `SWITCH_N_ENABLE_PIN`
@@ -328,7 +337,9 @@ pressure, the label remains active until reboot and the serial command log
 reports `persistence_mode=volatile`.
 
 `AP_SSID` and `AP_PASSWORD` are read from `[Network]` for AP mode but are not
-currently accepted by the web config classifier.
+currently accepted by the web config classifier. New factory settings receive
+the generated `Nodus-<sn>` AP name during bootstrap; existing live AP names are
+preserved.
 
 Calibration offsets in `[Calibration.System]` and `[Calibration.Device]` are additive corrections.
 For example, a `CO2_OFFSET = -400.0` reduces the live measured `CO2` value by `400 ppm` before publish.
@@ -553,4 +564,6 @@ Defaults in `sensor_soil.toml.def` are in `mg/kg`, matching the 7-in-1 sensor's 
 
 - Keep SSID/password correct to avoid AP fallback.
 - AP fallback network settings are in `[Network]`: `AP_SSID` and `AP_PASSWORD`.
+  New factory settings use `Nodus-<sn>`; upgraded or customized settings retain
+  their existing AP name.
 - If MQTT is disabled, the device can still run as a local sensor.

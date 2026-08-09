@@ -9,7 +9,7 @@ runtime contract with Sensorius lives in
 AP mode is used when:
 
 - SSID or password is missing
-- SSID equals `Nodus_Setup`
+- the saved station SSID equals the configured AP SSID
 - Wi-Fi connection fails
 
 ## Canonical Add Device Flow
@@ -33,7 +33,9 @@ AP mode is used when:
 
 ## Manual Fallback
 
-1. Connect to `Nodus_Setup`.
+1. Connect to the device's setup AP. New factory devices use `Nodus-<sn>`,
+   where `<sn>` is the device's six-character identity suffix. Existing
+   devices may continue to use `Nodus_Setup` or a custom AP name.
 2. Browse to `http://192.168.4.1:8000/setup` for the lightweight local UI.
 3. Use `POST /config` for supported JSON configuration writes that are not
    rendered by the page, such as `Network.PASSWORD`.

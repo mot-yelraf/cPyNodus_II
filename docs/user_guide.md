@@ -18,21 +18,23 @@ calibration fields that apply to its hardware.
 Nodus enters access-point (AP) mode when:
 
 - its saved Wi-Fi name or password is missing;
-- its saved Wi-Fi name is still `Nodus_Setup`; or
+- its saved Wi-Fi name matches its configured AP name; or
 - it cannot join the saved Wi-Fi network.
 
 The factory/default AP details are:
 
 | Setting | Default |
 | --- | --- |
-| Wi-Fi network | `Nodus_Setup` |
+| Wi-Fi network | `Nodus-<sn>` on new factory devices |
 | Password | `password` |
 | Setup page | `http://192.168.4.1:8000/setup` |
 
 To configure the device manually:
 
-1. Open Wi-Fi settings on a phone, tablet, or computer and join
-   `Nodus_Setup` using `password`.
+1. Open Wi-Fi settings on a phone, tablet, or computer and join the device's
+   `Nodus-<sn>` network using `password`. The `<sn>` value is the same
+   six-character suffix used by its sensor, switch, and hostname identities.
+   Existing devices retain `Nodus_Setup` or their custom configured AP name.
 2. Remain connected if the operating system warns that the network has no
    internet access. The Nodus AP is a local setup network.
 3. Open `http://192.168.4.1:8000/setup` in a browser. Enter the address
@@ -57,11 +59,12 @@ as a permanent network.
 Sensorius can automate AP-mode onboarding through **System Settings > Add
 Device**. A typical flow is:
 
-1. Start with the Nodus showing the `Nodus_Setup` AP.
+1. Start with the Nodus showing its `Nodus-<sn>` setup AP. Existing devices
+   may show `Nodus_Setup` or a custom configured AP name.
 2. Open **Add Device** in Sensorius and select **Add**.
 3. Sensorius scans for and joins the setup AP. On macOS it can attempt the
-   join automatically; if that is unavailable, follow its prompt to join
-   `Nodus_Setup` manually and then return to Add Device.
+   join automatically; if that is unavailable, follow its prompt to join the
+   displayed Nodus setup AP manually and then return to Add Device.
 4. Sensorius reads the Nodus identity and sends Wi-Fi, MQTT broker, hostname,
    and available time settings to the device.
 5. Nodus saves the bootstrap values and restarts. Sensorius returns to the
@@ -334,8 +337,8 @@ therefore expected behavior, not evidence that the device has failed.
   ownership and wait at least five seconds between manual requests.
 - If an MQTT profile appears offline, validate its Wi-Fi and broker settings,
   then confirm the expected topics at the broker.
-- If saved network credentials cannot be used, reconnect to `Nodus_Setup` and
-  repeat AP-mode provisioning.
+- If saved network credentials cannot be used, reconnect to the configured
+  Nodus setup AP and repeat AP-mode provisioning.
 
 ## Related Documentation
 
