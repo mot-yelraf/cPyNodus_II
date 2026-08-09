@@ -132,7 +132,7 @@ def _read_ready_sensor_snapshot(sensor_service, runtime_config, sensor):
         metrics = _compact_metrics(
             {
                 "Temperature": _maybe_round(temp_c, 2),
-                "Rel-Humidity": _maybe_round(rh_pct, 0),
+                "Rel-Humidity": _maybe_round(rh_pct, 1),
                 "Baro-Pressure": _maybe_round(
                     _bme_baro_pressure_hpa(sensor_service.driver, sensor),
                     1,
@@ -174,7 +174,7 @@ def _read_ready_sensor_snapshot(sensor_service, runtime_config, sensor):
             {
                 "CO2": _maybe_round(co2_ppm, 0),
                 "Temperature": _maybe_round(temp_c, 2),
-                "Rel-Humidity": _maybe_round(rh_pct, 0),
+                "Rel-Humidity": _maybe_round(rh_pct, 1),
             }
         )
         metrics = enrich_metrics(sensor.device, metrics, runtime_config=runtime_config)
@@ -216,7 +216,7 @@ def _read_ready_sensor_snapshot(sensor_service, runtime_config, sensor):
         metrics = _compact_metrics(
             {
                 "Temperature": _maybe_round(temp_c, 2),
-                "Rel-Humidity": _maybe_round(rh_pct, 0),
+                "Rel-Humidity": _maybe_round(rh_pct, 1),
             }
         )
         metrics = enrich_metrics(sensor.device, metrics, runtime_config=runtime_config)
@@ -239,7 +239,7 @@ def _read_ready_sensor_snapshot(sensor_service, runtime_config, sensor):
         metrics = _compact_metrics(
             {
                 "Temperature": _maybe_round(temp_c, 2),
-                "Rel-Humidity": _maybe_round(rh_pct, 0),
+                "Rel-Humidity": _maybe_round(rh_pct, 1),
                 "Baro-Pressure": _maybe_round(
                     _bme_baro_pressure_hpa(ambient_driver, sensor),
                     1,
@@ -264,7 +264,7 @@ def _read_ready_sensor_snapshot(sensor_service, runtime_config, sensor):
                                 0.0,
                                 sensor.calibration_device.apvpd_rh_cal_val,
                             ),
-                            0,
+                            1,
                         ),
                         "Plant Baro-Pressure": _maybe_round(
                             _bme_baro_pressure_hpa(driver.plant, sensor),
