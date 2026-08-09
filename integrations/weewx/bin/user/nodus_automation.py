@@ -1,8 +1,7 @@
 """Run threshold-and-time Nodus switch automations from WeeWX.
 
-``AutomationController`` evaluates persisted rules and coordinates switch
-requests; ``NodusAutomation`` and ``NodusAutomationStatus`` integrate control
-and status with WeeWX. Shared state is guarded for WeeWX's threaded runtime.
+The service evaluates configured rules against archive data, publishes switch
+commands, and maintains bounded status for the web skin and device dashboards.
 """
 
 import json
@@ -27,6 +26,7 @@ except ImportError:  # Allow host-side tests without a WeeWX installation.
             self.engine = engine
 
         def bind(self, *_args, **_kwargs):
+            """Accept event bindings when WeeWX is unavailable during tests."""
             return None
 
     class SearchList:
@@ -416,6 +416,53 @@ def _command_payload(channel, desired, message_id):
             ]
         },
         "restart": False,
+    }
+
+
+def _automation_contract_topics(meta_topic, controller="weewx"):
+    """Derive retained automation status topics from switch metadata."""
+    suffix = "/meta/switch"
+    text = str(meta_topic or "").rstrip("/")
+    if not text.endswith(suffix):
+        raise ValueError("automation meta topic must end with /meta/switch")
+    base = "{}/automation/{}".format(text[: -len(suffix)], controller)
+    return base + "/status", base + "/availability"
+
+
+def _automation_contract_status(rules, enabled=True, now=None):
+    """Build the retained channel ownership document for Nodus."""
+    channels = {}
+    if enabled:
+        for rule in rules or ():
+            name = str(rule.get("name") or "").strip()
+            for action in rule.get("actions") or ():
+                channel_id = str(action.get("channel_id") or "").strip()
+                if channel_id and name:
+                    channels.setdefault(channel_id, []).append(name)
+    return {
+        "schema": "nodus-automation-status/v1",
+        "controller": "weewx",
+        "controller_id": "weewx-nodus-automation",
+        "updated_at": int(now if now is not None else time.time()),
+        "channels": [
+            {
+                "channel_id": channel_id,
+                "automations": names,
+                "enabled": True,
+            }
+            for channel_id, names in sorted(channels.items())
+        ],
+    }
+
+
+def _automation_contract_availability(status, now=None):
+    """Build the retained WeeWX controller availability document."""
+    return {
+        "schema": "nodus-automation-availability/v1",
+        "controller": "weewx",
+        "controller_id": "weewx-nodus-automation",
+        "status": str(status or "offline").lower(),
+        "updated_at": int(now if now is not None else time.time()),
     }
 
 
@@ -969,6 +1016,12 @@ class NodusAutomation(StdService):
             raise ValueError("NodusAutomation is enabled but has no enabled rules")
         mqtt_section = _mqtt_section(config_dict)
         self.meta_topic = _derive_meta_topic(config_dict, section.get("meta_topic"))
+        (
+            self.automation_status_topic,
+            self.automation_availability_topic,
+        ) = _automation_contract_topics(self.meta_topic)
+        self.last_contract_status = ""
+        self.last_availability_publish = 0
         self.controller = AutomationController(
             rules,
             self._publish,
@@ -991,6 +1044,15 @@ class NodusAutomation(StdService):
         if _to_bool(section.get("tls_enable"), _to_bool(tls.get("enable"), False)):
             ca_certs = str(section.get("ca_certs") or tls.get("ca_certs") or "")
             self.client.tls_set(ca_certs=ca_certs or None)
+        self.client.will_set(
+            self.automation_availability_topic,
+            json.dumps(
+                _automation_contract_availability("offline"),
+                separators=(",", ":"),
+            ),
+            qos=0,
+            retain=True,
+        )
         self.client.on_connect = self._on_connect
         self.client.on_message = self._on_message
         host = str(section.get("host") or mqtt_section.get("host") or "localhost")
@@ -1013,6 +1075,8 @@ class NodusAutomation(StdService):
             connected = reason_code == 0
         if connected:
             client.subscribe(self.meta_topic, qos=0)
+            self._publish_contract_availability("online")
+            self._publish_contract_status(force=True)
         else:
             log.error("Nodus automation MQTT connect failed: %s", reason_code)
 
@@ -1043,6 +1107,8 @@ class NodusAutomation(StdService):
             with self.lock:
                 self._reload_rules()
                 self.controller.evaluate()
+                if time.time() - self.last_availability_publish >= 60:
+                    self._publish_contract_availability("online")
                 self._save_status()
 
     def _remember_rules_mtime(self):
@@ -1076,6 +1142,43 @@ class NodusAutomation(StdService):
         self.rule_order = _section_names(rules_source.get("rules", {}))
         self.rules_mtime = modified
         log.info("Reloaded %d Nodus automation rule(s)", len(rules))
+        self._publish_contract_status()
+
+    def _publish_contract_status(self, force=False):
+        """Publish retained enabled rule ownership when it changes."""
+        document = _automation_contract_status(
+            self.controller.rules, enabled=self.enabled
+        )
+        comparison = dict(document)
+        comparison["updated_at"] = 0
+        marker = json.dumps(comparison, separators=(",", ":"), sort_keys=True)
+        if not force and marker == self.last_contract_status:
+            return True
+        result = self.client.publish(
+            self.automation_status_topic,
+            json.dumps(document, separators=(",", ":")),
+            qos=0,
+            retain=True,
+        )
+        if getattr(result, "rc", 1) == 0:
+            self.last_contract_status = marker
+            return True
+        return False
+
+    def _publish_contract_availability(self, status):
+        """Publish retained controller liveness for Nodus presentation."""
+        result = self.client.publish(
+            self.automation_availability_topic,
+            json.dumps(
+                _automation_contract_availability(status), separators=(",", ":")
+            ),
+            qos=0,
+            retain=True,
+        )
+        if getattr(result, "rc", 1) == 0:
+            self.last_availability_publish = time.time()
+            return True
+        return False
 
     def _save_status(self):
         status = self.controller.status(enabled=self.enabled)
@@ -1131,6 +1234,7 @@ class NodusAutomation(StdService):
         if watchdog is not None:
             watchdog.join(timeout=6)
         if self.client is not None:
+            self._publish_contract_availability("offline")
             self.client.loop_stop()
             self.client.disconnect()
 

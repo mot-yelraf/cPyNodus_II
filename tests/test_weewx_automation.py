@@ -1,4 +1,8 @@
-"""Tests for the host-side WeeWX Nodus automation service."""
+"""Test the host-side WeeWX Nodus automation service.
+
+The suite covers rule parsing, evaluation, MQTT commands, status persistence,
+enablement, and report-facing automation state.
+"""
 
 import importlib.util
 import json
@@ -213,6 +217,72 @@ def test_controller_requires_all_conditions_and_publishes_canonical_command():
     ]
 
 
+def test_weewx_automation_contract_topics_and_status_payload():
+    module = _load_module()
+    rule = _advanced_rule(
+        module,
+        [{"type": "timer", "duration_minutes": 30, "period_minutes": 60}],
+        actions=[
+            {"channel_id": "S1-ykdvea", "state": "on"},
+            {"channel_id": "S2-ykdvea", "state": "off"},
+        ],
+    )
+
+    assert module._automation_contract_topics(
+        "nodus/aht-ykdvea/meta/switch"
+    ) == (
+        "nodus/aht-ykdvea/automation/weewx/status",
+        "nodus/aht-ykdvea/automation/weewx/availability",
+    )
+    assert module._automation_contract_status([rule], now=123) == {
+        "schema": "nodus-automation-status/v1",
+        "controller": "weewx",
+        "controller_id": "weewx-nodus-automation",
+        "updated_at": 123,
+        "channels": [
+            {
+                "channel_id": "S1-ykdvea",
+                "automations": ["advanced"],
+                "enabled": True,
+            },
+            {
+                "channel_id": "S2-ykdvea",
+                "automations": ["advanced"],
+                "enabled": True,
+            },
+        ],
+    }
+
+
+def test_weewx_service_publishes_retained_contract_documents():
+    module = _load_module()
+
+    class Client:
+        def __init__(self):
+            self.published = []
+
+        def publish(self, topic, payload, qos=0, retain=False):
+            self.published.append((topic, json.loads(payload), qos, retain))
+            return SimpleNamespace(rc=0)
+
+    service = object.__new__(module.NodusAutomation)
+    service.enabled = True
+    service.client = Client()
+    service.controller = SimpleNamespace(rules=[_rule(module)])
+    service.automation_status_topic = "nodus/aht/automation/weewx/status"
+    service.automation_availability_topic = "nodus/aht/automation/weewx/availability"
+    service.last_contract_status = ""
+    service.last_availability_publish = 0
+
+    assert service._publish_contract_status(force=True) is True
+    assert service._publish_contract_availability("online") is True
+    assert [item[0] for item in service.client.published] == [
+        service.automation_status_topic,
+        service.automation_availability_topic,
+    ]
+    assert all(item[3] is True for item in service.client.published)
+
+
 def test_controller_confirms_only_after_ack_result_and_matching_state():
     module = _load_module()
     published = []
@@ -281,6 +351,29 @@ def test_command_timeout_observes_retry_cooldown():
 
     controller.evaluate(now=260)
     assert len(published) == 2
+
+
+def test_replayed_retained_meta_does_not_duplicate_pending_command():
+    module = _load_module()
+    published = []
+    rule = _rule(module, retry_seconds="60", stale_after="300")
+    controller = module.AutomationController(
+        [rule],
+        lambda topic, payload, retain: published.append((topic, payload, retain)),
+        command_timeout=15,
+    )
+    metadata = _meta_payload(state=False)
+    controller.update_meta(metadata, now=100)
+    controller.evaluate({"dateTime": 200, "inTemp": 28.0}, now=200)
+
+    controller.update_meta(metadata, now=201)
+    controller.evaluate(now=205)
+    controller.evaluate(now=216)
+
+    assert len(published) == 1
+    assert controller.pending == {}
+    assert rule["last_error"] == "command confirmation timed out"
+    assert "retry cooldown" in rule["last_decision"]
 
 
 def test_failed_publish_observes_retry_cooldown():

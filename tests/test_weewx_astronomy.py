@@ -1,8 +1,13 @@
-"""Host-side tests for the WeeWX astronomy report extension."""
+"""Test the WeeWX astronomy report extension on the host.
+
+The cases model ephemeris and station inputs to pin Sun, Moon, event, and
+presentation values supplied to report generation.
+"""
 
 import base64
 import importlib.util
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -90,11 +95,58 @@ def test_search_list_base64_encodes_static_astronomy_payload(monkeypatch):
 
     extension = module.NodusAstronomy(generator)
     encoded = extension.nodus_astronomy["payload_b64"]
+    detail_encoded = extension.nodus_astronomy["detail_payload_b64"]
 
     assert json.loads(base64.b64decode(encoded)) == expected
+    assert json.loads(base64.b64decode(detail_encoded)) == {
+        "ok": True,
+        "position_29d": [],
+    }
     assert captured == {
         "latitude": 32.79,
         "longitude": -108.27,
         "altitude": 1782.0,
         "ephemeris": "/data/de421.bsp",
     }
+
+
+def test_position_samples_are_reused_for_the_same_local_day(monkeypatch):
+    module = _module()
+    calls = {"days": 0}
+
+    class FakeTimescale:
+        def from_datetime(self, value):
+            return value
+
+    class FakeApparent:
+        def __init__(self, degrees):
+            self.degrees = degrees
+
+        def apparent(self):
+            return self
+
+        def altaz(self):
+            return SimpleNamespace(degrees=self.degrees), None, None
+
+    class FakePosition:
+        def observe(self, body):
+            return FakeApparent(body)
+
+    class FakeSite:
+        def at(self, _instant):
+            return FakePosition()
+
+    def fake_position_days(*_args):
+        calls["days"] += 1
+        return [{"date": "2026-08-08"}]
+
+    monkeypatch.setattr(module, "_position_days", fake_position_days)
+    context = (object(), FakeTimescale(), FakeSite(), 10.0, 20.0)
+    day_start = datetime(2026, 8, 8, tzinfo=timezone.utc)
+
+    first = module._position_payload("station", context, day_start)
+    second = module._position_payload("station", context, day_start)
+
+    assert first is second
+    assert len(first[0]) == 145
+    assert calls["days"] == 1

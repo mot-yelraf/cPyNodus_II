@@ -1,4 +1,8 @@
-"""Tests for the host-side WeeWX retained Nodus identity extension."""
+"""Test the WeeWX retained Nodus identity extension.
+
+The cases cover metadata ingestion, caching, refresh, and report fields so skin
+generation remains independent of direct broker queries.
+"""
 
 import importlib.util
 import json
@@ -173,6 +177,29 @@ def test_identity_search_list_uses_cache_when_broker_is_unavailable(
         raise OSError("broker unavailable")
 
     monkeypatch.setattr(module, "_fetch_retained_meta", unavailable)
+
+    extension = module.NodusIdentity(_generator(tmp_path))
+
+    assert extension.nodus == expected
+
+
+def test_identity_search_list_uses_fresh_cache_without_broker_request(
+    tmp_path, monkeypatch
+):
+    module = _load_module()
+    expected = {
+        "device_id": "aht-va41ka",
+        "version": "v0.26.220.3",
+        "description": "Indoor environment + VPD + disease-risk indicators.",
+        "meta_topic": "nodus/aht-va41ka/meta",
+        "updated": 123,
+    }
+    (tmp_path / "identity.json").write_text(json.dumps(expected), encoding="utf-8")
+
+    def unexpected_request(_settings, _timeout):
+        raise AssertionError("fresh cache should avoid an MQTT request")
+
+    monkeypatch.setattr(module, "_fetch_retained_meta", unexpected_request)
 
     extension = module.NodusIdentity(_generator(tmp_path))
 

@@ -1,8 +1,7 @@
 """Collect Nodus switch identity, state, and events for WeeWX skins.
 
-``SwitchStatusController`` maintains the bounded shared snapshot;
-``NodusSwitchStatus`` and ``NodusSwitchStatusSearchList`` connect it to WeeWX
-services and templates. Thread locks protect MQTT updates and skin reads.
+The service consumes retained metadata and live MQTT messages, then writes a
+bounded status view that reports can render without broker access.
 """
 
 import json

@@ -2,8 +2,8 @@
 
 For installation or device replacement, start with the short, linear
 [`WeeWX Nodus installation runbook`](weewx_install.md). Return to this document
-for the detailed MQTT, schema, automation, manual-installation, and
-troubleshooting reference.
+only when you need the detailed MQTT, schema, automation, manual-installation,
+or troubleshooting reference.
 
 This guide provisions a Nodus sensor to publish to MQTT, integrates its data
 into a standard Raspberry Pi OS WeeWX package installation, and installs the
@@ -13,7 +13,8 @@ absent. Both paths require an operational MQTT broker.
 The examples use these names:
 
 - Nodus sensor: `aht-va41ka`
-- Nodus web address: `http://aht-va41ka.local:8000`
+- Nodus setup address: `http://aht-va41ka.local:8000` while the local web
+  runtime is active
 - MQTT and WeeWX host: `<host>`
 - MQTT base topic: `nodus`
 
@@ -78,7 +79,7 @@ the Debian or Raspberry Pi OS system that will run WeeWX:
 
 ```bash
 cd /path/to/cPyNodus_II
-./integrations/weewx/install_nodus_weewx.sh
+./setup_nodus_weewx_host.sh
 ```
 
 Do not run the script on the CircuitPython device or on a workstation that
@@ -96,7 +97,7 @@ The installer:
 5. Installs `python3-paho-mqtt`, pinned Astral 3.2 and Skyfield 1.54 libraries,
    a local Skyfield DE421 ephemeris, and MQTTSubscribe 3.1.1 only when missing.
 6. Installs the Nodus archive schema, unit registration, retained-MQTT identity
-   extension, switch status/event collector, authenticated setup UI,
+   extension, switch status/event collector, limited LAN setup UI,
    and Nodus skin from the clone.
 7. Validates the selected Nodus MQTTSubscribe configuration before replacing
    and starting `weewx@nodus.service`.
@@ -145,33 +146,38 @@ For a discovery-first installation, bootstrap only the host and one supported
 sensor-family template without naming a device:
 
 ```bash
-./integrations/weewx/install_nodus_weewx.sh \
+./setup_nodus_weewx_host.sh \
   --discovery-only \
   --family avpd
 ```
 
 Discovery-only mode requires that no operational Nodus is installed, its
 configuration is absent, `weewx@nodus.service` is inactive, and automatic
-provisioning is disabled. It installs or updates the skin, extensions, manager
-services, broker configuration, and family-bounded managed template without
-creating `/etc/weewx/nodus.conf`, an archive database, a device profile, or an
-installed-device record. After the intended `weewx` device appears as
-Discovered, select it under System Settings > Install Device. The
-`/api/install` endpoint provides the same explicit selection for scripts.
+provisioning is disabled. It installs or updates the Nodus skin, extensions,
+manager services, broker configuration, and family-bounded managed template.
+It does not create `/etc/weewx/nodus.conf`, an archive database, a device
+profile, or `/var/lib/weewx/nodus_installed.json`, and it leaves the operational
+service disabled. Existing manager broker settings supply prompt defaults,
+including preserving a saved password when the password prompt is left empty.
+
+After the expected `weewx`-profile device appears as Discovered, leave
+automatic provisioning disabled and select it under System Settings > Install
+Device. The manager validates the advertised family and data topic, creates the
+operational configuration, records the installed identity, and starts
+`weewx@nodus.service`. The `/api/install` endpoint provides the same explicit
+post-discovery selection for scripted administration.
 
 Automatic provisioning remains available when exactly one discovered device
-matches the managed template family. When multiple matching devices exist, the
-manager refuses to choose based on retained-message replay order and requires
-explicit selection.
+matches the managed template family. When two or more matching devices are in
+the registry, the manager refuses to choose arbitrarily and requires explicit
+selection. A retained device from a different family remains discovered but
+cannot claim the template.
 
 Discovery accepts only valid retained `nodus-meta/v1` messages whose
 `profile.active_profile` is `weewx` and whose topic matches the advertised
 `device_id`. It uses `sensor.hardware` to select the current stanza family;
 newer metadata may additionally provide a logical `sensor.device` hint. Topic
 and identifier values are constrained before they can enter the registry.
-Broker subscriptions are deduplicated for each connection so retained metadata
-cannot trigger a subscribe/redelivery loop, and unchanged registry metadata is
-persisted at most once per minute.
 
 The System Settings WeeWX information block uses a desktop 5-5-4 card layout.
 It resolves the configured MQTT broker to IPv4 when host DNS permits. Astral
@@ -191,7 +197,7 @@ it.
 Before making changes, config detection can be checked independently:
 
 ```bash
-./integrations/weewx/install_nodus_weewx.sh \
+./setup_nodus_weewx_host.sh \
   --inspect-config /etc/weewx/weewx.conf
 ```
 
@@ -199,13 +205,13 @@ Use `--dry-run` to complete the prompts and review the installation plan
 without changing the system:
 
 ```bash
-./integrations/weewx/install_nodus_weewx.sh --dry-run
+./setup_nodus_weewx_host.sh --dry-run
 ```
 
 The discovery-first plan can likewise be validated without changes:
 
 ```bash
-./integrations/weewx/install_nodus_weewx.sh \
+./setup_nodus_weewx_host.sh \
   --discovery-only \
   --family avpd \
   --dry-run
@@ -352,10 +358,10 @@ service/driver selection, configuration validation, and simulation:
 
 ## 5. Choose automated or manual host installation
 
-The automated installer is the supported stage-one path. cPyNodus_II keeps
+The automated installer is the recommended host-side path. cPyNodus II keeps
 normal MQTT profiles headless, so it intentionally does not expose the
-`/weewx-config` device endpoint. The host integration consumes the existing
-MQTT contract and does not require a firmware payload change.
+`/weewx-config` device endpoint. The host installer consumes the existing MQTT
+contract and does not require a firmware payload change.
 
 For a manual installation, use the canonical single-environment mapping below
 and transfer the bundled schema, units, identity, automation, and skin files.
@@ -502,9 +508,12 @@ The complete skin bundle is in:
 ```text
 integrations/weewx/Nodus/
   index.html.tmpl
+  astronomy.txt.tmpl
   skin.conf
+  pico.min.css
   style.css
   dashboard.js
+  moon-surface.png
   nodus-favicon.svg
   admin/index.html
   admin/admin.css
@@ -529,9 +538,12 @@ ssh <user>@<host> \
   'mkdir -p /tmp/Nodus/admin'
 
 scp integrations/weewx/Nodus/index.html.tmpl \
+    integrations/weewx/Nodus/astronomy.txt.tmpl \
     integrations/weewx/Nodus/skin.conf \
+    integrations/weewx/Nodus/pico.min.css \
     integrations/weewx/Nodus/style.css \
     integrations/weewx/Nodus/dashboard.js \
+    integrations/weewx/Nodus/moon-surface.png \
     integrations/weewx/Nodus/nodus-favicon.svg \
     integrations/weewx/bin/user/nodus_identity.py \
     integrations/weewx/bin/user/nodus_astronomy.py \
@@ -554,9 +566,12 @@ Install the staged files on the Raspberry Pi:
 ssh <user>@<host> \
   'sudo install -d -m 0755 /etc/weewx/skins/Nodus/admin /etc/weewx/bin/user &&
    sudo install -m 0644 /tmp/Nodus/index.html.tmpl /etc/weewx/skins/Nodus/ &&
+   sudo install -m 0644 /tmp/Nodus/astronomy.txt.tmpl /etc/weewx/skins/Nodus/ &&
    sudo install -m 0644 /tmp/Nodus/skin.conf /etc/weewx/skins/Nodus/ &&
+   sudo install -m 0644 /tmp/Nodus/pico.min.css /etc/weewx/skins/Nodus/ &&
    sudo install -m 0644 /tmp/Nodus/style.css /etc/weewx/skins/Nodus/ &&
    sudo install -m 0644 /tmp/Nodus/dashboard.js /etc/weewx/skins/Nodus/ &&
+   sudo install -m 0644 /tmp/Nodus/moon-surface.png /etc/weewx/skins/Nodus/ &&
    sudo install -m 0644 /tmp/Nodus/nodus-favicon.svg /etc/weewx/skins/Nodus/ &&
    sudo install -m 0644 /tmp/Nodus/nodus_identity.py /etc/weewx/bin/user/ &&
    sudo install -m 0644 /tmp/Nodus/nodus_astronomy.py /etc/weewx/bin/user/ &&
@@ -574,8 +589,11 @@ If the Raspberry Pi already has a customized Nodus `style.css`, back it
 up and omit the final `style.css` install command unless the repository default
 style is wanted.
 
-`style.css`, `dashboard.js`, and `nodus-favicon.svg` are `copy_once` skin
-assets. The supplied HTML uses versioned asset URLs so browsers fetch the
+`pico.min.css`, `style.css`, `dashboard.js`, `moon-surface.png`, and
+`nodus-favicon.svg` are
+`copy_once` skin assets. Pico is pinned and served locally so the dashboard
+does not depend on Internet DNS or a CDN. The supplied HTML uses versioned
+asset URLs so browsers fetch the
 matching files after an
 upgrade. When updating an already-generated Nodus report manually, also
 replace its published copies so the new layout takes effect immediately:
@@ -583,9 +601,13 @@ replace its published copies so the new layout takes effect immediately:
 ```bash
 ssh <user>@<host> \
   'sudo install -o weewx -g weewx -m 0664 \
+   /tmp/Nodus/pico.min.css /var/www/html/weewx/nodus/pico.min.css &&
+   sudo install -o weewx -g weewx -m 0664 \
    /tmp/Nodus/style.css /var/www/html/weewx/nodus/style.css &&
    sudo install -o weewx -g weewx -m 0664 \
-   /tmp/Nodus/dashboard.js /var/www/html/weewx/nodus/dashboard.js'
+   /tmp/Nodus/dashboard.js /var/www/html/weewx/nodus/dashboard.js &&
+   sudo install -o weewx -g weewx -m 0664 \
+   /tmp/Nodus/moon-surface.png /var/www/html/weewx/nodus/moon-surface.png'
 ```
 
 Add the report under `[StdReport]` in `/etc/weewx/weewx.conf`:
@@ -620,6 +642,10 @@ Normal report generation reads the cached ephemeris and does not require
 Internet access. Astral supplies the local rise, noon, and set events;
 Skyfield supplies the sampled Sun/Moon elevations, exact lunar illumination,
 phase angle, next principal phase, and local/reference bright-limb angles.
+Loaded Skyfield objects and the daily/29-day position samples are reused until
+the local date or station coordinates change. The generated HTML carries only
+the daily payload; the 29-day payload is generated separately and fetched when
+the expanded card is opened.
 
 ### Renaming an existing historical skin installation
 
@@ -642,8 +668,9 @@ configuration, subscribes to the corresponding retained `/meta` topic, and
 uses its `device_id` and `version`. It reuses the MQTTSubscribe broker, port,
 credentials, and TLS settings. A successful result is cached under
 `/var/lib/weewx/`, so a brief broker outage does not erase the header identity.
-The next report generation reads newly retained metadata after a firmware
-update; no `weewx.conf` version update is required.
+Reports use a fresh identity cache for up to 15 minutes before opening a new
+broker connection. Newly retained metadata after a firmware update therefore
+appears within that bound without a `weewx.conf` version update.
 
 The same metadata selects the header description:
 
@@ -675,7 +702,9 @@ The skin:
 - arranges available cards alphabetically;
 - hides observations unavailable for the current device;
 - formats VPD as `#.###`;
-- reloads the browser every 60 seconds;
+- checks the generated report every 60 seconds with a conditional HEAD request
+  and reloads only after its ETag or modification time changes;
+- pauses report, switch, and manager polling while the browser page is hidden;
 - identifies the source Nodus by `device_id` and firmware version;
 - selects a sensor-family description automatically from retained metadata;
 - adds a compact 24-hour graph to each available metric card using WeeWX's
@@ -704,7 +733,7 @@ their state cell acts as an ON/OFF control with a five-second command guard.
 Events use `<timestamp> <rule name> : <state>`; manual events use
 `Manual` as the rule name. New events use the WeeWX host's local MQTT receipt
 time for display. This avoids applying the host timezone a second time to the
-Pico RTC's already-local wall-clock timestamp; existing cached entries are
+device RTC's already-local wall-clock timestamp; existing cached entries are
 normalized during upgrade. The panel
 appears whenever retained metadata contains at least one channel; automation
 does not need to be enabled. Event history begins while the WeeWX switch status
@@ -745,8 +774,9 @@ The generated metrics dashboard remains at
 and switch views use the same sidebar-and-workspace presentation as Sensorius,
 and a Dashboard button returns directly to the metrics dashboard. The sensor
 sidebar contains Sensor Settings, Device Calibration, and Sensor Info; there is
-no System Calibration view. The switch sidebar contains Switch Settings,
-Automations, and Switch Info. The UI provides:
+no System Calibration view. The switch sidebar contains Switch Settings and
+Switch Info. Automations belongs to the System Settings navigation beside
+System Settings, Install Device, and Remove Device. The UI provides:
 
 - sensor location;
 - explicit, change-only calibration offsets appropriate to the sensor family;
@@ -757,11 +787,13 @@ Automations, and Switch Info. The UI provides:
 multi-switch action support.
 
 The dashboard title is `Nodus AI`. Its adjacent system gear opens the
-persistent manager at `http://<weewx-host>:8768/system/`. Its navigation has
-System Settings, Automations, Install Device, and Remove Device. System
-Settings are stored separately in `/var/lib/weewx/nodus_system.toml` and group
-the active WeeWX host, broker, station, database, service, and output paths.
-The dashboard shows a live
+persistent manager at `http://<weewx-host>:8768/system/`. That sidebar has
+System Settings, Automations, Install Device, and Remove Device. Automations
+opens the existing host-side editor on port 8767 in the same System navigation context. System
+Settings are stored separately in `/var/lib/weewx/nodus_system.toml` and use
+collapsed WeeWX Preferences, Station & MQTT, and WeeWX Runtime & Files groups.
+They retain the active WeeWX host, broker, station, database, service, and
+output paths. The dashboard shows a live
 online/offline dot before `Device:` and Installed/Discovered badges after the
 device ID. Online state requires recent non-retained MQTT traffic.
 
@@ -771,9 +803,10 @@ The pending/success/error notification reports the same way as other saves.
 An offline removed device is discoverable and installable again after it is
 powered on and republishes its metadata.
 
-Install Device lists discovered devices and performs an explicit selection
-while automatic provisioning is disabled. This prevents an older retained
-record from being selected merely because the broker replays it first.
+Install Device lists discovered devices and performs an explicit post-discovery
+selection while automatic provisioning is disabled. This prevents an older
+retained discovery record from being chosen merely because it is replayed
+first by the broker.
 
 Metric selectors show the canonical unit used by the separate Nodus WeeWX
 instance. The ON/OFF threshold labels and saved-rule summaries repeat that
@@ -817,7 +850,9 @@ the setup UI in addition to its normal read subscriptions:
 - subscribe to retained device `meta`, retained `meta/switch`, and channel
   state/event topics; and
 - for enabled automations, publish channel `config/set` and subscribe to the
-  matching channel `ack`, `result`, and retained state topics.
+  matching channel `ack`, `result`, and retained state topics; and
+- publish retained `nodus/<device_id>/automation/weewx/status` and
+  `nodus/<device_id>/automation/weewx/availability`.
 
 If the setup server does not start, inspect:
 
@@ -841,10 +876,6 @@ The optional `user.nodus_automation.NodusAutomation` WeeWX data service can
 control Nodus switch channels from gathered WeeWX observations. Automation
 logic runs on the WeeWX host, not in the generated HTML and not on the
 CircuitPython device.
-
-cPyNodus_II does not consume retained controller-ownership status topics. The
-WeeWX service controls the headless device through `config/set` and confirms
-`ack`, `result`, and retained state; no device web-service topic is required.
 
 The setup UI builds ordered condition groups. Conditions within a group use
 logical AND; an OR separator starts the next group. A rule is active when any
@@ -959,12 +990,21 @@ successful `config/result`, and the requested retained channel state. Timeout,
 rejection, and apply errors are recorded in the status file and shown by the
 Nodus Switch Automations cards after the next report generation.
 
+The service publishes retained `nodus-automation-status/v1` ownership whenever
+rules change and retained `nodus-automation-availability/v1` online status on
+connect and every 60 seconds. The availability topic has a retained offline
+Last Will. cPyNodus II does not consume these controller-ownership documents;
+they are forward-compatible status for other consumers and do not change the
+device's headless command or persistence semantics.
+
 For production, use a dedicated broker account whose ACL can:
 
 - subscribe to the selected device's `meta/switch` topic;
 - subscribe to the selected channels' `state`, `config/ack`, and
   `config/result` topics; and
-- publish only to those channels' `config/set` topics.
+- publish only to those channels' `config/set` topics; and
+- publish retained automation status and availability under the selected
+  device's `automation/weewx` topic family.
 
 After enabling or editing rules, restart WeeWX and inspect the service log:
 
@@ -997,7 +1037,7 @@ Validate service-mode configuration:
 ```bash
 sudo -u weewx env PYTHONPATH=/usr/share/weewx \
   python3 "$MQTTSUB" configure service \
-  --validate --conf /etc/weewx/nodus-aht-va41ka.conf
+  --validate --conf /etc/weewx/nodus.conf
 ```
 
 Optionally run the MQTTSubscribe simulator while the WeeWX service is stopped:
@@ -1005,7 +1045,7 @@ Optionally run the MQTTSubscribe simulator while the WeeWX service is stopped:
 ```bash
 sudo -u weewx env PYTHONPATH=/usr/share/weewx \
   python3 "$MQTTSUB" simulate service \
-  --conf /etc/weewx/nodus-aht-va41ka.conf
+  --conf /etc/weewx/nodus.conf
 ```
 
 Start WeeWX and inspect the complete log:
@@ -1023,7 +1063,7 @@ directory is not traversable by `weewx`:
 ```bash
 cd /tmp
 sudo -u weewx weectl report run Nodus \
-  --config=/etc/weewx/nodus-aht-va41ka.conf
+  --config=/etc/weewx/nodus.conf
 ```
 
 The normal report cycle will also regenerate it after new archive records.
@@ -1058,13 +1098,17 @@ Open:
 http://<host>/weewx/nodus/aht-va41ka/
 ```
 
-The page reloads every 60 seconds. The centered `Data Updated` time advances
-only when WeeWX has generated a report from a newer archive record. The Moon
+The page conditionally checks for a changed report every 60 seconds and reloads
+only after WeeWX has generated a new report. The centered `Data Updated` time
+advances only when that report uses a newer archive record. The Moon
 Phase card shows local Moon rise/set, precise illumination, the next principal
-phase, and a Local/Ref bright-limb view. The Sun Position card plots the
-Skyfield Sun and Moon elevation tracks and shows local rise/noon/set events.
-Clicking the Sun/Moon Position card replaces both daily cards with a full-width
-29-day position and Moon-phase graph; clicking the expanded graph closes it.
+phase, and a detailed, locally served lunar-surface texture shaded and rotated
+for the Local/Ref bright-limb view. The Sun Position card plots the
+Skyfield Sun and Moon elevation tracks with continuous Hermite curves across
+the day/night boundary and shows local rise/noon/set events.
+Clicking the Sun/Moon Position card lazily loads the separately generated
+29-day payload and replaces both daily cards with its full-width position and
+Moon-phase graph; clicking the expanded graph closes it.
 Device identity, firmware, sensor setup gear, and sensor description are
 centered immediately above the metric cards.
 
@@ -1088,7 +1132,7 @@ mosquitto_sub -h <mqtt-host> \
   -t 'nodus/aht-va41ka/meta' -C 1 -v
 cd /tmp
 sudo -u weewx weectl report run Nodus \
-  --config=/etc/weewx/nodus-aht-va41ka.conf
+  --config=/etc/weewx/nodus.conf
 sudo journalctl -u weewx@nodus --since '10 minutes ago' --no-pager -l | \
   grep -i 'Nodus identity'
 ls -l /var/lib/weewx/nodus_identity_*.json
@@ -1111,7 +1155,7 @@ mosquitto_sub -h <mqtt-host> \
 
 sudo journalctl -u weewx@nodus --since '30 minutes ago' --no-pager -l
 
-sqlite3 /var/lib/weewx/nodus-aht-va41ka.sdb \
+sqlite3 /var/lib/weewx/nodus.sdb \
   "select datetime(max(dateTime),'unixepoch','localtime') from archive;"
 ```
 
@@ -1135,7 +1179,7 @@ registered group.
 Compare the newest archive timestamp with the generated HTML modification time:
 
 ```bash
-sqlite3 /var/lib/weewx/nodus-aht-va41ka.sdb \
+sqlite3 /var/lib/weewx/nodus.sdb \
   "select datetime(max(dateTime),'unixepoch','localtime') from archive;"
 stat /var/www/html/weewx/nodus/aht-va41ka/index.html
 ```
@@ -1150,7 +1194,7 @@ Run it from `/tmp`:
 ```bash
 cd /tmp
 sudo -u weewx weectl report run Nodus \
-  --config=/etc/weewx/nodus-aht-va41ka.conf
+  --config=/etc/weewx/nodus.conf
 ```
 
 ### A metric card is missing
@@ -1161,9 +1205,15 @@ missing Station Pressure card is expected for an AHT sensor.
 
 ## Adding another Nodus
 
-Provision and verify the new device first. In service mode, merge its additional
-topic under the existing MQTTSubscribe `[[topics]]` section and preserve all
-existing services.
+Provision and verify the new device first. The automated installation's
+persistent manager records valid retained metadata for up to 32 devices, but
+keeps only one matching-family device operational in `weewx@nodus.service`.
+Use the system view to inspect discovered devices and explicitly remove the
+installed device before allowing another device to be provisioned.
+
+For a manual multi-instance installation, add a separate WeeWX configuration,
+archive, and report for each device rather than merging multiple devices into
+the canonical single-environment fields.
 
 Use device-specific observations for multiple devices. A canonical field such
 as `inTemp` can represent only one selected environmental sensor in a single

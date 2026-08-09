@@ -1,8 +1,7 @@
-"""Extend the WeeWX archive schema with canonical Nodus observations.
+"""Define the WeeWX schema for canonical Nodus observations.
 
-Importing this module copies the standard extended schema and adds any missing
-Nodus scalar columns and day summaries. The resulting ``schema`` object is the
-public value consumed by WeeWX configuration.
+The column inventory extends the archive table with sensor and switch values
+used by the Nodus services while preserving WeeWX schema conventions.
 """
 
 from weewx.schemas.wview_extended import schema as _weewx_schema
