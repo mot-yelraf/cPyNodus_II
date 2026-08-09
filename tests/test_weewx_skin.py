@@ -17,7 +17,7 @@ def test_nodus_refreshes_and_hides_unavailable_observations():
     template = (SKIN_ROOT / "index.html.tmpl").read_text(encoding="utf-8")
     stylesheet = (SKIN_ROOT / "style.css").read_text(encoding="utf-8")
 
-    assert '<meta http-equiv="refresh" content="60" />' in template
+    assert '<meta http-equiv="refresh"' not in template
     assert '<div class="brand-title">Nodus AI' in template
     assert 'class="setup-gear system-setup-gear"' in template
     assert '<span class="data-updated-label">Data Updated:</span>' in template
@@ -86,9 +86,17 @@ def test_nodus_bundle_includes_the_copied_stylesheet():
     skin_conf = (SKIN_ROOT / "skin.conf").read_text(encoding="utf-8")
     stylesheet = (SKIN_ROOT / "style.css").read_text(encoding="utf-8")
 
-    assert "copy_once = style.css, dashboard.js, nodus-favicon.svg" in skin_conf
-    assert 'href="style.css?v=20260718-5"' in template
-    assert 'src="dashboard.js?v=20260718-5"' in template
+    copy_once = (
+        "copy_once = pico.min.css, style.css, dashboard.js, "
+        "moon-surface.png, nodus-favicon.svg"
+    )
+    assert copy_once in skin_conf
+    assert 'href="pico.min.css?v=2.1.1"' in template
+    assert "cdn.jsdelivr.net" not in template
+    assert (SKIN_ROOT / "pico.min.css").is_file()
+    assert 'href="style.css?v=20260808-1"' in template
+    assert 'src="dashboard.js?v=20260808-3"' in template
+    assert (SKIN_ROOT / "moon-surface.png").is_file()
     assert ".tile-grid" in stylesheet
     assert "@media (prefers-color-scheme: dark)" in stylesheet
 
@@ -201,7 +209,7 @@ def test_nodus_shows_discovered_switches_without_automation_rules():
     assert "$event.display" in template
     assert "mode-$channel.mode_class" in template
     assert 'data-channel-id="$channel.channel_id"' in template
-    assert 'src="dashboard.js?v=20260718-5"' in template
+    assert 'src="dashboard.js?v=20260808-3"' in template
     assert ".switch-current.mode-automated" in stylesheet
     assert ".switch-current.mode-automated .switch-control-mode" in stylesheet
     assert "grid-template-columns: minmax(150px, 1.05fr)" in stylesheet
@@ -228,6 +236,11 @@ def test_nodus_skin_embeds_skyfield_sun_and_moon_cards():
     assert "user.nodus_astronomy.NodusAstronomy" in skin_conf
     assert "ephemeris = /var/lib/weewx/skyfield/de421.bsp" in skin_conf
     assert 'data-astronomy="$nodus_astronomy.payload_b64"' in template
+    assert 'data-astronomy-detail="astronomy.txt?ts=$current.dateTime.raw"' in template
+    assert (SKIN_ROOT / "astronomy.txt.tmpl").read_text(encoding="utf-8").strip() == (
+        "$nodus_astronomy.detail_payload_b64"
+    )
+    assert "template = astronomy.txt.tmpl" in skin_conf
     assert 'id="moonPhaseCanvas"' in template
     assert 'id="sunMoonPositionCanvas"' in template
     assert 'data-moon-view="local"' in template
@@ -239,13 +252,36 @@ def test_nodus_skin_embeds_skyfield_sun_and_moon_cards():
     assert "grid-template-columns: minmax(82px, 1fr) 145px" in stylesheet
     assert "height: 175px;" in stylesheet
     assert "function nodusDrawMoon(data)" in script
+    assert 'nodusMoonSurfaceImage.src = "moon-surface.png?v=1"' in script
+    assert "if (surfacePixels)" in script
     assert "function nodusDrawPositions(data)" in script
+    assert "function nodusSmoothSkyYMapper(" in script
+    assert "function nodusOrbitDisplayPoints(" in script
+    assert "function nodusSmoothElevationPoints(" in script
+    assert "function nodusDrawPositionPath(" in script
+    assert "context.bezierCurveTo(" in script
+    assert "if (moonDisplay.length < 2)" in script
     assert 'id="sunMoon29Card"' in template
     assert 'id="sunMoon29Canvas"' in template
     assert "function nodusDraw29Days(data)" in script
     assert "function nodusSet29DayOpen(open)" in script
+    assert "function nodusLoadAstronomyDetail()" in script
     assert 'grid.classList.toggle("astronomy-expanded", open)' in script
     assert ".astronomy-expanded-card" in stylesheet
+
+
+def test_nodus_skin_refreshes_only_when_visible_and_report_changes():
+    script = (SKIN_ROOT / "dashboard.js").read_text(encoding="utf-8")
+
+    assert 'fetch("index.html", {method: "HEAD", cache: "no-cache"})' in script
+    assert "Date.parse(document.lastModified)" in script
+    assert "validator !== nodusReportValidator" in script
+    assert "document.hidden" in script
+    assert "function nodusStopPresentationRefresh()" in script
+    assert (
+        'document.addEventListener("visibilitychange", nodusHandleVisibility)'
+        in script
+    )
 
 
 def test_nodus_skin_links_sensor_and_switch_gears_to_limited_admin_ui():

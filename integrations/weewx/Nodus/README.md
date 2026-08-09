@@ -2,12 +2,19 @@
 
 This directory is the complete `Nodus` WeeWX skin bundle. It arranges
 metric cards alphabetically, omits cards whose current observation is
-unavailable, and reloads the generated report in the browser every 60 seconds.
+unavailable, and checks the generated report once per minute with a conditional
+HEAD request. It reloads only when the report validator changes, and pauses
+report, switch, and manager polling while the page is hidden.
 The centered `Nodus AI` title and system-settings gear are followed by the latest
 data timestamp and Skyfield-backed Sun Position and Moon Phase cards. The
-cards use the station coordinates, pinned Astral 3.2 and Skyfield 1.54, and a
-locally cached DE421 ephemeris; report generation does not fetch astronomy
-data from the network. Clicking the position card opens a full-width 29-day
+cards use the station coordinates, pinned Astral 3.2 and Skyfield 1.54, a
+locally cached DE421 ephemeris, and a locally served detailed lunar-surface
+texture; report generation and display do not fetch astronomy data from the
+network. The daily position graph uses continuous Hermite curves through the
+day/night boundary, with sampled-elevation smoothing as a lunar fallback.
+Daily and 29-day positions are cached for the local day,
+and the larger 29-day payload is loaded only when its card is opened. Clicking
+the position card opens a full-width 29-day
 Sun/Moon position and lunar-phase graph; clicking the expanded graph closes
 it. Device identity, firmware, sensor
 setup gear, and sensor description are centered above the metric cards.
@@ -32,8 +39,8 @@ with a Dashboard return button. Sensor views cover Location, Device
 Calibration, and device/network information. Switch views cover location and
 channel labels and switch/network information. There is no System Calibration
 view. Saved host-side automations and their editor belong to the System
-Settings navigation alongside System Settings, Install Device, and Remove
-Device. The switch-status service
+Settings navigation alongside System Settings, Install Device, and Remove Device. The
+switch-status service
 supplies its unauthenticated LAN API on TCP port 8767. The UI supports
 locations, switch labels, change-only calibration writes, and bounded host-side
 automations with AND/OR metric, timer, time/day, Astral, and switch-state
@@ -41,11 +48,16 @@ conditions plus multiple switch actions. See `docs/weewx.md` for its limits,
 LAN exposure, and MQTT ACL requirements.
 Automation-card titles show `<automation name> : Enabled|Disabled`; disabled
 rules are display-only and do not control a channel.
+The automation service also publishes retained controller ownership and
+availability under `nodus/<device_id>/automation/weewx/` so current Nodus
+firmware can identify host-automated channels in its local switch card.
 
 The system gear opens the persistent port-8768 manager. Its menus are System
-Settings, Automations, Install Device, and Remove Device. System Settings uses
-grouped WeeWX Preferences, Station & MQTT, and WeeWX Runtime & Files sections.
-It stores host settings in
+Settings, Automations, Install Device, and Remove Device. System Settings uses collapsed WeeWX
+Preferences, Station & MQTT, and WeeWX Runtime & Files groups while retaining
+all host-specific fields. Automations links to the existing port-8767 editor,
+which presents the same System navigation context without changing the rules
+engine or storage contract. The manager stores host settings in
 `/var/lib/weewx/nodus_system.toml`, displays explicit Installed/Discovered
 badges and live online/offline state, clears exact retained device/switch
 topics during confirmed removal, and reprovisions a returning device.
@@ -61,8 +73,9 @@ FAMILY`. This mode requires automatic provisioning to be disabled and leaves
 under System Settings > Install Device. Automatic provisioning chooses a
 device only when exactly one discovered entry matches the managed family.
 
-For a fresh installation, copy `index.html.tmpl`, `skin.conf`, `style.css`,
-`dashboard.js`, and `nodus-favicon.svg`
+For a fresh installation, copy `index.html.tmpl`, `astronomy.txt.tmpl`,
+`skin.conf`, `pico.min.css`, `style.css`, `dashboard.js`, `moon-surface.png`,
+and `nodus-favicon.svg`
 into the host's `Nodus` skin directory. When updating a customized
 installation, keep its existing `style.css` unless the supplied default style
 is wanted.

@@ -91,7 +91,7 @@ cd ~/Projects/cPyNodus_II
 Confirm that the installer contains the discovery-first mode:
 
 ```bash
-./integrations/weewx/install_nodus_weewx.sh --help
+./setup_nodus_weewx_host.sh --help
 ```
 
 The output must include:
@@ -206,7 +206,7 @@ inactive
 Use the family of the intended device. For `avpd-1jm5s1`:
 
 ```bash
-./integrations/weewx/install_nodus_weewx.sh \
+./setup_nodus_weewx_host.sh \
   --discovery-only \
   --family avpd \
   --dry-run
@@ -260,7 +260,7 @@ DRY-RUN: configuration rendered successfully; no changes applied.
 Run the same command without `--dry-run`:
 
 ```bash
-./integrations/weewx/install_nodus_weewx.sh \
+./setup_nodus_weewx_host.sh \
   --discovery-only \
   --family avpd
 ```

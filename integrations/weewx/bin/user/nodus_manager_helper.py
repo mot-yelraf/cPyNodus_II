@@ -1,8 +1,7 @@
-"""Execute fixed privileged Nodus WeeWX install and removal requests.
+"""Execute fixed root-owned Nodus WeeWX manager requests.
 
-``run`` and ``main`` validate manager documents and device identifiers before
-touching managed configuration or invoking system services. State documents
-and generated configuration are replaced atomically where supported.
+The helper accepts only predefined install and removal operations, validates
+their arguments, and isolates privileged host changes from the web process.
 """
 
 import argparse
@@ -121,6 +120,11 @@ def _remove(settings, device_id):
 
 
 def run(config_path):
+    """Execute one validated manager request from ``config_path``.
+
+    The request file is always removed and the result is atomically replaced,
+    even when the fixed install or removal action fails.
+    """
     settings = _read(config_path)
     request_path = settings["request_file"]
     result_path = settings["result_file"]
@@ -151,6 +155,7 @@ def run(config_path):
 
 
 def main(argv=None):
+    """Run the privileged manager helper command-line interface."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="/etc/weewx/nodus-discovery.json")
     args = parser.parse_args(argv)

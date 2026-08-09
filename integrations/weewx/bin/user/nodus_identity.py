@@ -1,8 +1,7 @@
 """Expose retained Nodus MQTT identity metadata to WeeWX skins.
 
-``NodusIdentity`` resolves the single configured device metadata topic and
-returns skin-ready identity values. Broker access is bounded by a short
-timeout, and missing metadata degrades to explicit unknown values.
+The extension caches device metadata and supplies report-friendly identity and
+network fields without coupling skin generation to the MQTT client.
 """
 
 import json
@@ -24,6 +23,7 @@ except ImportError:  # Allow host-side tests without a WeeWX installation.
 log = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT = 2.0
+_DEFAULT_CACHE_TTL = 900.0
 _UNKNOWN = "unknown"
 _DEFAULT_DESCRIPTION = "Sensor conditions"
 _DESCRIPTIONS = {
@@ -230,6 +230,13 @@ def _read_cache(path, meta_topic):
     return identity
 
 
+def _read_fresh_cache(path, meta_topic, ttl):
+    """Return cached identity while its file remains inside the configured TTL."""
+    if ttl <= 0 or time.time() - os.path.getmtime(path) > ttl:
+        return None
+    return _read_cache(path, meta_topic)
+
+
 def _write_cache(path, identity):
     """Atomically persist a successful retained-meta read."""
     temporary = "{}.tmp.{}".format(path, os.getpid())
@@ -268,17 +275,35 @@ class NodusIdentity(SearchList):
         except (TypeError, ValueError):
             timeout = _DEFAULT_TIMEOUT
         try:
-            identity = _fetch_retained_meta(settings, timeout)
-        except Exception as exc:
-            log.warning("Unable to refresh retained Nodus identity: %s", exc)
+            cache_ttl_value = identity_config.get("cache_ttl")
+            cache_ttl = (
+                _DEFAULT_CACHE_TTL
+                if cache_ttl_value in (None, "")
+                else float(cache_ttl_value)
+            )
+        except (TypeError, ValueError):
+            cache_ttl = _DEFAULT_CACHE_TTL
+        try:
+            identity = _read_fresh_cache(
+                cache_path,
+                settings["topic"],
+                max(0.0, cache_ttl),
+            )
+        except Exception:
+            identity = None
+        if identity is None:
             try:
-                identity = _read_cache(cache_path, settings["topic"])
-            except Exception:
-                identity = None
-        else:
-            try:
-                _write_cache(cache_path, identity)
+                identity = _fetch_retained_meta(settings, timeout)
             except Exception as exc:
-                log.warning("Unable to cache retained Nodus identity: %s", exc)
+                log.warning("Unable to refresh retained Nodus identity: %s", exc)
+                try:
+                    identity = _read_cache(cache_path, settings["topic"])
+                except Exception:
+                    identity = None
+            else:
+                try:
+                    _write_cache(cache_path, identity)
+                except Exception as exc:
+                    log.warning("Unable to cache retained Nodus identity: %s", exc)
 
         self.nodus = identity or fallback

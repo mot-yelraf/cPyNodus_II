@@ -91,6 +91,20 @@ onboarding, profile behavior, calibration, switches, and automations. See the
 [technical reference](docs/README.md) for complete deployment options and
 runtime details.
 
+## WeeWX host setup
+
+On the Debian or Raspberry Pi OS host that will run WeeWX 5, use the root
+entry point:
+
+```bash
+./setup_nodus_weewx_host.sh
+```
+
+It delegates to the canonical installer under `integrations/weewx/` and
+installs the independent Nodus WeeWX service, report skin, extensions, and
+device manager. Start with the [WeeWX installation
+runbook](docs/weewx_install.md).
+
 ## Configuration and integration documentation
 
 - [User guide](docs/user_guide.md)

@@ -11,7 +11,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "integrations" / "weewx" / "install_nodus_weewx.sh"
-COMPAT_INSTALLER = ROOT / "install_nodus_weewx.sh"
+HOST_SETUP = ROOT / "setup_nodus_weewx_host.sh"
 
 
 def _run(*args):
@@ -43,6 +43,19 @@ def test_installer_is_valid_bash_and_has_help():
     assert "--family FAMILY" in output
 
 
+def test_root_host_setup_entry_point_delegates_to_canonical_installer():
+    subprocess.run(["bash", "-n", str(HOST_SETUP)], check=True)
+
+    output = subprocess.run(
+        [str(HOST_SETUP), "--help"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+    assert "persistent Nodus manager" in output
+
+
 def test_discovery_only_requires_a_family_and_rejects_device_selection():
     cases = (
         (("--discovery-only",), "requires --family"),
@@ -66,19 +79,6 @@ def test_discovery_only_requires_a_family_and_rejects_device_selection():
         assert message in result.stderr
 
 
-def test_top_level_installer_remains_a_compatibility_entry_point():
-    subprocess.run(["bash", "-n", str(COMPAT_INSTALLER)], check=True)
-
-    output = subprocess.run(
-        [str(COMPAT_INSTALLER), "--help"],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
-
-    assert "persistent Nodus manager" in output
-
-
 def test_installer_only_prompts_for_optional_mqtt_secret():
     script = INSTALLER.read_text(encoding="utf-8")
 
@@ -97,6 +97,9 @@ def test_installer_pins_astronomy_libraries_and_caches_ephemeris():
     assert 'Loader("/var/lib/weewx/skyfield")("de421.bsp")' in script
     assert "(cd /tmp && run_weewx env" in script
     assert '"$USER_SOURCE/nodus_astronomy.py"' in script
+    assert '"$SKIN_SOURCE/astronomy.txt.tmpl"' in script
+    assert '"$SKIN_SOURCE/pico.min.css"' in script
+    assert '"$SKIN_SOURCE/moon-surface.png"' in script
 
 
 def test_installer_writes_and_reuses_device_profile(tmp_path):

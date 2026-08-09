@@ -2,13 +2,12 @@
 <html>
 <head>
   <meta charset="UTF-8" />
-  <meta http-equiv="refresh" content="60" />
   <title>Nodus AI</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link rel="icon" href="nodus-favicon.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
-  <link rel="stylesheet" href="style.css?v=20260718-5" type="text/css" />
-  <script src="dashboard.js?v=20260718-5" defer></script>
+  <link rel="stylesheet" href="pico.min.css?v=2.1.1">
+  <link rel="stylesheet" href="style.css?v=20260808-1" type="text/css" />
+  <script src="dashboard.js?v=20260808-3" defer></script>
 </head>
 
 <body>
@@ -30,7 +29,7 @@
     </div>
   </header>
 
-  <section class="astro-grid" data-astronomy="$nodus_astronomy.payload_b64">
+  <section class="astro-grid" data-astronomy="$nodus_astronomy.payload_b64" data-astronomy-detail="astronomy.txt?ts=$current.dateTime.raw">
     <article class="astro-card moon-card">
       <header class="astro-card-head">
         <span>Moon Phase</span>

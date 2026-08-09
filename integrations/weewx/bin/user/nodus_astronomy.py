@@ -1,8 +1,7 @@
 """Generate Sun and Moon data for the Nodus WeeWX skin.
 
-``build_astronomy_payload`` calculates the skin-ready values and
-``NodusAstronomy`` exposes them as a WeeWX search-list extension. Ephemeris
-availability and third-party astronomy dependencies are handled as optional.
+The extension uses Skyfield ephemerides and station coordinates to supply
+astronomical events and presentation values to generated reports.
 """
 
 import base64
@@ -26,6 +25,8 @@ log = logging.getLogger(__name__)
 
 _DEFAULT_EPHEMERIS = "/var/lib/weewx/skyfield/de421.bsp"
 _SAMPLE_MINUTES = 10
+_ASTRONOMY_CONTEXT = {"key": None, "value": None}
+_ASTRONOMY_POSITIONS = {"key": None, "value": None}
 
 
 def _station_number(value, default=0.0):
@@ -188,35 +189,39 @@ def _position_days(eph, ts, site, sun_body, moon_body, day_start):
     return days
 
 
-def build_astronomy_payload(
-    latitude, longitude, altitude, tzinfo, ephemeris_path, now=None
-):
-    """Build one day of solar and lunar card data from local ephemerides."""
-    from astral import Observer
-    from astral import moon as astral_moon
-    from astral.sun import sun
-    from skyfield import almanac
+def _astronomy_context(ephemeris_path, latitude, longitude, altitude):
+    """Reuse loaded Skyfield objects across report runs in one WeeWX process."""
     from skyfield.api import load, load_file, wgs84
-    from skyfield.trigonometry import position_angle_of
-
-    now = now or datetime.now(tzinfo)
-    now = now.astimezone(tzinfo)
-    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    observer = Observer(latitude=latitude, longitude=longitude, elevation=altitude)
-    solar_events = sun(observer, date=now.date(), tzinfo=tzinfo)
 
     path = Path(ephemeris_path)
     if not path.is_file():
         raise FileNotFoundError("Skyfield ephemeris is missing: {}".format(path))
-    eph = load_file(str(path))
-    ts = load.timescale(builtin=True)
-    site = eph["earth"] + wgs84.latlon(
-        latitude,
-        longitude,
-        elevation_m=altitude,
-    )
-    sun_body = eph["sun"]
-    moon_body = eph["moon"]
+    key = (str(path), float(latitude), float(longitude), float(altitude))
+    if _ASTRONOMY_CONTEXT["key"] != key:
+        eph = load_file(str(path))
+        ts = load.timescale(builtin=True)
+        site = eph["earth"] + wgs84.latlon(
+            latitude,
+            longitude,
+            elevation_m=altitude,
+        )
+        _ASTRONOMY_CONTEXT["key"] = key
+        _ASTRONOMY_CONTEXT["value"] = (
+            eph,
+            ts,
+            site,
+            eph["sun"],
+            eph["moon"],
+        )
+    return key, _ASTRONOMY_CONTEXT["value"]
+
+
+def _position_payload(context_key, context, day_start):
+    """Reuse day and 29-day position samples until the local date changes."""
+    eph, ts, site, sun_body, moon_body = context
+    key = (context_key, day_start.date().isoformat(), str(day_start.tzinfo))
+    if _ASTRONOMY_POSITIONS["key"] == key:
+        return _ASTRONOMY_POSITIONS["value"]
 
     points = []
     for minute in range(0, 1441, _SAMPLE_MINUTES):
@@ -235,6 +240,39 @@ def build_astronomy_payload(
                 round(float(moon_alt.degrees), 2),
             ]
         )
+    value = (
+        points,
+        _position_days(eph, ts, site, sun_body, moon_body, day_start),
+    )
+    _ASTRONOMY_POSITIONS["key"] = key
+    _ASTRONOMY_POSITIONS["value"] = value
+    return value
+
+
+def build_astronomy_payload(
+    latitude, longitude, altitude, tzinfo, ephemeris_path, now=None
+):
+    """Build one day of solar and lunar card data from local ephemerides."""
+    from astral import Observer
+    from astral import moon as astral_moon
+    from astral.sun import sun
+    from skyfield import almanac
+    from skyfield.trigonometry import position_angle_of
+
+    now = now or datetime.now(tzinfo)
+    now = now.astimezone(tzinfo)
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    observer = Observer(latitude=latitude, longitude=longitude, elevation=altitude)
+    solar_events = sun(observer, date=now.date(), tzinfo=tzinfo)
+
+    context_key, context = _astronomy_context(
+        ephemeris_path,
+        latitude,
+        longitude,
+        altitude,
+    )
+    eph, ts, site, sun_body, moon_body = context
+    points, position_29d = _position_payload(context_key, context, day_start)
 
     current_t = ts.from_datetime(now.astimezone(timezone.utc))
     current_site = site.at(current_t)
@@ -254,15 +292,6 @@ def build_astronomy_payload(
         position_angle_of(moon_apparent.radec(), sun_apparent.radec()).degrees
     )
     next_phase_label, next_phase_date = _next_phase(eph, ts, now)
-    position_29d = _position_days(
-        eph,
-        ts,
-        site,
-        sun_body,
-        moon_body,
-        day_start,
-    )
-
     rise = _event_text(astral_moon.moonrise, observer, now.date(), tzinfo)
     setting = _event_text(astral_moon.moonset, observer, now.date(), tzinfo)
     return {
@@ -324,4 +353,12 @@ class NodusAstronomy(SearchList):
         except Exception as exc:
             log.warning("Unable to generate Nodus astronomy cards: %s", exc)
             payload["error"] = str(exc)
-        self.nodus_astronomy = {"payload_b64": _encoded_payload(payload)}
+        summary = dict(payload)
+        detail = {
+            "ok": bool(payload.get("ok")),
+            "position_29d": summary.pop("position_29d", []),
+        }
+        self.nodus_astronomy = {
+            "payload_b64": _encoded_payload(summary),
+            "detail_payload_b64": _encoded_payload(detail),
+        }

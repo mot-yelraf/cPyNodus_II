@@ -1,8 +1,7 @@
-"""Serve the authenticated setup UI for a Nodus WeeWX instance.
+"""Serve the limited LAN setup UI for a Nodus WeeWX instance.
 
-``NodusAdminHTTP`` exposes bounded status and configuration endpoints plus the
-static setup assets. Rule validation and atomic rule-file helpers are public
-for integration tests and companion management code.
+The extension exposes authenticated system settings and fixed manager actions
+while keeping privileged installation work behind the root-owned helper.
 """
 
 import base64
@@ -205,6 +204,7 @@ def _legacy_item(item):
 
 
 def _normalize_condition(condition, channel_ids, metric_ids):
+    """Validate and canonicalize one host-side automation condition."""
     if not isinstance(condition, dict):
         raise ValueError("automation condition must be an object")
     kind = str(condition.get("type") or "metric").strip().lower()

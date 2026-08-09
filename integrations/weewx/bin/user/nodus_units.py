@@ -1,8 +1,7 @@
 """Register canonical Nodus observations and units with WeeWX.
 
-``install_units`` updates WeeWX's global observation, format, label, and
-conversion tables; ``NodusUnits`` installs them as a service. Registration is
-idempotent so repeated service initialization does not duplicate converters.
+The extension maps device metric names into WeeWX observation groups and
+formatting rules so archive values display with consistent units.
 """
 
 import weewx.units

@@ -824,9 +824,12 @@ ensure_astronomy() {
 validate_integration_sources() {
   for path in \
     "$SKIN_SOURCE/index.html.tmpl" \
+    "$SKIN_SOURCE/astronomy.txt.tmpl" \
     "$SKIN_SOURCE/skin.conf" \
+    "$SKIN_SOURCE/pico.min.css" \
     "$SKIN_SOURCE/style.css" \
     "$SKIN_SOURCE/dashboard.js" \
+    "$SKIN_SOURCE/moon-surface.png" \
     "$SKIN_SOURCE/nodus-favicon.svg" \
     "$SKIN_SOURCE/admin/index.html" \
     "$SKIN_SOURCE/admin/admin.css" \
@@ -859,11 +862,17 @@ install_integration_files() {
   run_root install -o root -g weewx -m 0644 \
     "$SKIN_SOURCE/index.html.tmpl" "$WEEWX_SKIN_ROOT/index.html.tmpl"
   run_root install -o root -g weewx -m 0644 \
+    "$SKIN_SOURCE/astronomy.txt.tmpl" "$WEEWX_SKIN_ROOT/astronomy.txt.tmpl"
+  run_root install -o root -g weewx -m 0644 \
     "$SKIN_SOURCE/skin.conf" "$WEEWX_SKIN_ROOT/skin.conf"
+  run_root install -o root -g weewx -m 0644 \
+    "$SKIN_SOURCE/pico.min.css" "$WEEWX_SKIN_ROOT/pico.min.css"
   run_root install -o root -g weewx -m 0644 \
     "$SKIN_SOURCE/style.css" "$WEEWX_SKIN_ROOT/style.css"
   run_root install -o root -g weewx -m 0644 \
     "$SKIN_SOURCE/dashboard.js" "$WEEWX_SKIN_ROOT/dashboard.js"
+  run_root install -o root -g weewx -m 0644 \
+    "$SKIN_SOURCE/moon-surface.png" "$WEEWX_SKIN_ROOT/moon-surface.png"
   run_root install -o root -g weewx -m 0644 \
     "$SKIN_SOURCE/nodus-favicon.svg" "$WEEWX_SKIN_ROOT/nodus-favicon.svg"
   run_root install -o root -g weewx -m 0644 \
@@ -906,9 +915,13 @@ install_integration_files() {
   run_root install -o root -g weewx -m 0644 \
     "$USER_SOURCE/nodus_schema.py" "$WEEWX_USER_ROOT/nodus_schema.py"
   run_root install -o weewx -g weewx -m 0664 \
+    "$SKIN_SOURCE/pico.min.css" "$html_root/pico.min.css"
+  run_root install -o weewx -g weewx -m 0664 \
     "$SKIN_SOURCE/style.css" "$html_root/style.css"
   run_root install -o weewx -g weewx -m 0664 \
     "$SKIN_SOURCE/dashboard.js" "$html_root/dashboard.js"
+  run_root install -o weewx -g weewx -m 0664 \
+    "$SKIN_SOURCE/moon-surface.png" "$html_root/moon-surface.png"
   run_root install -o weewx -g weewx -m 0664 \
     "$SKIN_SOURCE/nodus-favicon.svg" "$html_root/nodus-favicon.svg"
 }

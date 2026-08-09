@@ -277,6 +277,8 @@ In normal mode the device:
   - Discovery-first installation can stage a sensor-family template without
     naming a device, then explicitly install the intended discovered device;
     see the [WeeWX installation runbook](./weewx_install.md).
+  - On the WeeWX host, run `./setup_nodus_weewx_host.sh`; this root entry point
+    delegates to the canonical installer under `integrations/weewx/`.
   - Periodic NTP sync is started after normal network bring-up.
 - `homeassistant` is a networked MQTT profile using the shared `[MQTT]` connection settings.
   - MQTT is enabled.

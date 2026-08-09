@@ -2,19 +2,25 @@
 
 ## WeeWX host system settings
 
-The host-side WeeWX integration keeps its system UI preferences in
-`/var/lib/weewx/nodus_system.toml`. This is not a CircuitPython
-`settings.toml`, sensor file, or switch file. It contains the Nodus system
-title, online timeout, and automatic-provisioning gate. Broker, station,
-database, service, and dashboard details remain sourced from the root-managed
-WeeWX manager configuration and are displayed read-only in the system pane.
-The System Settings view groups these values into WeeWX Preferences, Station &
-MQTT, and WeeWX Runtime & Files sections. The host installer supports
-`--discovery-only --family FAMILY`, which stages a family-bounded managed
-template without selecting a device. With automatic provisioning disabled, an
-operator can then select the intended retained-metadata device from System
-Settings > Install Device. Automatic provisioning proceeds only when exactly
-one discovered device matches the managed family.
+The host-side WeeWX integration stores its system-view preferences in
+`/var/lib/weewx/nodus_system.toml`. This is separate from CircuitPython
+`settings.toml`, sensor configuration, and switch configuration. It contains
+the visible system title, online timeout, and automatic-provisioning gate.
+Broker, station, database, service, and dashboard paths remain sourced from
+the root-managed WeeWX manager configuration and are read-only in that view.
+The WeeWX System Settings view groups its fields into collapsed WeeWX
+Preferences, Station & MQTT, and WeeWX Runtime & Files sections. Host-side
+Automations is a System navigation item; it is not part of Switch Settings.
+The host installer also supports `--discovery-only --family FAMILY` to stage
+the manager and a family-bounded WeeWX template without preselecting a device.
+Automatic provisioning must remain disabled during that bootstrap and can be
+replaced by an explicit System Settings > Install Device selection after the
+intended `weewx`-profile device appears as Discovered. Automatic selection is
+performed only when one discovered device matches the managed family.
+
+Run the installer from the repository root with
+`./setup_nodus_weewx_host.sh`. The root entry point delegates to
+`integrations/weewx/install_nodus_weewx.sh`.
 
 Live configuration is stored as TOML files at the project root. Defaults are
 provided as `.def` templates under `boards/`.
