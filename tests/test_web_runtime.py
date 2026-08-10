@@ -1280,7 +1280,13 @@ def test_web_runtime_controller_config_route_updates_runtime_config():
     assert controller.runtime_config.sensor.location == "Bench D"
 
 
-def test_web_runtime_controller_defers_itaot_init_reboot_until_after_response():
+def test_web_runtime_controller_defers_itaot_init_reboot_until_after_response(
+    monkeypatch,
+):
+    now = [100.0]
+    monkeypatch.setattr(
+        "cpynodus_ii.features.web_runtime.monotonic", lambda: now[0]
+    )
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         (tmpdir_path / "settings.toml").write_text(
@@ -1369,10 +1375,20 @@ def test_web_runtime_controller_defers_itaot_init_reboot_until_after_response():
                 "request path=/itaot-init phase=applied status=200 accepted=1 "
                 "rebooting=1 updates=7 time_updates=0 time_keys=none errors=none"
             ),
-            "request path=/itaot-init phase=reboot_scheduled",
+            "request path=/itaot-init phase=reboot_scheduled delay_s=2.0",
             "request path=/itaot-init phase=response_return status=200",
         ]
 
+        controller.poll()
+        assert reboot_calls == []
+        assert controller.server.poll_count == 1
+
+        now[0] = 101.99
+        controller.poll()
+        assert reboot_calls == []
+        assert controller.server.poll_count == 2
+
+        now[0] = 102.0
         controller.poll()
 
     assert reboot_calls == ["hard"]
