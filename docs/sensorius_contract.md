@@ -63,6 +63,8 @@ Canonical success response:
 Bootstrap rules:
 
 - Validate required fields and types.
+- After returning an accepted HTTP response, keep the AP web runtime alive for
+  two seconds before rebooting so the response can flush to the client.
 - Persist only supported Network, MQTT, Profile, and Time settings.
 - Keep onboarding protocol state out of normal TOML config schema.
 - If `mqtt.active_profile` is omitted and `mqtt.broker_host` is present,

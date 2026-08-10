@@ -35,6 +35,7 @@ _HTTP_STATUS = {
 }
 
 _MANUAL_SWITCH_GUARD_S = 5.0
+_ITAOT_REBOOT_DELAY_S = 2.0
 _STATUS_HEAP_FLOOR = 10000
 _CONFIG_HEAP_FLOOR = 10000
 _HEADER_READ_WINDOW_S = 0.25
@@ -88,6 +89,7 @@ class WebRuntimeController:
         self.errors = ()
         self._route_paths = ()
         self._pending_reboot_callback = None
+        self._pending_reboot_due_at = None
         self._manual_switch_guard_until = {}
         self._latest_sensor_snapshot = sensor_snapshot
         self._latest_sample_timestamp = (
@@ -604,8 +606,12 @@ class WebRuntimeController:
                     ) or self.reboot_callbacks.get("soft")
                     if callback is not None:
                         self._pending_reboot_callback = callback
+                        self._pending_reboot_due_at = (
+                            monotonic() + _ITAOT_REBOOT_DELAY_S
+                        )
                         self._log_ap_event(
-                            "request path=/itaot-init phase=reboot_scheduled"
+                            "request path=/itaot-init phase=reboot_scheduled "
+                            "delay_s={}".format(_ITAOT_REBOOT_DELAY_S)
                         )
                 self._log_ap_event(
                     "request path=/itaot-init phase=response_return status={}".format(
@@ -773,7 +779,11 @@ class WebRuntimeController:
         callback = self._pending_reboot_callback
         if callback is None:
             return
+        due_at = self._pending_reboot_due_at
+        if due_at is not None and monotonic() < due_at:
+            return
         self._pending_reboot_callback = None
+        self._pending_reboot_due_at = None
         self._log_ap_event("request path=/itaot-init phase=reboot_execute")
         callback()
 
