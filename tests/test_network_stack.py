@@ -1,4 +1,8 @@
-"""Tests for station-mode and AP-mode network stack helpers."""
+"""Tests for station-mode and AP-mode network stack helpers.
+
+The cases model radio, socket-pool, DNS, and mDNS behavior so connection and
+fallback decisions can be validated without device hardware.
+"""
 
 import cpynodus_ii.core.network as network_module
 from cpynodus_ii.core import (

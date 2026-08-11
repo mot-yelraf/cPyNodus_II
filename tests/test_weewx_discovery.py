@@ -1,4 +1,8 @@
-"""Tests for passive Nodus WeeWX device discovery."""
+"""Tests for passive Nodus WeeWX device discovery.
+
+The cases model retained broker traffic and cache updates so discovered device
+metadata remains stable and bounded.
+"""
 
 import importlib.util
 import json

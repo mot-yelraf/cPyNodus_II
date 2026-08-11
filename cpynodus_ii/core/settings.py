@@ -237,12 +237,14 @@ class Settings:
 
     @classmethod
     def from_runtime_config(cls, runtime_config):
+        """Build a settings facade around normalized runtime configuration."""
         instance = cls()
         instance._runtime_config = runtime_config
         return instance
 
     @classmethod
     def from_directory(cls, root, *, board_module=None, digitalio_module=None):
+        """Load and normalize settings documents rooted at a directory."""
         root_path = str(root or ".")
         settings_doc = cls._read_toml_file(_join_path(root_path, cls.SETTINGS_FILE))
         sensor_i2c_doc = cls._read_toml_file(_join_path(root_path, cls.SENSOR_I2C_FILE))
@@ -262,6 +264,7 @@ class Settings:
 
     @classmethod
     def from_working_directory(cls):
+        """Load settings from the working directory when settings TOML exists."""
         if _path_exists(cls.SETTINGS_FILE):
             return cls.from_directory(".")
         return cls()
@@ -1765,34 +1768,44 @@ class Settings:
         return str(getattr(profile, "key", "") or "pico2w")
 
     def active_profile(self):
+        """Return the normalized active runtime profile."""
         return self._runtime_config.active_profile
 
     def sensor_enabled(self):
+        """Return whether a sensor was detected in configuration."""
         return self._runtime_config.sensor.present
 
     def sensor_family(self):
+        """Return the normalized sensor family."""
         return self._runtime_config.sensor.family
 
     def sensor_interface(self):
+        """Return the normalized sensor hardware interface."""
         return self._runtime_config.sensor.interface
 
     def sensor_kind(self):
+        """Return the sensor family through the legacy kind accessor."""
         return self._runtime_config.sensor.family
 
     def active_sensor_file(self):
+        """Return the active sensor configuration filename."""
         return self._runtime_config.sensor.active_config_file
 
     def switch_enabled(self):
+        """Return whether switch configuration is present."""
         return self._runtime_config.switch_config_present
 
     def mqtt_enabled(self):
+        """Return whether the active profile enables MQTT."""
         return self._runtime_config.mqtt_enabled
 
     def mqtt_config(self):
+        """Return the broker fields consumed by the MQTT transport facade."""
         return {
             "BROKER": self._runtime_config.mqtt.broker,
             "PORT": self._runtime_config.mqtt.port,
         }
 
     def runtime_config(self):
+        """Return the normalized runtime configuration object."""
         return self._runtime_config

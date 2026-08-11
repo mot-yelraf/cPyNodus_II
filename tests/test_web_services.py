@@ -1,4 +1,8 @@
-"""Tests for onboarding and setup web-service helpers."""
+"""Tests for onboarding and setup web-service helpers.
+
+The cases cover rendered setup state, submitted values, persistence results,
+and reboot intent for local configuration services.
+"""
 
 from pathlib import Path
 from tempfile import TemporaryDirectory

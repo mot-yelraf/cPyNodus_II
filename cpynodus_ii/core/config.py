@@ -218,6 +218,7 @@ class SensorCalibration:
 
     @soil_temp_moist_val.setter
     def soil_temp_moist_val(self, value):
+        """Set the soil moisture calibration offset through its legacy alias."""
         _raw_setattr(self, "soil_moist_cal_val", float(value or 0.0))
 
 
@@ -284,10 +285,12 @@ class MQTTConfig:
 
     @property
     def preferred_host(self):
+        """Return the broker IP when available, otherwise the configured host."""
         return self.broker_ip or self.broker
 
     @property
     def connection_targets(self):
+        """Return unique literal-IP targets suitable for direct connections."""
         targets = []
         if self.broker_ip:
             targets.append(self.broker_ip)
@@ -388,6 +391,7 @@ class DetectedSensor:
 
     @staticmethod
     def default_interface_for_family(family):
+        """Return the default hardware interface for a sensor family."""
         if family == "i2c":
             return "i2c"
         if family == "soil":
@@ -396,6 +400,7 @@ class DetectedSensor:
 
     @staticmethod
     def default_config_file_for_family(family):
+        """Return the default TOML filename for a sensor family."""
         if family == "i2c":
             return "sensor_i2c.toml"
         if family == "soil":
@@ -404,6 +409,7 @@ class DetectedSensor:
 
     @property
     def present(self):
+        """Return whether a recognized sensor family is configured."""
         return bool(self.family)
 
     @property
@@ -497,14 +503,17 @@ class RuntimeConfig:
 
     @property
     def mqtt_enabled(self):
+        """Return whether the active profile uses MQTT."""
         return self.active_profile in {"sensorius", "weewx", "homeassistant"}
 
     @property
     def web_enabled(self):
+        """Return whether onboarding or NodusWeb routes should be served."""
         return self.ap_mode or self.active_profile == "nodusweb"
 
     @property
     def ntp_enabled(self):
+        """Return whether station-mode time synchronization should run."""
         return (not self.ap_mode) and self.active_profile in {
             "nodusweb",
             "sensorius",
@@ -514,12 +523,15 @@ class RuntimeConfig:
 
     @property
     def calibration_mqtt_available(self):
+        """Return whether calibration commands can use MQTT."""
         return self.mqtt_enabled
 
     @property
     def onboarding_allowed(self):
+        """Return whether the current mode permits onboarding changes."""
         return self.ap_mode or self.active_profile == "nodusweb"
 
     @property
     def switch_config_present(self):
+        """Return whether a switch configuration is present."""
         return self.switch.present

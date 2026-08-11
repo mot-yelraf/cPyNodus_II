@@ -1,4 +1,8 @@
-"""Regression tests for application logging and reboot-side effects."""
+"""Regression tests for application logging and reboot-side effects.
+
+The cases verify compact diagnostic output and the state transitions that
+surround managed reboot and recovery logging.
+"""
 
 import sys
 from types import SimpleNamespace

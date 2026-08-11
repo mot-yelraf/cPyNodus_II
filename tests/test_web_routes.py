@@ -1,4 +1,8 @@
-"""Tests for profile-driven web route selection."""
+"""Tests for profile-driven web route selection.
+
+The cases pin which setup, status, calibration, switch, and automation paths
+are exposed for each runtime mode.
+"""
 
 from cpynodus_ii.core.config import RuntimeConfig, SwitchConfig
 from cpynodus_ii.features.web_routes import build_web_route_table, route_paths

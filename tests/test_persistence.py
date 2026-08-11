@@ -1,4 +1,8 @@
-"""Tests for persisted switch state and calibration storage flows."""
+"""Tests for persisted switch state and calibration storage flows.
+
+The cases verify atomic updates, unchanged values, and failure handling for
+runtime state written back to TOML documents.
+"""
 
 from pathlib import Path
 from tempfile import TemporaryDirectory

@@ -1,4 +1,8 @@
-"""Tests for one-pass steady-state runtime coordination."""
+"""Tests for one-pass steady-state runtime coordination.
+
+The cases verify task ordering, service polling, publish decisions, and
+recovery signals for a single coordinator pass.
+"""
 
 from pathlib import Path
 from types import SimpleNamespace

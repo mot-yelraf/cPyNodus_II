@@ -1,4 +1,8 @@
-"""Tests for bounded reboot-log append and trim behavior."""
+"""Tests for bounded reboot-log append and trim behavior.
+
+The cases verify compact record formatting, size bounds, and resilient file
+handling for reboot diagnostics.
+"""
 
 from cpynodus_ii import __version__
 from cpynodus_ii.core.reboot_log import (

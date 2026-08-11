@@ -1,4 +1,8 @@
-"""Bound automatic recovery from CircuitPython hard-fault safe mode."""
+"""Bound automatic recovery from CircuitPython hard-fault safe mode.
+
+This entrypoint records safe-mode failures, limits automatic reset attempts,
+and leaves the device available for operator diagnosis after the retry bound.
+"""
 
 import microcontroller
 import supervisor

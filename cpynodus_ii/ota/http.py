@@ -215,6 +215,7 @@ class OtaHttpController:
 
     @property
     def route_paths(self):
+        """Return the paths registered by the temporary OTA server."""
         return self._route_paths
 
     def status_payload(self):

@@ -1,4 +1,8 @@
-"""Tests for CircuitPython auto-reload policy helpers."""
+"""Tests for CircuitPython auto-reload policy helpers.
+
+The cases verify that development reload behavior is selected and restored
+without disturbing normal firmware startup policy.
+"""
 
 from types import SimpleNamespace
 

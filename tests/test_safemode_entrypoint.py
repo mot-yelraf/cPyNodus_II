@@ -1,4 +1,8 @@
-"""Tests for bounded CircuitPython safe-mode recovery."""
+"""Tests for bounded CircuitPython safe-mode recovery.
+
+The cases execute the safe-mode entrypoint with faked supervisor state to pin
+retry limits, diagnostic writes, and reset decisions.
+"""
 
 import runpy
 import sys

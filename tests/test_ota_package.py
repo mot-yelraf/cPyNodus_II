@@ -1,4 +1,8 @@
-"""Tests for host-side OTA package creation."""
+"""Tests for host-side OTA package creation.
+
+The cases validate manifests, compiled-module policy, signatures, archive
+contents, and transfer helpers used by the packaging workflow.
+"""
 
 import hashlib
 import json

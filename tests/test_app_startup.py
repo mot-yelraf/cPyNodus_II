@@ -1,4 +1,8 @@
-"""Tests for startup planning, AP fallback, and settings boot behavior."""
+"""Tests for startup planning, AP fallback, and settings boot behavior.
+
+The cases exercise host-side startup orchestration so profile resolution,
+network fallback, and service selection remain deterministic.
+"""
 
 from dataclasses import replace
 from types import SimpleNamespace

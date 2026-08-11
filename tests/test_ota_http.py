@@ -1,4 +1,8 @@
-"""Tests for temporary OTA HTTP endpoints."""
+"""Tests for temporary OTA HTTP endpoints.
+
+The cases exercise route registration, upload validation, status responses,
+transfer cleanup, and reboot scheduling with host-side server doubles.
+"""
 
 import hashlib
 import json

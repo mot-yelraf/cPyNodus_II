@@ -1,3 +1,9 @@
+"""Tests for CircuitPython-safe import boundaries.
+
+The cases scan firmware modules for host-only dependencies and ensure entry
+points preserve the import constraints required by supported boards.
+"""
+
 import subprocess
 import sys
 import textwrap

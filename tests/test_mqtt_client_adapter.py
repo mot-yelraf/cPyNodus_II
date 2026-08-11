@@ -1,4 +1,8 @@
-"""Tests for the MQTT client adapter wrapper and callback handling."""
+"""Tests for the MQTT client adapter wrapper and callback handling.
+
+The cases model connection, publish, subscribe, polling, socket compatibility,
+and failure paths around the vendor MQTT client.
+"""
 
 import time
 

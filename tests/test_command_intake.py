@@ -1,4 +1,8 @@
-"""Tests for inbound command parsing and runtime settings updates."""
+"""Tests for inbound command parsing and runtime settings updates.
+
+The cases cover validation, dispatch, acknowledgements, and persistence for
+supported MQTT command families.
+"""
 
 from pathlib import Path
 from tempfile import TemporaryDirectory

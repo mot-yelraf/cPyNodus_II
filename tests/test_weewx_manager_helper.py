@@ -1,4 +1,8 @@
-"""Tests for the fixed root-side Nodus WeeWX manager actions."""
+"""Tests for the fixed root-side Nodus WeeWX manager actions.
+
+The cases pin command construction, validation, and output for the narrowly
+scoped privileged helper interface.
+"""
 
 import importlib.util
 import json

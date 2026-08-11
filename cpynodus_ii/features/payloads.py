@@ -80,6 +80,7 @@ def build_sensor_data_payload(runtime_config, sensor_snapshot):
 
 
 def build_sensor_availability_payload(runtime_config, *, online):
+    """Build the canonical online or offline sensor availability payload."""
     sensor = runtime_config.sensor
     return {
         "schema": "nodus-availability/v1",
@@ -551,6 +552,7 @@ def _ha_metric_metadata(metric_text, metadata_map):
 
 
 def build_config_ack_payload(message_id, *, accepted=True, duplicate=False):
+    """Build a compact configuration-command acknowledgement payload."""
     return {
         "message_id": str(message_id or ""),
         "accepted": bool(accepted),
@@ -568,6 +570,7 @@ def build_config_result_payload(
     restart=False,
     restart_mode="",
 ):
+    """Build the result payload for an applied configuration command."""
     payload = {
         "message_id": str(message_id or ""),
         "applied": bool(applied),
@@ -582,6 +585,7 @@ def build_config_result_payload(
 
 
 def build_meta_patch_payload(runtime_config, *, source, message_id, updates):
+    """Build a normalized metadata patch payload from applied updates."""
     device_id = (
         runtime_config.sensor.sensor_id
         or runtime_config.switch.device_id
@@ -615,6 +619,7 @@ def build_meta_patch_payload(runtime_config, *, source, message_id, updates):
 
 
 def build_calibration_ack_payload(message_id, *, accepted=True):
+    """Build a compact calibration-command acknowledgement payload."""
     return {
         "message_id": str(message_id or ""),
         "accepted": bool(accepted),
@@ -633,6 +638,7 @@ def build_calibration_result_payload(
     sample_count=None,
     reference_ph=None,
 ):
+    """Build the result payload for a calibration command."""
     payload = {
         "message_id": str(message_id or ""),
         "applied": bool(applied),
@@ -655,6 +661,7 @@ def build_calibration_result_payload(
 def build_calibration_status_payload(
     runtime_config, *, status="idle", calibrated=False, extra=None
 ):
+    """Build a calibration status payload with optional extra fields."""
     sensor = runtime_config.sensor
     payload = {
         "schema": "nodus-calibration-status/v1",

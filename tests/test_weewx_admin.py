@@ -1,4 +1,8 @@
-"""Tests for the limited authenticated Nodus WeeWX setup service."""
+"""Tests for the limited authenticated Nodus WeeWX setup service.
+
+The cases verify authentication, permitted manager actions, rendered status,
+and rejection of unsupported administrative requests.
+"""
 
 import importlib.util
 import json

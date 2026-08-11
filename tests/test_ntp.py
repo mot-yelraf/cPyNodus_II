@@ -1,4 +1,8 @@
-"""Tests for best-effort NTP synchronization behavior."""
+"""Tests for best-effort NTP synchronization behavior.
+
+The cases model successful and failed resolution and clock updates so time
+synchronization remains non-fatal and observable.
+"""
 
 from cpynodus_ii.core.config import NetworkConfig, RuntimeConfig
 from cpynodus_ii.core.network import NetworkStack

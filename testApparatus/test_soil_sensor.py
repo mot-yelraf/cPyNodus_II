@@ -109,6 +109,7 @@ CANDIDATE_LAYOUTS = (
 
 
 def crc16_modbus(buf: bytes) -> int:
+    """Return the Modbus CRC-16 checksum for a byte buffer."""
     crc = 0xFFFF
     for b in buf:
         crc ^= b
@@ -127,6 +128,7 @@ def build_read_req(
     count: int,
     function_code: int = 0x03,
 ) -> bytes:
+    """Build a Modbus request for a contiguous register range."""
     frame = bytearray(
         [
             addr & 0xFF,
@@ -184,6 +186,7 @@ def read_holding_regs(
     label: str = "",
     function_code: int = 0x03,
 ):
+    """Read and validate a contiguous register range from a soil sensor."""
     req = build_read_req(addr, start_reg, reg_count, function_code=function_code)
     try:
         uart.reset_input_buffer()
@@ -217,6 +220,7 @@ def _function_label(function_code):
 
 
 def prompt_sensor_profile():
+    """Prompt the operator for a soil sensor profile selection."""
     print("Select soil sensor type:")
     print("  1) 2-in-1 (moisture + temp)")
     print("  2) 4-in-1 (moisture + temp + EC + pH)")
@@ -239,6 +243,7 @@ def detect_sensor_profile(
     label: str = "",
     function_code: int = 0x03,
 ):
+    """Probe supported register spans and return the detected sensor profile."""
     regs7 = read_holding_regs(
         uart,
         addr,
@@ -283,6 +288,7 @@ def read_measurement(
     function_code: int = 0x03,
     layout=None,
 ):
+    """Read and decode one soil-sensor measurement for a profile or layout."""
     if layout:
         by_register = _read_layout_register_values(
             uart,
@@ -338,6 +344,7 @@ def read_measurement(
 
 
 def print_metrics(metrics, label=""):
+    """Print decoded soil metrics in a compact operator-readable line."""
     profile = metrics.get("profile", "unknown")
     base = (
         label
@@ -527,6 +534,7 @@ def _print_toml_candidate(label, layout):
 
 
 def analyze_register_map(snapshots):
+    """Score candidate layouts and annotate snapshots with unique best hints."""
     if not snapshots:
         return
     print("\nAnalyzing candidate register layouts.")
@@ -579,6 +587,7 @@ def _pin_name(pin):
 
 
 def print_contact_summary(contacts):
+    """Print detected contacts and candidate TOML configuration blocks."""
     if not contacts:
         return
     print("\nIdentified soil contact summary.")
@@ -612,6 +621,7 @@ def print_contact_summary(contacts):
 
 
 def prompt_measurement_loop():
+    """Return whether the operator requests the periodic measurement loop."""
     raw = input("Enter 10-second measurement loop? [y/N]: ").strip().lower()
     return raw in ("y", "yes")
 
@@ -622,6 +632,7 @@ def sweep_registers(
     end_reg=SWEEP_END_REG,
     chunk=SWEEP_CHUNK,
 ):
+    """Sweep configured register regions for each detected sensor contact."""
     if not contacts:
         return []
     print(
@@ -675,6 +686,7 @@ def sweep_registers(
 
 
 def probe_contacts(profile: str):
+    """Probe channel, baud, address, and function combinations for sensors."""
     successes = []
     for ch_name, (uart_tx, uart_rx) in CHANNELS.items():
         for baud in BAUDS:
@@ -739,6 +751,7 @@ def probe_contacts(profile: str):
 
 
 def measurement_loop(contacts):
+    """Continuously print measurements from detected contacts until stopped."""
     if not contacts:
         print("\nNo successful contacts found during probe phase.")
         return
@@ -793,6 +806,7 @@ def measurement_loop(contacts):
 
 
 def main():
+    """Run the interactive soil sensor probe and measurement workflow."""
     print("=== {} ===".format(SCRIPT_VERSION))
     profile = prompt_sensor_profile()
     print("Using profile: {}".format(profile))

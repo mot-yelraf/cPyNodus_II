@@ -1,4 +1,8 @@
-"""Tests for steady-state behavior across MQTT transport conditions."""
+"""Tests for steady-state behavior across MQTT transport conditions.
+
+The cases model connected, disconnected, delayed, and failed transport states
+to pin coordination and recovery outcomes.
+"""
 
 from types import SimpleNamespace
 

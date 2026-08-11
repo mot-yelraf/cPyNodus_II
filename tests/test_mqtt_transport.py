@@ -1,4 +1,8 @@
-"""Tests for the lightweight MQTT transport facade."""
+"""Tests for the lightweight MQTT transport facade.
+
+The cases verify connection bookkeeping and bounded message queues shared by
+feature logic and the concrete MQTT client adapter.
+"""
 
 from cpynodus_ii.core.mqtt import MQTTTransport
 from cpynodus_ii.core.settings import Settings

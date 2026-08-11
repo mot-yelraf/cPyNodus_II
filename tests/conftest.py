@@ -1,4 +1,8 @@
-"""Shared pytest configuration for host-side cPyNodus_II tests."""
+"""Shared pytest configuration for host-side cPyNodus_II tests.
+
+The fixtures and import setup in this module provide a consistent CPython
+environment for exercising firmware logic without CircuitPython hardware.
+"""
 
 import sys
 from pathlib import Path

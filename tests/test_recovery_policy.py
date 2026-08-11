@@ -1,4 +1,8 @@
-"""Tests for bounded Wi-Fi and MQTT recovery policy decisions."""
+"""Tests for bounded Wi-Fi and MQTT recovery policy decisions.
+
+The cases model elapsed time and repeated failures to pin retry, soft-reload,
+and hard-reset escalation decisions.
+"""
 
 from cpynodus_ii.core.recovery import (
     RecoveryPolicy,

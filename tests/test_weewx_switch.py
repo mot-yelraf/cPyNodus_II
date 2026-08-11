@@ -1,4 +1,8 @@
-"""Tests for the host-side WeeWX Nodus switch status service."""
+"""Tests for the host-side WeeWX Nodus switch status service.
+
+The cases cover MQTT state ingestion, cached status, commands, and report data
+for configured switch channels.
+"""
 
 import importlib.util
 import json

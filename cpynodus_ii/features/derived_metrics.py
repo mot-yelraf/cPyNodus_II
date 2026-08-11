@@ -52,6 +52,7 @@ def enrich_metrics(device, metrics, *, runtime_config):
 
 
 def calculate_vpd(temp_c, rh_pct):
+    """Calculate vapor pressure deficit in kPa from temperature and humidity."""
     if temp_c is None or rh_pct is None:
         return None
     try:
@@ -65,6 +66,7 @@ def calculate_vpd(temp_c, rh_pct):
 
 
 def calculate_dewpoint(temp_c, rh_pct):
+    """Calculate dew point in degrees Celsius from temperature and humidity."""
     if temp_c is None or rh_pct is None:
         return None
     try:
@@ -82,6 +84,7 @@ def calculate_dewpoint(temp_c, rh_pct):
 
 
 def calculate_absolute_humidity(temp_c, rh_pct):
+    """Calculate absolute humidity in grams per cubic meter."""
     if temp_c is None or rh_pct is None:
         return None
     try:
@@ -100,6 +103,7 @@ def calculate_absolute_humidity(temp_c, rh_pct):
 
 
 def calculate_dewpoint_deficit(temp_c, rh_pct):
+    """Calculate the Celsius difference between air temperature and dew point."""
     dewpoint_c = calculate_dewpoint(temp_c, rh_pct)
     if dewpoint_c is None or temp_c is None:
         return None
@@ -122,6 +126,7 @@ def calculate_dewvpd_risk(
     vpd_high=2.0,
     dew_weight=0.65,
 ):
+    """Calculate a blended 0-100 dew-point and VPD risk score."""
     if temp_c is None or rh_pct is None or vpd_kpa is None:
         return None
     delta_t = calculate_dewpoint_deficit(temp_c, rh_pct)
@@ -187,6 +192,7 @@ def calculate_npk_fertility_index(n_value, p_value, k_value, targets):
 
 
 def estimate_aqi(gas_ohms, rh_percent=None):
+    """Estimate a bounded air-quality index from gas resistance and humidity."""
     poor_threshold = 5100
     great_threshold = 995100
     if gas_ohms is None or gas_ohms < poor_threshold:
@@ -205,6 +211,7 @@ def estimate_aqi(gas_ohms, rh_percent=None):
 
 
 def estimate_ppfd_from_lux(lux, factor=DEFAULT_PPFD_LUX_FACTOR):
+    """Estimate photosynthetic photon flux density from illuminance."""
     if lux is None:
         return None
     try:
