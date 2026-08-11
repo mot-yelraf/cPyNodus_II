@@ -1,4 +1,8 @@
-"""Tests for normalized MQTT and runtime payload generation."""
+"""Tests for normalized MQTT and runtime payload generation.
+
+The cases pin externally visible schemas, identifiers, values, and optional
+fields emitted by feature payload builders.
+"""
 
 import json
 from types import SimpleNamespace

@@ -1,4 +1,8 @@
-"""Tests for sensor and switch feature initialization decisions."""
+"""Tests for sensor and switch feature initialization decisions.
+
+The cases map runtime configuration to enabled feature services and verify
+that absent hardware or configuration is handled explicitly.
+"""
 
 from pathlib import Path
 from tempfile import TemporaryDirectory

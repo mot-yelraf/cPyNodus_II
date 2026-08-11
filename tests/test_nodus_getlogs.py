@@ -1,4 +1,8 @@
-"""Tests for the host-side MQTT log retrieval tool."""
+"""Tests for the host-side MQTT log retrieval tool.
+
+The cases simulate broker messages and transfer state to verify complete,
+failed, and timed-out log retrieval workflows.
+"""
 
 import json
 from types import SimpleNamespace

@@ -1,4 +1,8 @@
-"""Tests for temporary OTA runtime startup behavior."""
+"""Tests for temporary OTA runtime startup behavior.
+
+The cases verify that pending OTA state selects the isolated HTTP runtime and
+that invalid or absent state follows normal startup.
+"""
 
 import asyncio
 from types import SimpleNamespace

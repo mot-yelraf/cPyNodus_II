@@ -1,4 +1,8 @@
-"""Tests for constructing feature runtime handles from settings."""
+"""Tests for constructing feature runtime handles from settings.
+
+The cases ensure runtime handles contain only the services enabled by the
+resolved profile and available configuration.
+"""
 
 from pathlib import Path
 from tempfile import TemporaryDirectory

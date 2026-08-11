@@ -1,4 +1,8 @@
-"""Tests for recovery diagnostic writes emitted by managed recovery."""
+"""Tests for recovery diagnostic writes emitted by managed recovery.
+
+The cases pin the reasons and metadata recorded when application recovery
+selects a reboot path.
+"""
 
 import sys
 from types import ModuleType

@@ -1,4 +1,8 @@
-"""Tests for runtime configuration loading and password handling."""
+"""Tests for runtime configuration loading and password handling.
+
+The cases cover profile normalization, sensor and switch detection, defaults,
+and redaction-sensitive configuration values.
+"""
 
 from pathlib import Path
 from tempfile import TemporaryDirectory

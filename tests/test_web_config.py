@@ -1,4 +1,8 @@
-"""Tests for web-driven configuration updates and switch overrides."""
+"""Tests for web-driven configuration updates and switch overrides.
+
+The cases validate form normalization, persistence, and restart intent while
+protecting existing settings from malformed submissions.
+"""
 
 from pathlib import Path
 from tempfile import TemporaryDirectory

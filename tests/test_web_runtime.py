@@ -1,4 +1,8 @@
-"""Tests for web runtime startup and polling behavior."""
+"""Tests for web runtime startup and polling behavior.
+
+The cases use radio, server, and socket doubles to verify listener lifecycle,
+request handling, cleanup, and timeout recovery.
+"""
 
 from pathlib import Path
 from tempfile import TemporaryDirectory

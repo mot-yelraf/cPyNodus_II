@@ -1,4 +1,8 @@
-"""Tests for bounded recovery-log append and trim behavior."""
+"""Tests for bounded recovery-log append and trim behavior.
+
+The cases verify compact record formatting, size bounds, and resilient file
+handling for recovery diagnostics.
+"""
 
 from cpynodus_ii import __version__
 from cpynodus_ii.core.recovery_log import append_recovery_event

@@ -1,4 +1,8 @@
-"""Tests for binding runtime configuration to hardware adapters."""
+"""Tests for binding runtime configuration to hardware adapters.
+
+The cases verify pin and bus selection while keeping all host-side checks
+independent of physical CircuitPython hardware.
+"""
 
 from pathlib import Path
 from tempfile import TemporaryDirectory

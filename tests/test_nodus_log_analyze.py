@@ -1,4 +1,8 @@
-"""Tests for transferred Nodus recovery-log analysis."""
+"""Tests for transferred Nodus recovery-log analysis.
+
+The cases feed representative diagnostics into the host tool and pin its
+classification and human-readable summaries.
+"""
 
 from scripts.nodus_log_analyze import (
     analyze_device_dir,

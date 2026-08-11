@@ -252,6 +252,7 @@ class WebRuntimeController:
 
     @property
     def route_paths(self):
+        """Return the paths registered by the web runtime."""
         return self._route_paths
 
     def _resolve_server_module(self):

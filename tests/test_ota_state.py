@@ -1,4 +1,8 @@
-"""Tests for device-compatible OTA state helpers."""
+"""Tests for device-compatible OTA state helpers.
+
+The cases cover state normalization, persistence, cleanup, and constrained
+filesystem behavior shared by normal and temporary OTA runtimes.
+"""
 
 from cpynodus_ii.ota.state import (
     FwUpdateState,

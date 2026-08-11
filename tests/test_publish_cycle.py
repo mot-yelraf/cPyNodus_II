@@ -1,4 +1,8 @@
-"""Tests for startup and steady-state MQTT publish-cycle helpers."""
+"""Tests for startup and steady-state MQTT publish-cycle helpers.
+
+The cases pin topic selection, payload ordering, retained state, and cycle
+bookkeeping for enabled runtime features.
+"""
 
 from types import SimpleNamespace
 

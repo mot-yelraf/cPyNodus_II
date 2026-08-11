@@ -1,4 +1,8 @@
-"""Tests for factory bootstrap writes and template-ordered TOML output."""
+"""Tests for factory bootstrap writes and template-ordered TOML output.
+
+The cases model blank and populated filesystems, board probes, backups, and
+deterministic persistence of generated settings.
+"""
 
 from pathlib import Path
 from tempfile import TemporaryDirectory

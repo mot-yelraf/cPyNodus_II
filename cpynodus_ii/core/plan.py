@@ -30,6 +30,7 @@ class StartupPlan:
 
     @classmethod
     def from_runtime_config(cls, runtime_config: RuntimeConfig):
+        """Build a startup plan from normalized runtime configuration."""
         profile = runtime_config.active_profile
         sensor = runtime_config.sensor
         ap_mode = runtime_config.ap_mode
@@ -51,4 +52,5 @@ class StartupPlan:
 
     @classmethod
     def from_settings(cls, settings):
+        """Build a startup plan from a settings facade."""
         return cls.from_runtime_config(settings.runtime_config())

@@ -1,4 +1,8 @@
-"""Tests for web handler payloads and route-level actions."""
+"""Tests for web handler payloads and route-level actions.
+
+The cases exercise request parsing and response generation for read-only and
+authorized state-changing web handlers.
+"""
 
 from pathlib import Path
 from tempfile import TemporaryDirectory

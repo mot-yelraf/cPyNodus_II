@@ -1,4 +1,8 @@
-"""Tests for deploy-time preservation and OTA trust-key provisioning."""
+"""Tests for deploy-time preservation and OTA trust-key provisioning.
+
+The cases inspect deployment script behavior so operator configuration and
+authentication material are handled by the documented workflow.
+"""
 
 import shutil
 import subprocess

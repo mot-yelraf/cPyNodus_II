@@ -1,4 +1,8 @@
-"""Tests for board profile detection and normalized defaults."""
+"""Tests for board profile detection and normalized defaults.
+
+The cases model supported boards and unknown hardware so pin, target, and
+configuration defaults remain predictable.
+"""
 
 from types import SimpleNamespace
 

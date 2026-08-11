@@ -7,11 +7,13 @@ files remain stable and readable.
 
 
 def load_file(path):
+    """Load a supported TOML document from a UTF-8 file."""
     with open(path, "r", encoding="utf-8") as handle:
         return loads(handle.read())
 
 
 def loads(text):
+    """Parse the supported TOML subset from text into nested dictionaries."""
     document = {}
     current = document
     for raw_line in str(text or "").splitlines():
@@ -34,10 +36,12 @@ def loads(text):
 
 
 def dumps(document):
+    """Serialize a settings document using deterministic default ordering."""
     return dumps_with_template(document)
 
 
 def dumps_with_template(document, template_text=""):
+    """Serialize a settings document using ordering from an optional template."""
     lines = []
     scalar_order, child_order = _parse_template_order(template_text)
     _emit_sections(

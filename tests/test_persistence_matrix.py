@@ -1,4 +1,8 @@
-"""Matrix tests for inbound TOML persistence command paths."""
+"""Matrix tests for inbound TOML persistence command paths.
+
+The parameterized cases exercise supported sections, keys, value types, and
+rejection behavior across configuration command families.
+"""
 
 from pathlib import Path
 from tempfile import TemporaryDirectory

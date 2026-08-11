@@ -1,4 +1,8 @@
-"""Checks for the units and archive schema installed on the WeeWX host."""
+"""Checks for the units and archive schema installed on the WeeWX host.
+
+The cases inspect extension modules to ensure Nodus observations, groups, and
+archive fields remain aligned with the host integration contract.
+"""
 
 import importlib.util
 import sys

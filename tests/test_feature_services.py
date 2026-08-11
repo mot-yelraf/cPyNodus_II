@@ -1,4 +1,8 @@
-"""Tests for sensor and switch service behavior over fake adapters."""
+"""Tests for sensor and switch service behavior over fake adapters.
+
+The cases use lightweight hardware doubles to validate service lifecycle,
+readings, control, and cleanup on the host.
+"""
 
 from pathlib import Path
 from tempfile import TemporaryDirectory

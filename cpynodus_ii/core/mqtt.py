@@ -71,6 +71,7 @@ class MQTTTransport:
 
     @classmethod
     def from_settings(cls, settings):
+        """Build a transport using broker settings from the settings facade."""
         config = settings.mqtt_config()
         return cls(
             broker=config.get("BROKER", ""),
@@ -78,9 +79,11 @@ class MQTTTransport:
         )
 
     def mark_connect_requested(self):
+        """Record that the runtime requested an MQTT connection."""
         self.connect_requested = True
 
     def mark_connected(self, now_monotonic=None):
+        """Record a successful connection and return its generation number."""
         self.connected = True
         self.connection_generation += 1
         now_value = _monotonic_value(now_monotonic)
@@ -89,6 +92,7 @@ class MQTTTransport:
         return self.connection_generation
 
     def mark_disconnected(self, now_monotonic=None, reason=""):
+        """Record a disconnection and its optional diagnostic reason."""
         self.connected = False
         self.last_disconnected_at = _monotonic_value(now_monotonic)
         if reason:
@@ -272,9 +276,11 @@ class MQTTTransport:
             self.subscriptions = self.subscriptions[subscriptions_start:]
 
     def target(self):
+        """Return the configured broker host and port."""
         return self.broker, self.port
 
     def publish(self, topic, payload, *, retain=False):
+        """Queue and return a normalized publish request."""
         normalized_payload = payload
         if isinstance(payload, dict):
             normalized_payload = dict(payload)
@@ -287,6 +293,7 @@ class MQTTTransport:
         return message
 
     def subscribe(self, topic):
+        """Record a unique topic subscription and return its normalized text."""
         topic = str(topic or "").strip()
         if topic in self.subscriptions:
             return topic
@@ -294,19 +301,23 @@ class MQTTTransport:
         return topic
 
     def defer_subscription_retry(self, now_monotonic, delay_s):
+        """Defer subscription retry eligibility by the requested delay."""
         self.subscription_retry_after = float(now_monotonic or 0.0) + float(
             delay_s or 0.0
         )
 
     def subscription_retry_ready(self, now_monotonic):
+        """Return whether a deferred subscription retry is now eligible."""
         return float(now_monotonic or 0.0) >= float(
             self.subscription_retry_after or 0.0
         )
 
     def clear_subscription_retry(self):
+        """Clear the deferred subscription retry deadline."""
         self.subscription_retry_after = 0.0
 
     def receive(self, topic, payload_text):
+        """Queue and return a normalized inbound MQTT message."""
         if topic is None:
             topic_text = ""
         elif isinstance(topic, str):
@@ -324,6 +335,7 @@ class MQTTTransport:
         return message
 
     def drain_received(self):
+        """Return all queued inbound messages and clear the queue."""
         messages = list(self.received_messages)
         self.received_messages.clear()
         return messages

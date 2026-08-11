@@ -1,4 +1,8 @@
-"""Tests for bounded local NodusWeb switch automations."""
+"""Tests for bounded local NodusWeb switch automations.
+
+The cases cover rule normalization, evaluation, persistence, and switch
+actions while respecting constrained runtime state.
+"""
 
 from types import SimpleNamespace
 

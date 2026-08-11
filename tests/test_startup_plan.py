@@ -1,4 +1,8 @@
-"""Tests for deriving startup plans from settings and runtime intent."""
+"""Tests for deriving startup plans from settings and runtime intent.
+
+The cases map profiles, AP mode, sensors, and switches to explicit service
+enablement decisions consumed by application startup.
+"""
 
 from cpynodus_ii.core.config import DetectedSensor, RuntimeConfig
 from cpynodus_ii.core.plan import StartupPlan

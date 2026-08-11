@@ -1,4 +1,8 @@
-"""Focused tests for signed OTA authentication and manifest policy."""
+"""Focused tests for signed OTA authentication and manifest policy.
+
+The cases verify signatures, hashes, trust configuration, and rejection rules
+for authenticated firmware packages.
+"""
 
 import json
 import shutil

@@ -1,4 +1,8 @@
-"""Tests for the CircuitPython boot hook."""
+"""Tests for the CircuitPython boot hook.
+
+The cases execute the host-mode entrypoint with faked modules to verify
+filesystem and USB guard decisions without accessing a mounted device.
+"""
 
 import runpy
 import sys
