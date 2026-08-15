@@ -378,6 +378,133 @@ def test_switch_admin_snapshot_exposes_retained_identity_and_service_statistics(
     }
 
 
+def test_switch_admin_history_reads_bounded_archive_and_switch_events():
+    module = _load_module()
+
+    class Manager:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, _exc_type, _exc, _traceback):
+            return None
+
+        def genBatchRecords(self, start_ts, end_ts):
+            assert start_ts == 100
+            assert end_ts == 3700
+            return iter(
+                (
+                    {"dateTime": 120, "inTemp": 20.5},
+                    {"dateTime": 180, "inTemp": 21.0},
+                )
+            )
+
+    service = object.__new__(module.NodusSwitchStatus)
+    service.engine = SimpleNamespace()
+    service._open_archive_manager = lambda: Manager()
+    service.lock = threading.RLock()
+    service.controller = module.SwitchStatusController()
+    service.controller.update_meta(_meta(), now=100)
+    service.controller.channels["S1-yuk0nv"]["events"] = [
+        {"timestamp": 200, "state": "ON"},
+        {"timestamp": 150, "state": "OFF"},
+    ]
+    service.config_dict = {
+        "MQTTSubscribeDriver": {
+            "topics": {
+                "nodus/aht-yuk0nv/data": {
+                    "temperature": {"name": "inTemp"}
+                }
+            }
+        }
+    }
+
+    result = service.admin_history(
+        {
+            "metrics": ["inTemp", "notConfigured"],
+            "switch_channels": ["S1-yuk0nv"],
+            "range_seconds": 3600,
+            "end_ts": 3700,
+        }
+    )
+
+    assert result["schema"] == "nodus-weewx-history/v1"
+    assert result["selected_metrics"] == ["inTemp"]
+    assert result["series"]["inTemp"] == [
+        {"t": 120, "v": 20.5},
+        {"t": 180, "v": 21.0},
+    ]
+    assert result["switches"][0]["events"] == [
+        {"t": 150, "state": False},
+        {"t": 200, "state": True},
+    ]
+
+
+def test_switch_admin_history_skips_invalid_archive_values():
+    module = _load_module()
+
+    class Manager:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, _exc_type, _exc, _traceback):
+            return None
+
+        def genBatchRecords(self, _start_ts, _end_ts):
+            return iter(
+                (
+                    {"dateTime": 120, "inTemp": "not-a-number"},
+                    {"dateTime": 180, "inTemp": 21.0},
+                )
+            )
+
+    service = object.__new__(module.NodusSwitchStatus)
+    service.engine = SimpleNamespace()
+    service._open_archive_manager = lambda: Manager()
+    service.lock = threading.RLock()
+    service.controller = module.SwitchStatusController()
+    service.config_dict = {
+        "MQTTSubscribeDriver": {
+            "topics": {
+                "nodus/aht-yuk0nv/data": {
+                    "temperature": {"name": "inTemp"}
+                }
+            }
+        }
+    }
+
+    result = service.admin_history(
+        {"metrics": ["inTemp"], "range_seconds": 3600, "end_ts": 3700}
+    )
+
+    assert result["series"]["inTemp"] == [{"t": 180, "v": 21.0}]
+
+
+def test_switch_history_opens_request_thread_archive_manager(monkeypatch):
+    module = _load_module()
+    calls = []
+    sentinel = object()
+    manager_module = ModuleType("weewx.manager")
+
+    def open_manager_with_config(config_dict, data_binding):
+        calls.append((config_dict, data_binding, threading.get_ident()))
+        return sentinel
+
+    manager_module.open_manager_with_config = open_manager_with_config
+    weewx_module = ModuleType("weewx")
+    weewx_module.manager = manager_module
+    monkeypatch.setitem(sys.modules, "weewx", weewx_module)
+    monkeypatch.setitem(sys.modules, "weewx.manager", manager_module)
+    service = object.__new__(module.NodusSwitchStatus)
+    service.config_dict = {"marker": "config"}
+
+    result = service._open_archive_manager()
+
+    assert result is sentinel
+    assert calls == [
+        (service.config_dict, "wx_binding", threading.get_ident())
+    ]
+
+
 def test_switch_status_preserves_events_across_metadata_refresh():
     module = _load_module()
     controller = module.SwitchStatusController()

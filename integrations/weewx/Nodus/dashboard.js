@@ -10,6 +10,12 @@ let nodusReportValidator = "";
 let nodusReportModified = Date.parse(document.lastModified) || 0;
 let nodusAstronomyDetail = null;
 let nodusAstronomyDetailRequest = null;
+let nodusGraphumRange = 86400;
+let nodusGraphumReady = false;
+let nodusGraphumTimer = null;
+let nodusGraphumRefresh = null;
+let nodusGraphumAbort = null;
+let nodusGraphumPayload = null;
 const nodusMoonSurfaceImage = new Image();
 
 nodusMoonSurfaceImage.addEventListener("load", () => {
@@ -741,7 +747,195 @@ function nodusRenderAstronomy() {
   nodusDrawPositions(data);
 }
 
+function nodusGraphumSelections() {
+  return Array.from(document.querySelectorAll(".graphum-observation:checked")).map(input => ({
+    kind: input.dataset.kind,
+    value: input.value,
+    label: input.dataset.label || input.value
+  }));
+}
+
+function nodusGraphumRangeLabel(seconds) {
+  const labels = {3600:"Last hour",10800:"Last 3 hours",21600:"Last 6 hours",43200:"Last 12 hours",86400:"Last 24 hours",259200:"Last 3 days",604800:"Last 7 days",1209600:"Last 14 days",2592000:"Last 30 days",5184000:"Last 60 days",7776000:"Last 90 days"};
+  return labels[seconds] || "History";
+}
+
+function nodusGraphumUpdateSelection(changed) {
+  const selected = nodusGraphumSelections();
+  if (changed?.checked && selected.length > 4) {
+    changed.checked = false;
+    document.getElementById("graphumStatus").textContent = "Select up to four observations.";
+  }
+  const current = nodusGraphumSelections();
+  document.getElementById("graphumSelectionCount").textContent = `${current.length} of 4`;
+  document.getElementById("graphumRangeTitle").textContent = nodusGraphumRangeLabel(nodusGraphumRange);
+  const chips = document.getElementById("graphumChips");
+  chips.replaceChildren(...current.map(item => {
+    const chip = document.createElement("span");
+    chip.className = "graphum-chip";
+    chip.textContent = item.label;
+    return chip;
+  }));
+  window.clearTimeout(nodusGraphumRefresh);
+  nodusGraphumRefresh = window.setTimeout(nodusLoadGraphum, 140);
+}
+
+function nodusGraphumOption(item, kind) {
+  const label = document.createElement("label");
+  label.className = "graphum-option-item";
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.className = "graphum-observation";
+  input.dataset.kind = kind;
+  input.dataset.label = item.label || item.name || item.channel_id;
+  input.value = item.name || item.channel_id;
+  input.addEventListener("change", () => nodusGraphumUpdateSelection(input));
+  const text = document.createElement("span");
+  text.textContent = `${input.dataset.label}${item.unit ? ` (${item.unit})` : ""}`;
+  label.append(input, text);
+  return label;
+}
+
+function nodusGraphumGroup(title, items, kind) {
+  const group = document.createElement("details");
+  group.className = "graphum-option-group";
+  group.open = true;
+  const summary = document.createElement("summary");
+  summary.textContent = title;
+  const rows = document.createElement("div");
+  rows.className = "graphum-option-items";
+  items.forEach(item => rows.append(nodusGraphumOption(item, kind)));
+  group.append(summary, rows);
+  return group;
+}
+
+async function nodusPrepareGraphum() {
+  if (nodusGraphumReady) return;
+  const response = await fetch(`${nodusApiOrigin}/api/status`, {cache:"no-store"});
+  if (!response.ok) throw new Error("Graph selections are unavailable");
+  const status = await response.json();
+  const metricHost = document.getElementById("graphumMetricOptions");
+  const metrics = status.metric_options || [];
+  metricHost.replaceChildren();
+  if (metrics.length) metricHost.append(nodusGraphumGroup(status.device_id || "Nodus sensor", metrics, "metric"));
+  else metricHost.innerHTML = "<p>No archived sensor metrics are available.</p>";
+  const switchHost = document.getElementById("graphumSwitchOptions");
+  const switches = status.switch?.channels || [];
+  switchHost.replaceChildren();
+  if (switches.length) switchHost.append(nodusGraphumGroup(status.switch?.switch_device_id || "Nodus switches", switches, "switch"));
+  else switchHost.innerHTML = "<p>No switch channels are available.</p>";
+  nodusGraphumReady = true;
+}
+
+function nodusOpenGraphum() {
+  const graphum = document.getElementById("nodusGraphum");
+  graphum.classList.add("active");
+  graphum.setAttribute("aria-hidden", "false");
+  nodusStopPresentationRefresh();
+  nodusPrepareGraphum().then(() => {
+    nodusResizeGraphum();
+    nodusGraphumUpdateSelection();
+  }).catch(error => { document.getElementById("graphumStatus").textContent = error.message; });
+  window.clearInterval(nodusGraphumTimer);
+  nodusGraphumTimer = window.setInterval(nodusLoadGraphum, 15000);
+}
+
+function nodusCloseGraphum() {
+  const graphum = document.getElementById("nodusGraphum");
+  graphum.classList.remove("active");
+  graphum.setAttribute("aria-hidden", "true");
+  window.clearInterval(nodusGraphumTimer);
+  nodusGraphumTimer = null;
+  window.clearTimeout(nodusGraphumRefresh);
+  nodusGraphumAbort?.abort();
+  nodusGraphumAbort = null;
+  nodusStartPresentationRefresh();
+}
+
+async function nodusLoadGraphum() {
+  if (!document.getElementById("nodusGraphum")?.classList.contains("active")) return;
+  const selected = nodusGraphumSelections();
+  if (!selected.length) {
+    nodusGraphumPayload = null;
+    nodusResizeGraphum();
+    document.getElementById("graphumStatus").textContent = "Select a sensor metric or switch state to begin.";
+    return;
+  }
+  nodusGraphumAbort?.abort();
+  nodusGraphumAbort = new AbortController();
+  const spinner = document.getElementById("graphumSpinner");
+  spinner.classList.add("active");
+  try {
+    const response = await fetch(`${nodusApiOrigin}/api/history`, {
+      method:"POST", headers:{"Content-Type":"text/plain;charset=UTF-8"}, signal:nodusGraphumAbort.signal,
+      body:JSON.stringify({range_seconds:nodusGraphumRange,metrics:selected.filter(item=>item.kind==="metric").map(item=>item.value),switch_channels:selected.filter(item=>item.kind==="switch").map(item=>item.value)})
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "History request failed");
+    nodusGraphumPayload = payload;
+    nodusResizeGraphum();
+    const points = Object.values(payload.series || {}).reduce((sum, rows) => sum + rows.length, 0);
+    document.getElementById("graphumStatus").textContent = points || (payload.switches || []).some(item => item.events?.length) ? "Graph updated" : "No history is available in this range.";
+  } catch (error) {
+    if (error.name !== "AbortError") {
+      nodusGraphumPayload = {error:error.message || "History request failed"};
+      nodusResizeGraphum();
+      document.getElementById("graphumStatus").textContent = nodusGraphumPayload.error;
+    }
+  } finally {
+    spinner.classList.remove("active");
+  }
+}
+
+function nodusResizeGraphum() {
+  const canvas = document.getElementById("graphumCanvas");
+  const frame = canvas.parentElement;
+  canvas.width = Math.max(320, frame.clientWidth - 12);
+  canvas.height = Math.max(260, frame.clientHeight - 12);
+  nodusDrawGraphum(canvas, nodusGraphumPayload);
+}
+
+function nodusDrawGraphum(canvas, payload) {
+  const context = canvas.getContext("2d");
+  const width = canvas.width, height = canvas.height;
+  context.clearRect(0, 0, width, height);
+  context.fillStyle = "#fff"; context.fillRect(0, 0, width, height);
+  if (!payload) {
+    context.fillStyle = "#61796f"; context.font = "16px system-ui,sans-serif"; context.textAlign = "center";
+    context.fillText("Select a sensor metric or switch state to begin.", width / 2, height / 2); return;
+  }
+  if (payload.error) {
+    context.fillStyle = "#b22635"; context.font = "16px system-ui,sans-serif"; context.textAlign = "center";
+    context.fillText(payload.error, width / 2, height / 2); return;
+  }
+  const left=64,right=28,top=48,bottom=52,x0=left,x1=width-right,y0=top,y1=height-bottom;
+  const timestamps=[];
+  Object.values(payload.series||{}).forEach(rows=>(rows||[]).forEach(row=>{const stamp=Number(row.t);if(Number.isFinite(stamp))timestamps.push(stamp);}));
+  (payload.switches||[]).forEach(channel=>(channel.events||[]).forEach(event=>{const stamp=Number(event.t);if(Number.isFinite(stamp))timestamps.push(stamp);}));
+  const requestedStart=Number(payload.start_ts)||0;
+  const start=timestamps.length?Math.min(...timestamps):requestedStart;
+  const duration=Math.max(1,Number(payload.range_seconds)||((Number(payload.end_ts)||start+1)-requestedStart));
+  const end=start+duration;
+  context.strokeStyle="#dbe3df"; context.lineWidth=1;
+  for(let index=0;index<=4;index+=1){const y=y0+((y1-y0)*index/4);context.beginPath();context.moveTo(x0,y);context.lineTo(x1,y);context.stroke();}
+  const tickCount=width<700?4:6; context.fillStyle="#61796f"; context.font="12px system-ui,sans-serif"; context.textAlign="center";
+  for(let index=0;index<=tickCount;index+=1){const timestamp=start+((end-start)*index/tickCount),x=x0+((x1-x0)*index/tickCount),date=new Date(timestamp*1000);context.strokeStyle="#e7ede9";context.beginPath();context.moveTo(x,y0);context.lineTo(x,y1);context.stroke();context.fillText((end-start)<=86400?date.toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"}):date.toLocaleDateString([], {month:"short",day:"numeric"}),x,y1+22);}
+  const colors=["#1769aa","#8a168f","#d97706","#16804b"];
+  (payload.selected_metrics||[]).forEach((name,index)=>{const rows=(payload.series?.[name]||[]).filter(row=>Number.isFinite(Number(row.t))&&Number.isFinite(Number(row.v)));if(!rows.length)return;let min=Math.min(...rows.map(row=>Number(row.v))),max=Math.max(...rows.map(row=>Number(row.v)));if(max===min){max+=1;min-=1;}context.strokeStyle=colors[index%colors.length];context.lineWidth=2;context.beginPath();rows.forEach((row,rowIndex)=>{const x=x0+((Number(row.t)-start)/(end-start))*(x1-x0),y=y1-((Number(row.v)-min)/(max-min))*(y1-y0);if(rowIndex)context.lineTo(x,y);else context.moveTo(x,y);});context.stroke();context.fillStyle=colors[index%colors.length];rows.forEach(row=>{const x=x0+((Number(row.t)-start)/(end-start))*(x1-x0),y=y1-((Number(row.v)-min)/(max-min))*(y1-y0);context.beginPath();context.arc(x,y,2.5,0,Math.PI*2);context.fill();});context.textAlign="left";context.fillText(`${name} ${Number(min.toFixed(2))}–${Number(max.toFixed(2))}`,x0+index*150,22);});
+  (payload.switches||[]).forEach((channel,channelIndex)=>(channel.events||[]).forEach(event=>{const x=x0+((event.t-start)/(end-start))*(x1-x0);context.strokeStyle=event.state?"#16804b":"#b22635";context.lineWidth=1;context.beginPath();context.moveTo(x,y0);context.lineTo(x,y1);context.stroke();if(channelIndex===0){context.fillStyle=context.strokeStyle;context.fillRect(x-2,event.state?y0:y1-6,4,6);}}));
+  context.strokeStyle="#87978f";context.strokeRect(x0,y0,x1-x0,y1-y0);
+}
+
 document.addEventListener("DOMContentLoaded", () => {
+  document.getElementById("nodusGraphumOpen")?.addEventListener("click", nodusOpenGraphum);
+  document.getElementById("nodusGraphumClose")?.addEventListener("click", nodusCloseGraphum);
+  document.querySelectorAll("#graphumRanges button").forEach(button => {
+    button.addEventListener("click", () => {
+      nodusGraphumRange = Number(button.dataset.range) || 86400;
+      document.querySelectorAll("#graphumRanges button").forEach(candidate => candidate.classList.toggle("active", candidate === button));
+      nodusGraphumUpdateSelection();
+    });
+  });
   document.querySelectorAll(".switch-current[data-channel-id]").forEach(element => {
     element.addEventListener("click", nodusToggle);
   });
@@ -769,10 +963,17 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   });
   document.addEventListener("keydown", event => {
+    if (event.key === "Escape" && document.getElementById("nodusGraphum")?.classList.contains("active")) {
+      nodusCloseGraphum();
+      return;
+    }
     if (event.key === "Escape" && document.querySelector(".astro-grid.astronomy-expanded")) {
       nodusSet29DayOpen(false);
     }
   });
   document.addEventListener("visibilitychange", nodusHandleVisibility);
   window.addEventListener("pageshow", nodusHandleVisibility);
+  window.addEventListener("resize", () => {
+    if (document.getElementById("nodusGraphum")?.classList.contains("active")) nodusResizeGraphum();
+  });
 });

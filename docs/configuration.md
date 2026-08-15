@@ -8,13 +8,13 @@ The host-side WeeWX integration stores its system-view preferences in
 the visible system title, online timeout, and automatic-provisioning gate.
 Broker, station, database, service, and dashboard paths remain sourced from
 the root-managed WeeWX manager configuration and are read-only in that view.
-The WeeWX System Settings view groups its fields into collapsed WeeWX
+The WeeWX General Settings view groups its fields into collapsed WeeWX
 Preferences, Station & MQTT, and WeeWX Runtime & Files sections. Host-side
 Automations is a System navigation item; it is not part of Switch Settings.
 The host installer also supports `--discovery-only --family FAMILY` to stage
 the manager and a family-bounded WeeWX template without preselecting a device.
 Automatic provisioning must remain disabled during that bootstrap and can be
-replaced by an explicit System Settings > Install Device selection after the
+replaced by an explicit General Settings > Install Device selection after the
 intended `weewx`-profile device appears as Discovered. Automatic selection is
 performed only when one discovered device matches the managed family.
 

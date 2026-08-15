@@ -9,7 +9,7 @@
 </head>
 <body>
 <main class="settings-dialog">
-  <header class="dialog-header"><h1 id="dialog-title">Sensor Settings &amp; Calibration</h1></header>
+  <header class="dialog-header"><h1 id="dialog-title">Sensor Settings &amp; Calibration</h1><a class="circle-close" href="../" title="Return to dashboard" aria-label="Return to dashboard">&times;</a></header>
   <h2 id="context-title">Loading device…</h2>
 
   <div class="dialog-layout">
@@ -25,7 +25,7 @@
         <a href="#switch-info" data-view="switch-info">Switch Info</a>
       </nav>
       <nav id="system-nav" aria-label="Nodus system setup" hidden>
-        <a id="system-settings-link" href="#system-settings">System Settings</a>
+        <a id="system-settings-link" href="#system-settings">General Settings</a>
         <a href="#automations" data-view="automations">Automations</a>
         <a id="install-device-link" href="#install-device">Install Device</a>
         <a id="remove-device-link" href="#remove-device">Remove Device</a>
@@ -40,7 +40,7 @@
           <div class="view-content form-grid single-field">
             <label>Location<input id="sensor-location" maxlength="64"></label>
           </div>
-          <footer><a class="button dashboard" href="../">Dashboard</a><button type="submit" class="primary">Save</button></footer>
+          <footer><button type="submit" class="primary">Save</button></footer>
         </form>
       </section>
 
@@ -60,14 +60,13 @@
               <div id="calibrations" class="calibration-fields"></div>
             </section>
           </div>
-          <footer><a class="button dashboard" href="../">Dashboard</a><button type="submit" class="primary">Apply Device Calibration</button></footer>
+          <footer><button type="submit" class="primary">Apply Device Calibration</button></footer>
         </form>
       </section>
 
       <section id="sensor-info" class="view-card" data-title="Sensor Info" hidden>
         <header><h3 id="sensor-info-title">Sensor Info</h3></header>
         <div id="sensor-info-content" class="view-content"></div>
-        <footer><a class="button dashboard" href="../">Dashboard</a></footer>
       </section>
 
       <section id="switch-settings" class="view-card" data-title="Switch Settings" hidden>
@@ -77,14 +76,13 @@
             <label>Location<input id="switch-location" maxlength="64"></label>
             <div id="switch-labels" class="label-fields"></div>
           </div>
-          <footer><a class="button dashboard" href="../">Dashboard</a><button type="submit" class="primary">Save</button></footer>
+          <footer><button type="submit" class="primary">Save</button></footer>
         </form>
       </section>
 
       <section id="automations" class="view-card" data-title="Saved Automations" hidden>
         <header class="saved-heading"><h3>Saved Automations</h3><button id="automation-new" type="button" class="success">New</button></header>
         <div id="automation-list" class="view-content automation-list"></div>
-        <footer><a class="button dashboard" href="../">Dashboard</a></footer>
       </section>
 
       <section id="automation-editor" class="view-card" data-title="Automation Editor" hidden>
@@ -120,7 +118,6 @@
             <button type="submit" class="success wide-save">Save</button>
           </div>
           <footer class="automation-footer">
-            <a class="button dashboard" href="../">Dashboard</a>
             <button id="saved-automations" type="button" class="dashboard">Saved Automations</button>
             <button id="automation-clear" type="button" class="success">New</button>
             <button id="automation-remove" type="button" class="danger">Remove</button>
@@ -131,7 +128,6 @@
       <section id="switch-info" class="view-card" data-title="Switch Info" hidden>
         <header><h3 id="switch-info-title">Switch Info</h3></header>
         <div id="switch-info-content" class="view-content"></div>
-        <footer><a class="button dashboard" href="../">Dashboard</a></footer>
       </section>
     </section>
   </div>

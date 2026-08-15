@@ -831,6 +831,112 @@ class NodusSwitchStatus(StdService):
             "automations": rules,
         }
 
+    def admin_history(self, body):
+        """Return bounded WeeWX archive history for the Graphum workspace.
+
+        Archive records remain owned by WeeWX. This method reads through the
+        configured data binding and returns only requested Nodus observations.
+        """
+        available = _data_observations(self.config_dict)
+        requested = body.get("metrics") or ()
+        if isinstance(requested, str):
+            requested = (requested,)
+        metrics = []
+        for name in requested:
+            name = str(name or "").strip()
+            if name in available and name not in metrics:
+                metrics.append(name)
+        metrics = metrics[:4]
+        switch_ids = body.get("switch_channels") or ()
+        if isinstance(switch_ids, str):
+            switch_ids = (switch_ids,)
+        switch_ids = [str(item or "").strip() for item in switch_ids if item][:4]
+        if len(metrics) + len(switch_ids) > 4:
+            switch_ids = switch_ids[: max(0, 4 - len(metrics))]
+        try:
+            range_seconds = int(body.get("range_seconds") or 86400)
+        except (TypeError, ValueError):
+            range_seconds = 86400
+        range_seconds = max(3600, min(range_seconds, 90 * 86400))
+        try:
+            end_ts = int(body.get("end_ts") or time.time())
+        except (TypeError, ValueError):
+            end_ts = int(time.time())
+        start_ts = max(0, end_ts - range_seconds)
+        series = {name: [] for name in metrics}
+        if metrics:
+            with self._open_archive_manager() as manager:
+                for record in manager.genBatchRecords(start_ts, end_ts):
+                    timestamp = int(record.get("dateTime") or 0)
+                    if not timestamp:
+                        continue
+                    for name in metrics:
+                        value = record.get(name)
+                        if value is not None:
+                            try:
+                                value = float(value)
+                            except (TypeError, ValueError, OverflowError):
+                                continue
+                            if value == value and value not in (
+                                float("inf"),
+                                float("-inf"),
+                            ):
+                                series[name].append(
+                                    {"t": timestamp, "v": value}
+                                )
+        max_points = 1440
+        for name, rows in series.items():
+            if len(rows) > max_points:
+                last = len(rows) - 1
+                series[name] = [
+                    rows[int(round(index * last / (max_points - 1)))]
+                    for index in range(max_points)
+                ]
+        channels = []
+        with self.lock:
+            switch_status = self.controller.status()
+        selected_ids = set(switch_ids)
+        for channel in switch_status.get("channels") or ():
+            channel_id = str(channel.get("channel_id") or "")
+            if channel_id not in selected_ids:
+                continue
+            events = []
+            for event in reversed(channel.get("events") or ()):
+                timestamp = int(event.get("timestamp") or event.get("received_at") or 0)
+                if start_ts <= timestamp <= end_ts:
+                    events.append(
+                        {"t": timestamp, "state": event.get("state") == "ON"}
+                    )
+            channels.append(
+                {
+                    "channel_id": channel_id,
+                    "label": channel.get("label") or channel_id,
+                    "events": events,
+                }
+            )
+        return {
+            "schema": "nodus-weewx-history/v1",
+            "start_ts": start_ts,
+            "end_ts": end_ts,
+            "range_seconds": range_seconds,
+            "selected_metrics": metrics,
+            "series": series,
+            "switches": channels,
+        }
+
+    def _open_archive_manager(self):
+        """Open a WeeWX archive manager owned by the requesting thread.
+
+        The admin HTTP server uses worker threads, so it must not reuse the
+        engine DBBinder's cached SQLite connection from the WeeWX main thread.
+        """
+        import weewx.manager
+
+        return weewx.manager.open_manager_with_config(
+            self.config_dict,
+            "wx_binding",
+        )
+
     def admin_update_sensor(self, body):
         """Apply a sensor location and selected calibration changes."""
         from user.nodus_admin import calibration_fields

@@ -156,6 +156,7 @@ def test_admin_routes_dashboard_and_protects_setup(tmp_path):
         True,
     )
     assert module._http_route("/api/status") == ("api", None, None, True)
+    assert module._http_route("/api/history") == ("history", None, None, True)
     assert module._static_path(dashboard, "index.html").read_text(
         encoding="utf-8"
     ) == "metrics dashboard"

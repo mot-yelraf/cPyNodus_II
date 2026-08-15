@@ -100,6 +100,8 @@ def test_installer_pins_astronomy_libraries_and_caches_ephemeris():
     assert '"$SKIN_SOURCE/astronomy.txt.tmpl"' in script
     assert '"$SKIN_SOURCE/pico.min.css"' in script
     assert '"$SKIN_SOURCE/moon-surface.png"' in script
+    assert '"$SKIN_SOURCE/system/nodus-ai-version.js"' in script
+    assert '"$WEEWX_SKIN_ROOT/system/nodus-ai-version.js"' in script
 
 
 def test_installer_writes_and_reuses_device_profile(tmp_path):

@@ -18,8 +18,17 @@ def test_nodus_refreshes_and_hides_unavailable_observations():
     stylesheet = (SKIN_ROOT / "style.css").read_text(encoding="utf-8")
 
     assert '<meta http-equiv="refresh"' not in template
-    assert '<div class="brand-title">Nodus AI' in template
+    assert (
+        '<div class="brand-title">\n      <button class="setup-gear graph-launch"'
+        in template
+    )
+    header = template.split('<div class="brand-title">', 1)[1].split("</div>", 1)[0]
+    assert header.index('id="nodusGraphumOpen"') < header.index("Nodus AI")
+    assert header.index("Nodus AI") < header.index("system-setup-gear")
     assert 'class="setup-gear system-setup-gear"' in template
+    assert 'id="nodusGraphumOpen"' in template
+    assert '<h1>Nodus AI Graphum</h1>' in template
+    assert 'id="nodusGraphumClose" class="circle-close"' in template
     assert '<span class="data-updated-label">Data Updated:</span>' in template
     assert "As of:" not in template
     assert "Indoor Metrics" not in template
@@ -51,6 +60,28 @@ def test_nodus_refreshes_and_hides_unavailable_observations():
         "vpd",
     ):
         assert "#if $current.{}.raw is not None".format(observation) in template
+
+
+def test_nodus_graphum_uses_live_archive_and_switch_selectors():
+    template = (SKIN_ROOT / "index.html.tmpl").read_text(encoding="utf-8")
+    script = (SKIN_ROOT / "dashboard.js").read_text(encoding="utf-8")
+    stylesheet = (SKIN_ROOT / "style.css").read_text(encoding="utf-8")
+
+    assert 'id="graphumMetricOptions"' in template
+    assert 'id="graphumSwitchOptions"' in template
+    assert 'id="graphumSelectionCount">0 of 4' in template
+    assert 'fetch(`${nodusApiOrigin}/api/history`' in script
+    assert '"Content-Type":"text/plain;charset=UTF-8"' in script
+    assert "selected.length > 4" in script
+    assert "window.setInterval(nodusLoadGraphum, 15000)" in script
+    assert (
+        "const start=timestamps.length?Math.min(...timestamps):requestedStart"
+        in script
+    )
+    assert "const end=start+duration" in script
+    assert "context.arc(x,y,2.5,0,Math.PI*2)" in script
+    assert ".graphum.active { display:flex; }" in stylesheet
+    assert ".graphum-controls" in stylesheet
 
 
 def test_nodus_metric_cards_are_alphabetical():
@@ -94,8 +125,8 @@ def test_nodus_bundle_includes_the_copied_stylesheet():
     assert 'href="pico.min.css?v=2.1.1"' in template
     assert "cdn.jsdelivr.net" not in template
     assert (SKIN_ROOT / "pico.min.css").is_file()
-    assert 'href="style.css?v=20260808-1"' in template
-    assert 'src="dashboard.js?v=20260808-3"' in template
+    assert 'href="style.css?v=20260814-3"' in template
+    assert 'src="dashboard.js?v=20260814-3"' in template
     assert (SKIN_ROOT / "moon-surface.png").is_file()
     assert ".tile-grid" in stylesheet
     assert "@media (prefers-color-scheme: dark)" in stylesheet
@@ -117,6 +148,9 @@ def test_nodus_uses_shared_n_svg_favicon_on_every_html_surface():
 def test_system_info_uses_requested_five_five_four_grid():
     page = (SKIN_ROOT / "system" / "index.html").read_text(encoding="utf-8")
     script = (SKIN_ROOT / "system" / "system.js").read_text(encoding="utf-8")
+    version = (SKIN_ROOT / "system" / "nodus-ai-version.js").read_text(
+        encoding="utf-8"
+    )
     stylesheet = (SKIN_ROOT / "system" / "system.css").read_text(encoding="utf-8")
     labels = (
         "Hostname",
@@ -150,6 +184,8 @@ def test_system_info_uses_requested_five_five_four_grid():
     assert 'id="install-form"' in page
     assert 'id="install-device-list"' in page
     assert 'api("/api/install"' in script
+    assert 'src="nodus-ai-version.js"' in page
+    assert 'window.NODUS_AI_VERSION = "v0.26.226.1"' in version
 
 
 def test_nodus_skin_uses_current_name_everywhere():
@@ -209,7 +245,7 @@ def test_nodus_shows_discovered_switches_without_automation_rules():
     assert "$event.display" in template
     assert "mode-$channel.mode_class" in template
     assert 'data-channel-id="$channel.channel_id"' in template
-    assert 'src="dashboard.js?v=20260808-3"' in template
+    assert 'src="dashboard.js?v=20260814-3"' in template
     assert ".switch-current.mode-automated" in stylesheet
     assert ".switch-current.mode-automated .switch-control-mode" in stylesheet
     assert "grid-template-columns: minmax(150px, 1.05fr)" in stylesheet
@@ -342,7 +378,8 @@ def test_nodus_admin_ui_uses_sensorius_style_sensor_and_switch_views():
     ):
         assert 'data-view="{}"'.format(view) in page
     assert "System Calibration" not in page
-    assert 'class="button dashboard" href="../">Dashboard</a>' in page
+    assert 'class="circle-close" href="../"' in page
+    assert ">Dashboard</a>" not in page
     assert 'id="switch-labels"' in page
     assert 'id="automation-editor"' in page
     assert page.index('class="workspace"') < page.index('id="notice"')
@@ -378,7 +415,7 @@ def test_nodus_automations_use_system_navigation_context():
     switch_nav = admin_page.split('id="switch-nav"', 1)[1].split("</nav>", 1)[0]
     system_nav = admin_page.split('id="system-nav"', 1)[1].split("</nav>", 1)[0]
     assert "Automations" not in switch_nav
-    assert "System Settings" in system_nav
+    assert "General Settings" in system_nav
     assert 'data-view="automations"' in system_nav
     assert "Install Device" in system_nav
     assert "Remove Device" in system_nav
@@ -387,6 +424,8 @@ def test_nodus_automations_use_system_navigation_context():
     assert '$("system-nav").hidden = !automationView' in admin_script
     assert "location.hostname}:8768`" in admin_script
     assert "location.hostname}:8767`" in system_script
+    assert "System Settings" not in system_page
+    assert 'class="circle-close"' in system_page
 
 
 def test_nodus_admin_info_groups_are_expandable():

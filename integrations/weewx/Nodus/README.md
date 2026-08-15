@@ -35,11 +35,12 @@ action, and error status.
 The generated metrics dashboard and its setup page share the visible
 `/weewx/nodus/` URL tree. Sensor and switch setup gears open `setup/#sensor`
 and `setup/#switch`; the page uses Sensorius-style sensor and switch sidebars
-with a Dashboard return button. Sensor views cover Location, Device
+with a transparent circled X in the top-right returning to the dashboard.
+Sensor views cover Location, Device
 Calibration, and device/network information. Switch views cover location and
 channel labels and switch/network information. There is no System Calibration
-view. Saved host-side automations and their editor belong to the System
-Settings navigation alongside System Settings, Install Device, and Remove Device. The
+view. Saved host-side automations and their editor belong to the General
+Settings navigation alongside General Settings, Install Device, and Remove Device. The
 switch-status service
 supplies its unauthenticated LAN API on TCP port 8767. The UI supports
 locations, switch labels, change-only calibration writes, and bounded host-side
@@ -52,12 +53,20 @@ The automation service also publishes retained controller ownership and
 availability under `nodus/<device_id>/automation/weewx/` so current Nodus
 firmware can identify host-automated channels in its local switch card.
 
-The system gear opens the persistent port-8768 manager. Its menus are System
-Settings, Automations, Install Device, and Remove Device. System Settings uses collapsed WeeWX
+The graph icon opens `Nodus AI Graphum`, whose live selector pane graphs up to
+four WeeWX archive metrics and recent switch-state transitions over ranges
+from one hour through 90 days. Its earliest returned observation anchors the
+left edge while live refreshes fill the selected window toward the right. Each
+history request owns a new WeeWX archive manager in its HTTP worker thread.
+The system gear opens the persistent port-8768 manager. Its menus are General
+Settings, Automations, Install Device, and Remove Device. General Settings uses
+collapsed WeeWX
 Preferences, Station & MQTT, and WeeWX Runtime & Files groups while retaining
-all host-specific fields. Automations links to the existing port-8767 editor,
-which presents the same System navigation context without changing the rules
-engine or storage contract. The manager stores host settings in
+all host-specific fields. Its title displays the independently versioned
+WeeWX Nodus AI release from `system/nodus-ai-version.js`. Automations links to
+the existing port-8767 editor, which presents the same General Settings
+navigation context without changing the rules engine or storage contract. The
+manager stores host settings in
 `/var/lib/weewx/nodus_system.toml`, displays explicit Installed/Discovered
 badges and live online/offline state, clears exact retained device/switch
 topics during confirmed removal, and reprovisions a returning device.
@@ -70,7 +79,7 @@ To stage the manager and a supported family template without naming an
 operational device, use `install_nodus_weewx.sh --discovery-only --family
 FAMILY`. This mode requires automatic provisioning to be disabled and leaves
 `weewx@nodus.service` inactive until a matching discovered device is selected
-under System Settings > Install Device. Automatic provisioning chooses a
+under General Settings > Install Device. Automatic provisioning chooses a
 device only when exactly one discovered entry matches the managed family.
 
 For a fresh installation, copy `index.html.tmpl`, `astronomy.txt.tmpl`,

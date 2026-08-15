@@ -101,8 +101,9 @@ entry point:
 ```
 
 It delegates to the canonical installer under `integrations/weewx/` and
-installs the independent Nodus WeeWX service, report skin, extensions, and
-device manager. Start with the [WeeWX installation
+installs the independent Nodus WeeWX service, report skin, extensions, device
+manager, and full-screen Nodus AI Graphum for archived sensor and switch
+history. Start with the [WeeWX installation
 runbook](docs/weewx_install.md).
 
 ## Configuration and integration documentation
