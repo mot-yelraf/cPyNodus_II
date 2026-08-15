@@ -130,7 +130,7 @@ the official WeeWX Debian package and continues after package installation.
 
 ### 4.1 Disable automatic provisioning
 
-Use the System Settings page:
+Use the General Settings page:
 
 ```text
 http://<weewx-host>:8768/system/#system-settings

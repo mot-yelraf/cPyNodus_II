@@ -3,17 +3,17 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Nodus AI System Settings</title>
+  <title>Nodus AI General Settings</title>
   <link rel="icon" href="nodus-favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="system.css">
 </head>
 <body>
 <main class="settings-dialog">
-  <header class="dialog-header"><h1 id="system-heading">Nodus Automation Instrumentorum</h1></header>
+  <header class="dialog-header"><h1 id="system-heading">Nodus Automation Instrumentorum</h1><a class="circle-close" href="http://localhost/" title="Return to dashboard" aria-label="Return to dashboard">&times;</a></header>
   <div class="dialog-layout">
     <aside class="sidebar">
       <nav aria-label="Nodus system setup">
-        <a href="#system-settings" data-view="system-settings">System Settings</a>
+        <a href="#system-settings" data-view="system-settings">General Settings</a>
         <a id="automations-link" href="#automations">Automations</a>
         <a href="#install-device" data-view="install-device">Install Device</a>
         <a href="#remove-device" data-view="remove-device">Remove Device</a>
@@ -22,7 +22,7 @@
     <section class="workspace">
       <div id="notice" role="status" aria-live="polite"></div>
       <section id="system-settings" class="view-card">
-        <header><h2>System Settings</h2></header>
+        <header><h2>General Settings <span id="nodus-ai-version" class="nodus-ai-version" aria-label="Nodus AI version"></span></h2></header>
         <form id="system-form">
           <div class="view-content system-groups">
             <details id="weewx-preferences" class="setup-group">
@@ -45,7 +45,6 @@
               <div class="setup-group-body"><div id="weewx-info" class="info-grid runtime-grid"></div></div>
             </details>
           </div>
-          <footer><a class="button dashboard" href="http://localhost/">Dashboard</a></footer>
         </form>
       </section>
       <section id="install-device" class="view-card" hidden>
@@ -55,7 +54,7 @@
             <p class="device-note">Select one discovered device after automatic provisioning has been disabled.</p>
             <div id="install-device-list" class="device-list"></div>
           </div>
-          <footer><a class="button dashboard" href="http://localhost/">Dashboard</a><button id="install-submit" class="primary" type="submit" disabled>Install Selected</button></footer>
+          <footer><button id="install-submit" class="primary" type="submit" disabled>Install Selected</button></footer>
         </form>
       </section>
       <section id="remove-device" class="view-card" hidden>
@@ -63,12 +62,13 @@
         <form id="remove-form">
           <div id="device-list" class="device-list view-content"></div>
           <label class="confirm"><input id="remove-confirm" type="checkbox">I understand this deletes selected WeeWX settings and data and clears retained MQTT messages.</label>
-          <footer><a class="button dashboard" href="http://localhost/">Dashboard</a><button id="remove-submit" class="danger" type="submit" disabled>Remove Selected</button></footer>
+          <footer><button id="remove-submit" class="danger" type="submit" disabled>Remove Selected</button></footer>
         </form>
       </section>
     </section>
   </div>
 </main>
+<script src="nodus-ai-version.js"></script>
 <script src="system.js"></script>
 </body>
 </html>

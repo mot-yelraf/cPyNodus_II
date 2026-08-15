@@ -836,6 +836,7 @@ validate_integration_sources() {
     "$SKIN_SOURCE/admin/admin.js" \
     "$SKIN_SOURCE/system/index.html" \
     "$SKIN_SOURCE/system/system.css" \
+    "$SKIN_SOURCE/system/nodus-ai-version.js" \
     "$SKIN_SOURCE/system/system.js" \
     "$ROOT_DIR/nodus-weewx-discovery.service" \
     "$ROOT_DIR/nodus-weewx-manager-action.service" \
@@ -885,6 +886,9 @@ install_integration_files() {
     "$SKIN_SOURCE/system/index.html" "$WEEWX_SKIN_ROOT/system/index.html"
   run_root install -o root -g weewx -m 0644 \
     "$SKIN_SOURCE/system/system.css" "$WEEWX_SKIN_ROOT/system/system.css"
+  run_root install -o root -g weewx -m 0644 \
+    "$SKIN_SOURCE/system/nodus-ai-version.js" \
+    "$WEEWX_SKIN_ROOT/system/nodus-ai-version.js"
   run_root install -o root -g weewx -m 0644 \
     "$SKIN_SOURCE/system/system.js" "$WEEWX_SKIN_ROOT/system/system.js"
   run_root install -o root -g weewx -m 0644 \

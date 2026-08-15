@@ -272,8 +272,9 @@ In normal mode the device:
     additional WeeWX instances. The integration also includes archive schema
     and units, a Nodus report skin, retained device identity, Skyfield-backed
     Sun/Moon position and phase cards, an always-on switch label/state/event
-    panel, and optional confirmed switch
-    automation. A bounded Sensorius-style LAN host UI configures sensor/switch
+    panel, optional confirmed switch automation, and a full-screen Nodus AI
+    Graphum for bounded WeeWX archive metrics and recent switch transitions.
+    A bounded Sensorius-style LAN host UI configures sensor/switch
     locations, switch labels, device calibration changes, and AND/OR metric,
     timer, time/day, Astral, and switch-state automations, with sensor/switch
     information panes. See

@@ -21,7 +21,7 @@ function selectSetupView() {
   $("switch-nav").hidden = !switchView;
   $("system-nav").hidden = !automationView;
   $("dialog-title").textContent = automationView
-    ? "System Settings"
+    ? "General Settings"
     : switchView ? "Edit Switch Settings" : "Sensor Settings & Calibration";
   $("context-title").textContent = automationView
     ? `WeeWX Host Automation — ${state.device_id || "Device"}`

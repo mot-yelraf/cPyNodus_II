@@ -1,7 +1,7 @@
 :root { background:#b9bdbc; color:#262626; font-family:system-ui,-apple-system,"Segoe UI",sans-serif; font-size:16px; }
 * { box-sizing:border-box; } body { margin:0; padding:8px; } button,input,select { font:inherit; }
 .settings-dialog { background:#f2fffa; border:1px solid #d6dfda; border-radius:24px; margin:auto; max-width:1500px; min-height:calc(100vh - 16px); overflow:hidden; }
-.dialog-header { border-bottom:1px solid #d5dfda; padding:20px 28px; text-align:center; } .dialog-header h1 { margin:0; font-size:clamp(1.5rem,2.2vw,2rem); }
+.dialog-header { align-items:center; border-bottom:1px solid #d5dfda; display:flex; justify-content:center; padding:20px 28px; position:relative; text-align:center; } .dialog-header h1 { margin:0; font-size:clamp(1.5rem,2.2vw,2rem); }
 .dialog-layout { display:grid; gap:24px; grid-template-columns:minmax(230px,300px) minmax(0,1fr); padding:26px 28px 28px; }
 .sidebar { background:#edf7f1; border:1px solid #d2ddd7; border-radius:18px; min-height:650px; padding:20px; }
 .sidebar nav { display:grid; gap:12px; } .sidebar a { background:#fff; border:1px solid transparent; border-radius:14px; color:#252525; font-weight:750; padding:16px 18px; text-decoration:none; }
@@ -28,8 +28,13 @@ label { color:#697180; display:grid; font-weight:700; gap:7px; } input,select { 
 .device-row input,.confirm input { height:auto; } .status-dot { background:#7b8188; border:1px solid #4d5358; border-radius:50%; height:18px; width:18px; } .status-dot.online { background:#2eae50; }
 .badges { display:inline-flex; gap:7px; margin-left:8px; } .badge { background:#e8edf2; border-radius:999px; font-size:.78rem; padding:3px 9px; } .badge.installed { background:#dce8ff; color:#164ea7; } .badge.discovered { background:#def3e4; color:#176b38; }
 .device-detail { color:#687180; } .device-note { color:#596270; margin:0 0 18px; text-align:center; } .confirm { align-items:center; border-top:1px solid #d8e1dc; display:flex; gap:10px; justify-content:center; padding:18px; }
-footer { align-items:center; border-top:1px solid #d3ddd7; display:flex; justify-content:space-between; min-height:100px; padding:20px 28px; }
-.button,button { border:0; border-radius:10px; color:#fff; cursor:pointer; font-weight:800; padding:13px 24px; text-decoration:none; } .dashboard { background:#050505; } .primary { background:#285cf3; } .danger { background:#d83142; } button:disabled { background:#d99da4; cursor:not-allowed; }
+footer { align-items:center; border-top:1px solid #d3ddd7; display:flex; justify-content:flex-end; min-height:100px; padding:20px 28px; }
+.button,button { border:0; border-radius:10px; color:#fff; cursor:pointer; font-weight:800; padding:13px 24px; text-decoration:none; } .primary { background:#285cf3; } .danger { background:#d83142; } button:disabled { background:#d99da4; cursor:not-allowed; }
+.nodus-ai-version { color:#697180; font-size:.68em; font-weight:700; margin-left:.35rem; white-space:nowrap; }
+.circle-close { border:2px solid #315b50; border-radius:50%; color:#315b50; font-size:0; height:44px; position:absolute; right:24px; top:50%; transform:translateY(-50%); width:44px; }
+.circle-close::before,.circle-close::after { background:currentColor; border-radius:999px; content:""; height:3px; left:50%; position:absolute; top:50%; transform:translate(-50%,-50%) rotate(45deg); width:18px; }
+.circle-close::after { transform:translate(-50%,-50%) rotate(-45deg); }
+.circle-close:hover,.circle-close:focus-visible { color:#173f35; outline:2px solid #79bba4; outline-offset:2px; }
 #notice { border-radius:10px; font-weight:700; left:28px; position:absolute; right:28px; top:14px; z-index:4; } #notice:empty { display:none; } #notice.pending,#notice.success,#notice.error { box-shadow:0 4px 14px #0002; padding:11px 13px; } #notice.pending { background:#fff2c7; color:#745500; } #notice.success { background:#dcf6e4; color:#176b38; } #notice.error { background:#ffe1e1; color:#8b2020; }
 @media(max-width:1100px){ .info-grid,.runtime-grid{grid-template-columns:repeat(2,minmax(0,1fr));} }
 @media(max-width:850px){ body{padding:0}.settings-dialog{border-radius:0}.dialog-layout{grid-template-columns:1fr;padding:14px}.sidebar{min-height:auto}.sidebar nav{grid-template-columns:repeat(4,minmax(0,1fr))}.form-grid,.info-grid{grid-template-columns:1fr}.device-row{grid-template-columns:auto auto 1fr}.device-detail{grid-column:3}.view-card{min-height:600px} }

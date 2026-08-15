@@ -67,6 +67,8 @@ def _http_route(raw_path):
     path = urlparse(raw_path).path
     if path == "/api/status":
         return "api", None, None, True
+    if path == "/api/history":
+        return "history", None, None, True
     if path == "/setup":
         return "redirect", "/setup/", None, False
     if path in _SETUP_FILES:
@@ -563,6 +565,9 @@ class NodusAdminHTTP:
                 if kind == "api":
                     self._json(200, outer.backend.admin_snapshot())
                     return
+                if kind == "history":
+                    self._json(405, {"ok": False, "error": "POST required"})
+                    return
                 if kind == "redirect":
                     self.send_response(302)
                     self.send_header("Location", target)
@@ -583,7 +588,9 @@ class NodusAdminHTTP:
                 try:
                     body = self._body()
                     path = urlparse(self.path).path
-                    if path == "/api/sensor":
+                    if path == "/api/history":
+                        result = outer.backend.admin_history(body)
+                    elif path == "/api/sensor":
                         result = outer.backend.admin_update_sensor(body)
                     elif path == "/api/switch":
                         result = outer.backend.admin_update_switch(body)

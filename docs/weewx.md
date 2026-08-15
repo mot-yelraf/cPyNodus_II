@@ -161,7 +161,7 @@ service disabled. Existing manager broker settings supply prompt defaults,
 including preserving a saved password when the password prompt is left empty.
 
 After the expected `weewx`-profile device appears as Discovered, leave
-automatic provisioning disabled and select it under System Settings > Install
+automatic provisioning disabled and select it under General Settings > Install
 Device. The manager validates the advertised family and data topic, creates the
 operational configuration, records the installed identity, and starts
 `weewx@nodus.service`. The `/api/install` endpoint provides the same explicit
@@ -179,7 +179,7 @@ Discovery accepts only valid retained `nodus-meta/v1` messages whose
 newer metadata may additionally provide a logical `sensor.device` hint. Topic
 and identifier values are constrained before they can enter the registry.
 
-The System Settings WeeWX information block uses a desktop 5-5-4 card layout.
+The General Settings WeeWX information block uses a desktop 5-5-4 card layout.
 It resolves the configured MQTT broker to IPv4 when host DNS permits. Astral
 does not derive an IANA time zone from latitude and longitude, so the manager
 reports the host's configured `TZ`, `/etc/timezone`, or `/etc/localtime` zone,
@@ -772,11 +772,12 @@ The generated metrics dashboard remains at
 `http://<weewx-host>/weewx/nodus/`. Its sensor and switch gears open
 `setup/#sensor` and `setup/#switch` within the same visible URL tree. Sensor
 and switch views use the same sidebar-and-workspace presentation as Sensorius,
-and a Dashboard button returns directly to the metrics dashboard. The sensor
+and a transparent circled X in the top-right returns directly to the metrics
+dashboard. The sensor
 sidebar contains Sensor Settings, Device Calibration, and Sensor Info; there is
 no System Calibration view. The switch sidebar contains Switch Settings and
-Switch Info. Automations belongs to the System Settings navigation beside
-System Settings, Install Device, and Remove Device. The UI provides:
+Switch Info. Automations belongs to the General Settings navigation beside
+General Settings, Install Device, and Remove Device. The UI provides:
 
 - sensor location;
 - explicit, change-only calibration offsets appropriate to the sensor family;
@@ -786,11 +787,21 @@ System Settings, Install Device, and Remove Device. The UI provides:
   sunrise/sunset, switch-state, AND/OR, hysteresis, dwell, delay, and
 multi-switch action support.
 
-The dashboard title is `Nodus AI`. Its adjacent system gear opens the
+The dashboard title is `Nodus AI`. Its graph icon opens the full-screen
+`Nodus AI Graphum` workspace. Graphum loads up to four selected archive metrics
+and switch-state observations through the bounded `/api/history` endpoint,
+offers ranges from one hour through 90 days, and redraws whenever a selection
+changes. The earliest returned observation anchors the left edge and live
+refreshes fill the selected-duration window from left to right. Switch
+observations use the recent retained switch-event list as
+ON/OFF transition markers. Each history request opens and closes its own
+WeeWX archive manager so SQLite access remains owned by the HTTP worker thread.
+Its adjacent settings gear opens the
 persistent manager at `http://<weewx-host>:8768/system/`. That sidebar has
-System Settings, Automations, Install Device, and Remove Device. Automations
-opens the existing host-side editor on port 8767 in the same System navigation context. System
-Settings are stored separately in `/var/lib/weewx/nodus_system.toml` and use
+General Settings, Automations, Install Device, and Remove Device. Automations
+opens the existing host-side editor on port 8767 in the same General Settings
+navigation context. General settings are stored separately in
+`/var/lib/weewx/nodus_system.toml` and use
 collapsed WeeWX Preferences, Station & MQTT, and WeeWX Runtime & Files groups.
 They retain the active WeeWX host, broker, station, database, service, and
 output paths. The dashboard shows a live

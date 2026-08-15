@@ -21,8 +21,12 @@ button, input, select { font: inherit; }
 }
 
 .dialog-header {
+  align-items: center;
   border-bottom: 1px solid #d5dfda;
+  display: flex;
+  justify-content: center;
   padding: 20px 28px;
+  position: relative;
   text-align: center;
 }
 
@@ -94,7 +98,7 @@ footer {
   align-items: center;
   border-top: 1px solid #d3ddd7;
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-end;
   min-height: 112px;
   padding: 22px 36px;
 }
@@ -134,7 +138,31 @@ input:not([type="checkbox"]):not([type="radio"]), select { height: 44px; }
 .primary { background: #285cf3; }
 .success { background: #27aa49; }
 .danger { background: #e83343; }
-.dashboard { background: #050505; }
+.circle-close {
+  border: 2px solid #315b50;
+  border-radius: 50%;
+  color: #315b50;
+  font-size: 0;
+  height: 44px;
+  position: absolute;
+  right: 24px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 44px;
+}
+.circle-close::before, .circle-close::after {
+  background: currentColor;
+  border-radius: 999px;
+  content: "";
+  height: 3px;
+  left: 50%;
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%) rotate(45deg);
+  width: 18px;
+}
+.circle-close::after { transform: translate(-50%, -50%) rotate(-45deg); }
+.circle-close:hover, .circle-close:focus-visible { color: #173f35; outline: 2px solid #79bba4; outline-offset: 2px; }
 .quiet { background: #e7e7e7; color: #303030; }
 .compact { border-radius: 7px; padding: 5px 10px; }
 .wide-save { margin-top: 24px; width: 100%; }

@@ -302,8 +302,10 @@ the physical sensor family detected by Nodus.
 - Publishes the normal Nodus sensor-data payload through MQTT; there is no
   separate WeeWX-only firmware payload.
 - Relies on the host-side Nodus WeeWX integration for collection, archive,
-  reports, its richer dashboard, limited setup UI, and optional host-side
-  switch automations.
+  reports, its richer dashboard, full-screen Nodus AI Graphum, General
+  Settings UI, and optional host-side switch automations. Graphum selects up
+  to four archived metrics or recent switch transitions over one-hour through
+  90-day ranges.
 - Does not run the normal NodusWeb server. Verify actual broker-visible MQTT
   data before diagnosing the WeeWX collector; serial-side publish messages
   alone are not proof that the broker received data.
