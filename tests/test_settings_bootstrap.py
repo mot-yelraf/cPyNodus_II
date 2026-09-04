@@ -217,11 +217,11 @@ def test_factory_bootstrap_creates_i2c_sensor_and_switch_tomls_with_seeded_ids()
     assert sensor_doc["I2Cbus"]["I2C_SDA"] == "GP2"
     assert sensor_doc["I2Cbus"]["I2C_ADDR"] == 0x61
     assert _display_metrics(sensor_doc) == (
-        "Temperature_F",
+        "Temperature",
         "Rel-Humidity",
         "Ambient VPD",
-        "Temperature",
         "Dew Point",
+        "Dew Point Deficit",
         "CO2",
     )
     assert switch_section["DEVICE_SERIAL_NUM"] == serial
@@ -644,10 +644,10 @@ def test_factory_bootstrap_writes_dual_i2c_sections_for_apvpd():
     assert sensor_doc["I2Cbus"]["Plant"]["I2C_SDA"] == "GP2"
     assert sensor_doc["I2Cbus"]["Plant"]["I2C_ADDR"] == 0x76
     assert _display_metrics(sensor_doc) == (
-        "Temperature_F",
+        "Temperature",
         "Rel-Humidity",
         "Ambient VPD",
-        "Plant Temperature_F",
+        "Plant Temperature",
         "Plant Rel-Humidity",
         "Plant VPD",
     )
@@ -681,10 +681,10 @@ def test_factory_bootstrap_writes_dual_i2c_sections_for_apvpd_aht():
     assert sensor_doc["I2Cbus"]["I2C_ADDR"] == 0x38
     assert sensor_doc["I2Cbus"]["Plant"]["I2C_ADDR"] == 0x38
     assert _display_metrics(sensor_doc) == (
-        "Temperature_F",
+        "Temperature",
         "Rel-Humidity",
         "Ambient VPD",
-        "Plant Temperature_F",
+        "Plant Temperature",
         "Plant Rel-Humidity",
         "Plant VPD",
     )

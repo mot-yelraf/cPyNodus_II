@@ -61,7 +61,6 @@ def test_sensor_data_payload_uses_values_contract():
         phase="ready",
         metrics={
             "Temperature": 24.5,
-            "Temperature_F": 76.1,
             "Ambient VPD": 1.2,
             "Air Quality": 87,
         },
@@ -71,7 +70,7 @@ def test_sensor_data_payload_uses_values_contract():
     assert payload["schema"] == "nodus-sensor-data/v1"
     assert payload["sensor_id"] == "aqi-x943fm"
     assert payload["location"] == "TestLab"
-    assert payload["values"]["Temperature_F"] == 76.1
+    assert payload["values"]["Temperature"] == 24.5
     assert payload["values"]["Air Quality"] == 87
     assert "metrics" not in payload
 
@@ -461,14 +460,14 @@ def test_compact_runtime_meta_stays_below_startup_payload_budget():
                 metrics=(
                     "DewVPD Risk",
                     "Dew Point",
-                    "Temperature_F",
                     "Humidity",
                     "Rel-Humidity",
-                    "Dew Point_F",
                     "Temperature",
                     "Dew Point Deficit",
                     "Ambient VPD",
                     "CO2",
+                    "",
+                    "",
                 ),
                 styles=(
                     "gauge",
@@ -714,12 +713,10 @@ def test_homeassistant_discovery_describes_co2_metric_units_and_classes():
             metrics={
                 "CO2": 406.0,
                 "Temperature": 28.48,
-                "Temperature_F": 83.3,
                 "Rel-Humidity": 35.0,
                 "Humidity": 9.772,
                 "Ambient VPD": 2.526,
                 "Dew Point": 11.53,
-                "Dew Point_F": 52.8,
                 "Dew Point Deficit": 16.95,
                 "DewVPD Risk": 35.0,
             },
@@ -733,9 +730,6 @@ def test_homeassistant_discovery_describes_co2_metric_units_and_classes():
     assert _ha_payload_for_metric(messages, "Temperature")["unit_of_measurement"] == (
         "\u00b0C"
     )
-    assert _ha_payload_for_metric(messages, "Temperature_F")[
-        "unit_of_measurement"
-    ] == "\u00b0F"
     assert _ha_payload_for_metric(messages, "Rel-Humidity")["device_class"] == (
         "humidity"
     )
@@ -773,13 +767,11 @@ def test_homeassistant_discovery_describes_plant_and_baro_metric_units():
             metrics={
                 "Baro-Pressure": 842.5,
                 "Plant Temperature": 24.2,
-                "Plant Temperature_F": 75.6,
                 "Plant Rel-Humidity": 60.0,
                 "Plant Humidity": 13.1,
                 "Plant VPD": 1.2,
                 "Plant Baro-Pressure": 843.0,
                 "Plant Dew Point": 16.1,
-                "Plant Dew Point_F": 61.0,
                 "Plant Dew Point Deficit": 8.1,
                 "Plant DewVPD Risk": 25.0,
             },
@@ -873,8 +865,7 @@ def test_homeassistant_discovery_describes_prefixed_soil_metric_units():
             phase="ready",
             metrics={
                 "CH1 Soil Moisture": 43.0,
-                "CH1 Soil Temp_C": 21.5,
-                "CH1 Soil Temp_F": 70.7,
+                "CH1 Soil Temperature": 21.5,
                 "CH1 Soil pH": 6.8,
                 "CH1 Soil EC": 0.55,
                 "CH1 Soil Nitrogen": 11.0,
@@ -890,12 +881,9 @@ def test_homeassistant_discovery_describes_prefixed_soil_metric_units():
     moisture = _ha_payload_for_metric(messages, "CH1 Soil Moisture")
     assert moisture["unit_of_measurement"] == "%"
     assert moisture["device_class"] == "moisture"
-    soil_temp = _ha_payload_for_metric(messages, "CH1 Soil Temp_C")
+    soil_temp = _ha_payload_for_metric(messages, "CH1 Soil Temperature")
     assert soil_temp["unit_of_measurement"] == "\u00b0C"
     assert soil_temp["device_class"] == "temperature"
-    assert _ha_payload_for_metric(messages, "CH1 Soil Temp_F")[
-        "unit_of_measurement"
-    ] == "\u00b0F"
     soil_ph = _ha_payload_for_metric(messages, "CH1 Soil pH")
     assert soil_ph["unit_of_measurement"] == "pH"
     assert soil_ph["device_class"] == "ph"

@@ -246,10 +246,6 @@ def _add_prefixed_temp_humidity_derivatives(
     temp_c = metrics.get(temp_key)
     rh_pct = metrics.get(rh_key)
     label_prefix = "{} ".format(prefix) if prefix else ""
-    if temp_c is not None:
-        metrics["{}Temperature_F".format(label_prefix)] = round(
-            (float(temp_c) * 9.0 / 5.0) + 32.0, 1
-        )
     absolute_humidity = calculate_absolute_humidity(temp_c, rh_pct)
     if absolute_humidity is not None:
         metrics["{}Humidity".format(label_prefix)] = round(
@@ -263,9 +259,6 @@ def _add_prefixed_temp_humidity_derivatives(
     dewpoint_c = calculate_dewpoint(temp_c, rh_pct)
     if dewpoint_c is not None:
         metrics["{}Dew Point".format(label_prefix)] = round(dewpoint_c, 2)
-        metrics["{}Dew Point_F".format(label_prefix)] = round(
-            (dewpoint_c * 9.0 / 5.0) + 32.0, 1
-        )
     dew_deficit = calculate_dewpoint_deficit(temp_c, rh_pct)
     if dew_deficit is not None:
         metrics["{}Dew Point Deficit".format(label_prefix)] = round(dew_deficit, 2)
@@ -282,7 +275,7 @@ def _add_prefixed_temp_humidity_derivatives(
 def _soil_metric_prefixes(metrics):
     prefixes = []
     suffixes = (
-        " Soil Temp_C",
+        " Soil Temperature",
         " Soil Moisture",
         " Soil Nitrogen",
         " Soil Phosphorus",
@@ -301,12 +294,8 @@ def _soil_metric_prefixes(metrics):
 def _add_soil_derivatives(metrics, runtime_config, prefix=""):
     soil = runtime_config.sensor
     label_prefix = "{} ".format(prefix) if prefix else ""
-    temp_c = metrics.get("{}Soil Temp_C".format(label_prefix))
+    temp_c = metrics.get("{}Soil Temperature".format(label_prefix))
     moisture = metrics.get("{}Soil Moisture".format(label_prefix))
-    if temp_c is not None:
-        metrics["{}Soil Temp_F".format(label_prefix)] = (
-            float(temp_c) * 9.0 / 5.0
-        ) + 32.0
 
     wet = getattr(getattr(soil, "soil_thresholds", None), "wet_pct", None)
     dry = getattr(getattr(soil, "soil_thresholds", None), "dry_pct", None)

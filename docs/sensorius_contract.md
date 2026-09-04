@@ -208,6 +208,12 @@ relevant sensor registers and `[NPK]` targets are available.
 `Baro-Pressure` and `Plant Baro-Pressure` values are normalized to one decimal
 place in hPa before publication.
 
+Temperature-bearing metrics use canonical metric-only names and Celsius
+values: `Temperature`, `Plant Temperature`, `Dew Point`, `Plant Dew Point`,
+and `Soil Temperature`. Nodus does not publish duplicate Fahrenheit metrics.
+Sensorius may convert these canonical Celsius values for imperial display
+without changing the MQTT metric names or stored source values.
+
 Canonical heartbeat payload:
 
 ```json

@@ -44,7 +44,7 @@ _FAMILY_FIELDS = {
     ),
     "co2": _COMMON_FIELDS + (("CO2", "co2"),),
     "soil": (
-        ("Soil Temp_C", "soilTemperature"),
+        ("Soil Temperature", "soilTemperature"),
         ("Soil Moisture", "soilMoisturePct"),
         ("Soil Moisture Deficit", "soilMoistureDeficit"),
         ("Soil Stress Index", "soilStressIndex"),

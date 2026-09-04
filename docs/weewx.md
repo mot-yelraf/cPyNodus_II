@@ -441,6 +441,7 @@ expect these canonical observation names:
 | `Dew Point Deficit` | `dewpointDepression` | Environmental sensors |
 | `DewVPD Risk` | `dewVpdRisk` | Environmental sensors |
 | `Baro-Pressure` | `pressure` | Only pressure-capable sensors |
+| `Soil Temperature` | `soilTemperature` | Soil sensors |
 
 For `aht-va41ka`, the canonical topic portion is:
 

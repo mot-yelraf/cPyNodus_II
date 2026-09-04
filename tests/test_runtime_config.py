@@ -200,6 +200,29 @@ def test_settings_from_directory_loads_sensor_switch_runtime_config():
     assert runtime_config.switch.channels[1].last_state is False
 
 
+def test_settings_normalizes_legacy_temperature_display_metric_names():
+    assert Settings._detect_sensor(
+        sensor_i2c_doc={
+            "Sensor": {"DEVICE": "co2"},
+            "Display": {
+                "METRIC_1": "Temperature_F",
+                "METRIC_2": "Dew Point_F",
+            },
+        },
+        sensor_soil_doc={},
+    ).display.metrics[:2] == ("Temperature", "Dew Point")
+    assert Settings._detect_sensor(
+        sensor_i2c_doc={},
+        sensor_soil_doc={
+            "Sensor": {"DEVICE": "soil"},
+            "Display": {
+                "METRIC_1": "Soil Temp_C",
+                "METRIC_2": "Soil Temp_F",
+            },
+        },
+    ).display.metrics[:2] == ("Soil Temperature", "Soil Temperature")
+
+
 def test_switch_toml_without_enable_pins_is_not_switch_present():
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)

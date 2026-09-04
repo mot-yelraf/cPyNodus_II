@@ -667,7 +667,7 @@ def test_display_fast_config_does_not_load_heavy_command_handlers():
             "nodus/co2-x/config/set",
             (
                 '{"message_id":"cfg-display","payload":{"updates":['
-                '{"section":"Display","key":"METRIC_1","value":"Temperature_F"}'
+                '{"section":"Display","key":"METRIC_1","value":"Temperature"}'
                 ']}}'
             ),
         )
@@ -693,7 +693,7 @@ def test_display_fast_config_does_not_load_heavy_command_handlers():
 
         if len(results) != 1 or results[0].phase != "published":
             raise SystemExit("unexpected display result: {}".format(results))
-        if 'METRIC_1 = "Temperature_F"' not in sensor_text:
+        if 'METRIC_1 = "Temperature"' not in sensor_text:
             raise SystemExit("display config was not persisted")
 
         blocked = (

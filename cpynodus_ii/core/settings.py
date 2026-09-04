@@ -71,51 +71,51 @@ _FACTORY_SWITCH_PINS = {
 _FACTORY_SOIL_CHANNELS = (("CH1", "GP0", "GP1"), ("CH2", "GP4", "GP5"))
 _FACTORY_SENSOR_DISPLAY_DEFAULTS = {
     "aht": (
-        "Temperature_F",
+        "Temperature",
         "Rel-Humidity",
         "Ambient VPD",
-        "Temperature",
         "Dew Point",
+        "Dew Point Deficit",
         "DewVPD Risk",
     ),
     "aqi": (
-        "Temperature_F",
+        "Temperature",
         "Rel-Humidity",
         "Ambient VPD",
-        "Temperature",
+        "Dew Point",
         "Baro-Pressure",
         "Air Quality",
     ),
     "apvpd": (
-        "Temperature_F",
+        "Temperature",
         "Rel-Humidity",
         "Ambient VPD",
-        "Plant Temperature_F",
+        "Plant Temperature",
         "Plant Rel-Humidity",
         "Plant VPD",
     ),
     "apvpd_aht": (
-        "Temperature_F",
+        "Temperature",
         "Rel-Humidity",
         "Ambient VPD",
-        "Plant Temperature_F",
+        "Plant Temperature",
         "Plant Rel-Humidity",
         "Plant VPD",
     ),
     "avpd": (
-        "Temperature_F",
+        "Temperature",
         "Rel-Humidity",
         "Ambient VPD",
-        "Temperature",
-        "Baro-Pressure",
         "Dew Point",
+        "Baro-Pressure",
+        "DewVPD Risk",
     ),
     "co2": (
-        "Temperature_F",
+        "Temperature",
         "Rel-Humidity",
         "Ambient VPD",
-        "Temperature",
         "Dew Point",
+        "Dew Point Deficit",
         "CO2",
     ),
     "lux": (
@@ -127,6 +127,21 @@ _FACTORY_SENSOR_DISPLAY_DEFAULTS = {
         "",
     ),
 }
+
+_LEGACY_DISPLAY_METRICS = {
+    "Temperature_F": "Temperature",
+    "Dew Point_F": "Dew Point",
+    "Plant Temperature_F": "Plant Temperature",
+    "Plant Dew Point_F": "Plant Dew Point",
+    "Soil Temp_C": "Soil Temperature",
+    "Soil Temp_F": "Soil Temperature",
+}
+
+
+def _canonical_display_metric(value):
+    """Return the metric-only name for a configured display metric."""
+    metric = str(value or "").strip()
+    return _LEGACY_DISPLAY_METRICS.get(metric, metric)
 
 
 def _factory_board_profile(board_module=None):
@@ -1227,7 +1242,9 @@ class Settings:
                 ),
                 display=DisplayConfig(
                     metrics=tuple(
-                        soil_display_doc.get(f"METRIC_{index}", "")
+                        _canonical_display_metric(
+                            soil_display_doc.get(f"METRIC_{index}", "")
+                        )
                         for index in range(1, 7)
                     ),
                     styles=tuple(
@@ -1272,7 +1289,9 @@ class Settings:
                 secondary_i2c=cls._optional_i2c_config(i2c_plant_bus_doc),
                 display=DisplayConfig(
                     metrics=tuple(
-                        i2c_display_doc.get(f"METRIC_{index}", "")
+                        _canonical_display_metric(
+                            i2c_display_doc.get(f"METRIC_{index}", "")
+                        )
                         for index in range(1, 7)
                     ),
                     styles=tuple(

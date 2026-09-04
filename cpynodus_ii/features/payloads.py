@@ -420,7 +420,6 @@ def build_homeassistant_discovery_plan(
         "Baro-Pressure": ("hPa", "atmospheric_pressure", "measurement"),
         "CO2": ("ppm", "carbon_dioxide", "measurement"),
         "Dew Point": ("\u00b0C", "temperature", "measurement"),
-        "Dew Point_F": ("\u00b0F", "temperature", "measurement"),
         "Dew Point Deficit": ("\u00b0C", "temperature_delta", "measurement"),
         "DewVPD Risk": ("%", "", "measurement"),
         "Estimated PPFD": ("\u00b5mol/m\u00b2/s", "", "measurement"),
@@ -429,7 +428,6 @@ def build_homeassistant_discovery_plan(
         "Light Intensity": ("lx", "illuminance", "measurement"),
         "Plant Baro-Pressure": ("hPa", "atmospheric_pressure", "measurement"),
         "Plant Dew Point": ("\u00b0C", "temperature", "measurement"),
-        "Plant Dew Point_F": ("\u00b0F", "temperature", "measurement"),
         "Plant Dew Point Deficit": (
             "\u00b0C",
             "temperature_delta",
@@ -439,7 +437,6 @@ def build_homeassistant_discovery_plan(
         "Plant Humidity": ("g/m\u00b3", "absolute_humidity", "measurement"),
         "Plant Rel-Humidity": ("%", "humidity", "measurement"),
         "Plant Temperature": ("\u00b0C", "temperature", "measurement"),
-        "Plant Temperature_F": ("\u00b0F", "temperature", "measurement"),
         "Plant VPD": ("kPa", "pressure", "measurement"),
         "PPFD": ("\u00b5mol/m\u00b2/s", "", "measurement"),
         "Pressure": ("Pa", "pressure", "measurement"),
@@ -452,11 +449,9 @@ def build_homeassistant_discovery_plan(
         "Soil Phosphorus": ("mg/kg", "", "measurement"),
         "Soil Potassium": ("mg/kg", "", "measurement"),
         "Soil Stress Index": ("%", "", "measurement"),
-        "Soil Temp_C": ("\u00b0C", "temperature", "measurement"),
-        "Soil Temp_F": ("\u00b0F", "temperature", "measurement"),
+        "Soil Temperature": ("\u00b0C", "temperature", "measurement"),
         "Soil pH": ("pH", "ph", "measurement"),
         "Temperature": ("\u00b0C", "temperature", "measurement"),
-        "Temperature_F": ("\u00b0F", "temperature", "measurement"),
         "Visible Light Intensity": ("mol/m\u00b2/day", "", "measurement"),
     }
     used_object_ids = set()
