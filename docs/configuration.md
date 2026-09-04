@@ -314,6 +314,12 @@ rendered page:
   `Network.HTTPPORT`, `Network.AP_CHANNEL`, `[MQTT]`, `[Profile]`, and
   `[HomeAssistant]`
 
+Temperature metric names are unit-neutral and their values are metric:
+`Temperature`, `Plant Temperature`, `Dew Point`, `Plant Dew Point`, and
+`Soil Temperature` all use degrees Celsius. Legacy display selections ending
+in `_F`, plus `Soil Temp_C`, are normalized to these canonical names when the
+configuration is loaded.
+
 Runtime MQTT `Display.*` writes use a low-stack handler for
 `Display.METRIC_1` through `Display.METRIC_6` and `Display.Style.METRIC_1`
 through `Display.Style.METRIC_6`. Nodus applies the live display setting and
@@ -453,7 +459,7 @@ SOIL_VARIANT = "canonical"
 ```
 
 When exactly one soil channel is active, payload metric names stay unchanged,
-for example `Soil Moisture` and `Soil Temp_C`. When both channels are active,
+for example `Soil Moisture` and `Soil Temperature`. When both channels are active,
 Nodus prefixes metric names with the channel, for example `CH1 Soil Moisture`
 and `CH2 Soil Moisture`, so Home Assistant and Sensorius receive distinct
 values.
@@ -501,7 +507,7 @@ Defaults in `sensor_soil.toml.def`:
 `Soil Stress Index` is a normalized soil concern percentage derived from:
 
 - `Soil Moisture Deficit`
-- corrected `Soil Temp_C`
+- corrected `Soil Temperature`
 
 Default temperature bands:
 

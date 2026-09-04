@@ -34,7 +34,7 @@ K_TARGET = 70.0
 
 [Display]
 METRIC_1 = "Soil Moisture"
-METRIC_2 = "Soil Temp_C"
+METRIC_2 = "Soil Temperature"
 METRIC_3 = "Soil pH"
 METRIC_4 = "Soil EC"
 METRIC_5 = "Soil Moisture Deficit"

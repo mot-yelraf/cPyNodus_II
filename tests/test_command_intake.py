@@ -1289,7 +1289,7 @@ def test_process_inbound_messages_fast_display_config_persists(
         (
             '{"message_id":"cfg-display","payload":{"updates":['
             '{"section":"Display","key":"METRIC_6",'
-            '"value":"Temperature_F","name":"sensor_i2c.toml"}'
+            '"value":"Temperature","name":"sensor_i2c.toml"}'
             ']},"restart":false}'
         ),
     )
@@ -1308,9 +1308,9 @@ def test_process_inbound_messages_fast_display_config_persists(
     assert results[0].published_count == 3
     assert results[0].errors == ()
     assert results[0].persistence_mode == "persisted"
-    assert results[0].runtime_config.sensor.display.metrics[5] == "Temperature_F"
+    assert results[0].runtime_config.sensor.display.metrics[5] == "Temperature"
     assert results[0].runtime_config.sensor.display.styles[5] == "Graph24hr"
-    assert 'METRIC_6 = "Temperature_F"' in sensor_text
+    assert 'METRIC_6 = "Temperature"' in sensor_text
     assert 'METRIC_6 = "Graph24hr"' in sensor_text
     assert backup_text == original_text
     assert [message.topic for message in transport.published_messages] == [
@@ -1329,7 +1329,7 @@ def test_process_inbound_messages_fast_display_config_persists(
         {
             "section": "Display",
             "key": "METRIC_6",
-            "value": "Temperature_F",
+            "value": "Temperature",
         },
     ]
 
@@ -1355,7 +1355,7 @@ def test_process_inbound_messages_fast_display_config_pystack_is_volatile(
         "nodus/co2-ykdvea/config/set",
         (
             '{"message_id":"cfg-display-stack","payload":{"updates":['
-            '{"section":"Display","key":"METRIC_6","value":"Temperature_F"}'
+            '{"section":"Display","key":"METRIC_6","value":"Temperature"}'
             "]}}"
         ),
     )
@@ -1372,7 +1372,7 @@ def test_process_inbound_messages_fast_display_config_pystack_is_volatile(
     assert results[0].published_count == 3
     assert results[0].errors == ("config_persist_pystack",)
     assert results[0].persistence_mode == "volatile"
-    assert results[0].runtime_config.sensor.display.metrics[5] == "Temperature_F"
+    assert results[0].runtime_config.sensor.display.metrics[5] == "Temperature"
     assert transport.published_messages[1].payload == {
         "message_id": "cfg-display-stack",
         "applied": True,

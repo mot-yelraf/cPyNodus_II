@@ -48,7 +48,7 @@ METRIC_SCALES = {
 
 METRIC_LABELS = {
     "moisture": "Soil Moisture",
-    "temperature": "Soil Temp_C",
+    "temperature": "Soil Temperature",
     "ec": "Soil EC",
     "ph": "Soil pH",
     "n": "Soil Nitrogen",

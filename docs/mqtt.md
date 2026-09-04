@@ -163,6 +163,9 @@ current contract:
   are applied live before best-effort sensor TOML persistence, so persistence
   stack or memory failures are reported in serial logs as volatile without
   turning the MQTT command result into failure.
+- Sensor `/data` temperature fields are metric-only. `Temperature`,
+  `Plant Temperature`, `Dew Point`, `Plant Dew Point`, and `Soil Temperature`
+  carry Celsius values; duplicate Fahrenheit fields are not published.
 - Accepted device `Sensor.LOCATION` and `Switch.SWITCH_LOCATION` config writes
   are applied live before best-effort TOML persistence, so persistence stack or
   memory failures are reported in serial logs as volatile without turning the

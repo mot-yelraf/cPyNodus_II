@@ -332,55 +332,45 @@ example `canonical`, `soil_2in1`, `soil_4in1`, or `soil_7in1`.
 ### `aht` (AHT10/AHT20)
 
 - `Temperature` (`°C`)
-- `Temperature_F` (`°F`)
 - `Rel-Humidity` (`%`)
 - `Humidity` (`g/m³`)
 - `Ambient VPD` (`kPa`)
 - `Dew Point` (`°C`)
-- `Dew Point_F` (`°F`)
 - `Dew Point Deficit` (`°C`)
 - `DewVPD Risk` (`%`)
 
 ### `apvpd_aht` (dual AHT10/AHT20: ambient + plant)
 
 - `Temperature` (`°C`)
-- `Temperature_F` (`°F`)
 - `Rel-Humidity` (`%`)
 - `Humidity` (`g/m³`)
 - `Ambient VPD` (`kPa`)
 - `Dew Point` (`°C`)
-- `Dew Point_F` (`°F`)
 - `Dew Point Deficit` (`°C`)
 - `DewVPD Risk` (`%`)
 - `Plant Temperature` (`°C`)
-- `Plant Temperature_F` (`°F`)
 - `Plant Rel-Humidity` (`%`)
 - `Plant Humidity` (`g/m³`)
 - `Plant VPD` (`kPa`)
 - `Plant Dew Point` (`°C`)
-- `Plant Dew Point_F` (`°F`)
 - `Plant Dew Point Deficit` (`°C`)
 - `Plant DewVPD Risk` (`%`)
 
 ### `apvpd` (dual BME280: ambient + plant)
 
 - `Temperature` (`°C`)
-- `Temperature_F` (`°F`)
 - `Rel-Humidity` (`%`)
 - `Humidity` (`g/m³`)
 - `Ambient VPD` (`kPa`)
 - `Dew Point` (`°C`)
-- `Dew Point_F` (`°F`)
 - `Dew Point Deficit` (`°C`)
 - `DewVPD Risk` (`%`)
 - `Plant Temperature` (`°C`)
-- `Plant Temperature_F` (`°F`)
 - `Plant Rel-Humidity` (`%`)
 - `Plant Humidity` (`g/m³`)
 - `Plant VPD` (`kPa`)
 - `Plant Baro-Pressure` (`hPa`)
 - `Plant Dew Point` (`°C`)
-- `Plant Dew Point_F` (`°F`)
 - `Plant Dew Point Deficit` (`°C`)
 - `Plant DewVPD Risk` (`%`)
 
@@ -389,12 +379,10 @@ example `canonical`, `soil_2in1`, `soil_4in1`, or `soil_7in1`.
 - `Air Quality` (`AQI`)
 - `Gas` (`Ω`)
 - `Temperature` (`°C`)
-- `Temperature_F` (`°F`)
 - `Rel-Humidity` (`%`)
 - `Humidity` (`g/m³`)
 - `Ambient VPD` (`kPa`)
 - `Dew Point` (`°C`)
-- `Dew Point_F` (`°F`)
 - `Dew Point Deficit` (`°C`)
 - `DewVPD Risk` (`%`)
 - `Baro-Pressure` (`hPa`)
@@ -402,12 +390,10 @@ example `canonical`, `soil_2in1`, `soil_4in1`, or `soil_7in1`.
 ### `avpd` (single BME280)
 
 - `Temperature` (`°C`)
-- `Temperature_F` (`°F`)
 - `Rel-Humidity` (`%`)
 - `Humidity` (`g/m³`)
 - `Ambient VPD` (`kPa`)
 - `Dew Point` (`°C`)
-- `Dew Point_F` (`°F`)
 - `Dew Point Deficit` (`°C`)
 - `DewVPD Risk` (`%`)
 - `Baro-Pressure` (`hPa`)
@@ -416,12 +402,10 @@ example `canonical`, `soil_2in1`, `soil_4in1`, or `soil_7in1`.
 
 - `CO2` (`ppm`)
 - `Temperature` (`°C`)
-- `Temperature_F` (`°F`)
 - `Rel-Humidity` (`%`)
 - `Humidity` (`g/m³`)
 - `Ambient VPD` (`kPa`)
 - `Dew Point` (`°C`)
-- `Dew Point_F` (`°F`)
 - `Dew Point Deficit` (`°C`)
 - `DewVPD Risk` (`%`)
 
@@ -441,16 +425,14 @@ When one soil channel is active, Nodus publishes unprefixed metric names. When b
 ### `soil` (RS485 Modbus 2-in-1)
 
 - `Soil Moisture` (`%`)
-- `Soil Temp_C` (`°C`)
-- `Soil Temp_F` (`°F`)
+- `Soil Temperature` (`°C`)
 - `Soil Moisture Deficit` (`%`)
 - `Soil Stress Index` (`%`)
 
 ### `soil` (RS485 Modbus 4-in-1)
 
 - `Soil Moisture` (`%`)
-- `Soil Temp_C` (`°C`)
-- `Soil Temp_F` (`°F`)
+- `Soil Temperature` (`°C`)
 - `Soil pH` (`pH`)
 - `Soil EC` (`mS/cm`)
 - `Soil Moisture Deficit` (`%`)
@@ -459,8 +441,7 @@ When one soil channel is active, Nodus publishes unprefixed metric names. When b
 ### `soil` (RS485 Modbus 7-in-1)
 
 - `Soil Moisture` (`%`)
-- `Soil Temp_C` (`°C`)
-- `Soil Temp_F` (`°F`)
+- `Soil Temperature` (`°C`)
 - `Soil pH` (`pH`)
 - `Soil EC` (`mS/cm`)
 - `Soil Nitrogen` (`mg/kg`)
@@ -545,9 +526,9 @@ Soil Stress Index = ((Soil Moisture Deficit * moisture_weight) + (soil_temp_stre
 
 With the default weights and temperature bands:
 
-- `Soil Moisture Deficit = 50%` and `Soil Temp_C = 21°C` reports `Soil Stress Index = 35%`
-- `Soil Moisture Deficit = 50%` and `Soil Temp_C = 27°C` reports `Soil Stress Index = 50%`
-- `Soil Moisture Deficit = 80%` and `Soil Temp_C = 31°C` reports `Soil Stress Index = 86%`
+- `Soil Moisture Deficit = 50%` and `Soil Temperature = 21°C` reports `Soil Stress Index = 35%`
+- `Soil Moisture Deficit = 50%` and `Soil Temperature = 27°C` reports `Soil Stress Index = 50%`
+- `Soil Moisture Deficit = 80%` and `Soil Temperature = 31°C` reports `Soil Stress Index = 86%`
 
 If the temperature band configuration is invalid, `Soil Stress Index` is not reported.
 

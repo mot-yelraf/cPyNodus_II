@@ -733,7 +733,6 @@ def test_sensor_service_reads_legacy_aqi_snapshot():
     assert snapshot.phase == "ready"
     assert snapshot.sensor_id == "aqi-x943fm"
     assert snapshot.metrics["Temperature"] == 24.5
-    assert snapshot.metrics["Temperature_F"] == 76.1
     assert snapshot.metrics["Rel-Humidity"] == 55.2
     assert snapshot.metrics["Humidity"] > 0
     assert snapshot.metrics["Baro-Pressure"] == 1008.5
@@ -741,9 +740,10 @@ def test_sensor_service_reads_legacy_aqi_snapshot():
     assert snapshot.metrics["Air Quality"] >= 0
     assert snapshot.metrics["Ambient VPD"] > 0
     assert snapshot.metrics["Dew Point"] < snapshot.metrics["Temperature"]
-    assert snapshot.metrics["Dew Point_F"] < snapshot.metrics["Temperature_F"]
     assert snapshot.metrics["Dew Point Deficit"] > 0
     assert 0 <= snapshot.metrics["DewVPD Risk"] <= 100
+    assert "Temperature_F" not in snapshot.metrics
+    assert "Dew Point_F" not in snapshot.metrics
 
 
 def test_sensor_service_uses_uart_transport_for_soil_sensor():
@@ -826,7 +826,7 @@ def test_sensor_service_reads_soil_snapshot_from_wrapped_uart_transport():
     snapshot = read_sensor_snapshot(sensor_service, runtime_config)
 
     assert snapshot.phase == "ready"
-    assert snapshot.metrics["Soil Temp_C"] == 21.5
+    assert snapshot.metrics["Soil Temperature"] == 21.5
     assert snapshot.metrics["Soil Moisture"] == 43.0
     assert snapshot.metrics["Soil pH"] == 6.8
     assert snapshot.metrics["Soil Nitrogen"] == 11.0
@@ -959,7 +959,7 @@ def test_sensor_service_uses_observed_soil_ph_and_ec_fallback_registers():
     snapshot = read_sensor_snapshot(sensor_service, runtime_config)
 
     assert snapshot.phase == "ready"
-    assert snapshot.metrics["Soil Temp_C"] == 28.5
+    assert snapshot.metrics["Soil Temperature"] == 28.5
     assert snapshot.metrics["Soil Moisture"] == 0.0
     assert snapshot.metrics["Soil pH"] == 7.0
     assert snapshot.metrics["Soil EC"] == 584.0
@@ -1025,7 +1025,7 @@ def test_sensor_service_prefers_soil_block_reads_for_sparse_zero_registers():
     snapshot = read_sensor_snapshot(sensor_service, runtime_config)
 
     assert snapshot.phase == "ready"
-    assert snapshot.metrics["Soil Temp_C"] == 27.6
+    assert snapshot.metrics["Soil Temperature"] == 27.6
     assert snapshot.metrics["Soil Moisture"] == 0.0
     assert snapshot.metrics["Soil pH"] == 7.0
     assert snapshot.metrics["Soil EC"] == 585.0
@@ -1248,12 +1248,13 @@ def test_sensor_service_reads_legacy_soil_snapshot():
     snapshot = read_sensor_snapshot(sensor_service, runtime_config)
 
     assert snapshot.phase == "ready"
-    assert snapshot.metrics["Soil Temp_C"] == 21.5
-    assert snapshot.metrics["Soil Temp_F"] == 70.7
+    assert snapshot.metrics["Soil Temperature"] == 21.5
     assert snapshot.metrics["Soil Moisture"] == 43.0
     assert snapshot.metrics["Soil pH"] == 6.8
     assert snapshot.metrics["Soil Moisture Deficit"] == 0.0
     assert snapshot.metrics["Soil Stress Index"] == 0.0
+    assert "Soil Temp_C" not in snapshot.metrics
+    assert "Soil Temp_F" not in snapshot.metrics
 
 
 def test_sensor_service_reads_legacy_lux_snapshot_with_ppfd():
@@ -1438,7 +1439,6 @@ def test_sensor_service_reads_aht_snapshot_with_temp_humidity_derivatives():
     assert snapshot.phase == "ready"
     assert snapshot.metrics["Temperature"] == 24.5
     assert snapshot.metrics["Rel-Humidity"] == 55.2
-    assert snapshot.metrics["Temperature_F"] == 76.1
     assert snapshot.metrics["Ambient VPD"] > 0
     assert snapshot.metrics["Dew Point"] < snapshot.metrics["Temperature"]
     assert snapshot.metrics["Dew Point Deficit"] > 0
@@ -1493,6 +1493,8 @@ def test_sensor_service_reads_dual_bme280_snapshot_for_apvpd():
     assert snapshot.metrics["Plant Baro-Pressure"] == 1006.5
     assert snapshot.metrics["Plant VPD"] > 0
     assert snapshot.metrics["Plant DewVPD Risk"] >= 0
+    assert "Plant Temperature_F" not in snapshot.metrics
+    assert "Plant Dew Point_F" not in snapshot.metrics
 
 
 def test_sensor_service_reads_dual_aht_snapshot_for_apvpd_aht():
@@ -1780,7 +1782,7 @@ def test_sensor_service_applies_soil_calibration_offsets():
 
     snapshot = read_sensor_snapshot(sensor_service, runtime_config)
 
-    assert snapshot.metrics["Soil Temp_C"] == 22.75
+    assert snapshot.metrics["Soil Temperature"] == 22.75
     assert snapshot.metrics["Soil Moisture"] == 40.0
     assert snapshot.metrics["Soil pH"] == 7.0
     assert snapshot.metrics["Soil EC"] == 59.5

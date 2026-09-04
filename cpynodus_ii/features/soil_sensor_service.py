@@ -185,7 +185,7 @@ def _read_soil_metrics(transport, sensor, channel=None):
         + fallback_registers,
     )
     metrics = {
-        "Soil Temp_C": _maybe_round(
+        "Soil Temperature": _maybe_round(
             _apply_linear_calibration(
                 _scale_register(
                     _soil_raw_value(raw_values, registers.temperature),

@@ -566,7 +566,7 @@ build_field_stanzas() {
       add_field "CO2" "co2"
       ;;
     soil)
-      add_field "Soil Temp_C" "soilTemperature"
+      add_field "Soil Temperature" "soilTemperature"
       add_field "Soil Moisture" "soilMoisturePct"
       add_field "Soil Moisture Deficit" "soilMoistureDeficit"
       add_field "Soil Stress Index" "soilStressIndex"
