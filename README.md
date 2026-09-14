@@ -47,17 +47,13 @@ for the current board mappings.
 - Signed OTA preparation, authenticated chunked HTTP transfer, verification,
   transactional apply, and rollback support
 
-## Runtime profiles
+## Educational Lessons
 
-| Profile | Purpose |
-| --- | --- |
-| `nodusweb` | Local web UI and API without an MQTT broker; supports local switch automations |
-| `sensorius` | Headless MQTT operation managed by Sensorius |
-| `weewx` | Headless MQTT publishing for the included WeeWX integration |
-| `homeassistant` | Headless MQTT operation with Home Assistant discovery |
-
-AP mode remains available for initial setup and network recovery. Normal
-runtime web pages are intentionally disabled for the headless MQTT profiles.
+The [educational lesson series](docs/syllabus-lessons/README.md) introduces
+cPyNodus II through Linux/macOS tool setup, Pico2 W wiring, CircuitPython and
+REPL use, firmware deployment, and guided labs covering sensors, MQTT, automation,
+recovery, memory, testing, and signed OTA updates. The core fixture uses a BME280
+and S1; XIAO ESP32-S3 Sense is extra credit. Start with the lesson index.
 
 ## Quick start
 
@@ -90,6 +86,18 @@ See the [user guide](docs/user_guide.md) for setup screens, Sensorius
 onboarding, profile behavior, calibration, switches, and automations. See the
 [technical reference](docs/README.md) for complete deployment options and
 runtime details.
+
+## Runtime profiles
+
+| Profile | Purpose |
+| --- | --- |
+| `nodusweb` | Local web UI and API without an MQTT broker; supports local switch automations |
+| `sensorius` | Headless MQTT operation managed by Sensorius |
+| `weewx` | Headless MQTT publishing for the included WeeWX integration |
+| `homeassistant` | Headless MQTT operation with Home Assistant discovery |
+
+AP mode remains available for initial setup and network recovery. Normal
+runtime web pages are intentionally disabled for the headless MQTT profiles.
 
 ## WeeWX host setup
 

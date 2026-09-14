@@ -6,6 +6,8 @@ and failure paths around the vendor MQTT client.
 
 import time
 
+import pytest
+
 import cpynodus_ii.core.mqtt_client as mqtt_client_module
 from cpynodus_ii.core import (
     build_mqtt_client_adapter,
@@ -1183,6 +1185,9 @@ def test_send_mqtt_packet_logs_only_bounded_slow_chunk_diagnostics(
     sock = _SendingSocket()
     packet = b"x" * (mqtt_client_module.MQTT_RAW_SEND_CHUNK_BYTES * 6)
     monkeypatch.setattr(mqtt_client_module, "_elapsed_ms", lambda _started: 300)
+    monkeypatch.setattr(
+        mqtt_client_module.time, "localtime", lambda: (2026, 9, 14, 12, 34, 56)
+    )
 
     mqtt_client_module._send_mqtt_packet(
         sock,
@@ -1193,11 +1198,54 @@ def test_send_mqtt_packet_logs_only_bounded_slow_chunk_diagnostics(
 
     lines = capsys.readouterr().out.strip().splitlines()
     assert len(lines) == mqtt_client_module.MQTT_RAW_SEND_SLOW_CHUNK_LOG_LIMIT
+    assert all(
+        line.startswith("2026-09-14 12:34:56 mqtt send_chunk_slow ")
+        for line in lines
+    )
     assert "packet_bytes=1536" in lines[0]
     assert "chunk=1" in lines[0]
     assert "chunk_bytes=256" in lines[0]
     assert "bytes_returned=256" in lines[0]
     assert "elapsed_ms=300" in lines[0]
+
+
+@pytest.mark.parametrize("clock_state", ["unset", "unavailable", "failed"])
+def test_send_mqtt_packet_timestamps_send_failure_before_clock_sync(
+    monkeypatch, capsys, clock_state
+):
+    def localtime():
+        if clock_state == "unset":
+            return (2000, 1, 1, 0, 0, 0)
+        raise RuntimeError("clock unavailable")
+
+    def monotonic():
+        if clock_state == "failed":
+            raise RuntimeError("clock unavailable")
+        return 42.9
+
+    failure = OSError("send failed")
+
+    def send(_sock, _chunk):
+        # Fail the fallback clock only after the send has started.
+        monkeypatch.setattr(mqtt_client_module.time, "monotonic", monotonic)
+        raise failure
+
+    monkeypatch.setattr(mqtt_client_module.time, "localtime", localtime)
+    monkeypatch.setattr(mqtt_client_module.time, "monotonic", lambda: 42.0)
+    monkeypatch.setattr(mqtt_client_module, "_elapsed_ms", lambda _started: 300)
+    monkeypatch.setattr(mqtt_client_module, "_send_socket_bytes", send)
+
+    with pytest.raises(OSError) as caught:
+        mqtt_client_module._send_mqtt_packet(
+            object(), b"hello", diagnostic_topic="test"
+        )
+
+    assert caught.value is failure
+    stamp = "0s" if clock_state == "failed" else "42s"
+    assert capsys.readouterr().out == (
+        "{} mqtt send_chunk_slow topic=test packet_bytes=5 chunk=1 "
+        "chunk_bytes=5 bytes_returned=-1 elapsed_ms=300\n"
+    ).format(stamp)
 
 
 def test_sync_transport_to_client_verifies_startup_meta_qos1_during_diagnosis():

@@ -764,6 +764,28 @@ def _mqtt_remaining_length(value):
     return encoded
 
 
+def _mqtt_log_stamp():
+    """Return local date/time, or monotonic seconds before the clock is set."""
+    try:
+        now = time.localtime()
+        if int(now[0]) >= 2023:
+            return "{:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}".format(
+                int(now[0]),
+                int(now[1]),
+                int(now[2]),
+                int(now[3]),
+                int(now[4]),
+                int(now[5]),
+            )
+    except Exception:
+        pass
+    try:
+        elapsed = max(0, int(time.monotonic()))
+    except Exception:
+        elapsed = 0
+    return "{}s".format(elapsed)
+
+
 def _send_mqtt_packet(sock, packet, *, chunked=False, diagnostic_topic=""):
     total = len(packet)
     sent_total = 0
@@ -787,9 +809,10 @@ def _send_mqtt_packet(sock, packet, *, chunked=False, diagnostic_topic=""):
             ):
                 print(
                     (
-                        "mqtt send_chunk_slow topic={} packet_bytes={} chunk={} "
+                        "{} mqtt send_chunk_slow topic={} packet_bytes={} chunk={} "
                         "chunk_bytes={} bytes_returned=-1 elapsed_ms={}"
                     ).format(
+                        _mqtt_log_stamp(),
                         str(diagnostic_topic or "none"),
                         total,
                         chunk_number,
@@ -806,9 +829,10 @@ def _send_mqtt_packet(sock, packet, *, chunked=False, diagnostic_topic=""):
             slow_chunk_logs += 1
             print(
                 (
-                    "mqtt send_chunk_slow topic={} packet_bytes={} chunk={} "
+                    "{} mqtt send_chunk_slow topic={} packet_bytes={} chunk={} "
                     "chunk_bytes={} bytes_returned={} elapsed_ms={}"
                 ).format(
+                    _mqtt_log_stamp(),
                     str(diagnostic_topic or "none"),
                     total,
                     chunk_number,
