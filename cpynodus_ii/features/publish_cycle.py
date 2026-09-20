@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from time import time
 
 from cpynodus_ii.features.payloads import (
+    build_configuration_meta_payload,
     build_device_heartbeat_payload,
     build_homeassistant_discovery_plan,
     build_onboarding_hello_payload,
@@ -45,6 +46,7 @@ def publish_startup_cycle(
     ip_address="",
     publish_switch_startup=True,
     include_switch_meta_channels=False,
+    settings_root=None,
 ):
     """Publish retained startup payloads for the current runtime state."""
     topics = []
@@ -57,6 +59,7 @@ def publish_startup_cycle(
             active_broker=active_broker,
             ip_address=ip_address,
             include_switch_channels=include_switch_meta_channels,
+            settings_root=settings_root,
         ),
         retain=True,
     )
@@ -91,7 +94,9 @@ def publish_startup_cycle(
     if runtime_config.switch.present:
         switch_meta = transport.publish(
             mqtt_topic(runtime_config, device_id, "meta", "switch"),
-            build_switch_meta_payload(runtime_config, switch_snapshot or {}),
+            build_switch_meta_payload(
+                runtime_config, switch_snapshot or {}, settings_root=settings_root
+            ),
             retain=True,
         )
         topics.append(switch_meta.topic)
@@ -161,6 +166,13 @@ def publish_startup_cycle(
             )
             topics.append(message.topic)
 
+    config_topic = mqtt_topic(runtime_config, device_id, "meta", "config")
+    transport.publish(
+        config_topic,
+        build_configuration_meta_payload(runtime_config, settings_root=settings_root),
+        retain=True,
+    )
+    topics.append(config_topic)
     return PublishCycleResult(
         phase="published",
         published_count=len(topics),
@@ -177,6 +189,7 @@ def publish_retained_startup_refresh(
     active_broker="",
     ip_address="",
     availability_debug_logger=None,
+    settings_root=None,
 ):
     """Publish retained identity and online status after MQTT recovery."""
     topics = []
@@ -189,6 +202,7 @@ def publish_retained_startup_refresh(
             active_broker=active_broker,
             ip_address=ip_address,
             include_switch_channels=False,
+            settings_root=settings_root,
         ),
         retain=True,
     )
@@ -199,6 +213,18 @@ def publish_retained_startup_refresh(
         debug_logger=availability_debug_logger,
     )
     topics.extend(availability_result.topics)
+    config_topic = mqtt_topic(runtime_config, device_id, "meta", "config")
+    transport.publish(
+        config_topic,
+        build_configuration_meta_payload(runtime_config, settings_root=settings_root),
+        retain=True,
+    )
+    topics.append(config_topic)
+    switch_result = publish_switch_meta_cycle(
+        transport, runtime_config, settings_root=settings_root
+    )
+    topics.extend(switch_result.topics)
+
     errors = availability_result.errors if availability_result.errors else ()
     return PublishCycleResult(
         phase="published",
@@ -238,7 +264,9 @@ def publish_sensor_cycle(transport, runtime_config, sensor_snapshot):
     )
 
 
-def publish_switch_meta_cycle(transport, runtime_config, switch_snapshot=None):
+def publish_switch_meta_cycle(
+    transport, runtime_config, switch_snapshot=None, *, settings_root=None
+):
     """Publish retained split switch metadata when switch channels exist."""
     if not runtime_config.switch.present:
         return PublishCycleResult(
@@ -251,7 +279,9 @@ def publish_switch_meta_cycle(transport, runtime_config, switch_snapshot=None):
     topic = mqtt_topic(runtime_config, device_id, "meta", "switch")
     message = transport.publish(
         topic,
-        build_switch_meta_payload(runtime_config, switch_snapshot or {}),
+        build_switch_meta_payload(
+            runtime_config, switch_snapshot or {}, settings_root=settings_root
+        ),
         retain=True,
     )
     return PublishCycleResult(

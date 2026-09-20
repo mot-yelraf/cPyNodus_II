@@ -25,9 +25,9 @@ publications using [payloads.py](../../cpynodus_ii/features/payloads.py).
 client/socket adapter. Queue acceptance and a local send return are not proof
 of receipt. Observe the broker separately.
 
-Retained `meta` is a startup identity snapshot. `meta/switch` holds detailed
-channel information. `meta/patch` describes accepted runtime mutations without
-replacing the full retained startup snapshot. Sensor `/data` uses metric names
+Retained `meta` is a compact identity snapshot. Advertised `meta/config` holds
+saved calibration/display/time/HA settings; `meta/switch` holds channel details. `meta/patch` describes accepted runtime mutations;
+successfully persisted changes also schedule retained snapshot refreshes. Sensor `/data` uses metric names
 and units defined by the contract; temperature values are Celsius.
 
 ## Lab

@@ -127,7 +127,7 @@ def test_steady_state_resubscribes_and_republishes_on_connect_generation_change(
     )
 
     assert result.startup_publish_phase == "published"
-    assert result.startup_published_count == 7
+    assert result.startup_published_count == 8
     assert result.subscribed_topics == (
         "nodus/aqi-x943fm/config/set",
         "nodus/aqi-x943fm/calibration/set",

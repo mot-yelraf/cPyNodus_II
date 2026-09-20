@@ -120,7 +120,9 @@ def build_switch_event_payload(runtime_config, channel, state, *, message_id="")
     }
 
 
-def build_switch_meta_payload(runtime_config, switch_state_snapshot=None):
+def build_switch_meta_payload(
+    runtime_config, switch_state_snapshot=None, *, settings_root=None
+):
     """Build retained switch channel metadata for the split meta contract."""
     switch = runtime_config.switch
     device_id = (
@@ -140,6 +142,9 @@ def build_switch_meta_payload(runtime_config, switch_state_snapshot=None):
                 "index": index,
                 "label": channel.label,
                 "channel_id": channel.channel_id,
+                "pin": channel.control_pin,
+                "enable_pin": channel.enable_pin,
+                "override_script": bool(channel.override_script),
                 "state": bool(state),
                 "event_topic": mqtt_topic(runtime_config, channel.channel_id, "event"),
                 "state_topic": mqtt_topic(runtime_config, channel.channel_id, "state"),
@@ -157,7 +162,7 @@ def build_switch_meta_payload(runtime_config, switch_state_snapshot=None):
                 ),
             }
         )
-    return {
+    payload = {
         "schema": "nodus-meta-switch/v1",
         "device_id": device_id,
         "switch_device_id": switch.device_id,
@@ -166,6 +171,11 @@ def build_switch_meta_payload(runtime_config, switch_state_snapshot=None):
         "channels": channels,
         "timestamp": int(time()),
     }
+    if settings_root is not None:
+        from cpynodus_ii.features.metadata_snapshot import apply_saved_switch
+
+        apply_saved_switch(payload, switch, settings_root)
+    return payload
 
 
 def build_device_heartbeat_payload(runtime_config, *, online):
@@ -190,6 +200,7 @@ def build_runtime_meta_payload(
     active_broker="",
     ip_address="",
     include_switch_channels=False,
+    settings_root=None,
 ):
     """Build the retained runtime metadata payload."""
     sensor = runtime_config.sensor
@@ -269,9 +280,9 @@ def build_runtime_meta_payload(
     if sensor.present:
         sensor_payload = {
             "sensor_id": sensor.sensor_id,
+            "device": sensor.device,
+            "config_file": sensor.active_config_file,
             "location": sensor.location,
-            "display_metrics": _display_metrics_for_meta(sensor),
-            "display_styles": _display_styles_for_meta(sensor),
             "data_topic": mqtt_topic(runtime_config, sensor.sensor_id, "data"),
             "event_topic": mqtt_topic(runtime_config, sensor.sensor_id, "event"),
             "availability_topic": mqtt_topic(
@@ -294,6 +305,7 @@ def build_runtime_meta_payload(
                         "channel_id": channel.channel_id,
                         "enable_pin": channel.enable_pin,
                         "pin": channel.control_pin,
+                        "override_script": bool(channel.override_script),
                         "state": bool(channel.last_state),
                         "event_topic": mqtt_topic(
                             runtime_config, channel.channel_id, "event"
@@ -320,6 +332,35 @@ def build_runtime_meta_payload(
         if include_switch_channels:
             payload["switch"]["channels"] = channels
 
+    from cpynodus_ii.features.metadata_snapshot import add_configuration_snapshot
+
+    payload["config_topic"] = mqtt_topic(runtime_config, device_id, "meta", "config")
+    add_configuration_snapshot(payload, runtime_config, settings_root, compact=True)
+    return payload
+
+
+def build_configuration_meta_payload(runtime_config, *, settings_root=None):
+    """Build the retained saved-configuration companion to compact metadata."""
+    from cpynodus_ii.features.metadata_snapshot import add_configuration_snapshot
+
+    sensor = runtime_config.sensor
+    payload = {
+        "schema": "nodus-meta-config/v1",
+        "device_id": (
+            sensor.sensor_id or runtime_config.switch.device_id
+            or runtime_config.network.hostname
+        ),
+        "timestamp": int(time()),
+    }
+    if sensor.present:
+        payload["sensor"] = {
+            "sensor_id": sensor.sensor_id,
+            "device": sensor.device,
+            "config_file": sensor.active_config_file,
+            "display_metrics": _display_metrics_for_meta(sensor),
+            "display_styles": _display_styles_for_meta(sensor),
+        }
+    add_configuration_snapshot(payload, runtime_config, settings_root)
     return payload
 
 

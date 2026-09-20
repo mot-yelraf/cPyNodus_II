@@ -26,6 +26,7 @@ from cpynodus_ii.features.payloads import (
     build_calibration_result_payload,
     build_config_ack_payload,
     build_config_result_payload,
+    build_configuration_meta_payload,
     build_device_heartbeat_payload,
     build_homeassistant_discovery_plan,
     build_meta_patch_payload,
@@ -202,12 +203,16 @@ def test_runtime_meta_payload_includes_sensor_and_switch_topics():
         decode_password(payload["mqtt"]["password"], hostname="aqi-x943fm")
         == "mqtt-secret"
     )
-    assert payload["sensor"]["display_metrics"] == [
+    config_payload = build_configuration_meta_payload(runtime_config)
+    assert "display_metrics" not in payload["sensor"]
+    assert config_payload["sensor"]["display_metrics"] == [
         "Air Quality",
         "Temperature",
         "Rel-Humidity",
     ]
-    assert payload["sensor"]["display_styles"] == ["graph24hr", "graph24hr", "gauge"]
+    assert config_payload["sensor"]["display_styles"] == [
+        "graph24hr", "graph24hr", "gauge"
+    ]
     assert payload["sensor"]["hardware"] == "BME680"
     assert payload["sensor"]["data_topic"] == "nodus/aqi-x943fm/data"
     assert payload["sensor"]["event_topic"] == "nodus/aqi-x943fm/event"
@@ -348,7 +353,7 @@ def test_onboarding_hello_payload_reports_absent_sensor_without_duplicate_id():
     assert payload["sensor"] == {"present": False}
 
 
-def test_switch_meta_payload_uses_split_contract_without_pin_fields():
+def test_switch_meta_payload_uses_split_contract_with_pin_fields():
     runtime_config = RuntimeConfig(
         network=NetworkConfig(hostname="aqi-x943fm"),
         mqtt=MQTTConfig(broker="broker.local", base_topic="nodus"),
@@ -390,8 +395,9 @@ def test_switch_meta_payload_uses_split_contract_without_pin_fields():
     assert channel["set_topic"] == "nodus/S1-x943fm/config/set"
     assert channel["ack_topic"] == "nodus/S1-x943fm/config/ack"
     assert channel["result_topic"] == "nodus/S1-x943fm/config/result"
-    assert "pin" not in channel
-    assert "enable_pin" not in channel
+    assert channel["pin"] == "GP28"
+    assert channel["enable_pin"] == "GP5"
+    assert channel["override_script"] is False
 
 
 def test_runtime_meta_payload_can_omit_switch_channel_detail():
@@ -602,7 +608,7 @@ def test_avpd_switch_runtime_meta_packet_stays_under_single_mss():
     assert packet_size <= 1460
 
 
-def test_switch_meta_payload_includes_channel_topic_map_without_pin_fields():
+def test_switch_meta_payload_includes_channel_topic_map_with_pin_fields():
     runtime_config = RuntimeConfig(
         network=NetworkConfig(hostname="aqi-x943fm"),
         mqtt=MQTTConfig(base_topic="nodus"),
@@ -639,6 +645,9 @@ def test_switch_meta_payload_includes_channel_topic_map_without_pin_fields():
         "label": "Fan",
         "channel_id": "S1-x943fm",
         "state": True,
+        "pin": "GP28",
+        "enable_pin": "GP5",
+        "override_script": False,
         "event_topic": "nodus/S1-x943fm/event",
         "state_topic": "nodus/S1-x943fm/state",
         "set_topic": "nodus/S1-x943fm/config/set",
@@ -646,8 +655,8 @@ def test_switch_meta_payload_includes_channel_topic_map_without_pin_fields():
         "result_topic": "nodus/S1-x943fm/config/result",
         "availability_topic": "nodus/S1-x943fm/availability",
     }
-    assert "pin" not in payload["channels"][0]
-    assert "enable_pin" not in payload["channels"][0]
+    assert payload["channels"][0]["pin"] == "GP28"
+    assert payload["channels"][0]["enable_pin"] == "GP5"
 
 
 def test_availability_and_heartbeat_payloads_use_online_state():

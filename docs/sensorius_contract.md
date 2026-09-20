@@ -15,7 +15,8 @@ define the contract. When other docs drift, this document wins.
 - Nodus publishes retained compact `meta` on connect/reconnect.
 - Nodus publishes retained `meta/switch` with detailed switch channel topics in
   the startup identity publish batch when switch channels are present.
-- After accepted runtime changes, Nodus publishes only `meta/patch`.
+- Accepted runtime changes publish correlated non-retained `meta/patch`.
+  Successfully persisted changes also schedule retained snapshot refreshes.
 - Sensorius paces ordinary runtime config writes one key at a time per
   physical Nodus host and waits for `ack` plus successful `result`.
 - Sensorius restarts a Nodus through device `config/set` with `restart = true`
@@ -86,6 +87,7 @@ Bootstrap rules:
 - `nodus/<device_id>/status/heartbeat`
 - `nodus/<device_id>/meta`
 - `nodus/<device_id>/meta/switch`
+- `nodus/<device_id>/meta/config`
 - `nodus/<sensor_id>/availability`
 - `nodus/<sensor_id>/data`
 - `nodus/<channel_id>/event`
@@ -260,7 +262,7 @@ topics, and switch presence quickly after connect/reconnect.
 The payload must include:
 
 - top-level `schema`, `device_id`, `hostname`, `serial`, `version`, `type`,
-  `mcu`
+  `mcu`, `config_topic`
 - `capabilities`
 - `status.heartbeat_topic`
 - `network.ssid`, `network.password`, `network.hostname`, `network.ipv4addr`
@@ -271,9 +273,10 @@ The payload must include:
 - `fwupdate.schema`, `fwupdate.transport`, `fwupdate.prepare_topic`,
   `fwupdate.ack_topic`, `fwupdate.result_topic`
 - `location_group.location`, `location_group.members`
-- `sensor.sensor_id`, `sensor.location`, `sensor.hardware`, `sensor.data_topic`,
-  `sensor.event_topic`, `sensor.availability_topic`,
-  `sensor.display_metrics`, `sensor.display_styles`
+- `sensor.sensor_id`, `sensor.device`, `sensor.config_file`, `sensor.location`,
+  `sensor.hardware`, `sensor.data_topic`, `sensor.event_topic`,
+  `sensor.availability_topic`; saved `sensor.calibration.Device.ALTITUDE_METERS`
+  when present for an I2C sensor
 - `switch.device_id`, `switch.channel_count`, and `switch.meta_topic` when
   switch capability is present
 
@@ -320,6 +323,102 @@ Sensorius compatibility rule:
 Password fields in retained `meta` use the same `obf1:` obfuscation format as
 persisted TOML password fields. They are not plaintext.
 
+## Retained `meta/config`
+
+`meta.config_topic` advertises `nodus/<device_id>/meta/config`, with schema
+`nodus-meta-config/v1`. It is retained at startup/reconnect and refreshed after
+persisted changes. Its top-level fields are `schema`, `device_id`, `timestamp`,
+`time`, `homeassistant`, and `sensor` when a sensor is present. The `sensor`
+object includes `sensor_id`, logical `device`, authoritative `config_file`,
+`display_metrics`, `display_styles`, and `calibration`.
+
+Calibration uses TOML casing beneath the lowercase `calibration` object:
+
+- `CALIBRATED` and `CALIB_STATUS` are saved values, not transient session state.
+- `Device` includes present supported I2C keys: `ALTITUDE_METERS`, `TEMP_OFFSET`,
+  `RH_OFFSET`, `CO2_OFFSET`, `AQI_OFFSET`, `GAS_OFFSET`, `LUX_OFFSET`,
+  `PPFD_OFFSET`, `APVPD_TEMP_CAL_VAL`, and `APVPD_RH_CAL_VAL`.
+- Soil `Device` includes `SOIL_TEMP_CAL_VAL`, `SOIL_MOIST_CAL_VAL`,
+  `SOIL_PH_CAL_VAL`, and `SOIL_EC_CAL_VAL`. The legacy moisture spelling is
+  normalized; an explicit canonical value wins, including zero.
+- `System` includes supported present `TEMP_OFFSET`, `RH_OFFSET`, `CO2_OFFSET`,
+  `REF_SENSOR_ID`, `REF_RANGE_HOURS`, `REF_START_TS`, `REF_END_TS`, and `REF_NOTE`.
+
+`time` uses `TZ`, `TZ_OFFSET`, `TZ_NAME`, `NTP_SERVER`, and `NTP_SERVER_IP`.
+Values are saved TOML scalars, including blank server settings and the
+configuration's supported hours-or-seconds offset representation. II does not
+implement `AUTO_TIMEZONE`; absence does not mean false.
+
+`homeassistant` uses `DISCOVERY_PREFIX`, `BASE_TOPIC`,
+`PUBLISH_DISCOVERY_RETAIN`, `PUBLISH_STATE_RETAIN`, and
+`PUBLISH_LEGACY_SENSOR_TOPIC`. These are saved settings even outside the
+Home Assistant profile. No credentials are added to this companion topic.
+
+Example (partial configuration):
+
+```json
+{
+  "schema": "nodus-meta-config/v1",
+  "device_id": "avpd-1jm5s1",
+  "timestamp": 1790000000,
+  "sensor": {
+    "sensor_id": "avpd-1jm5s1",
+    "device": "avpd",
+    "config_file": "sensor_i2c.toml",
+    "display_metrics": ["Temperature"],
+    "display_styles": ["gauge"],
+    "calibration": {
+      "CALIBRATED": false,
+      "CALIB_STATUS": "Not Calibrated",
+      "Device": {"ALTITUDE_METERS": 1719.0, "TEMP_OFFSET": 0.0},
+      "System": {"TEMP_OFFSET": 0.0, "REF_START_TS": 0}
+    }
+  },
+  "time": {"TZ": "Etc/UTC", "TZ_OFFSET": 0},
+  "homeassistant": {"PUBLISH_STATE_RETAIN": false}
+}
+```
+
+Migration and replay rules:
+
+- Sensorius must subscribe to the advertised `config_topic` and merge the
+  companion with compact `meta` and `meta/switch` by `device_id`/`sensor_id`.
+  `sensor.display_metrics` and `sensor.display_styles` move from compact `meta`
+  into this companion. Accept their old embedded location on older firmware.
+- Compact `meta` retains altitude as a pressure-client compatibility field;
+  its value matches the companion's saved altitude.
+- Missing fields mean unknown, not zero/false/default. Preserve previously
+  mirrored values when reading partial or older payloads. Explicit zero,
+  false, and empty strings are values. Repeated equivalent snapshots should
+  not cause redundant hub shadow writes.
+- Correlated `meta/patch` remains non-retained. Successful persistence marks
+  the retained snapshots dirty; the shallow coordinator coalesces changes
+  until command replies and subscriptions drain. After the command coordinator
+  returns, the main loop builds and queues one serialized snapshot at a time.
+  Remaining topics wait for queue drain, reducing simultaneous allocations.
+  Snapshot build failures retain pending work. Queued sends use the existing
+  MQTT retry path. Duplicate commands and volatile writes do not request a
+  saved-snapshot refresh.
+- Snapshot construction reads saved TOML values, so a prior volatile edit
+  cannot contaminate advertised calibration/time/display configuration.
+  Switch `state` remains live state; pins/override/labels come from saved
+  configuration. Persisted restart-required settings can differ from active
+  sockets until restart; `mqtt.active_broker` and `network.ipv4addr` remain
+  runtime observations.
+- An edit followed by immediate reboot is reflected at the next MQTT startup.
+  AP/nodusweb saves are likewise reflected at the next MQTT startup; those
+  profiles do not run an MQTT publisher concurrently with the web UI.
+- Snapshots on separate topics are not an atomic transaction; a consumer may
+  briefly see mixed generations during delivery. Reconnect replay converges
+  once all refreshed retained topics arrive.
+
+The split preserves the existing 1,460-byte packet guard for the tested Pico2 W
+startup fixture. Do not combine these payloads: archived broker captures show
+failure delivering the tail of a 1,464-byte packet. Long configured strings
+can still increase packet sizes; verify actual deployment payloads and heap
+on both boards. Host tests are not proof of broker delivery. Follow
+[the metadata validation routine](./metadata_validation.md) before deployment.
+
 ## Retained `meta/switch`
 
 Retained `nodus/<device_id>/meta/switch` is the authoritative switch channel
@@ -345,6 +444,9 @@ Canonical payload:
       "index": 1,
       "label": "Fan",
       "channel_id": "S1-ykdvea",
+      "pin": "GP28",
+      "enable_pin": "GP5",
+      "override_script": false,
       "state": false,
       "event_topic": "nodus/S1-ykdvea/event",
       "state_topic": "nodus/S1-ykdvea/state",
@@ -357,6 +459,9 @@ Canonical payload:
       "index": 2,
       "label": "Humidifier",
       "channel_id": "S2-ykdvea",
+      "pin": "GP21",
+      "enable_pin": "GP10",
+      "override_script": false,
       "state": false,
       "event_topic": "nodus/S2-ykdvea/event",
       "state_topic": "nodus/S2-ykdvea/state",
@@ -374,13 +479,14 @@ Canonical payload:
 
 - top-level `schema`, `device_id`, `switch_device_id`, `location`,
   `channel_count`, `channels`, and `timestamp`
-- per-channel `index`, `label`, `channel_id`, `state`, `event_topic`,
+- per-channel `index`, `label`, `channel_id`, `pin`, `enable_pin`,
+  `override_script`, `state`, `event_topic`,
   `state_topic`, `set_topic`, `ack_topic`, `result_topic`, and
   `availability_topic`
 
-Hardware pin fields are not part of the MQTT control contract. If Sensorius
-needs pin diagnostics, use `/itaot-meta` or a later diagnostic contract rather
-than startup MQTT metadata.
+Each channel also advertises `pin`, `enable_pin`, and `override_script` as
+configuration metadata. Physical pins are not remote channel identities and
+do not change the channel-scoped command topics.
 
 ## Retained Command Cleanup
 
@@ -723,6 +829,8 @@ Patch rules:
 - `meta/patch` is the incremental sync stream after startup.
 - It does not replace retained startup `meta`.
 - Accepted config, switch, and calibration writes should emit `meta/patch`.
+- Successfully persisted writes also refresh retained snapshots as described
+  under `meta/config`; patches alone cannot synchronize an offline hub.
 
 ## Deprecated Doc Shapes
 
@@ -730,5 +838,4 @@ These shapes are deprecated and should not be treated as canonical:
 
 - `nodus/<channel_id>/set`
 - switch-control docs centered on plain `ON` and `OFF`
-- docs that imply ordinary runtime config writes trigger a full retained `meta`
-  refresh
+- docs that imply non-retained patches alone synchronize offline subscribers

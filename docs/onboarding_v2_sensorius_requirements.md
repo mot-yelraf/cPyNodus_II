@@ -254,8 +254,11 @@ Use stable short error strings to keep UI and recovery behavior predictable:
 `nodus/<device_id>/meta` (`schema = "nodus-meta/v1"`) is the compact retained
 startup snapshot. It includes:
 1. `network`, `profile`, and `mqtt` shadow fields for Sensorius TOML materialization.
-2. `sensor.display_metrics` for Sensorius TOML `[Display]` materialization.
-3. `sensor.display_styles` for Sensorius TOML `[Display.Style]` materialization.
+2. `sensor.device` and `sensor.config_file` for explicit sensor identity.
+3. `config_topic` advertising retained `meta/config`. Its sensor object carries
+   `display_metrics`, `display_styles`, and full saved calibration, with top-level
+   Time/HomeAssistant snapshots. Accept older embedded display arrays, but use
+   the companion on current firmware.
 4. `sensor.hardware` for the concrete sensor family, for example `BME280`,
    `BME680`, `VEML7700`, `AHTx0`, `SCD30`, or `SCD4x`. Logical sensor IDs
    remain `avpd`, `apvpd`, `aqi`, `aht`, `co2`, and `lux`.

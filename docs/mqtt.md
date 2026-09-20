@@ -25,8 +25,12 @@ wins.
   family when known while logical device IDs remain unchanged.
 - Nodus publishes retained `nodus/<device_id>/meta/switch` in the startup
   identity publish batch when switch channels are present.
+- Nodus publishes retained `nodus/<device_id>/meta/config`, advertised by
+  `meta.config_topic`, for calibration, display, Time, and HomeAssistant
+  snapshots. Display arrays now live here; consumers must support this split.
 - Nodus publishes non-retained `nodus/<device_id>/meta/patch` after accepted
-  runtime changes.
+  runtime changes and refreshes saved retained snapshots after successful
+  persistence and command-reply drain.
 - Nodus publishes retained heartbeat and availability online/offline payloads.
 - MQTT configures a retained offline Last Will on the device heartbeat topic.
   Abrupt power, radio, or socket loss can therefore become broker-visible
@@ -58,6 +62,7 @@ wins.
 - `nodus/<device_id>/status/heartbeat`
 - `nodus/<device_id>/meta`
 - `nodus/<device_id>/meta/switch`
+- `nodus/<device_id>/meta/config`
 - `nodus/<device_id>/meta/patch`
 - `nodus/<device_id>/onboard/hello`
 - `nodus/<device_id>/config/set`
@@ -93,8 +98,7 @@ current contract:
 
 - `nodus/<channel_id>/set`
 - switch-control docs centered on plain `ON` and `OFF`
-- docs that imply ordinary runtime config writes trigger a full retained
-  `meta` republish
+- docs that imply non-retained patches alone synchronize offline subscribers
 
 ## Runtime Command Ownership
 
@@ -103,7 +107,7 @@ current contract:
   Sensorius must clear that retained command by publishing an empty retained
   payload to that exact topic after successful `result`. Nodus ignores empty
   `/set` payloads defensively.
-- Startup retained `meta` publishing belongs to startup and reconnect handling.
+- Retained snapshots publish at startup/reconnect and after persisted edits.
   It is compact and excludes `switch.channels[*]`; detailed switch control
   topics live in retained `meta/switch`. Retained startup identity publishes
   drain before runtime command subscriptions. New compact `meta` payloads
@@ -121,7 +125,7 @@ current contract:
   interleaved broker packets. This includes retained PUBLISH messages that can
   arrive immediately after a subscription request.
 - Retained startup publishes are separated by 350 ms. For temporary hardware
-  diagnosis, retained device `meta` and `meta/switch` publish at QoS 1 so PUBACK
+  diagnosis, retained device `meta`, `meta/config`, and `meta/switch` publish at QoS 1 so PUBACK
   distinguishes broker receipt from a stalled send or lost acknowledgement.
   Slow raw-send chunk diagnostics are capped at four lines per packet and are
   emitted only when an individual chunk takes at least 250 ms.

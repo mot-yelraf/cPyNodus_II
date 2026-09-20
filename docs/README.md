@@ -774,7 +774,12 @@ persists `SWITCH_#_LAST_STATE` when the filesystem is writable.
   to control whether the filesystem is R/W for the app.
 - Keep web routes small; heavy handlers can destabilize startup on constrained devices.
 - Add Device flow uses `POST /itaot-init`, then MQTT onboarding topics (`nodus/<device_id>/onboard/hello`, `config/set`, `config/ack`, `config/result`) as the authoritative configuration path.
-- Nodus TOML files are the source of truth for accepted config. Sensorius should use retained `nodus/<device_id>/meta` as the compact startup/reconnect snapshot, retained `nodus/<device_id>/meta/switch` as the switch control-topic map when switch channels are present, then consume `nodus/<device_id>/meta/patch` for accepted steady-state config deltas.
+- Nodus TOML files are the source of truth for accepted config. Sensorius merges
+  retained `meta` identity, advertised `meta/config` calibration/display/Time/HA
+  settings, and `meta/switch` channel configuration. Accepted changes emit
+  correlated non-retained `meta/patch`; successful persistence also schedules
+  retained refreshes for offline-hub replay. See the migration rules in
+  [the Sensorius contract](./sensorius_contract.md#retained-metaconfig).
 - Accepted runtime `Time.*` config writes request a fresh NTP sync after MQTT
   command responses and queued publishes drain.
 - `GET /itaot-meta` remains available as optional, on-demand UI metadata fallback; it is not required for onboarding success.

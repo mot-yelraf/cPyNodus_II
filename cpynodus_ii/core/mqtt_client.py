@@ -430,10 +430,15 @@ def sync_transport_to_client(
     message_retain = bool(message.retain)
     startup_meta_publish = _is_retained_startup_meta_publish(message)
     collect_after_publish = _should_collect_after_startup_meta_publish(message)
-    payload = _serialize_payload(message.payload)
-    payload_bytes = _payload_size(payload)
+    payload_bytes = -1
     operation_started = time.monotonic()
     try:
+        if startup_meta_publish:
+            _collect_garbage()
+        payload = _serialize_payload(message.payload)
+        payload_bytes = _payload_size(payload)
+        if startup_meta_publish:
+            _collect_garbage()
         publish_result = _publish_mqtt(
             adapter.client,
             message.topic,
@@ -2766,7 +2771,7 @@ def _bind_on_message(client, transport, *, flexible=False):
 def _serialize_payload(payload):
     import json
 
-    if isinstance(payload, str):
+    if isinstance(payload, (str, bytes)):
         return payload
     return json.dumps(dict(payload or {}), separators=(",", ":"))
 
@@ -2852,7 +2857,11 @@ def _is_retained_startup_meta_publish(message):
     topic = str(getattr(message, "topic", "") or "").strip().lower()
     if topic.startswith("homeassistant/"):
         return False
-    return topic.endswith("/meta") or topic.endswith("/meta/switch")
+    return (
+        topic.endswith("/meta")
+        or topic.endswith("/meta/switch")
+        or topic.endswith("/meta/config")
+    )
 
 
 def _should_collect_after_startup_meta_publish(message):
@@ -2862,7 +2871,7 @@ def _should_collect_after_startup_meta_publish(message):
     topic = str(getattr(message, "topic", "") or "").strip().lower()
     if topic.startswith("homeassistant/"):
         return False
-    return topic.endswith("/meta")
+    return topic.endswith("/meta") or topic.endswith("/meta/config")
 
 
 def _collect_garbage():
