@@ -221,7 +221,7 @@ the device:
   advances the same in-memory startup-failure count rather than remaining an
   unclassified reconnect.
 - Retained startup publishes are paced by 350 ms. During the current hardware
-  diagnostic period, retained device `meta` and `meta/switch` use QoS 1 and
+  diagnostic period, retained device `meta`, `meta/config`, and `meta/switch` use QoS 1 and
   wait for PUBACK. Raw sends emit at most four slow-chunk records per packet,
   and only for chunks taking at least 250 ms; records include topic, packet and
   chunk sizes, chunk number, returned byte count, and elapsed time.
@@ -293,8 +293,20 @@ reload. This has been especially important on Pico2 W.
 - The current Nodus station IPv4 in retained `meta.network.ipv4addr` comes from
   the active `NetworkStack` at publish time. It is runtime state only and is not
   part of TOML configuration persistence.
-- Retained `nodus/<device_id>/meta/switch` carries detailed switch channel control topics and is published in the startup identity batch when switch channels are present.
-- After startup, accepted runtime config writes are mirrored to Sensorius through non-retained `nodus/<device_id>/meta/patch` only; config writes do not trigger another full retained `meta` publish.
+- Retained `nodus/<device_id>/meta/switch` carries switch channel control topics,
+  physical pins, and override settings in the startup identity batch.
+- Retained `nodus/<device_id>/meta/config`, advertised by `meta.config_topic`,
+  carries full calibration, display, Time, and HomeAssistant snapshots. Keeping
+  these outside compact `meta` preserves its tested Pico2 W packet-size guard.
+- After startup, accepted runtime config writes emit correlated non-retained
+  `nodus/<device_id>/meta/patch`. Successfully persisted changes also mark
+  retained metadata dirty. The steady-state coordinator only marks pending
+  topics in the live app; snapshot allocation runs from the main loop after
+  that coordinator and command stack return. It builds and serializes one
+  snapshot after command replies/subscriptions drain, releases its dictionary,
+  and queues one UTF-8 buffer. The next snapshot waits for queue drain. Failed
+  snapshot builds remain pending; MQTT send retries use the existing adapter.
+  Volatile writes do not claim to update the saved configuration snapshot.
 - Runtime liveness and device materialization should come from MQTT heartbeat/availability/data topics.
 - `GET /itaot-meta` remains as optional fallback metadata for user-initiated enrichment, not background polling.
 - `nodusweb` remains the only normal-mode profile that starts the built-in web server.

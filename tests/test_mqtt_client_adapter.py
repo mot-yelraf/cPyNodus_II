@@ -38,10 +38,16 @@ def _run_direct_tests():
         test_connect_sync_poll_and_disconnect_flow,
         test_sync_transport_to_client_records_last_publish_state,
         test_sync_transport_to_client_records_startup_publish_state,
-        test_sync_transport_to_client_collects_after_retained_device_meta,
+        lambda: test_sync_transport_to_client_collects_after_retained_device_meta(
+            "meta"
+        ),
         test_sync_transport_to_client_publishes_qos0_packet_on_socket,
         test_sync_transport_to_client_chunks_large_qos0_publish_on_socket,
-        test_sync_transport_to_client_verifies_startup_meta_qos1_during_diagnosis,
+        lambda: (
+            test_sync_transport_to_client_verifies_startup_meta_qos1_during_diagnosis(
+                "meta"
+            )
+        ),
         test_sync_transport_to_client_can_verify_large_raw_publish_when_debug_enabled,
         test_sync_transport_to_client_keeps_large_non_startup_publish_qos0,
         test_sync_transport_to_client_reports_startup_puback_timeout_by_default,
@@ -1078,7 +1084,8 @@ def test_sync_transport_to_client_records_startup_publish_state():
     assert sync_result.diagnostic == ""
 
 
-def test_sync_transport_to_client_collects_after_retained_device_meta():
+@pytest.mark.parametrize("suffix", ["meta", "meta/config"])
+def test_sync_transport_to_client_collects_after_retained_device_meta(suffix):
     runtime_config = _runtime_config()
     transport = MQTTTransport("broker.local", 1883)
     transport.mark_connect_requested()
@@ -1099,7 +1106,7 @@ def test_sync_transport_to_client_collects_after_retained_device_meta():
         mqtt_client_module.gc.collect = _collect
         connect_result = connect_mqtt_client(adapter, transport)
         transport.publish(
-            "nodus/aqi-x943fm/meta",
+            "nodus/aqi-x943fm/" + suffix,
             {"schema": "nodus-meta/v1"},
             retain=True,
         )
@@ -1110,8 +1117,8 @@ def test_sync_transport_to_client_collects_after_retained_device_meta():
 
     assert sync_result.phase == "synced"
     assert sync_result.published_count == 1
-    assert sync_result.topic == "nodus/aqi-x943fm/meta"
-    assert collect_calls == [1]
+    assert sync_result.topic == "nodus/aqi-x943fm/" + suffix
+    assert collect_calls == [1, 1, 1]
     assert transport.published_messages == []
     assert sync_result.diagnostic == ""
 
@@ -1248,7 +1255,10 @@ def test_send_mqtt_packet_timestamps_send_failure_before_clock_sync(
     ).format(stamp)
 
 
-def test_sync_transport_to_client_verifies_startup_meta_qos1_during_diagnosis():
+@pytest.mark.parametrize("suffix", ["meta", "meta/config"])
+def test_sync_transport_to_client_verifies_startup_meta_qos1_during_diagnosis(
+    suffix,
+):
     runtime_config = _runtime_config()
     transport = MQTTTransport("broker.local", 1883)
     transport.mark_connect_requested()
@@ -1259,7 +1269,7 @@ def test_sync_transport_to_client_verifies_startup_meta_qos1_during_diagnosis():
     )
 
     connect_result = connect_mqtt_client(adapter, transport)
-    topic = "nodus/avpd-0kl7sx/meta"
+    topic = "nodus/avpd-0kl7sx/" + suffix
     payload = "x" * 1435
     transport.publish(topic, payload, retain=True)
 
@@ -1272,7 +1282,7 @@ def test_sync_transport_to_client_verifies_startup_meta_qos1_during_diagnosis():
         mqtt_client_module._mqtt_qos1_publish_packet(topic, payload, True, 1)
     )
     sock = connect_result.adapter.client._sock
-    assert len(expected) == 1464
+    assert len(expected) == 1464 + len(suffix) - len("meta")
     assert bytes(sock.sent) == expected
     chunk_size = mqtt_client_module.MQTT_RAW_SEND_CHUNK_BYTES
     assert [len(chunk) for chunk in sock.chunks] == [
@@ -1281,7 +1291,7 @@ def test_sync_transport_to_client_verifies_startup_meta_qos1_during_diagnosis():
         chunk_size,
         chunk_size,
         chunk_size,
-        184,
+        184 + len(suffix) - len("meta"),
     ]
     assert sock.incoming == bytearray()
     assert "last_ack_kind=puback" in transport.ack_diagnostic()
@@ -2968,3 +2978,54 @@ def test_poll_mqtt_client_tolerates_two_arg_message_callback():
 
 if __name__ == "__main__":
     _run_direct_tests()
+
+
+def test_preencoded_metadata_reuses_payload_buffer_for_raw_packet(monkeypatch):
+    runtime_config = _runtime_config()
+    transport = MQTTTransport("broker.local", 1883)
+    adapter = build_mqtt_client_adapter(
+        runtime_config, socket_pool=object(),
+        modules={"mqtt_cls": _PubackSocketPublishMQTTClient},
+    )
+    connected = connect_mqtt_client(adapter, transport)
+    encoded = b'{"schema":"nodus-meta-config/v1","padding":"' + b'x' * 1000 + b'"}'
+    topic = "nodus/avpd-test/meta/config"
+    original = mqtt_client_module._mqtt_bytes
+    payload_results = []
+
+    def record(value):
+        result = original(value)
+        if value is encoded:
+            payload_results.append(result)
+        return result
+
+    monkeypatch.setattr(mqtt_client_module, "_mqtt_bytes", record)
+    transport.publish(topic, encoded, retain=True)
+    assert mqtt_client_module._serialize_payload(encoded) is encoded
+    result = sync_transport_to_client(connected.adapter, transport)
+    assert result.phase == "synced"
+    assert len(payload_results) >= 2
+    assert all(value is encoded for value in payload_results)
+    assert not transport.published_messages
+    assert bytes(connected.adapter.client._sock.sent) == bytes(
+        mqtt_client_module._mqtt_qos1_publish_packet(topic, encoded, True, 1)
+    )
+
+
+def test_metadata_serialization_memory_failure_preserves_queued_work(monkeypatch):
+    transport = MQTTTransport("broker.local", 1883)
+    adapter = build_mqtt_client_adapter(
+        _runtime_config(), socket_pool=object(), modules={"mqtt_cls": _FakeMQTTClient},
+    )
+    connected = connect_mqtt_client(adapter, transport)
+    transport.publish("nodus/avpd-test/meta", {"schema": "nodus-meta/v1"}, retain=True)
+    queued = transport.published_messages[0]
+
+    def fail(_payload):
+        raise MemoryError("allocation failed")
+
+    monkeypatch.setattr(mqtt_client_module, "_serialize_payload", fail)
+    result = sync_transport_to_client(connected.adapter, transport)
+    assert result.phase == "error"
+    assert "allocation failed" in result.errors[0]
+    assert transport.published_messages == [queued]

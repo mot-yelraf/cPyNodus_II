@@ -573,3 +573,23 @@ Defaults in `sensor_soil.toml.def` are in `mg/kg`, matching the 7-in-1 sensor's 
   New factory settings use `Nodus-<sn>`; upgraded or customized settings retain
   their existing AP name.
 - If MQTT is disabled, the device can still run as a local sensor.
+
+## Retained MQTT configuration snapshots
+
+MQTT profiles advertise `meta.config_topic` for retained `meta/config` with
+saved calibration (including status/reference fields), display arrays, Time,
+and HomeAssistant settings. Compact `meta` includes explicit sensor `device`,
+`config_file`, and saved altitude. `meta/switch` includes physical `pin`,
+`enable_pin`, and `override_script` alongside channel identities and topics.
+
+Advertised keys keep TOML casing within `calibration`, `time`, and
+`homeassistant`. Explicit zero/false values are preserved; missing fields are
+unknown. `AUTO_TIMEZONE` is not implemented by II. This adds no config keys or
+calibration-status write commands; existing saved status fields remain distinct
+from transient calibration events.
+
+Persisted MQTT edits schedule fresh retained snapshots after command replies
+drain. Volatile edits do not update saved snapshots. Web/AP edits and changes
+followed by restart appear at the next MQTT startup. Sensorius must support
+`meta/config` because display arrays moved there from compact `meta`; see
+[the canonical migration/replay contract](./sensorius_contract.md#retained-metaconfig).

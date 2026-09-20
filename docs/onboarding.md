@@ -57,7 +57,8 @@ AP mode is used when:
   token TTL enforcement is not currently implemented; Sensorius should still
   enforce short onboarding-session TTLs.
 - Sensorius should treat retained startup `meta` as the authoritative compact
-  device/sensor snapshot and retained `meta/switch` as the detailed switch
-  control-topic map.
-- Ordinary runtime config writes should not trigger a full retained `meta`
-  republish.
+  device/sensor snapshot, advertised retained `meta/config` as saved sensor/
+  time/HA configuration, and retained `meta/switch` as the switch control map.
+- Successfully persisted runtime config writes schedule retained metadata
+  refresh after command replies drain, so an offline hub can replay saved
+  configuration without receiving the original non-retained patch.

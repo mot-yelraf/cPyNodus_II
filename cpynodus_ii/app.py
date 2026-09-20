@@ -5851,6 +5851,8 @@ async def main(*, startup_plan_override=None, ota_first_boot_armed=False):
                     subscribe_switch_topics=not defer_switch_subscriptions,
                     publish_switch_startup=False,
                     include_switch_meta_channels=False,
+                    metadata_root=settings_root,
+                    defer_metadata_refresh=True,
                 )
             else:
                 iteration = _inactive_steady_state_iteration(
@@ -5859,6 +5861,29 @@ async def main(*, startup_plan_override=None, ota_first_boot_armed=False):
                 )
             steady_state = iteration.state
             runtime_config = iteration.runtime_config
+            if plan.mqtt_enabled:
+                # Allocate retained refresh payloads only after the coordinator
+                # and command-handler stacks have unwound.
+                from cpynodus_ii.features.metadata_refresh import refresh_saved_metadata
+
+                metadata_refresh = refresh_saved_metadata(
+                    transport,
+                    runtime_config,
+                    settings_root=settings_root,
+                    version=__version__,
+                    active_broker=mqtt_adapter.active_broker,
+                    ip_address=network_stack.ip_address or "",
+                    switch_service=switch_service,
+                )
+                if metadata_refresh.errors:
+                    _print_log(
+                        "mqtt",
+                        "metadata_refresh phase={} errors={}".format(
+                            metadata_refresh.phase,
+                            ",".join(metadata_refresh.errors),
+                        ),
+                        start_monotonic=start_monotonic,
+                    )
             sensor_issue = _sensor_issue_text(iteration.errors)
             sensor_poll_observed = (
                 bool(sensor_issue) or iteration.sensor_publish_phase == "published"

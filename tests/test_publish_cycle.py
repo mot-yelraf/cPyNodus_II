@@ -123,7 +123,7 @@ def test_startup_cycle_publishes_heartbeat_meta_sensor_and_switch_topics():
     )
 
     assert result.phase == "published"
-    assert result.published_count == 7
+    assert result.published_count == 8
     assert "nodus/aqi-x943fm/status/heartbeat" in result.topics
     assert "nodus/aqi-x943fm/meta" in result.topics
     assert "nodus/aqi-x943fm/meta/switch" in result.topics
@@ -456,7 +456,7 @@ def test_availability_refresh_cycle_republishes_retained_heartbeat_and_online_to
     assert transport.published_messages[2].payload["status"] == "online"
 
 
-def test_retained_startup_refresh_publishes_meta_heartbeat_and_availability_only():
+def test_retained_startup_refresh_publishes_split_meta_and_availability():
     transport = MQTTTransport("broker.local", 1883)
     runtime_config = RuntimeConfig(
         network=NetworkConfig(hostname="aqi-x943fm"),
@@ -492,12 +492,14 @@ def test_retained_startup_refresh_publishes_meta_heartbeat_and_availability_only
     )
 
     assert result.phase == "published"
-    assert result.published_count == 4
+    assert result.published_count == 6
     assert result.topics == (
         "nodus/aqi-x943fm/meta",
         "nodus/aqi-x943fm/status/heartbeat",
         "nodus/aqi-x943fm/availability",
         "nodus/S1-x943fm/availability",
+        "nodus/aqi-x943fm/meta/config",
+        "nodus/aqi-x943fm/meta/switch",
     )
     assert all(message.retain is True for message in transport.published_messages)
     assert "nodus/aqi-x943fm/data" not in result.topics

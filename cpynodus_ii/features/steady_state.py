@@ -96,12 +96,16 @@ def run_steady_state_iteration(
     active_broker="",
     ip_address="",
     settings_root=None,
+    metadata_root=None,
+    defer_metadata_refresh=False,
     subscribe_switch_topics=True,
     publish_switch_startup=True,
     include_switch_meta_channels=False,
 ):
     """Process reconnect, queued commands, and cadence-gated sensor publish."""
     state = state or SteadyState()
+    if metadata_root is None:
+        metadata_root = settings_root
     subscribed_topics = ()
     startup_result = _skipped_publish_result("startup_not_required")
     availability_result = _skipped_publish_result("availability_refresh_not_required")
@@ -147,6 +151,7 @@ def run_steady_state_iteration(
             ip_address=ip_address,
             publish_switch_startup=publish_switch_startup,
             include_switch_meta_channels=include_switch_meta_channels,
+            settings_root=metadata_root,
         )
         ota_status_result = publish_ota_completion_report(
             transport,
@@ -191,6 +196,7 @@ def run_steady_state_iteration(
             transport,
             runtime_config,
             switch_snapshot,
+            settings_root=metadata_root,
         )
         if switch_meta_result.phase == "published":
             working_state = SteadyState(
@@ -245,6 +251,21 @@ def run_steady_state_iteration(
     if calibration_session_result.runtime_config is not None:
         updated_runtime_config = calibration_session_result.runtime_config
     errors.extend(calibration_session_result.errors)
+    from cpynodus_ii.features.metadata_refresh import refresh_saved_metadata
+
+    metadata_result = refresh_saved_metadata(
+        transport,
+        updated_runtime_config,
+        command_results + (calibration_session_result,),
+        settings_root=metadata_root,
+        version=version,
+        active_broker=active_broker,
+        ip_address=ip_address,
+        switch_service=switch_service,
+        defer_build=defer_metadata_refresh,
+    )
+    errors.extend(metadata_result.errors)
+
     log_transfer_result = _process_log_transfer_session(
         transport,
         updated_runtime_config,
@@ -347,6 +368,7 @@ def run_steady_state_iteration(
             startup_result.published_count
             + ota_status_result.published_count
             + switch_meta_result.published_count
+            + metadata_result.published_count
             + command_published_count
             + calibration_session_result.published_count
             + log_transfer_result.published_count
