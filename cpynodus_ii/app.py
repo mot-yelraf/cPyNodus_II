@@ -1559,10 +1559,20 @@ def _steady_state_for_mqtt_connect(
     steady_state,
     transport,
     subscription_recovery_pending,
+    runtime_config,
 ):
-    """Reuse pending startup work instead of queueing it for every reconnect."""
+    """Reuse pending publications but restore subscriptions for a clean session."""
     if not bool(subscription_recovery_pending):
         return steady_state
+    from cpynodus_ii.features.command_subscriptions import (
+        subscribe_device_runtime_topics,
+    )
+
+    # SUBACKs from the previous clean session do not survive reconnect.
+    # Rebuild device topics even when the old queue was fully drained;
+    # switch topics return through the app's deferred subscription phase.
+    transport.subscriptions.clear()
+    subscribe_device_runtime_topics(transport, runtime_config)
     return replace(
         steady_state,
         connection_generation=int(
@@ -5498,11 +5508,18 @@ async def main(*, startup_plan_override=None, ota_first_boot_armed=False):
                             steady_state,
                             transport,
                             mqtt_subscribe_recovery_pending,
+                            runtime_config,
+                        )
+                        deferred_switch_subscription_generation = (
+                            transport.connection_generation
+                            if runtime_config.switch.present
+                            else 0
                         )
                         _print_log(
                             "mqtt",
                             (
-                                "recovery action=reuse_startup_queues gen={} "
+                                "recovery action=reuse_startup_queues "
+                                "subscriptions=restored gen={} "
                                 "{}"
                             ).format(
                                 transport.connection_generation,

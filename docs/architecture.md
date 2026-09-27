@@ -214,8 +214,13 @@ the device:
   those targeted warm reloads. Continued failure after warm attempt two uses
   hard reset. The counter clears only at the operational-generation checkpoint
   or on a true power-on.
-  Pending startup queues are reused across those connection generations instead
-  of appending duplicate retained identity and data work.
+  Pending startup publications are reused across those connection generations
+  instead of appending duplicate retained identity and data work. Each reconnect
+  uses a clean MQTT session, so device command subscriptions are rebuilt in full,
+  including topics whose SUBACK succeeded on the previous connection. Switch
+  subscriptions are scheduled again after pending publications and device
+  subscriptions drain. An empty subscription queue from the previous session
+  does not establish readiness on the new session.
 - A QoS 1 startup publish that times out waiting for PUBACK enters this ladder
   immediately. Errno 12 reported by either TCP preflight or raw MQTT CONNECT
   advances the same in-memory startup-failure count rather than remaining an
