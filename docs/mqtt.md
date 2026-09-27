@@ -116,11 +116,17 @@ current contract:
 - A connection is operational only after its startup publish and subscription
   queues drain. Slow startup publishes and errno 119, 116, and related errno 12
   failures retain one recovery epoch across reconnects, reuse the pending
-  startup queues, and escalate through MQTT rebuild, station/radio reset, two
+  startup publication queues, and escalate through MQTT rebuild, station/radio reset, two
   NVM-counted warm reload attempts, then hard-reset recovery. Only the
   operational checkpoint or true power-on clears the warm-attempt count.
   PUBACK timeouts and errno 12 from TCP preflight or raw MQTT CONNECT are
   classified immediately instead of retrying with a zero failure count.
+- Recovery reconnects use clean sessions: all device command topics must be
+  subscribed again, even if their previous subscription queue drained. Pending
+  publications are preserved, device subscriptions are rebuilt, and switch
+  subscriptions follow after those queues drain. The recovery log reports
+  `subscriptions=restored`; verify subsequent device and switch SUBACKs before
+  treating the connection as operational.
 - During the bounded SUBACK wait, Nodus accepts and delivers up to eight
   interleaved broker packets. This includes retained PUBLISH messages that can
   arrive immediately after a subscription request.
@@ -221,6 +227,38 @@ python scripts/nodus_log_analyze.py --device-id co2-v5p04u
 - Calibration details remain documented in `docs/calibration_mqtt_contract.md`.
 
 ## Troubleshooting
+
+### Validate Command Subscriptions After Recovery
+
+Host regression tests model an empty or partially drained subscription queue,
+reconnect, and a display command with correlated ACK/result. They do not prove
+delivery on CircuitPython hardware.
+
+For operator validation on each supported board:
+
+1. Capture serial output and broker-side MQTT traffic before recovery. Confirm
+   the boot version and active profile, and subscribe to device `config/#`,
+   `meta/#`, and the channel `config/#` topics.
+2. In a controlled test, interrupt the device's MQTT connection and allow the
+   running firmware to reconnect without rebooting. Include the recovery path
+   reporting `reuse_startup_queues` (for example, after a captured PUBACK timeout);
+   a normal boot alone does not exercise this regression.
+3. Verify broker-side subscriptions for device `config/set`, `calibration/set`,
+   `fwupdate`, and `logs/get`, followed by every configured switch `config/set`.
+   Correlate these with serial subscription completion and the operational
+   checkpoint. Repeat after a reconnect during partially completed subscriptions.
+4. Send one non-retained display `config/set` with a fresh `message_id` and
+   `restart:false`. Require broker-visible correlated `config/ack`, successful
+   `config/result`, and `meta/patch`. Check serial persistence status and the
+   refreshed retained `meta/config` before claiming durable persistence.
+5. Validate a channel command using an operator-approved safe switch state and
+   require its channel-scoped ACK/result. Check continued heartbeat/data traffic
+   and stable post-GC heap across repeated reconnects.
+
+`testApparatus/calibration_test.py` can isolate command parsing and persistence
+from the normal app, but its direct-injection mode bypasses broker subscriptions
+and cannot validate this reconnect fix. Do not substitute direct injection or
+serial publish success for the broker-visible recovery sequence above.
 
 ### MQTT Publish Stall With False Local Success
 

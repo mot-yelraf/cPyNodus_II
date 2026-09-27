@@ -4,6 +4,7 @@ The cases model connection, publish, subscribe, polling, socket compatibility,
 and failure paths around the vendor MQTT client.
 """
 
+import json
 import time
 
 import pytest
@@ -2312,6 +2313,87 @@ def test_sync_transport_to_client_disconnects_on_subscribe_failure():
         "mqtt_subscribe_failed:nodus/S1-x943fm/config/set:"
         "No data received from broker for 10 seconds."
     )
+
+
+@pytest.mark.parametrize("partial_subscription_failure", [False, True])
+def test_recovery_clean_session_receives_config_after_resubscribe(
+    partial_subscription_failure,
+):
+    from cpynodus_ii.app import (
+        _steady_state_for_mqtt_connect,
+        _subscribe_switch_runtime_topics,
+    )
+    from cpynodus_ii.features.command_intake import process_inbound_messages
+    from cpynodus_ii.features.command_subscriptions import subscribe_runtime_topics
+    from cpynodus_ii.features.steady_state import SteadyState
+
+    config = _runtime_config()
+    transport = MQTTTransport("broker.local", 1883)
+    adapter = build_mqtt_client_adapter(
+        config,
+        socket_pool=object(),
+        modules={
+            "mqtt_cls": _SubscribeFailSecondMQTTClient
+            if partial_subscription_failure
+            else _FakeMQTTClient
+        },
+    )
+    connected = connect_mqtt_client(adapter, transport)
+    expected_topics = subscribe_runtime_topics(transport, config)
+    first = sync_transport_to_client(connected.adapter, transport)
+    assert first.phase == ("error" if partial_subscription_failure else "synced")
+    # The config subscription was consumed even when a later SUBACK failed.
+    assert expected_topics[0] not in transport.subscriptions
+    state = SteadyState(connection_generation=transport.connection_generation)
+    transport.mark_disconnected(reason="test_recovery")
+    transport.publish("nodus/aqi-x943fm/meta", {"version": "test"}, retain=True)
+
+    adapter = build_mqtt_client_adapter(
+        config, socket_pool=object(), modules={"mqtt_cls": _FakeMQTTClient}
+    )
+    connected = connect_mqtt_client(adapter, transport)
+    client = connected.adapter.client
+    assert client.subscribed == []  # New broker session has no subscriptions.
+    _steady_state_for_mqtt_connect(state, transport, True, config)
+    metadata = sync_transport_to_client(connected.adapter, transport)
+    assert metadata.published_count == 1
+    assert client.subscribed == []
+    devices = sync_transport_to_client(metadata.adapter, transport)
+    assert devices.subscribed_count == 4
+    assert not transport.published_messages and not transport.subscriptions
+    _subscribe_switch_runtime_topics(transport, config)
+    switches = sync_transport_to_client(devices.adapter, transport)
+    assert switches.subscribed_count == 1
+    assert tuple(client.subscribed) == expected_topics
+
+    topic = "nodus/aqi-x943fm/config/set"
+    assert topic in client.subscribed
+    client.pending_incoming.append(
+        (topic, json.dumps({
+            "message_id": "after-reconnect",
+            "payload": {"updates": [{
+                "section": "Display", "key": "METRIC_1", "value": "Temperature",
+            }]},
+            "restart": False,
+        }))
+    )
+    polled = poll_mqtt_client(switches.adapter, transport)
+    assert polled.received_count == 1
+    results = process_inbound_messages(transport, config, None)
+    assert results[0].published_count == 3
+    adapter = polled.adapter
+    while transport.published_messages:
+        sent = sync_transport_to_client(adapter, transport)
+        assert sent.phase == "synced"
+        adapter = sent.adapter
+    replies = {topic: json.loads(payload) for topic, payload, _ in client.published}
+    ack = replies["nodus/aqi-x943fm/config/ack"]
+    result = replies["nodus/aqi-x943fm/config/result"]
+    assert ack["message_id"] == result["message_id"] == "after-reconnect"
+    assert ack["accepted"] is True
+    assert result["applied"] is True
+    assert result["updated"] == 1
+    assert config.sensor.display.metrics[0] == "Temperature"
 
 
 def test_sync_transport_to_client_compacts_successful_subscriptions_before_failure():

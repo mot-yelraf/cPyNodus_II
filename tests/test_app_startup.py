@@ -7,6 +7,8 @@ network fallback, and service selection remain deterministic.
 from dataclasses import replace
 from types import SimpleNamespace
 
+import pytest
+
 import cpynodus_ii.app as app_module
 from cpynodus_ii.app import (
     _broker_ip_refresh_needed,
@@ -531,11 +533,45 @@ def test_subscription_reconnect_reuses_pending_startup_generation():
     generation = transport.mark_connected(now_monotonic=10.0)
     state = SteadyState(connection_generation=0)
 
-    unchanged = _steady_state_for_mqtt_connect(state, transport, False)
-    reused = _steady_state_for_mqtt_connect(state, transport, True)
+    config = RuntimeConfig(network=NetworkConfig(hostname="co2-pmoopn"))
+    unchanged = _steady_state_for_mqtt_connect(state, transport, False, config)
+    assert transport.subscriptions == []
+    reused = _steady_state_for_mqtt_connect(state, transport, True, config)
 
     assert unchanged is state
     assert reused.connection_generation == generation
+
+
+@pytest.mark.parametrize("pending", [(), ("logs/get",), ("config/set", "logs/get")])
+def test_recovery_reconnect_restores_consumed_device_subscriptions(pending):
+    transport = MQTTTransport("broker.local", 1883)
+    transport.mark_connected(now_monotonic=1.0)
+    state = SteadyState(connection_generation=1, handled_message_ids=("old-command",))
+    config = RuntimeConfig(network=NetworkConfig(hostname="co2-pmoopn"))
+    for suffix in pending:
+        transport.subscribe("nodus/co2-pmoopn/" + suffix)
+    # A failed switch subscription must return to the deferred switch phase.
+    transport.subscribe("nodus/S2-pmoopn/config/set")
+    publication = transport.publish(
+        "nodus/co2-pmoopn/meta", {"version": "test"}, retain=True
+    )
+    transport.mark_disconnected(now_monotonic=2.0, reason="publish_timeout")
+    transport.mark_connected(now_monotonic=3.0)
+
+    recovered = _steady_state_for_mqtt_connect(state, transport, True, config)
+
+    assert transport.subscriptions == [
+        "nodus/co2-pmoopn/config/set",
+        "nodus/co2-pmoopn/calibration/set",
+        "nodus/co2-pmoopn/fwupdate",
+        "nodus/co2-pmoopn/logs/get",
+    ]
+    assert transport.published_messages == [publication]
+    assert recovered.handled_message_ids == ("old-command",)
+    assert recovered.connection_generation == transport.connection_generation
+    assert not _startup_subscription_recovery_drained(
+        SimpleNamespace(phase="synced", subscribed_count=0), transport
+    )
 
 
 def test_subscription_failure_handler_uses_guarded_warm_reload(monkeypatch):
