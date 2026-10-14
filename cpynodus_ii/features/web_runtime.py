@@ -88,6 +88,7 @@ class WebRuntimeController:
         self.phase = "new"
         self.errors = ()
         self._route_paths = ()
+        self.halt_requested = False
         self._pending_reboot_callback = None
         self._pending_reboot_due_at = None
         self._manual_switch_guard_until = {}
@@ -224,7 +225,8 @@ class WebRuntimeController:
                 gc.collect()
             except Exception:
                 pass
-        self._run_pending_reboot()
+        if not self.halt_requested:
+            self._run_pending_reboot()
         return self
 
     def stop(self):
@@ -518,6 +520,17 @@ class WebRuntimeController:
                 payload = self.automation_service.delete_rule(body.get("rule_id"))
                 status = 200 if payload.get("success") else 400
                 return self._json_response(request, payload, status_code=status)
+
+        @route("/halt", methods=["POST"])
+        def _halt(request):
+            self.halt_requested = True
+            return self._html_response(
+                request,
+                "<!doctype html><html><head><title>Halt requested</title></head>"
+                "<body><h1>Halt requested</h1><p>Relay outputs will stay unchanged. "
+                "Wait for serial confirmation: halt phase=halted filesystem_sync=ok "
+                "before disconnecting power.</p><p>Power cycle to resume.</p></body></html>",
+            )
 
         @route("/restart", methods=["POST"])
         def _restart(request):

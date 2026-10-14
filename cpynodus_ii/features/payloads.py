@@ -243,6 +243,7 @@ def build_runtime_meta_payload(
             "switch": switch.present,
             "fwupdate": True,
             "log_transfer": True,
+            "halt": True,
         },
         "status": {
             "heartbeat_topic": mqtt_topic(

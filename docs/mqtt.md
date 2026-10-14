@@ -11,6 +11,8 @@ wins.
 
 - AP bootstrap uses `/itaot-meta` and `/itaot-init`.
 - Runtime device config uses `nodus/<device_id>/config/set`.
+- Runtime device halt uses `nodus/<device_id>/config/set` with an empty
+  `payload` and `halt = true`; send without retain. Relay outputs stay held.
 - Runtime device restart uses `nodus/<device_id>/config/set` with
   `restart = true`.
 - Runtime switch config uses `nodus/<channel_id>/config/set`.
@@ -279,3 +281,46 @@ Observed remediation:
 5. Restore the TOML files.
 
 In recent validation, two separate Nodus devices that exhibited this MQTT publish-stall / broker-mismatch behavior were restored to normal operation only after the full `flash_nuke.uf2` + fresh CircuitPython reflash sequence. A plain CircuitPython reflash alone did not clear the issue.
+
+## Halt before removing power
+
+Retained device `meta.capabilities.halt = true` advertises support. Sensorius
+should enable Halt only for an explicit `true` flag; absent or false means
+unsupported.
+
+Send a non-retained command on `nodus/<device_id>/config/set`:
+
+```json
+{"message_id":"halt-001","payload":{},"halt":true}
+```
+
+For example (substitute your broker and device ID):
+
+```sh
+mosquitto_pub -h <broker> -t nodus/<device_id>/config/set -m '{"message_id":"halt-001","payload":{},"halt":true}'
+```
+
+Subscribe to `nodus/<device_id>/config/#` before sending. `config/ack` means
+accepted; wait for the correlated `config/result` with `halt = true`,
+`phase = "halted"`, and `applied = true` before removing power. This result
+means filesystem sync succeeded and application writes have stopped. Offline
+heartbeat/availability are also attempted before MQTT is closed. Delivery is
+best effort: a broker or socket failure does not prevent local halt.
+
+Do not retain a halt command: retained delivery would halt the device again
+after a power cycle. Halt cannot be undone over MQTT. Power cycling resumes
+normal startup; reset or an operator REPL interruption can also end the wait.
+
+NodusWeb exposes **Halt until power cycle** on the status page, using
+`POST /halt`. Its response confirms the request only. Wait for serial
+`halt phase=halted filesystem_sync=ok relays=held` before unplugging. A failed
+HTTP response does not establish whether halt occurred; check serial output.
+
+Halt finishes the current synchronous file transaction, stops future command,
+automation, calibration, sensor, and recovery work, syncs filesystems, and
+closes web/MQTT/network services. Relay GPIO handles remain allocated with
+their existing output levels while power remains applied. Halt does not
+persist a new relay state or a halt flag. It reduces exposure to power loss
+during application writes; it does not establish or fix the cause of past
+filesystem loss. In USB edit mode, separately finish and eject any host-side
+filesystem writes before unplugging.

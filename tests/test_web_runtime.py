@@ -1637,3 +1637,38 @@ def test_web_runtime_automation_routes_and_ownership_guard():
 
     assert response.status == (409, "Conflict")
     assert response.body["error"] == "switch_controlled_by_automation"
+
+
+def test_web_halt_returns_response_without_stopping_server_or_relays():
+    runtime_config = _runtime_config()
+    stack = build_network_stack(
+        runtime_config, wifi_radio=_FakeRadio(), connection_manager_module=_FakeConnMgr
+    )
+    controller = WebRuntimeController(
+        runtime_config, stack, version="test", server_module=_FakeServerModule
+    ).start()
+    response = controller.server.routes[("/halt", ("POST",))](_FakeRequest())
+    assert "Halt requested" in response.body
+    assert "filesystem_sync=ok" in response.body
+    assert controller.halt_requested
+    assert controller.server.stop_count == 0
+    assert controller.phase == "ready"
+    page = controller.server.routes[("/", ("GET",))](_FakeRequest()).body
+    assert 'action="/halt"' in page
+    assert "Halt until power cycle" in page
+
+
+def test_web_halt_suppresses_pending_reboot():
+    runtime_config = _runtime_config()
+    stack = build_network_stack(
+        runtime_config, wifi_radio=_FakeRadio(), connection_manager_module=_FakeConnMgr
+    )
+    controller = WebRuntimeController(
+        runtime_config, stack, version="test", server_module=_FakeServerModule
+    ).start()
+    reboots = []
+    controller._pending_reboot_callback = lambda: reboots.append(True)
+    controller._pending_reboot_due_at = 0
+    controller.server.routes[("/halt", ("POST",))](_FakeRequest())
+    controller.poll()
+    assert reboots == []

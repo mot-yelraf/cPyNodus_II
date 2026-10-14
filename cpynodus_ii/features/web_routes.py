@@ -38,6 +38,12 @@ def _operational_routes(runtime_config):
     profile = str(getattr(runtime_config, "active_profile", "") or "").strip().lower()
     routes = [
         WebRoute(
+            path="/halt",
+            methods=("POST",),
+            kind="control",
+            description="Finish filesystem work and halt until power cycle",
+        ),
+        WebRoute(
             path="/",
             methods=("GET",),
             kind="status",

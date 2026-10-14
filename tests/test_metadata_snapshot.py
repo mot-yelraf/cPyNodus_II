@@ -379,6 +379,7 @@ def test_saved_fixture_split_packets_stay_under_single_mss():
         "meta/config": build_configuration_meta_payload(config, settings_root=root),
         "meta/switch": build_switch_meta_payload(config, settings_root=root),
     }
+    assert payloads["meta"]["capabilities"]["halt"] is True
     for suffix, payload in payloads.items():
         topic = "nodus/{}/{}".format(config.sensor.sensor_id, suffix)
         assert (
@@ -662,3 +663,27 @@ def test_deferred_refresh_marks_dirty_without_building_or_collecting(
     assert result.phase == "skipped"
     assert transport._metadata_refresh_pending
     assert not transport.published_messages
+
+
+@pytest.mark.parametrize(
+    "sensor_present,switch_present", [(True, False), (False, True)]
+)
+def test_retained_meta_advertises_halt_for_sensor_and_switch_devices(
+    sensor_present, switch_present
+):
+    from cpynodus_ii.core.config import SwitchConfig
+
+    config = RuntimeConfig(
+        active_profile="sensorius",
+        sensor=DetectedSensor(
+            family="i2c" if sensor_present else "",
+            device="avpd" if sensor_present else "",
+            sensor_id="sensor-test" if sensor_present else "",
+        ),
+        switch=SwitchConfig(
+            present=switch_present, device_id="switch-test" if switch_present else ""
+        ),
+    )
+    payload = build_runtime_meta_payload(config, version="test")
+    assert payload["capabilities"]["halt"] is True
+    assert payload["device_id"] == ("sensor-test" if sensor_present else "switch-test")

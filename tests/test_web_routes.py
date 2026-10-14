@@ -21,6 +21,7 @@ def test_nodusweb_route_table_includes_operational_routes_only():
     assert "/config" in paths
     assert "/set-switch-state" in paths
     assert "/restart" in paths
+    assert "/halt" in paths
     assert "/itaot-init" not in paths
     assert "/itaot-meta" not in paths
 

@@ -285,6 +285,33 @@ radio cleanup will clear the socket issue. Hard reset is reserved for the cases
 where field behavior suggests board radio/socket state may outlive a normal
 reload. This has been especially important on Pico2 W.
 
+## Operator halt
+
+Device MQTT `config/set` with `halt = true` and NodusWeb `POST /halt` share an
+app-owned halt path. Handlers request halt; they do not close sockets or
+interrupt file operations. File writers and request/command handlers run
+synchronously, so the app enters halt after the active transaction returns,
+including closes and final renames. Command intake stops at the accepted halt,
+and steady state skips remaining background work. Web halt is checked after
+`server.poll()` returns, allowing the response send/close attempt to finish;
+it takes precedence over a pending web reboot and recovery evaluation.
+
+Halt disables auto-reload, stops HTTP and sensors, calls `os.sync()`, attempts
+MQTT completion/offline publications, closes MQTT, and tears down networking.
+MQTT draining stops after 32 sends or eight seconds between operations; an
+individual operation retains its existing socket timeout, so eight seconds is
+not an absolute shutdown deadline. No reconnect or recovery is run during halt.
+The app holds the switch service and GPIO handles without deinitialization,
+then uses `time.sleep(1)` indefinitely outside the async scheduler. No halt
+marker or switch state is written. Normal startup resumes on power cycle.
+
+Serial `halt phase=halted filesystem_sync=ok relays=held` is the local
+completion indication. Sync failure is reported as `filesystem_sync=failed`.
+The HTTP response acknowledges a request, while a successful MQTT halted
+result indicates application file sync is complete. Hardware verification of
+file integrity, relay levels, and broker-visible replies is still required;
+see `testApparatus/halt_validation.md`.
+
 ## Developer Note: MQTT-First Onboarding and Runtime Metadata (2026-02-24)
 
 - Add Device provisioning uses `POST /itaot-init` only for AP bootstrap (Wi-Fi + MQTT seed + reboot).
