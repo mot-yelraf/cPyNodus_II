@@ -285,6 +285,8 @@ def test_startup_cycle_can_publish_reduced_switch_meta():
     )
 
     meta = transport.published_messages[0].payload
+    assert meta["capabilities"]["halt"] is True
+    assert transport.published_messages[0].retain is True
     assert meta["capabilities"]["switch"] is True
     assert meta["switch"] == {
         "device_id": "switch-x943fm",

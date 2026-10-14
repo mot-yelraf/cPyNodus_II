@@ -80,6 +80,7 @@ class CommandResult:
     duplicate: bool = False
     persistence_mode: str = ""
     requested_state: str = ""
+    halt_requested: bool = False
     reboot_requested: bool = False
     reboot_mode: str = ""
     ntp_resync_requested: bool = False

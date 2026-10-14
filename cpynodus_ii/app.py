@@ -2960,6 +2960,101 @@ def _mark_unprepared_shutdown_cleanup(start_monotonic, *, reason="unprepared"):
     return marker_status == "set"
 
 
+def _prepare_runtime_halt(
+    *,
+    runtime_config,
+    network_stack,
+    web_runtime=None,
+    sensor_service=None,
+    mqtt_adapter=None,
+    transport=None,
+    message_id="",
+    start_monotonic,
+):
+    """Quiesce services and sync files without releasing relay GPIO outputs."""
+    from cpynodus_ii.core.autoreload import disable_auto_reload
+
+    disable_auto_reload()
+    _stop_web_runtime_for_shutdown(web_runtime, start_monotonic=start_monotonic)
+    # Never stop the switch service: deinit releases the relay control pins.
+    _stop_feature_services_for_shutdown(
+        sensor_service=sensor_service, start_monotonic=start_monotonic
+    )
+    sync_error = ""
+    try:
+        os.sync()
+    except Exception as exc:
+        sync_error = "filesystem_sync_failed"
+        _print_log("halt", "sync error={}".format(exc), start_monotonic=start_monotonic)
+    if transport is not None and mqtt_adapter is not None:
+        try:
+            if transport.connected:
+                # Halt must never subscribe or admit more command work.
+                transport.subscriptions.clear()
+                from cpynodus_ii.features.publish_cycle import publish_shutdown_cycle
+                from cpynodus_ii.features.topics import mqtt_topic
+
+                if message_id:
+                    transport.publish(
+                        mqtt_topic(
+                            runtime_config,
+                            _runtime_device_id(runtime_config),
+                            "config",
+                            "result",
+                        ),
+                        {
+                            "message_id": message_id,
+                            "applied": not bool(sync_error),
+                            "updated": 0,
+                            "duplicate": False,
+                            "error": sync_error,
+                            "halt": True,
+                            "phase": "halted",
+                            "relays": "held",
+                        },
+                        retain=False,
+                    )
+                publish_shutdown_cycle(transport, runtime_config)
+                deadline = time.monotonic() + 8.0
+                # A send retains its existing socket timeout. Bound both elapsed
+                # time between sends and operation count; never reconnect here.
+                for _ in range(32):
+                    if not transport.published_messages or time.monotonic() >= deadline:
+                        break
+                    result = sync_transport_to_client(mqtt_adapter, transport)
+                    mqtt_adapter = result.adapter
+                    if result.phase != "synced" or not result.published_count:
+                        break
+        except Exception as exc:
+            _print_log(
+                "halt",
+                "mqtt error={}".format(exc),
+                start_monotonic=start_monotonic,
+            )
+        try:
+            close_mqtt_client(mqtt_adapter, transport)
+        except Exception as exc:
+            _print_log(
+                "halt",
+                "mqtt close error={}".format(exc),
+                start_monotonic=start_monotonic,
+            )
+    _teardown_network_for_shutdown(network_stack, start_monotonic=start_monotonic)
+    _print_log(
+        "halt",
+        "phase=halted filesystem_sync={} relays=held".format(
+            "failed" if sync_error else "ok"
+        ),
+        start_monotonic=start_monotonic,
+    )
+
+
+def _wait_for_power_cycle():
+    """Wait indefinitely without scheduling application or recovery work."""
+    while True:
+        time.sleep(1.0)
+
+
 def _prepare_soft_recovery_reboot(
     *,
     mqtt_adapter=None,
@@ -3784,6 +3879,24 @@ async def main(*, startup_plan_override=None, ota_first_boot_armed=False):
         start_monotonic=start_monotonic,
     )
 
+    halt_active = False
+
+    def _enter_runtime_halt(message_id=""):
+        nonlocal halt_active
+        halt_active = True
+        _prepare_runtime_halt(
+            runtime_config=runtime_config,
+            network_stack=network_stack,
+            web_runtime=web_runtime,
+            sensor_service=sensor_service,
+            mqtt_adapter=mqtt_adapter if plan.mqtt_enabled else None,
+            transport=transport if plan.mqtt_enabled else None,
+            message_id=message_id,
+            start_monotonic=start_monotonic,
+        )
+        # The enclosing main frame retains switch_service and its GPIO handles.
+        _wait_for_power_cycle()
+
     loop_error = None
     try:
         while True:
@@ -3842,6 +3955,8 @@ async def main(*, startup_plan_override=None, ota_first_boot_armed=False):
                 )
                 web_runtime.poll()
                 runtime_config = web_runtime.runtime_config
+                if web_runtime.halt_requested:
+                    _enter_runtime_halt()
             previous_phase = recovery_state.phase
             recovery_decision = advance_recovery_state(
                 recovery_state,
@@ -5878,6 +5993,9 @@ async def main(*, startup_plan_override=None, ota_first_boot_armed=False):
                 )
             steady_state = iteration.state
             runtime_config = iteration.runtime_config
+            for command_result in iteration.command_results:
+                if command_result.halt_requested:
+                    _enter_runtime_halt(command_result.message_id)
             if plan.mqtt_enabled:
                 # Allocate retained refresh payloads only after the coordinator
                 # and command-handler stacks have unwound.
@@ -6356,7 +6474,9 @@ async def main(*, startup_plan_override=None, ota_first_boot_armed=False):
         raise
     finally:
         shutdown_prepared_for_reload = _consume_soft_reload_prepared()
-        if shutdown_prepared_for_reload:
+        if halt_active:
+            pass  # Halt already closed services; do not release relay outputs.
+        elif shutdown_prepared_for_reload:
             _print_log(
                 "runtime",
                 "shutdown cleanup=skipped reason=prepared_reload",

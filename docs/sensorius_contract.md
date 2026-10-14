@@ -294,6 +294,15 @@ network stack. It is not a TOML setting and should be treated as volatile
 runtime state that can change after DHCP lease changes, reconnects, or network
 changes.
 
+Retained `meta.capabilities.halt = true` advertises support for the standalone
+halt command on device `config/set`. Sensorius should enable Halt only when
+this flag is explicitly `true`; an absent or false flag means unsupported.
+Send `{"message_id":"halt-001","payload":{},"halt":true}` without retain to
+`<mqtt.base_topic>/<device_id>/config/set`, and observe the corresponding
+`config/ack` and `config/result` topics. No extra topic map is added to compact
+`meta`. Wait for a successful correlated halted result before removing power;
+acceptance alone does not confirm filesystem sync.
+
 The retained `meta.status` block intentionally advertises only the heartbeat
 topic. Consumers should use retained heartbeat and availability topics for
 online/offline state.
@@ -561,6 +570,36 @@ Canonical standalone restart request:
   "restart_mode": "soft"
 }
 ```
+
+Canonical standalone halt request (non-retained, on device `config/set`):
+
+```json
+{"message_id":"halt-001","payload":{},"halt":true}
+```
+
+Halt accepts no updates and cannot be combined with `restart = true`.
+It uses the existing onboarding-token checks and message-ID deduplication.
+The non-retained `config/ack` indicates acceptance only. After synchronous
+file transactions have returned and filesystem sync succeeds, the app queues:
+
+```json
+{"message_id":"halt-001","applied":true,"updated":0,"duplicate":false,"error":"","halt":true,"phase":"halted","relays":"held"}
+```
+
+A filesystem sync failure instead reports `applied = false` and
+`error = "filesystem_sync_failed"`; the application still stops and waits,
+but does not claim successful sync. Duplicate commands return the existing
+duplicate result and do not request halt again. Replies and retained offline
+status receive a bounded send attempt before MQTT closes. Lost delivery does
+not restart the device or prevent local halt. No further inbound commands are
+processed after acceptance, including later commands in the same intake batch.
+
+Relay outputs stay at their current levels; switch handles are not deinitialized
+and halt performs no new switch persistence. No halt flag is persisted. The
+normal scheduler and recovery loop stop and the app sleeps indefinitely until
+power cycle, reset, or operator interruption. A successful halted result means
+application writes have stopped and filesystem sync completed, not that host
+USB writes have been flushed or prior corruption has been repaired.
 
 Canonical restart replies:
 

@@ -70,11 +70,15 @@ def process_device_config_message(
             errors=("schema_invalid",),
             runtime_config=runtime_config,
         )
-    message_id, updates, token, restart, restart_mode = parsed
+    message_id, updates, token, restart, restart_mode, halt = parsed
     token_error = _validate_token(settings_root, token)
     if token_error:
         return _failure(
             transport, runtime_config, topic, message_id, token_error, accepted=False
+        )
+    if halt and (restart or updates):
+        return _failure(
+            transport, runtime_config, topic, message_id, "halt_requires_empty_payload"
         )
     duplicate = _contains(handled_message_ids, message_id)
     _ack(transport, runtime_config, message_id, duplicate=duplicate)
@@ -98,6 +102,17 @@ def process_device_config_message(
             message_id=message_id,
             duplicate=True,
             reboot_mode=restart_mode if restart else "",
+        )
+    if halt:
+        return CommandResult(
+            phase="halt_requested",
+            topic=topic,
+            command_type="config",
+            published_count=1,
+            runtime_config=runtime_config,
+            message_id=message_id,
+            requested_state="halt",
+            halt_requested=True,
         )
     if restart and not updates:
         _result(
@@ -223,6 +238,7 @@ def _parse(payload_text):
     message_id = str(payload.get("message_id", "") or "").strip()
     if not message_id:
         return None
+    halt = payload.get("halt", False) is True
     restart = _truthy(payload.get("restart", False))
     restart_mode = (
         "hard"
@@ -231,6 +247,8 @@ def _parse(payload_text):
     )
     body = payload.get("payload") or {}
     if not isinstance(body, dict):
+        return None
+    if halt and body and not ("updates" in body or "settings" in body):
         return None
     updates = []
     if isinstance(body.get("updates"), list):
@@ -252,9 +270,11 @@ def _parse(payload_text):
                 updates.append(
                     {"section": str(section), "key": str(key), "value": value}
                 )
-    elif not restart:
+    elif not (restart or halt):
         return None
-    if not updates and not restart:
+    if halt and body and not updates:
+        return None
+    if not updates and not (restart or halt):
         return None
     return (
         message_id,
@@ -262,6 +282,7 @@ def _parse(payload_text):
         str(payload.get("onboard_token", "") or "").strip(),
         restart,
         restart_mode,
+        halt,
     )
 
 

@@ -221,6 +221,27 @@ def run_steady_state_iteration(
             handled_message_ids=working_state.handled_message_ids,
             settings_root=settings_root,
         )
+    if any(result.halt_requested for result in command_results):
+        return SteadyStateResult(
+            state=working_state,
+            runtime_config=runtime_config,
+            subscribed_topics=tuple(subscribed_topics),
+            startup_publish_phase=startup_result.phase,
+            startup_published_count=startup_result.published_count,
+            command_results=command_results,
+            sensor_publish_phase="skipped",
+            sensor_published_count=0,
+            availability_refresh_phase="skipped",
+            availability_refresh_published_count=0,
+            ota_status_phase=ota_status_result.phase,
+            ota_status_published_count=ota_status_result.published_count,
+            command_published_count=sum(r.published_count for r in command_results),
+            calibration_session_phase="skipped",
+            calibration_session_published_count=0,
+            log_transfer_phase="skipped",
+            log_transfer_published_count=0,
+            total_published_count=sum(r.published_count for r in command_results),
+        )
     updated_runtime_config = runtime_config
     handled_message_ids = list(working_state.handled_message_ids)
     for result in command_results:

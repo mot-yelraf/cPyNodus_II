@@ -107,6 +107,8 @@ def process_inbound_messages(
             if fast_result.runtime_config is not None:
                 runtime_config = fast_result.runtime_config
             results.append(fast_result)
+            if fast_result.halt_requested:
+                return tuple(results)
             continue
 
         if _is_empty_payload(message.payload_text) and _is_sensor_calibration_topic(

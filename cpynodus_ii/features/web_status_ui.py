@@ -58,11 +58,12 @@ def render_status_html(payload):
         body += '<div class="card"><h2>Switches</h2><table><tr><th>Switch</th><th>State</th></tr>{}</table><div id="switch_status" class="status"></div></div>'.format(
             "".join(rows)
         )
-    script = """let guard={};
+    body += '<form method="post" action="/halt"><button>Halt until power cycle</button></form>'
+    script = """let guard={};const d=document;function el(i){return d.getElementById(i)}
 function value(v){return v===null||v===undefined?'--':(typeof v==='number'?v.toFixed(2):String(v))}
-async function setSwitch(ch,state){if(Date.now()<Number(guard[ch]||0))return;guard[ch]=Date.now()+5000;const b=document.querySelector('[data-channel="'+ch+'"]');if(b)b.disabled=true;const r=await fetch('/set-switch-state',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channel_id:ch,state:state})});const p=await r.json();document.getElementById('switch_status').textContent=p.success?(state?'Switch turned on.':'Switch turned off.'):JSON.stringify(p);setTimeout(refresh,100);setTimeout(refresh,5100)}
+async function setSwitch(ch,state){if(Date.now()<Number(guard[ch]||0))return;guard[ch]=Date.now()+5000;const b=d.querySelector('[data-channel="'+ch+'"]');if(b)b.disabled=true;const r=await fetch('/set-switch-state',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channel_id:ch,state:state})});const p=await r.json();el('switch_status').textContent=p.success?(state?'Switch turned on.':'Switch turned off.'):JSON.stringify(p);setTimeout(refresh,100);setTimeout(refresh,5100)}
 function toggleSwitch(b){setSwitch(b.dataset.channel,b.textContent.trim()!=='ON')}
-async function refresh(){try{const r=await fetch('/current-data',{cache:'no-store'}),p=await r.json(),s=p.sensor||{};document.getElementById('sample_timestamp').textContent=s.display_timestamp||'';(s.display_metrics||[]).forEach(i=>{const e=document.getElementById('sample_'+i.index);if(e)e.textContent=value(i.value)});((p.switch||{}).channels||[]).forEach(i=>{const a=i.automation||{},b=document.getElementById('switch_'+i.key),o=document.getElementById('owner_'+i.key);if(b){b.textContent=i.state?'ON':'OFF';b.className=i.state?'on':'off';b.disabled=!!a.controlled||Date.now()<Number(guard[i.channel_id]||0)}if(o)o.textContent=a.controlled?'NodusWeb: '+(a.automations||[]).join(', '):''})}catch(e){}}
+async function refresh(){try{const r=await fetch('/current-data',{cache:'no-store'}),p=await r.json(),s=p.sensor||{};el('sample_timestamp').textContent=s.display_timestamp||'';(s.display_metrics||[]).forEach(i=>{const e=el('sample_'+i.index);if(e)e.textContent=value(i.value)});((p.switch||{}).channels||[]).forEach(i=>{const a=i.automation||{},b=el('switch_'+i.key),o=el('owner_'+i.key);if(b){b.textContent=i.state?'ON':'OFF';b.className=i.state?'on':'off';b.disabled=!!a.controlled||Date.now()<Number(guard[i.channel_id]||0)}if(o)o.textContent=a.controlled?'NodusWeb: '+(a.automations||[]).join(', '):''})}catch(e){}}
 setInterval(refresh,15000);setTimeout(refresh,1000);"""
     switch_present = bool(payload["switch"]["present"])
     nav = navigation(

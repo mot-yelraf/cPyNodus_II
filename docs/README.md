@@ -33,6 +33,9 @@ Nodus is a headless IoT node with the following core responsibilities:
 - Maintain sensor data collection and publish loops.
 - Provide recovery hooks for network, MQTT, sensor, and AP idle failures.
 - Maintain bounded reboot and recovery logs when the filesystem is writable.
+- Halt before unplugging through MQTT or the NodusWeb status-page button;
+  active file transactions finish and relay outputs remain held. See
+  [halt usage and completion checks](./mqtt.md#halt-before-removing-power).
 - Constrained-memory friendly web server and routes.
 - Over-the-air update support using MQTT prepare plus chunked HTTP transfer.
   See [OTA](./ota.md).
