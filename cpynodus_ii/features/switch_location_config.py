@@ -258,7 +258,8 @@ def _target_file_for_location_update(runtime_config, update):
 
 
 def _write_location_file(path, updates):
-    import os
+
+    from cpynodus_ii.core.filesystem import commit_file
 
     targets = _location_patch_targets(updates)
     if not targets:
@@ -270,92 +271,59 @@ def _write_location_file(path, updates):
     current_section = ""
     sections_seen = []
     found = [False] * len(targets)
-    source = None
-    target = None
     try:
-        source = open(path_text, "r")
-        target = open(tmp_path, "w")
-        while True:
-            raw_line = source.readline()
-            if raw_line == "":
-                break
-            stripped = str(raw_line or "").strip()
-            if stripped.startswith("[") and stripped.endswith("]"):
-                _append_missing_location_targets(
-                    target,
-                    current_section,
-                    targets,
-                    found,
-                )
-                current_section = stripped[1:-1].strip()
-                if current_section not in sections_seen:
-                    sections_seen.append(current_section)
-                target.write(raw_line)
-                continue
-            line_key = ""
-            if _section_has_missing_targets(current_section, targets, found):
-                line_body = str(raw_line or "").split("#", 1)[0]
-                equal_index = line_body.find("=")
-                if equal_index >= 0:
-                    line_key = line_body[:equal_index].strip().upper()
-            replacement = ""
-            if line_key:
-                replacement = _replacement_location_line(
-                    current_section,
-                    line_key,
-                    raw_line,
-                    targets,
-                    found,
-                )
-            target.write(replacement if replacement else raw_line)
-        _append_missing_location_targets(target, current_section, targets, found)
-        for section in _location_target_sections(targets, found):
-            if section not in sections_seen:
-                target.write("\n[{}]\n".format(section))
-                sections_seen.append(section)
-            _append_missing_location_targets(target, section, targets, found)
-        try:
-            target.flush()
-        except AttributeError:
-            pass
-        try:
-            source.close()
-        except AttributeError:
-            pass
-        source = None
-        try:
-            target.close()
-        except AttributeError:
-            pass
-        target = None
+        with open(path_text, "r") as source, open(tmp_path, "w") as target:
+            while True:
+                raw_line = source.readline()
+                if raw_line == "":
+                    break
+                stripped = str(raw_line or "").strip()
+                if stripped.startswith("[") and stripped.endswith("]"):
+                    _append_missing_location_targets(
+                        target,
+                        current_section,
+                        targets,
+                        found,
+                    )
+                    current_section = stripped[1:-1].strip()
+                    if current_section not in sections_seen:
+                        sections_seen.append(current_section)
+                    target.write(raw_line)
+                    continue
+                line_key = ""
+                if _section_has_missing_targets(current_section, targets, found):
+                    line_body = str(raw_line or "").split("#", 1)[0]
+                    equal_index = line_body.find("=")
+                    if equal_index >= 0:
+                        line_key = line_body[:equal_index].strip().upper()
+                replacement = ""
+                if line_key:
+                    replacement = _replacement_location_line(
+                        current_section,
+                        line_key,
+                        raw_line,
+                        targets,
+                        found,
+                    )
+                target.write(replacement if replacement else raw_line)
+            _append_missing_location_targets(target, current_section, targets, found)
+            for section in _location_target_sections(targets, found):
+                if section not in sections_seen:
+                    target.write("\n[{}]\n".format(section))
+                    sections_seen.append(section)
+                _append_missing_location_targets(target, section, targets, found)
+            try:
+                target.flush()
+            except AttributeError:
+                pass
         if not _all_found(found):
             _remove_tmp(tmp_path)
             return ("location_key_missing",)
         if _path_size(tmp_path) <= 0:
             _remove_tmp(tmp_path)
             return ("toml_write_empty_tmp",)
-        try:
-            os.stat(backup_path)
-            os.remove(backup_path)
-        except OSError:
-            pass
-        try:
-            os.stat(path_text)
-            os.rename(path_text, backup_path)
-        except OSError:
-            pass
-        os.rename(tmp_path, path_text)
+        commit_file(path_text, tmp_path, backup_path)
     except OSError as exc:
-        if source is not None:
-            try:
-                source.close()
-            except AttributeError:
-                pass
-        if target is not None:
-            try:
-                target.close()
-            except AttributeError:
-                pass
         _remove_tmp(tmp_path)
         return (_persistence_error(exc),)
     return ()
@@ -524,6 +492,12 @@ def _validate_onboarding_token_fast(settings_root, onboard_token):
     if settings_root is None:
         return ""
     state_path = _join_settings_path(settings_root, "onboarding_state.json")
+    from cpynodus_ii.core.filesystem import readable_path
+
+    try:
+        state_path = readable_path(state_path)
+    except OSError:
+        return ""
     if _path_size(state_path) <= 0:
         return ""
     try:
@@ -546,14 +520,13 @@ def _validate_onboarding_token_fast(settings_root, onboard_token):
 def _clear_onboarding_state_fast(settings_root):
     if settings_root is None:
         return False
+    from cpynodus_ii.core.filesystem import clear_file
+
     path = _join_settings_path(settings_root, "onboarding_state.json")
     try:
-        import os
-
-        os.remove(path)
+        return clear_file(path)
     except OSError:
         return False
-    return True
 
 
 def _persistence_mode(settings_root, errors):

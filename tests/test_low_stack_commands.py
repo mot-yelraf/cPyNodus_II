@@ -4,6 +4,7 @@ These tests guard the one-key pacing contract and ensure constrained-memory
 failures remain correlated with MQTT acknowledgements and results.
 """
 
+import sys
 from types import SimpleNamespace
 
 import cpynodus_ii.features.command_intake as command_intake
@@ -195,3 +196,37 @@ def test_switch_pystack_is_correlated_failure(monkeypatch):
     )
     assert result.errors == ("switch_command_pystack",)
     assert transport.published_messages[1].payload["applied"] is False
+
+
+def test_scalar_mqtt_update_stays_within_six_firmware_frames(tmp_path):
+    """Keep durable commit within the shallow inbound command stack budget."""
+    (tmp_path / "settings.toml").write_text('[Network]\nSSID = "old"\n')
+    transport = MQTTTransport("broker.local", 1883)
+    transport.receive(
+        "nodus/co2-test/config/set",
+        '{"message_id":"depth","payload":{"updates":['
+        '{"section":"Network","key":"SSID","value":"new"}]}}',
+    )
+    depths = []
+
+    def profile(frame, event, arg):
+        if event != "call" or "/cpynodus_ii/" not in frame.f_code.co_filename:
+            return
+        depth = 0
+        while frame is not None:
+            if "/cpynodus_ii/" in frame.f_code.co_filename:
+                depth += 1
+            frame = frame.f_back
+        depths.append(depth)
+
+    previous = sys.getprofile()
+    sys.setprofile(profile)
+    try:
+        result = command_intake.process_inbound_messages(
+            transport, _config(), _service(), settings_root=tmp_path
+        )[0]
+    finally:
+        sys.setprofile(previous)
+    assert result.phase == "published"
+    assert result.persistence_mode == "persisted"
+    assert max(depths) <= 6

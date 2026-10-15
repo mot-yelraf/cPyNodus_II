@@ -9,6 +9,8 @@ import os
 import sys
 import time
 
+from cpynodus_ii.core.filesystem import commit_file, readable_path
+
 REBOOT_LOG_MAX_BYTES = 10 * 1024
 
 
@@ -29,19 +31,22 @@ def _trim_reboot_log(path, *, max_bytes=REBOOT_LOG_MAX_BYTES):
         return False
     if _stat_size(stat_result) <= int(max_bytes or 0):
         return True
+    max_bytes = max(0, int(max_bytes or 0))
+    tmp_path = "{}.tmp".format(path)
     try:
-        with open(path, "r", encoding="utf-8") as handle:
-            content = handle.read()
-    except Exception:
-        return False
-    max_chars = max(0, int(max_bytes or 0))
-    trimmed = content[-max_chars:]
-    marker_index = trimmed.find("=== ")
-    if marker_index > 0:
-        trimmed = trimmed[marker_index:]
-    try:
-        with open(path, "w", encoding="utf-8") as handle:
+        with open(path, "rb") as handle:
+            handle.seek(max(0, _stat_size(stat_result) - max_bytes))
+            trimmed = handle.read(max_bytes)
+        marker_index = trimmed.find(b"=== ")
+        if marker_index > 0:
+            trimmed = trimmed[marker_index:]
+        else:
+            # A tail starting inside a UTF-8 character must remain readable.
+            while trimmed and trimmed[0] & 0xC0 == 0x80:
+                trimmed = trimmed[1:]
+        with open(tmp_path, "wb") as handle:
             handle.write(trimmed)
+        commit_file(path, tmp_path, "{}.bak".format(path))
     except Exception:
         return False
     return True
@@ -129,6 +134,14 @@ def append_reboot_traceback(
 ):
     """Append a traceback entry and return True when the write succeeds."""
     try:
+        retained = readable_path(path)
+        if retained != path:
+            try:
+                os.remove(path)
+            except OSError as exc:
+                if exc.args[0] != 2:
+                    raise
+            os.rename(retained, path)
         with open(path, "a", encoding="utf-8") as handle:
             handle.write("=== {} ===\n".format(_entry_header(header, device_id)))
             print_exception = getattr(sys, "print_exception", None)

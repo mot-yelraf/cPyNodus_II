@@ -10,6 +10,8 @@ import json
 import os
 from dataclasses import dataclass
 
+from cpynodus_ii.core.filesystem import clear_file, commit_file, readable_path
+
 OTA_STATE_DIR = "/_ota"
 OTA_STATE_FILE = "/_ota/state.json"
 FWUPDATE_TOPIC_SUFFIX = "fwupdate"
@@ -64,7 +66,7 @@ def build_fwupdate_topic(device_id, base_topic="nodus"):
 def load_ota_state(path=OTA_STATE_FILE):
     """Load OTA handoff state, returning ``None`` when no request exists."""
     try:
-        with open(path, "r") as handle:
+        with open(readable_path(path), "r") as handle:
             document = json.load(handle)
     except OSError:
         return None
@@ -95,19 +97,14 @@ def save_ota_state(state, path=OTA_STATE_FILE):
     with open(tmp_path, "w") as handle:
         handle.write(payload)
         handle.write("\n")
-    try:
-        os.rename(tmp_path, path)
-    except OSError:
-        clear_ota_state(path)
-        os.rename(tmp_path, path)
+    commit_file(path, tmp_path, "{}.bak".format(path))
     return state_obj
 
 
 def clear_ota_state(path=OTA_STATE_FILE):
     """Remove the OTA handoff record if it exists."""
     try:
-        os.remove(path)
-        return True
+        return clear_file(path)
     except OSError:
         return False
 

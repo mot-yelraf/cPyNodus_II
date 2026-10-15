@@ -13,6 +13,7 @@ import json
 import os
 import time
 
+from cpynodus_ii.core.filesystem import clear_file, commit_file, readable_path
 from cpynodus_ii.ota.state import (
     FwUpdateState,
     clear_ota_state,
@@ -790,7 +791,10 @@ class OtaHttpController:
         self._log("commit verify complete elapsed_s={:.1f}".format(verify_elapsed))
         apply_started = self._monotonic()
         _collect_garbage()
-        transaction = _build_apply_transaction(self.settings_root, manifest)
+        try:
+            transaction = _build_apply_transaction(self.settings_root, manifest)
+        except OSError:
+            return _error_payload("apply_transaction_persist_failed", "staging"), 503
         try:
             _write_json_file(_ota_transaction_path(self.settings_root), transaction)
             applying_state = FwUpdateState(
@@ -832,6 +836,8 @@ class OtaHttpController:
             )
             save_ota_state(staging_state, _ota_state_path(self.settings_root))
             self.ota_state = staging_state
+            _remove_file(_ota_transaction_path(self.settings_root))
+            _remove_tree(_ota_backup_path(self.settings_root))
             return _error_payload(error, "staging"), 503
         self._log("commit apply complete elapsed_s={:.1f}".format(apply_elapsed))
         _collect_garbage()
@@ -1306,6 +1312,7 @@ def _filesystem_free_bytes(root):
 def _build_apply_transaction(root, manifest):
     paths = []
     existing = []
+    originals = {}
     for entry in manifest.get("files", ()) or ():
         safe_path = _normalize_package_path(entry.get("path", ""))
         if safe_path and safe_path not in paths:
@@ -1317,7 +1324,11 @@ def _build_apply_transaction(root, manifest):
     for safe_path in paths:
         if _path_exists(_join_root(root, safe_path)):
             existing.append(safe_path)
-    return {"paths": paths, "existing": existing}
+            size, digest = _file_size_sha256(_join_root(root, safe_path))
+            if size < 0 or not digest:
+                raise OSError("backup_digest_unavailable")
+            originals[safe_path] = (size, digest)
+    return {"paths": paths, "existing": existing, "originals": originals}
 
 
 def _apply_staged_manifest_files(root, manifest, transaction=None):
@@ -1334,9 +1345,17 @@ def _apply_staged_manifest_files(root, manifest, transaction=None):
         try:
             _copy_file(staged_path, new_path)
             if safe_path in existing:
-                _copy_file(live_path, backup_path)
+                backup_tmp = "{}.tmp".format(backup_path)
+                _copy_file(live_path, backup_tmp)
+                expected = transaction.get("originals", {}).get(safe_path)
+                if expected and tuple(expected) != _file_size_sha256(backup_tmp):
+                    raise OSError("backup_verify_failed")
+                os.sync()
+                os.rename(backup_tmp, backup_path)
+                os.sync()
             _remove_file(live_path)
             os.rename(new_path, live_path)
+            os.sync()
         except OSError:
             _remove_file(new_path)
             return "file_apply_failed"
@@ -1348,8 +1367,16 @@ def _apply_staged_manifest_files(root, manifest, transaction=None):
         backup_path = _join_root(root, "_ota/backup/{}".format(safe_path))
         try:
             if safe_path in existing and _path_exists(live_path):
-                _copy_file(live_path, backup_path)
+                backup_tmp = "{}.tmp".format(backup_path)
+                _copy_file(live_path, backup_tmp)
+                expected = transaction.get("originals", {}).get(safe_path)
+                if expected and tuple(expected) != _file_size_sha256(backup_tmp):
+                    raise OSError("backup_verify_failed")
+                os.sync()
+                os.rename(backup_tmp, backup_path)
+                os.sync()
                 _remove_file(live_path)
+                os.sync()
         except OSError:
             return "file_delete_failed"
     return ""
@@ -1367,18 +1394,34 @@ def _rollback_apply_transaction(root, manifest, transaction):
         _remove_file("{}.ota-new".format(live_path))
         try:
             if safe_path in existing:
+                expected = (transaction or {}).get("originals", {}).get(safe_path)
                 if _path_exists(backup_path):
+                    if expected and tuple(expected) != _file_size_sha256(backup_path):
+                        failed = True
+                        continue
                     restore_path = "{}.ota-restore".format(live_path)
                     _copy_file(backup_path, restore_path)
+                    if expected and tuple(expected) != _file_size_sha256(restore_path):
+                        failed = True
+                        continue
+                    os.sync()
                     _remove_file(live_path)
                     os.rename(restore_path, live_path)
+                    os.sync()
+                elif not _path_exists(live_path) or (
+                    expected and tuple(expected) != _file_size_sha256(live_path)
+                ):
+                    failed = True
             else:
                 _remove_file(live_path)
         except OSError:
             failed = True
     if not failed:
-        _remove_file(_ota_transaction_path(root))
-        _remove_tree(_ota_backup_path(root))
+        # Keep recovery artifacts until the caller durably leaves applying.
+        try:
+            os.sync()
+        except OSError:
+            failed = True
     return "apply_rollback_failed" if failed else ""
 
 
@@ -1391,10 +1434,15 @@ def recover_interrupted_ota_apply(root):
     error = _rollback_apply_transaction(root, manifest, transaction)
     if error:
         return error
+    try:
+        clear_file(_ota_state_path(root))
+    except OSError:
+        return "apply_recovery_state_clear_failed"
     _remove_tree(_ota_stage_path(root))
     _remove_ota_tmp_files(root)
     _remove_file(_ota_manifest_path(root))
-    clear_ota_state(_ota_state_path(root))
+    _remove_file(_ota_transaction_path(root))
+    _remove_tree(_ota_backup_path(root))
     return ""
 
 
@@ -1450,7 +1498,10 @@ def _remove_tree(path):
 
 def _remove_file(path):
     try:
-        os.remove(path)
+        if str(path).endswith(".json"):
+            clear_file(path)
+        else:
+            os.remove(path)
     except OSError:
         pass
 
@@ -1521,7 +1572,7 @@ def _read_binary_file(path):
 
 def _read_json_file(path):
     try:
-        with open(path, "r") as handle:
+        with open(readable_path(path), "r") as handle:
             payload = json.load(handle)
     except (OSError, ValueError):
         return None
@@ -1534,14 +1585,7 @@ def _write_json_file(path, payload):
     with open(tmp_path, "w") as handle:
         handle.write(json.dumps(payload, separators=(",", ":")))
         handle.write("\n")
-    try:
-        os.rename(tmp_path, path)
-    except OSError:
-        try:
-            os.remove(path)
-        except OSError:
-            pass
-        os.rename(tmp_path, path)
+    commit_file(path, tmp_path, "{}.bak".format(path))
 
 
 def _ensure_parent_dirs(path):

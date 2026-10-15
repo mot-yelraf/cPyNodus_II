@@ -1366,7 +1366,6 @@ def test_web_runtime_controller_defers_itaot_init_reboot_until_after_response(
             "request path=/itaot-init apply phase=persist_close_done",
             "request path=/itaot-init apply phase=persist_validate_done",
             "request path=/itaot-init apply phase=persist_rotate_begin",
-            "request path=/itaot-init apply phase=persist_backup_done",
             "request path=/itaot-init apply phase=persist_rename_done",
             (
                 "request path=/itaot-init apply phase=persist_done applied=7 "
@@ -1444,7 +1443,7 @@ def test_web_runtime_controller_logs_itaot_init_time_updates():
         "request path=/itaot-init phase=parsed time_present=1",
         "request path=/itaot-init apply phase=normalize_begin",
     ]
-    assert log_events[3:21] == [
+    assert log_events[3:20] == [
         (
             "request path=/itaot-init apply phase=normalize_done errors=none "
             "ssid_present=1 password_present=1 hostname_present=1 "
@@ -1476,7 +1475,6 @@ def test_web_runtime_controller_logs_itaot_init_time_updates():
         "request path=/itaot-init apply phase=persist_close_done",
         "request path=/itaot-init apply phase=persist_validate_done",
         "request path=/itaot-init apply phase=persist_rotate_begin",
-        "request path=/itaot-init apply phase=persist_backup_done",
         "request path=/itaot-init apply phase=persist_rename_done",
         (
             "request path=/itaot-init apply phase=persist_done applied=12 "
@@ -1487,7 +1485,7 @@ def test_web_runtime_controller_logs_itaot_init_time_updates():
         "request path=/itaot-init apply phase=state_persist_begin",
         "request path=/itaot-init apply phase=state_persist_done",
     ]
-    assert log_events[21:24] == [
+    assert log_events[20:23] == [
         "request path=/itaot-init apply phase=response_ready status=200",
         (
             "request path=/itaot-init phase=applied status=200 accepted=1 "
