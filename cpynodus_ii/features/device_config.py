@@ -608,13 +608,15 @@ def _validate_token(root, token):
     try:
         import os
 
+        from cpynodus_ii.core.filesystem import readable_path
+
+        path = readable_path(path)
         if os.stat(path)[6] <= 0:
             return ""
         import json
 
-        handle = open(path, "r")
-        state = json.load(handle)
-        handle.close()
+        with open(path, "r") as handle:
+            state = json.load(handle)
     except (OSError, ValueError):
         return ""
     expected = (
@@ -633,9 +635,9 @@ def _clear_token(root):
     if root is None:
         return
     try:
-        import os
+        from cpynodus_ii.core.filesystem import clear_file
 
-        os.remove(_join(root, "onboarding_state.json"))
+        clear_file(_join(root, "onboarding_state.json"))
     except OSError:
         pass
 

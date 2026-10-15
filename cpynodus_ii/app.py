@@ -2762,6 +2762,14 @@ def _soft_reboot(*, reason="soft_reboot", start_monotonic=None, settle_s=0.0):
     reload_runtime = getattr(supervisor, "reload", None)
     if not callable(reload_runtime):
         raise RuntimeError("supervisor_reload_unavailable")
+    try:
+        os.sync()
+    except Exception as exc:
+        _print_log(
+            "runtime",
+            "filesystem_sync_failed:{}".format(exc),
+            start_monotonic=start_monotonic,
+        )
     reload_runtime()
 
 
@@ -2779,6 +2787,14 @@ def _hard_reboot(*, reason="hard_reboot", start_monotonic=None):
     reset = getattr(microcontroller, "reset", None)
     if not callable(reset):
         raise RuntimeError("microcontroller_reset_unavailable")
+    try:
+        os.sync()
+    except Exception as exc:
+        _print_log(
+            "runtime",
+            "filesystem_sync_failed:{}".format(exc),
+            start_monotonic=start_monotonic,
+        )
     reset()
 
 

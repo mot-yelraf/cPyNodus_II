@@ -101,6 +101,34 @@ six-character suffix already stored in `AP_SSID`. A pre-existing
 `settings.toml` is never migrated: legacy `Nodus_Setup`, custom, and blank AP
 names remain unchanged.
 
+## Filesystem write recovery
+
+Configuration writers stream into a same-directory `.tmp`, close both handles,
+then synchronize and rotate the previous nonempty live file to `.bak` before
+installing the replacement. A failed install attempts to restore the original;
+an empty live file never replaces a useful backup. File handles also close on
+memory or stack errors. The scalar MQTT writer stays shallow: its commit helper
+runs after streaming and parsing finish, without callback or wrapper layers.
+
+On writable startup, missing or empty live TOML files are restored from a
+parseable nonempty `.bak` before factory bootstrap and sensor/switch detection.
+Read-only settings loading can read the retained version without modifying disk.
+Nonempty live TOML files remain authoritative; recovery does not replace them
+automatically. Backup checks use the existing limited TOML parser. To deliberately remove a configuration,
+remove its `.bak` and `.tmp` as well, including for the `switch.toml` gate.
+
+Onboarding JSON and local automation files use temporary/backup replacement.
+Their readers can use `.bak` when the live file is missing or empty. Clearing
+onboarding state removes retained versions before deleting the live document,
+with synchronization so stale onboarding state cannot reappear after reboot.
+
+Reboot/recovery logs remain best effort. Trimming reads only a bounded tail and
+replaces through `.tmp`/`.bak` instead of truncating the live log. Software reboot
+paths attempt filesystem synchronization before reset; a sync failure is logged
+and does not block required recovery. Filesystem synchronization and backups
+reduce exposure, but do not make FAT or flash immune to sudden power loss.
+See [filesystem hardware validation](../testApparatus/filesystem_safety_validation.md).
+
 ## Switch bootstrap behavior
 
 - `switch.toml` plus at least one populated and grounded `SWITCH_N_ENABLE_PIN`

@@ -355,7 +355,9 @@ class NodusWebAutomationService:
             return
         path = _join_path(self.settings_root, AUTOMATIONS_FILE)
         try:
-            document = toml_compat.load_file(path)
+            from cpynodus_ii.core.filesystem import readable_path
+
+            document = toml_compat.load_file(readable_path(path))
         except OSError:
             return
         except Exception as exc:
@@ -382,7 +384,9 @@ class NodusWebAutomationService:
             return
         path = _join_path(self.settings_root, AUTOMATION_STATE_FILE)
         try:
-            with open(path, "r", encoding="utf-8") as handle:
+            from cpynodus_ii.core.filesystem import readable_path
+
+            with open(readable_path(path), "r", encoding="utf-8") as handle:
                 document = json.loads(handle.read())
         except (OSError, TypeError, ValueError):
             return
@@ -695,7 +699,8 @@ def _path_size(path):
 def _replace_file(path, text, error_prefix=""):
     tmp_path = "{}.tmp".format(path)
     backup_path = "{}.bak".format(path)
-    moved_original = False
+    from cpynodus_ii.core.filesystem import commit_file
+
     try:
         with open(tmp_path, "w", encoding="utf-8") as handle:
             handle.write(text)
@@ -705,19 +710,9 @@ def _replace_file(path, text, error_prefix=""):
                 pass
         if _path_size(tmp_path) <= 0:
             raise OSError("write_empty")
-        if _path_exists(backup_path):
-            os.remove(backup_path)
-        if _path_exists(path):
-            os.rename(path, backup_path)
-            moved_original = True
-        os.rename(tmp_path, path)
+        commit_file(path, tmp_path, backup_path)
         return ""
     except Exception as exc:
-        try:
-            if moved_original and not _path_exists(path):
-                os.rename(backup_path, path)
-        except OSError:
-            pass
         try:
             os.remove(tmp_path)
         except OSError:

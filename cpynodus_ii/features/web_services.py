@@ -446,40 +446,29 @@ def _write_itaot_settings_file(path, updates, *, event_logger=None):
 
 
 def _rewrite_itaot_settings_file(path_text, updates, targets, event_logger):
+    from cpynodus_ii.core.filesystem import commit_file
+
     tmp_path = "{}.tmp".format(path_text)
     backup_path = "{}.bak".format(path_text)
     seen_sections = []
     found = [False] * len(targets)
-    source = None
-    target = None
     try:
         _emit_event(event_logger, "apply phase=persist_open_begin file=settings.toml")
-        source = open(path_text, "r")
-        target = open(tmp_path, "w")
-        _emit_event(event_logger, "apply phase=persist_open_done")
-        _copy_itaot_settings_file(
-            source,
-            target,
-            targets,
-            found,
-            seen_sections,
-            event_logger,
-        )
-        try:
-            target.flush()
-        except AttributeError:
-            pass
-        _emit_event(event_logger, "apply phase=persist_flush_done")
-        try:
-            source.close()
-        except AttributeError:
-            pass
-        source = None
-        try:
-            target.close()
-        except AttributeError:
-            pass
-        target = None
+        with open(path_text, "r") as source, open(tmp_path, "w") as target:
+            _emit_event(event_logger, "apply phase=persist_open_done")
+            _copy_itaot_settings_file(
+                source,
+                target,
+                targets,
+                found,
+                seen_sections,
+                event_logger,
+            )
+            try:
+                target.flush()
+            except AttributeError:
+                pass
+            _emit_event(event_logger, "apply phase=persist_flush_done")
         _emit_event(event_logger, "apply phase=persist_close_done")
         if not _all_found(found):
             _remove_tmp(tmp_path)
@@ -494,30 +483,9 @@ def _rewrite_itaot_settings_file(path_text, updates, targets, event_logger):
             return (), ("toml_write_empty_tmp",)
         _emit_event(event_logger, "apply phase=persist_validate_done")
         _emit_event(event_logger, "apply phase=persist_rotate_begin")
-        try:
-            os.stat(backup_path)
-            os.remove(backup_path)
-        except OSError:
-            pass
-        try:
-            os.stat(path_text)
-            os.rename(path_text, backup_path)
-        except OSError:
-            pass
-        _emit_event(event_logger, "apply phase=persist_backup_done")
-        os.rename(tmp_path, path_text)
+        commit_file(path_text, tmp_path, backup_path)
         _emit_event(event_logger, "apply phase=persist_rename_done")
     except OSError as exc:
-        if source is not None:
-            try:
-                source.close()
-            except AttributeError:
-                pass
-        if target is not None:
-            try:
-                target.close()
-            except AttributeError:
-                pass
         _remove_tmp(tmp_path)
         error = _persistence_error(exc)
         _emit_event(

@@ -22,6 +22,8 @@ def persist_calibration_updates(runtime_config, updates, *, settings_root):
 def _write_calibration_file(path, updates):
     import os
 
+    from cpynodus_ii.core.filesystem import commit_file
+
     targets = _calibration_patch_targets(updates)
     if not targets:
         return ("calibration_key_missing",)
@@ -81,11 +83,7 @@ def _write_calibration_file(path, updates):
             return ("calibration_key_missing",)
         if _path_size(tmp_path) <= 0:
             return ("toml_write_empty_tmp",)
-        if _path_exists(backup_path):
-            os.remove(backup_path)
-        if _path_exists(path):
-            os.rename(path, backup_path)
-        os.rename(tmp_path, path)
+        commit_file(path, tmp_path, backup_path)
     except OSError as exc:
         try:
             os.remove(tmp_path)

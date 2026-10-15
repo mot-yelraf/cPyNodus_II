@@ -6,7 +6,8 @@ Writes replace a temporary file so partially written JSON is not made active.
 """
 
 import json
-import os
+
+from cpynodus_ii.core.filesystem import clear_file, commit_file, readable_path
 
 ONBOARDING_STATE_FILE = "onboarding_state.json"
 
@@ -24,7 +25,7 @@ def load_onboarding_state(root="."):
     """Load any persisted onboarding runtime state."""
     path = _join_path(root, ONBOARDING_STATE_FILE)
     try:
-        with open(path, "r", encoding="utf-8") as handle:
+        with open(readable_path(path), "r", encoding="utf-8") as handle:
             state = json.load(handle)
     except OSError:
         return {}
@@ -37,8 +38,10 @@ def save_onboarding_state(root, state):
     """Persist onboarding runtime state outside TOML config files."""
     path = _join_path(root, ONBOARDING_STATE_FILE)
     payload = dict(state or {})
-    with open(path, "w", encoding="utf-8") as handle:
+    tmp_path = "{}.tmp".format(path)
+    with open(tmp_path, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, separators=(",", ":"))
+    commit_file(path, tmp_path, "{}.bak".format(path))
     return path
 
 
@@ -46,7 +49,6 @@ def clear_onboarding_state(root="."):
     """Delete any persisted onboarding runtime state."""
     path = _join_path(root, ONBOARDING_STATE_FILE)
     try:
-        os.remove(path)
+        return clear_file(path)
     except OSError:
         return False
-    return True

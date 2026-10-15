@@ -5,6 +5,9 @@ reboot-log size cap, and returns failure instead of raising when the
 CircuitPython filesystem is unavailable or read-only.
 """
 
+import os
+
+from cpynodus_ii.core.filesystem import readable_path
 from cpynodus_ii.core.reboot_log import (
     REBOOT_LOG_MAX_BYTES,
     _entry_header,
@@ -24,6 +27,14 @@ def append_recovery_event(
 ):
     """Append one recovery event and return True when the write succeeds."""
     try:
+        retained = readable_path(path)
+        if retained != path:
+            try:
+                os.remove(path)
+            except OSError as exc:
+                if exc.args[0] != 2:
+                    raise
+            os.rename(retained, path)
         with open(path, "a", encoding="utf-8") as handle:
             handle.write(
                 "=== {} ===\n".format(

@@ -86,6 +86,17 @@ The architecture is split into three layers:
   snapshot; HTTP request handlers never call sensor drivers. This avoids Pico2
   W Python-stack exhaustion in the deeper HTTP dispatch/response call path.
 
+## Filesystem transaction boundaries
+
+Before factory bootstrap interprets missing configuration as a new device,
+writable startup restores retained TOML backups from interrupted rotations.
+Writers close their handles before a flat commit helper synchronizes, rotates,
+and installs files. No new asynchronous writer, callback layer, or recursive
+persistence path is introduced. See [configuration recovery](./configuration.md#filesystem-write-recovery).
+Software-requested hard resets and soft reloads attempt a filesystem sync while
+preserving the existing recovery decisions and reboot depth. Physical power-loss
+validation remains separate from host tests.
+
 ## Network Startup Path
 
 The current network startup path is intentional and stability-sensitive:

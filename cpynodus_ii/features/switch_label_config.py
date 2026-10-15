@@ -243,7 +243,8 @@ def _persist_switch_label_updates_fast(updates, *, settings_root=None):
 
 
 def _write_switch_label_file(path, updates):
-    import os
+
+    from cpynodus_ii.core.filesystem import commit_file
 
     targets = _switch_label_patch_targets(updates)
     if not targets:
@@ -255,86 +256,53 @@ def _write_switch_label_file(path, updates):
     current_section = ""
     sections_seen = []
     found = [False] * len(targets)
-    source = None
-    target = None
     try:
-        source = open(path_text, "r")
-        target = open(tmp_path, "w")
-        while True:
-            raw_line = source.readline()
-            if raw_line == "":
-                break
-            stripped = str(raw_line or "").strip()
-            if stripped.startswith("[") and stripped.endswith("]"):
+        with open(path_text, "r") as source, open(tmp_path, "w") as target:
+            while True:
+                raw_line = source.readline()
+                if raw_line == "":
+                    break
+                stripped = str(raw_line or "").strip()
+                if stripped.startswith("[") and stripped.endswith("]"):
+                    if current_section == "Switch":
+                        _append_missing_switch_label_targets(target, targets, found)
+                    current_section = stripped[1:-1].strip()
+                    if current_section not in sections_seen:
+                        sections_seen.append(current_section)
+                    target.write(raw_line)
+                    continue
+                line_key = ""
                 if current_section == "Switch":
-                    _append_missing_switch_label_targets(target, targets, found)
-                current_section = stripped[1:-1].strip()
-                if current_section not in sections_seen:
-                    sections_seen.append(current_section)
-                target.write(raw_line)
-                continue
-            line_key = ""
+                    line_body = str(raw_line or "").split("#", 1)[0]
+                    equal_index = line_body.find("=")
+                    if equal_index >= 0:
+                        line_key = line_body[:equal_index].strip().upper()
+                replacement = ""
+                if line_key:
+                    replacement = _replacement_switch_label_line(
+                        line_key,
+                        raw_line,
+                        targets,
+                        found,
+                    )
+                target.write(replacement if replacement else raw_line)
             if current_section == "Switch":
-                line_body = str(raw_line or "").split("#", 1)[0]
-                equal_index = line_body.find("=")
-                if equal_index >= 0:
-                    line_key = line_body[:equal_index].strip().upper()
-            replacement = ""
-            if line_key:
-                replacement = _replacement_switch_label_line(
-                    line_key,
-                    raw_line,
-                    targets,
-                    found,
-                )
-            target.write(replacement if replacement else raw_line)
-        if current_section == "Switch":
-            _append_missing_switch_label_targets(target, targets, found)
-        elif "Switch" not in sections_seen:
-            target.write("\n[Switch]\n")
-            _append_missing_switch_label_targets(target, targets, found)
-        try:
-            target.flush()
-        except AttributeError:
-            pass
-        try:
-            source.close()
-        except AttributeError:
-            pass
-        source = None
-        try:
-            target.close()
-        except AttributeError:
-            pass
-        target = None
+                _append_missing_switch_label_targets(target, targets, found)
+            elif "Switch" not in sections_seen:
+                target.write("\n[Switch]\n")
+                _append_missing_switch_label_targets(target, targets, found)
+            try:
+                target.flush()
+            except AttributeError:
+                pass
         if not _all_found(found):
             _remove_tmp(tmp_path)
             return ("switch_label_key_missing",)
         if _path_size(tmp_path) <= 0:
             _remove_tmp(tmp_path)
             return ("toml_write_empty_tmp",)
-        try:
-            os.stat(backup_path)
-            os.remove(backup_path)
-        except OSError:
-            pass
-        try:
-            os.stat(path_text)
-            os.rename(path_text, backup_path)
-        except OSError:
-            pass
-        os.rename(tmp_path, path_text)
+        commit_file(path_text, tmp_path, backup_path)
     except OSError as exc:
-        if source is not None:
-            try:
-                source.close()
-            except AttributeError:
-                pass
-        if target is not None:
-            try:
-                target.close()
-            except AttributeError:
-                pass
         _remove_tmp(tmp_path)
         return (_persistence_error(exc),)
     return ()

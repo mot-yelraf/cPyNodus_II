@@ -30,6 +30,7 @@ from cpynodus_ii.core.config import (
     SwitchConfig,
     TimeConfig,
 )
+from cpynodus_ii.core.filesystem import clear_file, commit_file
 from cpynodus_ii.core.obfuscation import decode_password, encode_password
 
 
@@ -280,7 +281,7 @@ class Settings:
     @classmethod
     def from_working_directory(cls):
         """Load settings from the working directory when settings TOML exists."""
-        if _path_exists(cls.SETTINGS_FILE):
+        if _path_size(cls.SETTINGS_FILE) > 0 or _path_size("settings.toml.bak") > 0:
             return cls.from_directory(".")
         return cls()
 
@@ -361,6 +362,24 @@ class Settings:
     ):
         """Create first-boot TOML files and seed IDs for detected hardware."""
         root_path = str(root or ".")
+        # Restore interrupted rotations before factory detection sees missing files.
+        for name in (
+            cls.SETTINGS_FILE,
+            cls.SENSOR_I2C_FILE,
+            cls.SENSOR_SOIL_FILE,
+            cls.SWITCH_FILE,
+        ):
+            path = _join_path(root_path, name)
+            backup_path = "{}.bak".format(path)
+            if _path_size(path) <= 0 and _path_size(backup_path) > 0:
+                if not toml_compat.load_file(backup_path):
+                    raise ValueError("toml_backup_empty")
+                if _path_exists(path):
+                    os.remove(path)
+                os.rename(backup_path, path)
+                sync = getattr(os, "sync", None)
+                if sync is not None:
+                    sync()
         settings_created = cls._ensure_file_from_def(
             root_path,
             cls.SETTINGS_DEF_FILE,
@@ -413,10 +432,9 @@ class Settings:
         """Remove any persisted onboarding runtime state file."""
         path = _join_path(str(root or "."), "onboarding_state.json")
         try:
-            os.remove(path)
+            return clear_file(path)
         except OSError:
             return False
-        return True
 
     @classmethod
     def _ensure_file_from_def(cls, root, def_name, live_name, *, board_module=None):
@@ -1609,11 +1627,7 @@ class Settings:
                 return False
             if _path_size(tmp_path) <= 0:
                 raise OSError("toml_write_empty_tmp")
-            if _path_exists(backup_path):
-                os.remove(backup_path)
-            if _path_exists(path_text):
-                os.rename(path_text, backup_path)
-            os.rename(tmp_path, path_text)
+            commit_file(path_text, tmp_path, backup_path)
             return True
         except OSError:
             try:
@@ -1691,11 +1705,7 @@ class Settings:
         if _path_size(tmp_path) <= 0:
             raise OSError("toml_write_empty_tmp")
 
-        if _path_exists(backup_path):
-            os.remove(backup_path)
-        if _path_exists(path_text):
-            os.rename(path_text, backup_path)
-        os.rename(tmp_path, path_text)
+        commit_file(path_text, tmp_path, backup_path)
 
     @classmethod
     def _document_for_write(cls, path, document):

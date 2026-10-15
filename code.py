@@ -100,6 +100,16 @@ else:
                         type(exc).__name__,
                     )
                 )
+                try:
+                    import os
+
+                    os.sync()
+                except Exception as sync_exc:
+                    print(
+                        "{} runtime filesystem_sync_failed:{}".format(
+                            _stamp(), sync_exc
+                        )
+                    )
                 reload_runtime()
         except Exception:
             pass

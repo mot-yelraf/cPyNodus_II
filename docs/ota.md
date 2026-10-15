@@ -544,6 +544,23 @@ Rollback behavior:
 - expose rollback reason in `/ota/status`, serial logs, reboot logs, and later
   Sensorius metadata.
 
+New apply journals also retain each original file's size and SHA-256. Backups
+are copied to temporary paths, checked against that journal, synchronized, and
+renamed into their final backup paths before live files are replaced or deleted.
+Rollback checks both the backup and its temporary restore copy before replacing
+live firmware. A missing backup is acceptable only when the original live file
+still matches the journal. Older journals without digests retain their legacy
+recovery behavior.
+
+Rollback keeps its journal and backups until the caller durably leaves the apply
+phase. Interrupted rollback can therefore repeat. Failed verification or state
+clearing preserves recovery artifacts for diagnosis. State/journal JSON uses
+synchronized temporary/backup replacement with fallback reads for missing or
+empty live files. This adds digest passes and synchronization latency to OTA;
+measure timing and heap on both targets before field deployment. Recovery still
+requires an importable CircuitPython entrypoint and recovery modules, and cannot
+repair a damaged FAT volume or flash chip.
+
 Power loss during phase `applying` is recovered before normal profile startup.
 The retained `boot_pending` phase also provides a one-boot health checkpoint;
 for MQTT profiles that checkpoint requires reconnect and startup publication.
