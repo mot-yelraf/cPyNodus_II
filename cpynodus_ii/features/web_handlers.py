@@ -5,7 +5,6 @@ the concrete web server implementation, which keeps the route layer thin and
 easy to test.
 """
 
-from cpynodus_ii.core.settings import Settings
 from cpynodus_ii.features.web_config import (
     apply_web_config_updates,
     apply_web_switch_override,
@@ -324,20 +323,12 @@ def handle_switch_state_request(
     )
     persistence_errors = ()
     persistence_mode = ""
-    if settings_root is not None and apply_result.phase == "ready" and apply_result.key:
-        _, _, persistence_errors = Settings.apply_updates_to_directory(
-            settings_root,
-            updated_runtime_config,
-            (
-                {
-                    "section": "Switch",
-                    "key": "{}_LAST_STATE".format(apply_result.key),
-                    "value": bool(apply_result.applied_state),
-                },
-            ),
-            reload_runtime=False,
+    if apply_result.phase == "ready" and apply_result.key:
+        from cpynodus_ii.features.switch_state import persist_switch_state
+
+        persistence_mode, persistence_errors = persist_switch_state(
+            settings_root, apply_result.key, apply_result.applied_state
         )
-        persistence_mode = "volatile" if persistence_errors else "persisted"
     return {
         "success": apply_result.phase == "ready",
         "phase": apply_result.phase,
@@ -346,5 +337,6 @@ def handle_switch_state_request(
         "state": apply_result.applied_state,
         "errors": list(apply_result.errors) + list(persistence_errors),
         "persistence_mode": persistence_mode,
+        "persistence_errors": list(persistence_errors),
         "runtime_config": updated_runtime_config,
     }

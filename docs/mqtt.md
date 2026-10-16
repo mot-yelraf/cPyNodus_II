@@ -188,7 +188,11 @@ current contract:
 - Switch `event` payloads are JSON. Retained switch `state` is currently
   startup-refreshed as a JSON state snapshot and command-refreshed as raw
   `ON`/`OFF`; consumers should tolerate both and use `event`/`config/result`
-  for correlated command handling.
+  for correlated command handling. Channel `config/result` includes
+  `persistence_mode` and `persistence_errors`; `applied=true` confirms output
+  application independently of whether the state was saved. Reports use the
+  updated runtime state, including after a volatile change. Reconnect snapshots
+  report current state without generating historical switch events.
 - Calibration uses `calibration/set`, `calibration/ack`,
   `calibration/result`, and `meta/patch`. Nodus does not clear
   `calibration/set`; Sensorius owns any retained command cleanup.

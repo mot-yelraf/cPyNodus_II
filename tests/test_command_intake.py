@@ -533,7 +533,9 @@ def test_process_switch_command_message_pystack_persistence_is_volatile(
     def raise_pystack(*args, **kwargs):
         raise RuntimeError("pystack exhausted")
 
-    monkeypatch.setattr(command_intake, "_write_switch_state_file", raise_pystack)
+    monkeypatch.setattr(
+        "cpynodus_ii.features.scalar_persistence.write_toml_scalar", raise_pystack
+    )
     transport = MQTTTransport("broker.local", 1883)
     result = process_switch_command_message(
         transport,
@@ -555,6 +557,8 @@ def test_process_switch_command_message_pystack_persistence_is_volatile(
         "updated": 1,
         "duplicate": False,
         "error": "",
+        "persistence_mode": "volatile",
+        "persistence_errors": ["switch_state_persist_pystack"],
     }
 
 

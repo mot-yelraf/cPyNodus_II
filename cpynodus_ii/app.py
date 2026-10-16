@@ -3837,6 +3837,7 @@ async def main(*, startup_plan_override=None, ota_first_boot_armed=False):
             switch_service=switch_service,
             automation_service=automation_service,
             settings_root=writable_settings_root,
+            mqtt_transport=transport if plan.mqtt_enabled else None,
             reboot_callbacks={
                 "soft": _request_runtime_soft_reboot,
                 "hard": _hard_reboot,
@@ -3973,6 +3974,7 @@ async def main(*, startup_plan_override=None, ota_first_boot_armed=False):
                 runtime_config = web_runtime.runtime_config
                 if web_runtime.halt_requested:
                     _enter_runtime_halt()
+                web_runtime.publish_pending_switch_report()
             previous_phase = recovery_state.phase
             recovery_decision = advance_recovery_state(
                 recovery_state,

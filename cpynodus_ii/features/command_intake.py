@@ -62,16 +62,17 @@ def process_inbound_messages(
     results = []
     for index, message in enumerate(messages):
         if _is_switch_command_topic(message.topic, runtime_config):
-            results.append(
-                process_switch_command_message(
-                    transport,
-                    runtime_config,
-                    switch_service,
-                    topic=message.topic,
-                    payload_text=message.payload_text,
-                    settings_root=settings_root,
-                )
+            result = process_switch_command_message(
+                transport,
+                runtime_config,
+                switch_service,
+                topic=message.topic,
+                payload_text=message.payload_text,
+                settings_root=settings_root,
             )
+            results.append(result)
+            if result.runtime_config is not None:
+                runtime_config = result.runtime_config
             continue
 
         if _is_device_config_topic(message.topic, runtime_config):
@@ -366,21 +367,39 @@ def process_switch_command_message(
         _build_config_ack_payload(command.message_id, accepted=True, duplicate=False),
         retain=False,
     )
+    apply_result = None
+    updated_config = runtime_config
+    persistence_mode = ""
+    persistence_errors = ()
     try:
+        from cpynodus_ii.features.switch_state import (
+            persist_switch_state,
+            update_switch_runtime_config,
+        )
+
         apply_result = _apply_switch_state(
             switch_service,
             channel_id=command.channel_id,
             state=command.desired_state,
         )
+        if apply_result.phase == "ready":
+            updated_config = update_switch_runtime_config(
+                runtime_config, apply_result.key, apply_result.applied_state
+            )
+            persistence_mode, persistence_errors = persist_switch_state(
+                settings_root, apply_result.key, apply_result.applied_state
+            )
         publish_result = _publish_switch_result(
             transport,
-            runtime_config,
+            updated_config,
             apply_result,
             message_id=command.message_id,
+            persistence_mode=persistence_mode,
+            persistence_errors=persistence_errors,
         )
         meta_result = _publish_switch_meta_patch(
             transport,
-            runtime_config,
+            updated_config,
             apply_result,
             message_id=command.message_id,
         )
@@ -395,14 +414,18 @@ def process_switch_command_message(
             if isinstance(exc, MemoryError)
             else "switch_command_pystack"
         )
+        applied = apply_result is not None and apply_result.phase == "ready"
+        payload = _build_config_result_payload(
+            command.message_id,
+            applied=applied,
+            updated=1 if applied else 0,
+            error=error,
+        )
+        payload["persistence_mode"] = persistence_mode or "volatile"
+        payload["persistence_errors"] = list(persistence_errors)
         transport.publish(
             mqtt_topic(runtime_config, command.channel_id, "config", "result"),
-            _build_config_result_payload(
-                command.message_id,
-                applied=False,
-                updated=0,
-                error=error,
-            ),
+            payload,
             retain=False,
         )
         return CommandResult(
@@ -410,31 +433,23 @@ def process_switch_command_message(
             topic=topic,
             command_type="switch",
             published_count=2,
-            errors=(error,),
+            errors=(error,) + persistence_errors,
+            runtime_config=updated_config,
             message_id=command.message_id,
+            persistence_mode=persistence_mode or "volatile",
             requested_state="ON" if command.desired_state else "OFF",
         )
-    persistence_errors = _persist_switch_state(
-        runtime_config,
-        command,
-        settings_root=settings_root,
-    )
     return CommandResult(
-        phase=publish_result.phase
-        if publish_result.phase != "skipped"
-        else meta_result.phase,
+        phase=publish_result.phase,
         topic=topic,
         command_type="switch",
         published_count=1
-        + int(publish_result.published_count or 0)
-        + int(meta_result.published_count or 0),
-        errors=publish_result.errors + meta_result.errors + tuple(persistence_errors),
+        + publish_result.published_count
+        + meta_result.published_count,
+        errors=publish_result.errors + meta_result.errors + persistence_errors,
+        runtime_config=updated_config,
         message_id=command.message_id,
-        persistence_mode="volatile"
-        if persistence_errors
-        else "persisted"
-        if settings_root is not None
-        else "",
+        persistence_mode=persistence_mode,
         requested_state="ON" if command.desired_state else "OFF",
     )
 
@@ -930,13 +945,17 @@ def _apply_switch_state(switch_service, *, channel_id, state):
     )
 
 
-def _publish_switch_result(transport, runtime_config, apply_result, *, message_id=""):
-    if apply_result.phase != "ready":
-        return _publish_result(
-            "skipped",
-            0,
-            errors=apply_result.errors,
-        )
+def _publish_switch_result(
+    transport,
+    runtime_config,
+    apply_result,
+    *,
+    message_id="",
+    persistence_mode="",
+    persistence_errors=(),
+    source="",
+    include_result=True,
+):
     channel = _find_runtime_channel(runtime_config, apply_result.channel_id)
     if channel is None:
         return _publish_result(
@@ -949,16 +968,23 @@ def _publish_switch_result(transport, runtime_config, apply_result, *, message_i
     event_topic = mqtt_topic(runtime_config, channel.channel_id, "event")
     state_topic = mqtt_topic(runtime_config, channel.channel_id, "state")
     state_payload = "ON" if apply_result.applied_state else "OFF"
-    result_message = transport.publish(
-        result_topic,
-        _build_config_result_payload(
+    topics = []
+    if include_result:
+        applied = apply_result.phase == "ready"
+        payload = _build_config_result_payload(
             message_id,
-            applied=True,
-            updated=1,
-            error="",
-        ),
-        retain=False,
-    )
+            applied=applied,
+            updated=1 if applied else 0,
+            error="" if applied else ",".join(apply_result.errors),
+        )
+        payload["persistence_mode"] = persistence_mode
+        payload["persistence_errors"] = list(persistence_errors)
+        result_message = transport.publish(result_topic, payload, retain=False)
+        topics.append(result_message.topic)
+    if apply_result.phase != "ready":
+        return _publish_result(
+            "error", len(topics), topics=tuple(topics), errors=apply_result.errors
+        )
     event_message = transport.publish(
         event_topic,
         _build_switch_event_payload(
@@ -966,18 +992,18 @@ def _publish_switch_result(transport, runtime_config, apply_result, *, message_i
             channel,
             bool(apply_result.applied_state),
             message_id=message_id,
+            source=source,
         ),
         retain=False,
     )
     state_message = transport.publish(state_topic, state_payload, retain=True)
-    return _publish_result(
-        "published",
-        3,
-        topics=(result_message.topic, event_message.topic, state_message.topic),
-    )
+    topics.extend((event_message.topic, state_message.topic))
+    return _publish_result("published", len(topics), topics=tuple(topics))
 
 
-def _publish_switch_meta_patch(transport, runtime_config, apply_result, *, message_id):
+def _publish_switch_meta_patch(
+    transport, runtime_config, apply_result, *, message_id, source="switch_set"
+):
     if apply_result.phase != "ready":
         return _publish_result("skipped", 0, errors=apply_result.errors)
 
@@ -990,7 +1016,7 @@ def _publish_switch_meta_patch(transport, runtime_config, apply_result, *, messa
         topic,
         _build_meta_patch_payload(
             runtime_config,
-            source="switch_set",
+            source=source,
             message_id=message_id,
             updates=(
                 {
@@ -1003,40 +1029,6 @@ def _publish_switch_meta_patch(transport, runtime_config, apply_result, *, messa
         retain=False,
     )
     return _publish_result("published", 1, topics=(topic,))
-
-
-def _persist_switch_state(runtime_config, command, *, settings_root=None):
-    if settings_root is None:
-        return ()
-    switch_channel = _find_runtime_channel(runtime_config, command.channel_id)
-    if switch_channel is None:
-        return ()
-    key = "{}_LAST_STATE".format(switch_channel.key)
-    try:
-        return _write_switch_state_file(
-            _join_settings_path(settings_root, "switch.toml"),
-            key,
-            bool(command.desired_state),
-        )
-    except MemoryError:
-        return ("switch_state_persist_memory",)
-    except RuntimeError as exc:
-        if "pystack exhausted" in str(exc).lower():
-            return ("switch_state_persist_pystack",)
-        raise
-
-
-def _write_switch_state_file(path, key, state):
-    from cpynodus_ii.features.scalar_persistence import write_toml_scalar
-
-    return write_toml_scalar(path, "Switch", str(key or "").strip().upper(), state)
-
-
-def _join_settings_path(root, filename):
-    root_text = str(root or ".")
-    if root_text.endswith("/"):
-        return "{}{}".format(root_text, filename)
-    return "{}/{}".format(root_text, filename)
 
 
 def _build_config_ack_payload(message_id, *, accepted=True, duplicate=False):
@@ -1064,14 +1056,16 @@ def _build_config_result_payload(
     }
 
 
-def _build_switch_event_payload(runtime_config, channel, state, *, message_id=""):
+def _build_switch_event_payload(
+    runtime_config, channel, state, *, message_id="", source=""
+):
     try:
         from time import time
 
         timestamp = int(time())
     except Exception:
         timestamp = 0
-    return {
+    payload = {
         "schema": "nodus-switch-event/v1",
         "device_id": runtime_config.switch.device_id,
         "channel_id": channel.channel_id,
@@ -1080,6 +1074,9 @@ def _build_switch_event_payload(runtime_config, channel, state, *, message_id=""
         "message_id": str(message_id or ""),
         "timestamp": timestamp,
     }
+    if source:
+        payload["source"] = source
+    return payload
 
 
 def _build_meta_patch_payload(runtime_config, *, source, message_id, updates):

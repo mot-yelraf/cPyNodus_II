@@ -751,7 +751,11 @@ implements the complete flow.
   discovery snapshot is not an explicit state patch.
 - A report of the previous state while a different state is requested must not
   silently mark that request confirmed. Reports with distinct channel IDs must
-  never affect each other's pending state, labels, or history.
+  never affect each other's pending state, labels, or history. Plain `ON`/`OFF`
+  state reports confirm an observed value but contain no action correlation ID;
+  they do not establish which request caused a transition. Correlated JSON
+  events and patches identify the action. Consumers must deduplicate those
+  reports so one action does not create multiple history entries.
 - Refreshing metadata, receiving events, and rendering either UI must not send
   a new switch command. Startup metadata replay must not create synthetic switch
   events. Keep the existing topic and payload compatibility paths.
@@ -761,6 +765,13 @@ implements the complete flow.
 For each supported Nodus firmware, check the local web state handler, MQTT switch
 command handler, runtime configuration update, persistence result, and deferred
 metadata publisher together. In particular:
+
+For cPyNodus II, the active shallow MQTT entry point is
+`features/command_intake.py::process_switch_command_message`; the legacy
+`command_handlers.py` entry point delegates to it. Shared runtime-state and
+scalar persistence steps live in `features/switch_state.py`. Deferred retained
+refresh is implemented by `features/metadata_refresh.py::refresh_saved_metadata`
+and receives the live switch service from `app.py`.
 
 Implementation review entry points (under `cpynodus_ii/` or `cpynodus_iii/`):
 `features/command_handlers.py::process_switch_command_message`,
@@ -836,8 +847,23 @@ Implemented behavior:
   `OFF`; startup refresh may write a JSON state snapshot.
 - If the filesystem is writable, Nodus persists the channel
   `SWITCH_<n>_LAST_STATE` update into `switch.toml`. If persistence fails, the
-  command may still be applied locally and the command result carries
-  `persistence_mode = "volatile"` in serial logging.
+  command may still be applied locally. The MQTT `config/result` and local
+  HTTP result carry `persistence_mode` (`"persisted"` or `"volatile"`) and
+  `persistence_errors` (an array). Application success stays independent:
+  `applied = true` in MQTT or `success = true` in HTTP does not imply a saved
+  change. Without a writable settings directory, the error is
+  `settings_not_writable`. Persistence is attempted before the MQTT result is
+  queued, using the flat scalar writer rather than the general config handler.
+- Accepted state changes propagate current runtime configuration through the
+  inbound batch and steady-state loop. Retained switch snapshots use live state
+  when available and current runtime last-state values as fallback.
+- Local web actions have fresh `message_id` values. When a connected MQTT
+  transport is supplied, the controller defers event/state/patch queuing until
+  HTTP dispatch returns; event and patch share the action ID and
+  `source = "manual/web"`. A disconnected action or a connection-generation
+  change before drain does not replay an event later. Reconnect publishes
+  current snapshots. Normal profiles retain their existing split: `nodusweb`
+  has no MQTT runtime, and MQTT profiles have no normal web server.
 - Nodus does not clear `nodus/<channel_id>/config/set`; Sensorius owns retained
   command cleanup for commands it publishes retained.
 
