@@ -5,7 +5,6 @@ ordering and restart decisions without browser or device mutations.
 """
 
 import json
-import re
 import shutil
 import subprocess
 from html.parser import HTMLParser
@@ -22,14 +21,18 @@ from cpynodus_ii.features.web_status_ui import render_status_html
 
 
 class _SettingsFields(HTMLParser):
-    """Collect the actual generated controls for the JavaScript fixture."""
+    """Collect generated controls and script text for the JavaScript fixture."""
 
     def __init__(self):
         super().__init__()
         self.fields = []
         self.select = None
+        self.script_parts = []
+        self.in_script = False
 
     def handle_starttag(self, tag, attrs):
+        if tag == "script":
+            self.in_script = True
         attrs = dict(attrs)
         if tag in ("input", "select") and "data-section" in attrs:
             field = {
@@ -49,15 +52,28 @@ class _SettingsFields(HTMLParser):
     def handle_endtag(self, tag):
         if tag == "select":
             self.select = None
+        elif tag == "script":
+            self.in_script = False
+
+    def handle_data(self, data):
+        if self.in_script:
+            self.script_parts.append(data)
+
+
+def test_script_collection_accepts_uppercase_tags_and_attributes():
+    parser = _SettingsFields()
+    parser.feed('<SCRIPT type="text/javascript">const smaller=1<2;</SCRIPT>outside')
+    assert "".join(parser.script_parts) == "const smaller=1<2;"
 
 
 def _execute(html, checks):
     node = shutil.which("node")
     if not node:
         pytest.skip("Node is required to execute browser-script behavior tests")
-    script = re.search(r"<script>(.*?)</script>", html, re.S).group(1)
     parser = _SettingsFields()
     parser.feed(html)
+    script = "".join(parser.script_parts)
+    assert script
     harness = """
 const assert=require('node:assert/strict'),vm=require('node:vm');
 let timers=new Map(),next=0,events={},calls=[],pending=[],requests=[];
