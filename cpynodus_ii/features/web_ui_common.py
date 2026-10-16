@@ -26,7 +26,10 @@ def navigation(*, switch_present=False, automations=False, current=""):
     """Return links to independently rendered NodusWeb pages."""
     links = [
         ("/", "Status"),
-        ("/setup", "Setup"),
+        ("/setup", "Network"),
+        ("/time-setup", "Time"),
+        ("/mqtt-setup", "Profile & MQTT"),
+        ("/display-setup", "Sensor Display"),
         ("/calibration", "Calibration"),
     ]
     if switch_present:
@@ -38,7 +41,7 @@ def navigation(*, switch_present=False, automations=False, current=""):
         '<a href="{}"{}>{}</a>'.format(
             path,
             ' class="active"' if path == current else "",
-            label,
+            html_escape(label),
         )
         for path, label in links
     )

@@ -8,8 +8,11 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 
+import pytest
+
 from cpynodus_ii.core.settings import Settings
 from cpynodus_ii.features.web_handlers import (
+    build_config_page_payload,
     build_setup_payload,
     build_status_payload,
     handle_switch_state_request,
@@ -134,7 +137,27 @@ def test_build_setup_payload_lists_routes_and_current_values():
     assert "use_tls" in payload["mqtt"]
 
 
-def test_handle_web_config_request_reports_live_and_restart_required_updates():
+@pytest.mark.parametrize("page,extra", [
+    ("setup", set()), ("time", {"time"}), ("mqtt", {"mqtt"}),
+    ("display", {"sensor"}),
+])
+def test_settings_page_payload_excludes_other_settings_and_credentials(page, extra):
+    runtime = _runtime_config()
+    payload = build_config_page_payload(runtime, version="test", page=page)
+    assert set(payload) == {"version", "profile", "network", "switch"} | extra
+    assert set(payload["network"]) == (
+        {"hostname", "ssid", "password"} if page == "setup" else {"hostname"}
+    )
+    if page == "display":
+        assert set(payload["sensor"]) == {
+            "location", "display_metrics", "display_styles",
+        }
+    if page == "mqtt":
+        assert "password" in payload["mqtt"]
+        assert "broker_ip" not in payload["mqtt"]
+
+
+def test_handle_web_config_request_reports_unsaved_restart_updates():
     runtime_config = _runtime_config()
 
     payload = handle_web_config_request(
@@ -145,10 +168,30 @@ def test_handle_web_config_request_reports_live_and_restart_required_updates():
         ),
     )
 
-    assert payload["success"] is True
+    assert payload["success"] is False
     assert payload["live_updated"] == 1
-    assert payload["restart_required"] is True
+    assert payload["restart_required"] is False
+    assert payload["errors"] == ["settings_not_writable"]
+    assert payload["persistence_mode"] == "volatile"
     assert payload["runtime_config"].sensor.location == "Bench C"
+
+
+def test_config_partial_persistence_is_not_reported_as_success(monkeypatch):
+    runtime = _runtime_config()
+
+    def partial_write(root, config, updates, **kwargs):
+        return config, (updates[0],), ("persistence_failed",)
+
+    monkeypatch.setattr(Settings, "apply_updates_to_directory", partial_write)
+    payload = handle_web_config_request(runtime, [
+        {"section": "Sensor", "key": "LOCATION", "value": "Bench C"},
+        {"section": "Network", "key": "SSID", "value": "unsaved"},
+    ], settings_root="unused")
+    assert not payload["success"]
+    assert payload["errors"] == ["persistence_failed"]
+    assert payload["persistence_mode"] == "partial"
+    assert payload["updated"] == payload["live_updated"] == 1
+    assert not payload["restart_required"]
 
 
 def test_handle_switch_state_request_persists_last_state_when_requested():

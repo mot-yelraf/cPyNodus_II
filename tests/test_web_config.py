@@ -8,6 +8,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 
+import pytest
+
 from cpynodus_ii.core.config import RuntimeConfig
 from cpynodus_ii.core.settings import Settings
 from cpynodus_ii.features.web_config import (
@@ -175,3 +177,60 @@ def test_apply_web_config_updates_rejects_unknown_updates():
     assert result.applied_updates == ()
     assert "no_supported_updates" in result.errors
     assert result.ignored_updates[0]["reason"] == "unsupported_update"
+
+
+@pytest.mark.parametrize("bad", [
+    None, "bad", {}, {"section": [], "key": "LOCATION", "value": "x"},
+    {"section": "Sensor", "key": "LOCATION", "value": {}},
+    {"section": "Sensor", "key": "LOCATION", "value": "x" * 257},
+    {"section": "Calibration.Device", "key": "CO2_OFFSET", "value": "bad"},
+    {"section": "Calibration.Device", "key": "CO2_OFFSET", "value": "nan"},
+    {"section": "Time", "key": "TZ_OFFSET", "value": 1.5},
+    {"section": "MQTT", "key": "PORT", "value": 0},
+    {"section": "MQTT", "key": "USE_TLS", "value": "maybe"},
+    {"section": "Profile", "key": "ACTIVE_PROFILE", "value": "unknown"},
+])
+def test_invalid_batch_is_rejected_before_any_write_or_live_change(bad, monkeypatch):
+    runtime = _load_runtime_config()
+
+    def unexpected_write(*args, **kwargs):
+        raise AssertionError("validation must precede persistence")
+
+    monkeypatch.setattr(Settings, "apply_updates_to_directory", unexpected_write)
+    result = apply_web_config_updates(runtime, [
+        {"section": "Sensor", "key": "LOCATION", "value": "changed"}, bad,
+    ], settings_root="unused")
+    assert result.errors == ("invalid_config_payload",)
+    assert result.runtime_config is runtime
+    assert not result.applied_updates
+
+
+def test_web_update_count_is_bounded():
+    runtime = _load_runtime_config()
+    update = {"section": "Sensor", "key": "LOCATION", "value": "x"}
+    assert apply_web_config_updates(runtime, [update] * 33).errors == (
+        "invalid_config_payload",
+    )
+
+
+def test_read_only_config_keeps_live_changes_but_rejects_restart_fields():
+    runtime = _load_runtime_config()
+    result = apply_web_config_updates(runtime, [
+        {"section": "Sensor", "key": "LOCATION", "value": "volatile"},
+        {"section": "Network", "key": "SSID", "value": "unsaved"},
+    ])
+    assert result.errors == ("settings_not_writable",)
+    assert result.runtime_config.sensor.location == "volatile"
+    assert result.runtime_config.network.ssid == runtime.network.ssid
+    assert len(result.applied_updates) == 1
+    assert not result.restart_required_updates
+    assert result.ignored_updates[0]["key"] == "SSID"
+    assert result.persistence_mode == "volatile"
+
+
+def test_live_only_read_only_config_is_explicitly_volatile():
+    result = apply_web_config_updates(_load_runtime_config(), [
+        {"section": "Sensor", "key": "LOCATION", "value": "volatile"},
+    ])
+    assert not result.errors
+    assert result.persistence_mode == "volatile"

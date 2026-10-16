@@ -199,29 +199,28 @@ def build_config_page_payload(runtime_config, *, version, page):
                 "password": runtime_config.network.password,
             }
         )
-        payload.update(
-            {
-                "sensor": {
-                    "location": sensor.location,
-                    "display_metrics": sensor.display.metrics,
-                    "display_styles": sensor.display.styles,
-                },
-                "time": {
-                    "tz": runtime_config.time.tz,
-                    "tz_offset": runtime_config.time.tz_offset,
-                    "tz_name": runtime_config.time.tz_name,
-                    "ntp_server": runtime_config.time.ntp_server,
-                    "ntp_server_ip": runtime_config.time.ntp_server_ip,
-                },
-                "mqtt": {
-                    "broker": runtime_config.mqtt.broker,
-                    "port": runtime_config.mqtt.port,
-                    "use_tls": bool(runtime_config.mqtt.use_tls),
-                    "username": runtime_config.mqtt.username,
-                    "password": runtime_config.mqtt.password,
-                },
-            }
-        )
+    elif page == "time":
+        payload["time"] = {
+            "tz": runtime_config.time.tz,
+            "tz_offset": runtime_config.time.tz_offset,
+            "tz_name": runtime_config.time.tz_name,
+            "ntp_server": runtime_config.time.ntp_server,
+            "ntp_server_ip": runtime_config.time.ntp_server_ip,
+        }
+    elif page == "mqtt":
+        payload["mqtt"] = {
+            "broker": runtime_config.mqtt.broker,
+            "port": runtime_config.mqtt.port,
+            "use_tls": bool(runtime_config.mqtt.use_tls),
+            "username": runtime_config.mqtt.username,
+            "password": runtime_config.mqtt.password,
+        }
+    elif page == "display":
+        payload["sensor"] = {
+            "location": sensor.location,
+            "display_metrics": sensor.display.metrics,
+            "display_styles": sensor.display.styles,
+        }
     elif page == "calibration":
         payload["sensor"] = {
             "device": sensor.device,
@@ -293,7 +292,7 @@ def handle_web_config_request(runtime_config, updates, *, settings_root=None):
         settings_root=settings_root,
     )
     return {
-        "success": bool(result.applied_updates),
+        "success": bool(result.applied_updates) and not result.errors,
         "updated": len(result.applied_updates),
         "live_updated": len(result.live_updates),
         "restart_required": bool(result.restart_required_updates),

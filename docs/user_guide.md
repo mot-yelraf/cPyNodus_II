@@ -9,9 +9,11 @@ This guide begins with a prepared device that can boot normally or enter AP
 mode. It does not describe installing CircuitPython, building firmware,
 flashing a board, or copying files to the device.
 
-The screenshots show a CO2 Nodus with two switch channels. A sensor-only,
-switch-only, or different sensor model will show only the controls and
-calibration fields that apply to its hardware.
+The current screenshots show a sensor-only CO2 Nodus running firmware
+`v0.26.289.3`. Network addresses, hostnames, credentials, locations, and device
+identities have been anonymized. Switch Settings and Automations use labeled
+illustrative examples rendered from the current interface. Your Nodus shows
+only the controls and calibration fields that apply to its hardware.
 
 ## AP Mode: Initial Setup and Network Recovery
 
@@ -39,12 +41,16 @@ To configure the device manually:
    internet access. The Nodus AP is a local setup network.
 3. Open `http://192.168.4.1:8000/setup` in a browser. Enter the address
    manually if no captive-portal window appears.
-4. Expand **Network** and enter the normal Wi-Fi SSID, password, and desired
-   hostname.
-5. Expand **Profile and MQTT** and select the intended operating profile. For
-   an MQTT profile, also provide the broker settings.
-6. Select **Save & Restart**. The setup AP disappears while Nodus restarts and
-   tries to join the saved Wi-Fi network.
+4. On **Network**, enter the normal Wi-Fi SSID, password, and desired
+   hostname. Select **Save** and confirm the settings were saved before
+   moving to another page.
+5. Open **Profile & MQTT** and select the intended operating profile. For
+   an MQTT profile, also provide the broker settings. Each page saves only its
+   own fields; navigating away does not save unfinished edits.
+6. Select **Save & Restart** on Profile & MQTT. After a successful saved
+   result, the setup AP disappears while Nodus restarts and tries to join the
+   saved Wi-Fi network. If you are keeping the existing profile and broker
+   settings, Network's **Save & Restart** can perform the restart instead.
 7. Reconnect the phone or computer to the normal network. A `nodusweb` device
    can then be opened by hostname or IPv4 address.
 
@@ -93,12 +99,13 @@ is `nodusweb`. From a device on the same local network, open:
 http://<device-hostname>.local:8000
 ```
 
-The example device used here is `http://co2-pmoopn.local:8000`. An IPv4
+Replace `<device-hostname>` with your own configured hostname. An IPv4
 address can be used when `.local` name resolution is unavailable. If the HTTP
 port was changed, use that configured port instead of `8000`.
 
-The sidebar contains **Status**, **Setup**, **Calibration**, and **Nodus
-Info**. **Switch Settings** and **Automations** also appear when switch
+The sidebar contains **Status**, **Network**, **Time**, **Profile & MQTT**,
+**Sensor Display**, **Calibration**, and **Nodus Info**.
+**Switch Settings** and **Automations** also appear when switch
 channels are enabled. On narrow screens the sidebar becomes a horizontal,
 scrollable navigation row.
 
@@ -110,7 +117,7 @@ provide graphs, 24-hour statistics, or CSV export.
 
 ## Status
 
-![NodusWeb Status page with current sensor and switch values](<../assets/screenshots/nodusweb-status.png>)
+![NodusWeb Status page showing current CO2 sensor values](<../assets/screenshots/nodusweb-status.png>)
 
 Status is the main local operating page. It shows:
 
@@ -118,7 +125,9 @@ Status is the main local operating page. It shows:
 - the current values for the configured display metrics; and
 - the current state of each enabled switch channel.
 
-The browser refreshes the visible values about every 15 seconds. Sensor
+While the page is visible, the browser schedules its next refresh about
+15 seconds after the previous request completes. Hidden tabs pause polling,
+and requests do not overlap. Sensor
 acquisition itself runs on the device's approximately 60-second NodusWeb
 cadence, so several browser refreshes can legitimately show the same sample.
 If a sensor read is still pending or temporarily fails, the prior successful
@@ -129,19 +138,31 @@ browser and device enforce a five-second guard between manual changes. When an
 enabled local automation owns a channel, the state control is disabled and an
 ownership label identifies the automation.
 
-## Setup
+**Halt until power cycle** stops normal operation before unplugging and holds
+relay outputs in their current state. Wait for the serial confirmation
+`halt phase=halted filesystem_sync=ok` before removing power. A power cycle
+resumes normal startup.
 
-Setup groups configuration into four independently expandable sections. The
-screens below show one section expanded at a time.
+## Settings Pages
+
+Settings use four separate menu pages to keep each response small. Each page
+loads and saves only its own fields. The existing `/setup` address opens
+Network; the other pages are `/time-setup`, `/mqtt-setup`, and `/display-setup`.
+
+When the device filesystem is read-only, Time and Sensor Display can apply
+live changes until reboot, but cannot save them permanently. The page reports
+**Applied until reboot; not saved**. Network and Profile & MQTT require
+persistent storage: an unsaved result does not trigger an automatic restart.
+Do not assume changes were saved until the page confirms **Saved**.
 
 ### Network
 
-![NodusWeb Setup Network section expanded](<../assets/screenshots/nodusweb-setup-network-expanded.png>)
+![Independent NodusWeb Network settings page with anonymized credentials](<../assets/screenshots/nodusweb-network.png>)
 
 - **SSID** is the normal Wi-Fi network name.
 - **Password** is the Wi-Fi password and remains visually concealed.
-- **Hostname** is the local device name used in addresses such as
-  `http://co2-pmoopn.local:8000`.
+- **Hostname** is the local device name used in
+  `http://<device-hostname>.local:8000`.
 
 Network changes require a restart. Check all three values before selecting
 **Save & Restart**; an incorrect network name or password will send the device
@@ -149,7 +170,7 @@ back to AP mode.
 
 ### Time
 
-![NodusWeb Setup Time section expanded](<../assets/screenshots/nodusweb-setup-time-expanded.png>)
+![Independent NodusWeb Time settings page with anonymized server addresses](<../assets/screenshots/nodusweb-time.png>)
 
 - **Time Zone** is an IANA name such as `America/Denver`.
 - **TZ Offset** is the local offset from UTC in seconds.
@@ -158,12 +179,12 @@ back to AP mode.
 - **NTP Server IP** is the fallback address used when hostname resolution or
   hostname-based synchronization fails.
 
-Select **Save** for an ordinary live time-setting update. Nodus requests a new
-time synchronization after accepted time changes.
+Select **Save** for a live time-setting update. This page does not include a
+Save & Restart button. Check the save result, especially on a read-only device.
 
-### Profile and MQTT
+### Profile & MQTT
 
-![NodusWeb Setup Profile and MQTT section expanded](<../assets/screenshots/nodusweb-setup-profile-and-mqtt-expanded.png>)
+![Independent NodusWeb Profile and MQTT page with anonymized broker credentials](<../assets/screenshots/nodusweb-profile-and-mqtt.png>)
 
 The profile selector offers `nodusweb`, `sensorius`, `weewx`, and
 `homeassistant`. MQTT profiles use the shared fields:
@@ -179,7 +200,7 @@ MQTT profile starts normally, the built-in web server is intentionally absent.
 
 ### Sensor Display
 
-![NodusWeb Setup Sensor Display section expanded](<../assets/screenshots/nodusweb-setup-sensor-display-expanded.png>)
+![Independent NodusWeb Sensor Display settings page](<../assets/screenshots/nodusweb-sensor-display.png>)
 
 - **Location** is the friendly place name reported with the sensor.
 - **Metric 1-6** select the preferred Sensorius display metrics.
@@ -199,10 +220,10 @@ restarting the device.
 Calibration fields depend on the detected sensor family. The pictured CO2
 device provides:
 
-- **TEMP OFFSET**: additive temperature correction;
-- **RH OFFSET**: additive relative-humidity correction;
-- **CO2 OFFSET**: additive CO2 correction in ppm; and
-- **ALTITUDE METERS**: sensor altitude compensation, not an additive pressure
+- **Temperature Offset**: additive temperature correction;
+- **Relative Humidity Offset**: additive relative-humidity correction;
+- **CO2 Offset**: additive CO2 correction in ppm; and
+- **Altitude Meters**: sensor altitude compensation, not an additive pressure
   offset.
 
 Other sensor families expose only their applicable temperature, humidity,
@@ -214,6 +235,9 @@ device restart and is not required for an ordinary live calibration save.
 ## Switch Settings
 
 ![NodusWeb Switch Settings page](<../assets/screenshots/nodusweb-switch-settings.png>)
+
+*Illustrative two-channel example rendered locally from the current UI;
+the sensor-only device used for the live screenshots has no switch channels.*
 
 Switch Settings shows the switch device's location, editable channel labels,
 and a compact manual state toggle for each enabled channel. The toggle appears
@@ -228,6 +252,10 @@ manual change.
 ## Automations
 
 ![NodusWeb automation editor with Example expanded](<../assets/screenshots/nodusweb-automations-example-expanded.png>)
+
+*Illustrative editor rendered locally from the current UI, with Example
+expanded and its JSON formatted for readability. This page is available only
+on a switch-equipped Nodus.*
 
 Local automations run only in the `nodusweb` profile and use this Nodus's own
 sensor sample and switch channels. The editor deliberately exposes compact

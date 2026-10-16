@@ -16,6 +16,9 @@ def test_nodusweb_route_table_includes_operational_routes_only():
     assert "/" in paths
     assert "/current-data" in paths
     assert "/setup" in paths
+    assert "/time-setup" in paths
+    assert "/mqtt-setup" in paths
+    assert "/display-setup" in paths
     assert "/calibration" in paths
     assert "/info" in paths
     assert "/config" in paths
@@ -32,6 +35,9 @@ def test_ap_mode_route_table_includes_bootstrap_and_operational_routes():
     paths = route_paths(runtime_config)
 
     assert "/setup" in paths
+    assert "/time-setup" in paths
+    assert "/mqtt-setup" in paths
+    assert "/display-setup" in paths
     assert "/itaot-init" in paths
     assert "/itaot-meta" in paths
 

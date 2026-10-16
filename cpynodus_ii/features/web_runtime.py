@@ -29,6 +29,7 @@ _HTTP_STATUS = {
     404: "Not Found",
     405: "Method Not Allowed",
     409: "Conflict",
+    413: "Payload Too Large",
     429: "Too Many Requests",
     500: "Internal Server Error",
     503: "Service Unavailable",
@@ -46,6 +47,9 @@ _RESPONSE_SEND_CHUNK_BYTES = 256
 _RESPONSE_SEND_PACE_S = 0.025
 _SOCKET_RETRY_DELAY_S = 0.005
 _MAX_HEADER_BYTES = 2048
+_MAX_BODY_BYTES = 4096
+# CircuitPython 9.2.8 reports broken pipes as 32 but does not export EPIPE.
+_BROKEN_PIPE_ERRNO = 32
 _RESPONSE_TIMEOUT_RESTART_COUNT = 2
 _WEB_RENDER_MODULES = (
     "cpynodus_ii.features.web_status_ui",
@@ -216,6 +220,8 @@ class WebRuntimeController:
                 self._collect_after_response_timeout()
                 if self._response_timeout_count >= _RESPONSE_TIMEOUT_RESTART_COUNT:
                     self._restart_listener_after_timeout()
+            else:
+                gc.collect()
             return self
         if self.phase == "error":
             return self
@@ -373,6 +379,18 @@ class WebRuntimeController:
         def _setup(request):
             return self._config_page_response(request, "setup")
 
+        @route("/time-setup", methods=["GET"])
+        def _time_setup(request):
+            return self._config_page_response(request, "time")
+
+        @route("/mqtt-setup", methods=["GET"])
+        def _mqtt_setup(request):
+            return self._config_page_response(request, "mqtt")
+
+        @route("/display-setup", methods=["GET"])
+        def _display_setup(request):
+            return self._config_page_response(request, "display")
+
         @route("/calibration", methods=["GET"])
         def _calibration(request):
             return self._config_page_response(request, "calibration")
@@ -395,6 +413,11 @@ class WebRuntimeController:
 
         @route("/config", methods=["POST"])
         def _config(request):
+            if len(getattr(request, "body", b"")) > _MAX_BODY_BYTES:
+                return self._json_response(
+                    request, {"success": False, "error": "request_body_too_large"},
+                    status_code=413,
+                )
             updates = _extract_updates(request)
             if updates is None:
                 return self._json_response(
@@ -408,7 +431,8 @@ class WebRuntimeController:
                 settings_root=self.settings_root,
             )
             self.runtime_config = payload.pop("runtime_config")
-            return self._json_response(request, payload)
+            status = 400 if "invalid_config_payload" in payload["errors"] else 200
+            return self._json_response(request, payload, status_code=status)
 
         @route("/set-switch-state", methods=["POST"])
         def _set_switch_state(request):
@@ -937,9 +961,14 @@ def _server_state_text(server):
 
 def _is_recoverable_web_poll_error(exc):
     if isinstance(exc, ValueError):
-        return "Unparseable raw_request" in str(exc or "")
+        return (
+            "Unparseable raw_request" in str(exc or "")
+            or str(exc) == "web_request_body_too_large"
+        )
     if isinstance(exc, OSError):
         error = _socket_error_number(exc)
+        if error == _BROKEN_PIPE_ERRNO:
+            return _socket_error_stage(exc) == "response_send"
         if error == EBADF:
             return _socket_error_stage(exc) in (
                 "header_receive",
@@ -1144,6 +1173,12 @@ def _receive_bounded_header(server, sock):
 
 def _receive_bounded_body(server, sock, received, content_length):
     """Read a declared request body within a short fixed window."""
+    if content_length > _MAX_BODY_BYTES:
+        try:
+            sock.close()
+        except OSError:
+            pass
+        raise ValueError("web_request_body_too_large")
     deadline = monotonic() + _BODY_READ_WINDOW_S
     _set_socket_nonblocking(sock)
     try:

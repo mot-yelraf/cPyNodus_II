@@ -4,9 +4,12 @@ The cases use radio, server, and socket doubles to verify listener lifecycle,
 request handling, cleanup, and timeout recovery.
 """
 
+import builtins
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
+
+import pytest
 
 from cpynodus_ii.core.network import build_network_stack
 from cpynodus_ii.core.settings import Settings
@@ -28,6 +31,27 @@ class _FakeRadio:
 
     def start_ap(self, ssid, password):
         self.ap_started.append((ssid, password))
+
+
+def test_web_runtime_imports_with_circuitpython_errno_exports(monkeypatch):
+    """Catch unsupported imports that MPY compilation cannot detect."""
+    supported_errno = SimpleNamespace(
+        EAGAIN=11, EBADF=9, ECONNRESET=104, ETIMEDOUT=116,
+    )
+    original_import = builtins.__import__
+
+    def circuitpython_import(name, *args, **kwargs):
+        if name == "errno":
+            return supported_errno
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", circuitpython_import)
+    path = Path(web_runtime.__file__)
+    namespace = {"__name__": "web_runtime_circuitpython_import_probe"}
+    exec(compile(path.read_text(), str(path), "exec"), namespace)
+    recoverable = namespace["_is_recoverable_web_poll_error"]
+    assert recoverable(OSError(32, "web_socket_stage=response_send path=/setup"))
+    assert not recoverable(OSError(32))
 
 
 class _FakeConnMgr:
@@ -203,6 +227,16 @@ def test_bounded_body_read_accepts_fragments(monkeypatch):
 
     assert received == b'{"state":true}'
     assert sock.timeouts == [1]
+
+
+def test_oversized_declared_body_is_closed_without_reading():
+    sock = _ScriptedSocket()
+    server = SimpleNamespace(_buffer=bytearray(64), _timeout=1)
+    with pytest.raises(ValueError, match="web_request_body_too_large") as error:
+        web_runtime._receive_bounded_body(server, sock, b"", 4097)
+    assert sock.close_count == 1
+    assert not sock.blocking
+    assert web_runtime._is_recoverable_web_poll_error(error.value)
 
 
 def test_bounded_send_retries_and_rejects_zero_progress(monkeypatch):
@@ -587,14 +621,15 @@ def test_web_status_page_is_small_and_excludes_configuration_editors():
     assert 'id="switch_SWITCH_1"' in html
     assert 'href="/switch-setup"' in html
     assert 'href="/automations-ui"' in html
-    assert "setInterval(refresh,15000)" in html
-    assert "fetch('/current-data',{cache:'no-store'})" in html
+    assert "setInterval(" not in html
+    assert "request('/current-data',{cache:'no-store'})" in html
     assert "Device Calibration" not in html
     assert "Save &amp; Restart" not in html
     assert 'id="wifi_password"' not in html
     assert 'id="automation_script"' not in html
     assert "loadAutomations()" not in html
-    assert len(html.encode("utf-8")) < 7000
+    # Three additional navigation links add 119 bytes to every page.
+    assert len(html.encode("utf-8")) < 8200
 
 
 def test_config_page_payload_omits_values_unused_by_setup_renderer():
@@ -607,12 +642,10 @@ def test_config_page_payload_omits_values_unused_by_setup_renderer():
     )
 
     assert "routes" not in payload
-    assert "calibration_device" not in payload["sensor"]
-    assert "broker_ip" not in payload["mqtt"]
-    assert "base_topic" not in payload["mqtt"]
-    assert tuple(payload["sensor"]["display_metrics"]) == tuple(
-        runtime_config.sensor.display.metrics
-    )
+    assert "sensor" not in payload
+    assert "mqtt" not in payload
+    assert "time" not in payload
+    assert set(payload["network"]) == {"hostname", "ssid", "password"}
 
 
 def test_config_renderer_collects_before_final_page_wrapper(monkeypatch):
@@ -633,7 +666,7 @@ def test_config_renderer_collects_before_final_page_wrapper(monkeypatch):
     monkeypatch.setattr(web_config_ui, "render_page", wrapped_page)
 
     assert web_config_ui.render_config_html("setup", payload) == "complete"
-    assert events == ["collect", "collect", "collect", "render_page"]
+    assert events == ["collect", "collect", "render_page"]
 
 
 def test_calibration_labels_expand_device_abbreviations():
@@ -680,6 +713,11 @@ def test_web_configuration_surfaces_render_on_separate_routes():
     ).start()
 
     setup = controller.server.routes[("/setup", ("GET",))](_FakeRequest()).body
+    time = controller.server.routes[("/time-setup", ("GET",))](_FakeRequest()).body
+    mqtt = controller.server.routes[("/mqtt-setup", ("GET",))](_FakeRequest()).body
+    display = controller.server.routes[("/display-setup", ("GET",))](
+        _FakeRequest()
+    ).body
     calibration = controller.server.routes[("/calibration", ("GET",))](
         _FakeRequest()
     ).body
@@ -693,21 +731,32 @@ def test_web_configuration_surfaces_render_on_separate_routes():
 
     assert "Save &amp; Restart" in setup
     assert 'id="wifi_password" type="password"' in setup
-    assert "grid-template-columns:1fr 1fr" in setup
-    assert (
-        '<div class="f loc"><label>Location</label>'
-        '<input id="location"' in setup
-    )
+    assert '<h1>Network</h1>' in setup
+    assert 'id="location"' not in setup
+    assert 'id="time_tz"' not in setup
+    assert 'id="mqtt_broker"' not in setup
+    assert 'id="location"' in display
+    assert 'id="wifi_password"' not in display
+    assert "Save &amp; Restart" not in display
+    assert "Save &amp; Restart" not in time
+    assert 'id="time_tz"' in time
+    assert 'id="mqtt_broker"' in mqtt
+    assert 'id="mqtt_password" type="password"' in mqtt
+    assert "Save &amp; Restart" in mqtt
+    assert "grid-template-columns:1fr 1fr" in display
     assert (
         '<div class="g"><div class="f">'
-        '<label>Metric 1</label><input id="metric_1"' in setup
+        '<label>Metric 1</label><input id="metric_1"' in display
     )
     assert (
-        '<label>Metric 6</label><input id="metric_6"' in setup
-        and '<label>Style 6</label><input id="style_6"' in setup
+        '<label>Metric 6</label><input id="metric_6"' in display
+        and '<label>Style 6</label><input id="style_6"' in display
     )
-    assert setup.count('class="f"') == 12
-    assert len(setup.encode("utf-8")) < 8900
+    assert display.count('class="f"') == 12
+    assert len(setup.encode("utf-8")) < 6200
+    assert len(time.encode("utf-8")) < 6400
+    assert len(mqtt.encode("utf-8")) < 6750
+    assert len(display.encode("utf-8")) < 7700
     assert "Device Calibration" in calibration
     assert "grid-template-columns:1fr 1fr" in calibration
     assert ".cal{grid-column:1}" in calibration
@@ -722,7 +771,7 @@ def test_web_configuration_surfaces_render_on_separate_routes():
     )
     assert "AQI Offset" in calibration
     assert "AQI OFFSET" not in calibration
-    assert len(calibration.encode("utf-8")) < 6050
+    assert len(calibration.encode("utf-8")) < 6200
     assert "Switch Settings" in switch
     assert "grid-template-columns:1fr 1fr" in switch
     assert ".ctl input{width:90%}" in switch
@@ -751,7 +800,7 @@ def test_web_configuration_surfaces_render_on_separate_routes():
     assert "Switch ID" not in switch
     assert "Serial Number" not in switch
     assert "Enabled Channels" not in switch
-    assert len(switch.encode("utf-8")) < 6450
+    assert len(switch.encode("utf-8")) < 6600
     assert "Switch Automations" in automations
     assert 'id="automation_script"' in automations
     assert "loadAutomations()" in automations
@@ -760,6 +809,9 @@ def test_web_configuration_surfaces_render_on_separate_routes():
     assert "Network Info" in info
     assert "Device Info" in info
     assert 'href="/setup" class="active"' in setup
+    assert 'href="/time-setup" class="active"' in time
+    assert 'href="/mqtt-setup" class="active"' in mqtt
+    assert 'href="/display-setup" class="active"' in display
     assert 'href="/calibration" class="active"' in calibration
     assert 'href="/switch-setup" class="active"' in switch
     assert 'href="/automations-ui" class="active"' in automations
@@ -820,6 +872,32 @@ def test_web_setup_payload_memory_error_reports_stage(monkeypatch):
     assert any(
         "phase=render_memory_error stage=payload_build" in event for event in events
     )
+
+
+@pytest.mark.parametrize("path", ["/time-setup", "/mqtt-setup", "/display-setup"])
+def test_split_settings_pages_keep_heap_admission_and_recover_after_render_error(
+    path, monkeypatch,
+):
+    runtime = _runtime_config()
+    controller = WebRuntimeController(
+        runtime, SimpleNamespace(socket_pool=object()), version="test",
+        server_module=_FakeServerModule,
+    ).start()
+    handler = controller.server.routes[(path, ("GET",))]
+    monkeypatch.setattr(web_runtime.gc, "mem_free", lambda: 9999, raising=False)
+    assert handler(_FakeRequest(path=path)).status[0] == 503
+    monkeypatch.setattr(web_runtime.gc, "mem_free", lambda: 10000, raising=False)
+    assert handler(_FakeRequest(path=path)).status[0] == 200
+    original = web_runtime.build_config_page_payload
+
+    def fail_payload(*args, **kwargs):
+        raise MemoryError
+
+    monkeypatch.setattr(web_runtime, "build_config_page_payload", fail_payload)
+    assert handler(_FakeRequest(path=path)).status[0] == 503
+    monkeypatch.setattr(web_runtime, "build_config_page_payload", original)
+    assert handler(_FakeRequest(path=path)).status[0] == 200
+    assert controller.phase == "ready"
 
 
 def test_web_setup_encoding_memory_error_reports_stage(monkeypatch):
@@ -917,10 +995,10 @@ def test_web_pages_enforce_heap_floors_after_collection(monkeypatch):
     assert status.status == (200, "OK")
     assert setup.status == (200, "OK")
     # The successful pair adds one renderer release, two admission
-    # collections, one Status wrapper collection, and four Setup
-    # profile/display/renderer/wrapper collections. The prior guarded Setup did
+    # collections, one Status wrapper collection, and three Network
+    # body/renderer/wrapper collections. The prior guarded Setup did
     # not import its renderer, so Status has nothing to release first.
-    assert len(collections) == 11
+    assert len(collections) == 10
 
 
 def test_web_dashboard_keeps_last_successful_sample_and_timestamp(monkeypatch):
@@ -1193,6 +1271,56 @@ def test_web_runtime_recovers_scoped_client_bad_descriptor():
     assert controller.server.stop_count == 0
     assert any("web_socket_stage=response_send" in event for event in events)
     assert any("path=/current-data" in event for event in events)
+
+
+def test_broken_pipe_does_not_disable_next_request(monkeypatch):
+    class BrokenPipeServer(_FakeServer):
+        def poll(self):
+            self.poll_count += 1
+            if self.poll_count == 1:
+                raise web_runtime._socket_stage_error(
+                    OSError(32), "response_send", path="/setup"
+                )
+            return "request_handled_response_sent"
+
+    runtime = _runtime_config()
+    collections = []
+    monkeypatch.setattr(web_runtime.gc, "collect", lambda: collections.append(True))
+    controller = WebRuntimeController(
+        runtime, SimpleNamespace(socket_pool=object()), version="test",
+        server_module=SimpleNamespace(
+            Server=BrokenPipeServer, Response=_FakeResponse,
+            JSONResponse=_FakeJSONResponse,
+        ),
+    ).start()
+    controller.poll()
+    controller.poll()
+    assert controller.phase == "ready"
+    assert not controller.errors
+    assert controller.server.poll_count == 2
+    assert controller.server.stop_count == 0
+    assert len(collections) == 2
+    assert not web_runtime._is_recoverable_web_poll_error(OSError(32))
+
+
+@pytest.mark.parametrize("body,status", [
+    (b'{"updates":[null]}', 400),
+    (b'{"updates":[{"section":"Time","key":"TZ_OFFSET","value":"bad"}]}', 400),
+    (b" " * 4097, 413),
+])
+def test_invalid_config_request_leaves_subsequent_routes_available(body, status):
+    runtime = _runtime_config()
+    controller = WebRuntimeController(
+        runtime, SimpleNamespace(socket_pool=object()), version="test",
+        server_module=_FakeServerModule,
+    ).start()
+    response = controller.server.routes[("/config", ("POST",))](_FakeRequest(body))
+    assert response.status[0] == status
+    assert not response.body["success"]
+    assert controller.runtime_config is runtime
+    assert controller.server.routes[("/current-data", ("GET",))](
+        _FakeRequest()
+    ).status[0] == 200
 
 
 def test_web_runtime_restarts_listener_after_unscoped_bad_descriptor():
