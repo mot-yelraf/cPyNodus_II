@@ -96,6 +96,8 @@ def build_switch_state_payload(runtime_config, switch_state_snapshot):
     for channel in runtime_config.switch.channels:
         snapshot = switch_state_snapshot.get(channel.key, {})
         state = snapshot.get("state")
+        if state is None:
+            state = bool(channel.last_state)
         payloads[channel.key] = {
             "schema": "nodus-switch-state/v1",
             "device_id": runtime_config.switch.device_id,

@@ -436,7 +436,19 @@ Corner case:
 Manual switch overrides use the live runtime switch controller and persist the
 resulting `SWITCH_#_LAST_STATE`, so the next boot starts from the last
 successfully applied manual state. The browser and backend enforce a
-per-channel five-second guard. An enabled local rule owns its target channel
+per-channel five-second guard. MQTT channel commands and manual web controls
+update the same per-channel runtime state and use the same streaming scalar
+writer. After successful GPIO application, the existing mutable channel's
+last state is updated in place to avoid reconstructing configuration objects
+on each toggle. Failed applications leave runtime last state unchanged.
+Their results report output application separately from
+`persistence_mode` (`persisted` or `volatile`) and `persistence_errors`.
+No writable settings directory reports `volatile` with
+`settings_not_writable`; an applied output remains active until reboot even
+when saving fails. MQTT replies are queued after the scalar persistence attempt
+so the remote UI can distinguish applied from saved.
+
+An enabled local rule owns its target channel
 and blocks manual changes until disabled. Rules are stored transactionally in
 `automations.toml`; see [automations.md](automations.md).
 

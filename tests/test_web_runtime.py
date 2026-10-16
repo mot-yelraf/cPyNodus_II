@@ -1798,3 +1798,93 @@ def test_web_halt_suppresses_pending_reboot():
     controller.server.routes[("/halt", ("POST",))](_FakeRequest())
     controller.poll()
     assert reboots == []
+
+
+def _switch_report_controller(transport):
+    config = _runtime_config()
+    stack = build_network_stack(
+        config, wifi_radio=_FakeRadio(), connection_manager_module=_FakeConnMgr
+    )
+    service = SimpleNamespace(
+        phase="ready",
+        device_id=config.switch.device_id,
+        errors=(),
+        channels=tuple(
+            SimpleNamespace(
+                key=c.key,
+                channel_id=c.channel_id,
+                phase="ready",
+                errors=(),
+                control_handle=SimpleNamespace(value=False),
+                enable_handle=SimpleNamespace(value=True),
+            )
+            for c in config.switch.channels
+        ),
+    )
+    return WebRuntimeController(
+        config,
+        stack,
+        version="test",
+        switch_service=service,
+        mqtt_transport=transport,
+        server_module=_FakeServerModule,
+    ).start()
+
+
+def test_web_switch_reports_are_deferred_correlated_and_not_repeated():
+    from cpynodus_ii.core.mqtt import MQTTTransport
+
+    transport = MQTTTransport()
+    transport.mark_connected()
+    controller = _switch_report_controller(transport)
+    handler = controller.server.routes[("/set-switch-state", ("POST",))]
+    response = handler(_FakeRequest(b'{"channel_id":"S1-x943fm","state":true}'))
+    assert response.body["success"] is True
+    assert response.body["persistence_mode"] == "volatile"
+    assert response.body["persistence_errors"] == ["settings_not_writable"]
+    assert transport.published_messages == []
+    controller.publish_pending_switch_report()
+    messages = transport.published_messages
+    assert len(messages) == 3
+    event, state, patch = messages
+    assert event.topic.endswith("/S1-x943fm/event")
+    assert state.topic.endswith("/S1-x943fm/state")
+    assert patch.topic.endswith("/meta/patch")
+    assert (
+        event.payload["message_id"]
+        == patch.payload["message_id"]
+        == response.body["message_id"]
+    )
+    assert event.payload["source"] == patch.payload["source"] == "manual/web"
+    assert event.payload["state"] == state.payload == "ON"
+    assert state.retain is True
+    assert event.retain is patch.retain is False
+    assert patch.payload["updates"][0]["value"] is True
+    controller.publish_pending_switch_report()
+    assert len(messages) == 3
+    # Receiving/reading the confirmed state creates no new MQTT command.
+    controller.server.routes[("/current-data", ("GET",))](_FakeRequest())
+    assert len(messages) == 3
+    assert transport.received_messages == []
+
+
+@pytest.mark.parametrize("disconnect_before_action", [True, False])
+def test_web_switch_offline_or_new_generation_does_not_replay_live_events(
+    disconnect_before_action,
+):
+    from cpynodus_ii.core.mqtt import MQTTTransport
+
+    transport = MQTTTransport()
+    transport.mark_connected()
+    controller = _switch_report_controller(transport)
+    if disconnect_before_action:
+        transport.mark_disconnected()
+    response = controller.server.routes[("/set-switch-state", ("POST",))](
+        _FakeRequest(b'{"channel_id":"S2-x943fm","state":true}')
+    )
+    assert response.body["success"] is True
+    transport.mark_disconnected()
+    transport.mark_connected()
+    controller.publish_pending_switch_report()
+    assert transport.published_messages == []
+    assert controller.runtime_config.switch.channels[1].last_state is True

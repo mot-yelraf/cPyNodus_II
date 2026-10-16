@@ -285,28 +285,16 @@ def apply_web_switch_override(
     runtime_config, switch_service, *, channel_id=None, channel_key=None, state
 ):
     """Apply a live switch override and reflect it into runtime config."""
-    from cpynodus_ii.features.runtime_config_update import apply_runtime_config_update
     from cpynodus_ii.features.switch_service import apply_switch_state
+    from cpynodus_ii.features.switch_state import update_switch_runtime_config
 
     apply_result = apply_switch_state(
-        switch_service,
-        channel_id=channel_id,
-        channel_key=channel_key,
-        state=state,
+        switch_service, channel_id=channel_id, channel_key=channel_key, state=state
     )
-    if apply_result.phase != "ready":
-        return runtime_config, apply_result
-    channel_key = apply_result.key or channel_key or ""
-    if channel_key:
-        key = "{}_LAST_STATE".format(channel_key)
-        updated_runtime = apply_runtime_config_update(
-            runtime_config,
-            "Switch",
-            key,
-            bool(apply_result.applied_state),
+    if apply_result.phase == "ready":
+        update_switch_runtime_config(
+            runtime_config, apply_result.key, apply_result.applied_state
         )
-        if updated_runtime is not None:
-            runtime_config = updated_runtime
     return runtime_config, apply_result
 
 

@@ -30,6 +30,9 @@ primary design constraint.
   behavior change.
 - Serial logs alone are not proof of MQTT success. Broker-visible MQTT output
   is required when validating MQTT behavior.
+- Switch, persistence, payload, and metadata changes that execute in an MQTT
+  command path are MQTT stability-sensitive changes, even when they do not
+  modify the MQTT adapter. Apply the same investigation and approval rules.
 
 ## Start Here
 
@@ -118,19 +121,61 @@ When the operator requests an OTA package:
   requested refs, stop and report that tooling gap. Do not fall back to a
   source `.py` OTA package.
 
-## MQTT Startup and Recovery Investigation
+## MQTT Change Review and Regression Investigation
 
-For MQTT startup/recovery failures:
+Before changing an MQTT command path, including switch behavior:
+
+- Compare the proposed path with the existing working path. Review allocations,
+  lazy imports, Python stack depth, persistence ordering, payload sizes,
+  publication count/order/QoS, deferred metadata work, and queue-drain timing.
+  Include downstream work triggered after the command handler returns.
+- Keep the shallow command path lean. Configuration-object replacement,
+  shared helper extraction, and extra reporting are not automatically safe on
+  Pico2 W merely because host tests pass. State their resource and timing
+  implications before proposing them.
+- State the exact files, intended behavior, MQTT-visible differences, and
+  validation plan before requesting runtime-edit approval. Approval to
+  investigate does not authorize a runtime behavior change.
+
+For MQTT failures, including failures observed during or after switch commands:
 
 - Use `testApparatus/` first to isolate the mechanism.
 - Review `docs/debug-notes/` for prior failed paths before proposing runtime
   changes.
+- When the operator reports previously working behavior, treat recent relevant
+  changes as the leading regression hypothesis. Review committed and
+  uncommitted differences and establish the known-working baseline and deployed
+  artifact provenance; a version string alone does not prove source equality.
+- Separate observations from hypotheses. A send timeout, `Socket not managed`,
+  `ENOMEM`, or native-socket-poison reset identifies an observed failure, not
+  its initiating cause. A later availability or metadata publish failure does
+  not exonerate earlier switch-command work. One successful toggle does not
+  establish repeated-toggle stability.
+- Prefer a controlled baseline-versus-candidate comparison using the same
+  board, CircuitPython version, profile, broker, filesystem mode, command
+  sequence, and pacing. Change one suspected mechanism at a time. If the
+  baseline or hardware is unavailable, state that limitation and leave the
+  cause unconfirmed.
+- Do not compensate for a suspected command-path regression by changing MQTT
+  timeouts, startup order, reconnect policy, or reboot depth without a separate
+  evidence-based proposal and explicit operator approval.
 - Do not reintroduce primer, startup conditioning, MQTT startup reorder, or
   soft-reload recovery behavior without explicit operator approval and
   broker-visible validation.
 - Treat serial-side `published=1`, queued publish drain, or successful local
   API return as insufficient unless the broker capture shows the expected
   topic and payload.
+- For switch validation, correlate fresh command IDs with broker-visible
+  ACK/result/event/state/patch output and serial timing/recovery events. Check
+  persistence claims separately from application success, and physical relay
+  behavior separately from reported state. Follow safe repeated ON/OFF
+  commands through deferred metadata work and subsequent availability cycles;
+  document command count, pacing, missing confirmations, and any recovery.
+- Host pytest results cannot establish CircuitPython heap/stack headroom,
+  socket health, or broker delivery. Report host checks and hardware/broker
+  checks separately, and do not call a regression fixed until the relevant
+  on-device sequence has been validated. The operator owns deployment and
+  approval of live relay actions.
 
 ## Network and Recovery Rules
 

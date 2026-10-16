@@ -535,8 +535,9 @@ def test_switch_command_refresh_reports_live_state_not_boot_state(
     )
     assert first.command_results[0].persistence_mode == "persisted"
     assert pin.value is not initial_state
-    # The switch handler deliberately leaves the boot config unchanged.
-    assert config.switch.channels[0].last_state is initial_state
+    # Applied state updates the shared runtime config without rebuilding it.
+    assert config.switch.channels[0].last_state is not initial_state
+    assert first.runtime_config is config
     transport.published_messages.clear()
     state = first.state
     for now in (2, 3, 4):

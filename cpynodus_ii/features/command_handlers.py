@@ -174,16 +174,14 @@ def process_inbound_messages(
             continue
 
         if message.topic.endswith("/config/set"):
-            results.append(
-                process_switch_command_message(
-                    transport,
-                    current_runtime_config,
-                    switch_service,
-                    topic=message.topic,
-                    payload_text=message.payload_text,
-                    settings_root=settings_root,
-                )
+            result = process_switch_command_message(
+                transport, current_runtime_config, switch_service,
+                topic=message.topic, payload_text=message.payload_text,
+                settings_root=settings_root,
             )
+            results.append(result)
+            if result.runtime_config is not None:
+                current_runtime_config = result.runtime_config
 
     return tuple(results)
 
@@ -574,84 +572,17 @@ def process_switch_command_message(
     settings_root=None,
 ):
     """Parse, apply, and publish one switch command message."""
-    if not str(payload_text or "").strip():
-        return CommandResult(
-            phase="ignored",
-            topic=topic,
-            command_type="switch",
-            published_count=0,
-            errors=(),
-            requested_state="",
-        )
-    command = parse_switch_command(topic, payload_text, runtime_config=runtime_config)
-    if command is None:
-        return CommandResult(
-            phase="error",
-            topic=topic,
-            command_type="switch",
-            published_count=0,
-            errors=("invalid_switch_command",),
-            requested_state="",
-        )
-    ack_topic = mqtt_topic(runtime_config, command.channel_id, "config", "ack")
-    transport.publish(
-        ack_topic,
-        build_config_ack_payload(command.message_id, accepted=True, duplicate=False),
-        retain=False,
+    from cpynodus_ii.features.command_intake import (
+        process_switch_command_message as process_switch,
     )
-    from cpynodus_ii.features.publish_cycle import publish_switch_result
-    from cpynodus_ii.features.switch_service import apply_switch_state
 
-    apply_result = apply_switch_state(
+    return process_switch(
+        transport,
+        runtime_config,
         switch_service,
-        channel_id=command.channel_id,
-        state=command.desired_state,
-    )
-    publish_result = publish_switch_result(
-        transport,
-        runtime_config,
-        apply_result,
-        message_id=command.message_id,
-    )
-    meta_result = _publish_switch_meta_patch(
-        transport,
-        runtime_config,
-        apply_result,
-        message_id=command.message_id,
-    )
-    persistence_errors = ()
-    if settings_root is not None:
-        switch_channel = _find_runtime_channel(runtime_config, command.channel_id)
-        if switch_channel is not None:
-            _, _, persistence_errors = Settings.apply_updates_to_directory(
-                settings_root,
-                runtime_config,
-                (
-                    {
-                        "section": "Switch",
-                        "key": "{}_LAST_STATE".format(switch_channel.key),
-                        "value": bool(command.desired_state),
-                    },
-                ),
-                reload_runtime=False,
-            )
-    return CommandResult(
-        phase=publish_result.phase
-        if publish_result.phase != "skipped"
-        else meta_result.phase,
         topic=topic,
-        command_type="switch",
-        published_count=1
-        + publish_result.published_count
-        + meta_result.published_count,
-        errors=publish_result.errors + meta_result.errors + tuple(persistence_errors),
-        message_id=command.message_id,
-        persistence_mode="volatile"
-        if persistence_errors
-        else "persisted"
-        if settings_root is not None
-        else "",
-        requested_state="ON" if command.desired_state else "OFF",
+        payload_text=payload_text,
+        settings_root=settings_root,
     )
 
 

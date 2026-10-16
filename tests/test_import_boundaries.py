@@ -364,6 +364,11 @@ def test_switch_command_does_not_load_heavy_command_handlers():
         """
         import sys
 
+        from cpynodus_ii.core.config import (
+            RuntimeConfig,
+            SwitchChannelConfig,
+            SwitchConfig,
+        )
         from cpynodus_ii.core.mqtt import MQTTTransport
         from cpynodus_ii.features.command_intake import process_inbound_messages
 
@@ -374,17 +379,12 @@ def test_switch_command_does_not_load_heavy_command_handlers():
         def ns(**values):
             return type("Obj", (), values)()
 
-        runtime_config = ns(
-            mqtt=ns(base_topic="nodus"),
-            sensor=ns(sensor_id=""),
-            switch=ns(
-                device_id="switch-x",
-                channels=(
-                    ns(key="SWITCH_1", channel_id="S1-x", label="Fan"),
-                ),
-            ),
-            network=ns(hostname="host-x"),
-        )
+        runtime_config = RuntimeConfig(switch=SwitchConfig(
+            present=True, device_id="switch-x", channel_count=1,
+            channels=(SwitchChannelConfig(
+                key="SWITCH_1", channel_id="S1-x", label="Fan", last_state=True,
+            ),),
+        ))
         switch_service = ns(
             phase="ready",
             device_id="switch-x",
@@ -420,6 +420,9 @@ def test_switch_command_does_not_load_heavy_command_handlers():
             raise SystemExit("unexpected switch result: {}".format(results))
         if switch_service.channels[0].control_handle.value is not False:
             raise SystemExit("switch state was not applied")
+
+        if results[0].runtime_config.switch.channels[0].last_state is not False:
+            raise SystemExit("runtime switch configuration was not updated")
 
         blocked = (
             "cpynodus_ii.core.settings",

@@ -9,7 +9,7 @@ import gc
 import json
 import sys
 from errno import EAGAIN, EBADF, ECONNRESET, ETIMEDOUT
-from time import localtime, monotonic, sleep
+from time import localtime, monotonic, sleep, time
 
 from cpynodus_ii.features.web_handlers import (
     build_config_page_payload,
@@ -76,6 +76,7 @@ class WebRuntimeController:
         reboot_callbacks=None,
         event_logger=None,
         wifi_recovery_count=0,
+        mqtt_transport=None,
     ):
         self.runtime_config = runtime_config
         self.network_stack = network_stack
@@ -96,6 +97,9 @@ class WebRuntimeController:
         self._pending_reboot_callback = None
         self._pending_reboot_due_at = None
         self._manual_switch_guard_until = {}
+        self._mqtt_transport = mqtt_transport
+        self._pending_switch_report = None
+        self._switch_action_sequence = 0
         self._latest_sensor_snapshot = sensor_snapshot
         self._latest_sample_timestamp = (
             _sample_timestamp_text()
@@ -106,6 +110,50 @@ class WebRuntimeController:
         self._json_response_cls = None
         self._response_timeout_count = 0
         self._listener_restart_count = 0
+
+    def publish_pending_switch_report(self):
+        """Queue a live local report after HTTP dispatch has unwound."""
+        pending = self._pending_switch_report
+        self._pending_switch_report = None
+        transport = self._mqtt_transport
+        if pending is None or transport is None:
+            return
+        key, channel_id, state, message_id, generation, persisted = pending
+        if not transport.connected or transport.connection_generation != generation:
+            # Reconnect snapshots describe current state, never fabricated history.
+            return
+        from cpynodus_ii.features.command_intake import (
+            _publish_switch_meta_patch,
+            _publish_switch_result,
+        )
+        from cpynodus_ii.features.switch_service import SwitchApplyResult
+
+        result = SwitchApplyResult(
+            phase="ready",
+            key=key,
+            device_id=self.runtime_config.switch.device_id,
+            channel_id=channel_id,
+            applied_state=state,
+        )
+        _publish_switch_result(
+            transport,
+            self.runtime_config,
+            result,
+            message_id=message_id,
+            source="manual/web",
+            include_result=False,
+        )
+        _publish_switch_meta_patch(
+            transport,
+            self.runtime_config,
+            result,
+            message_id=message_id,
+            source="manual/web",
+        )
+        if persisted:
+            transport._metadata_refresh_pending = (
+                int(getattr(transport, "_metadata_refresh_pending", 0)) | 7
+            )
 
     def start(self):
         """Initialize the backing HTTP server and register routes."""
@@ -503,6 +551,19 @@ class WebRuntimeController:
             self.runtime_config = payload.pop("runtime_config")
             if not payload.get("success") and channel_token:
                 self._manual_switch_guard_until.pop(channel_token, None)
+            if payload.get("success"):
+                self._switch_action_sequence += 1
+                message_id = "web-{}-{}-{}".format(
+                    int(time()), int(monotonic() * 1000), self._switch_action_sequence
+                )
+                payload["message_id"] = message_id
+                transport = self._mqtt_transport
+                if transport is not None and transport.connected:
+                    self._pending_switch_report = (
+                        payload["channel_key"], payload["channel_id"],
+                        payload["state"], message_id, transport.connection_generation,
+                        payload["persistence_mode"] == "persisted",
+                    )
             payload["guard_seconds"] = int(_MANUAL_SWITCH_GUARD_S)
             return self._json_response(request, payload)
 
