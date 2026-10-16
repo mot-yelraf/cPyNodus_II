@@ -668,6 +668,126 @@ Implemented behavior:
 - Nodus does not clear `nodus/<device_id>/config/set`; Sensorius owns retained
   command cleanup for commands it publishes retained.
 
+## Switch state ownership and synchronization between UIs
+
+This section defines the required behavior for Sensorius and Nodus implementations.
+Firmware agents should review their implementation against the checklist below;
+this clarification does not claim that every existing firmware version already
+implements the complete flow.
+
+### Device-owned source of truth
+
+- Nodus owns the logical channel state and its `SWITCH_<n>_LAST_STATE` values in
+  the device's `/switch.toml`. Sensorius settings files are local shadows, not
+  an alternative owner of the Nodus configuration.
+- Both MQTT commands and local Nodus web controls must use the same switch
+  application/persistence rules. After a durable successful change, the device
+  file, in-memory runtime configuration, logical output state, and subsequent
+  MQTT reports must agree. Hardware pin readback alone is not independent proof
+  of the attached relay/contact state.
+- Preserve the existing volatile-operation fallback when the filesystem cannot
+  be written, but report `persistence_mode = "volatile"` and the persistence
+  failure in the command/HTTP result. A volatile applied change must not be
+  described as saved to `/switch.toml`. Missing persistence metadata on older
+  firmware means durability is unknown, not proven.
+- In-memory configuration must be updated after an accepted MQTT switch change;
+  writing the file without updating the runtime copy is insufficient. Retained
+  metadata refreshes must use a current device snapshot, not a stale cached
+  `last_state` value.
+
+### Manual change from the Sensorius UI
+
+1. Sensorius resolves the stable channel ID and sends one non-retained,
+   correlated channel `config/set` command using the existing envelope.
+2. Publication or `config/ack` means requested/accepted, not a confirmed state
+   change. Sensorius keeps the last device-confirmed state visible and exposes
+   the requested state separately as pending. It does not synthesize a switch
+   transition, update its shadow as though the request succeeded, or start the
+   manual auto-off countdown merely because MQTT publication succeeded.
+3. Nodus applies the logical output, synchronizes runtime configuration, attempts
+   the device-file write, and emits the existing correlated `config/result`,
+   JSON `event`, retained `state`, and non-retained device `meta/patch` reports.
+   Their values must describe the same applied state. Report persistence status
+   separately from output application success.
+4. Sensorius confirms the state from a matching channel state report, a live
+   canonical switch event, or an explicit state patch; a successful result with
+   no state report does not by itself replace the displayed state. Matching
+   confirmation clears pending and records the actual transition once through
+   `log_switch_event`. Rejects and confirmation timeouts remain visible without
+   changing the last confirmed state. Repeated same-state requests must not
+   restart the confirmation deadline.
+
+### Manual change from the Nodus UI
+
+1. Nodus applies and persists through the same device-owned path and synchronizes
+   the in-memory runtime configuration. The local HTTP result reports application
+   and persistence outcomes.
+2. When MQTT is available, Nodus publishes a JSON channel `event`, retained
+   channel `state`, and non-retained device `meta/patch` for the change. Use a
+   fresh action `message_id` shared by these correlated JSON reports and
+   `source = "manual/web"` on the event and patch. No Sensorius-issued command
+   or MQTT command acknowledgment is required for a local web action.
+3. Sensorius accepts these unsolicited live reports, updates its confirmed-state
+   cache and shadow, records the transition once, and updates the dashboard.
+   It must not echo the received state back as another switch command.
+4. If MQTT was unavailable, a later reconnect must publish a current retained
+   channel state and current metadata. Missed intermediate local events must not
+   be invented as historical transitions.
+
+### Snapshot and live-report precedence
+
+- Retained `meta` and `meta/switch` remain authoritative for discovery, identity,
+  channel labels, and topic wiring. Their state fields bootstrap an unknown
+  channel but must not overwrite a channel state already learned from device
+  runtime reports during the ingest session. This protects against older
+  firmware publishing stale cached configuration snapshots; it does not transfer
+  ownership of state to Sensorius.
+- Channel `state` reports accept existing plain `ON`/`OFF` and JSON shapes. Live,
+  non-retained `nodus-switch-event/v1` events may also confirm a state change.
+  Retained/replayed events and legacy event-only history payloads may update
+  history but must not roll the current display backward.
+- An explicit non-retained `meta/patch` update to
+  `Switch.SWITCH_<n>_LAST_STATE` is a device runtime confirmation. Replaying a
+  discovery snapshot is not an explicit state patch.
+- A report of the previous state while a different state is requested must not
+  silently mark that request confirmed. Reports with distinct channel IDs must
+  never affect each other's pending state, labels, or history.
+- Refreshing metadata, receiving events, and rendering either UI must not send
+  a new switch command. Startup metadata replay must not create synthetic switch
+  events. Keep the existing topic and payload compatibility paths.
+
+### Firmware implementation review checklist
+
+For each supported Nodus firmware, check the local web state handler, MQTT switch
+command handler, runtime configuration update, persistence result, and deferred
+metadata publisher together. In particular:
+
+Implementation review entry points (under `cpynodus_ii/` or `cpynodus_iii/`):
+`features/command_handlers.py::process_switch_command_message`,
+`features/web_handlers.py::handle_switch_state_request`,
+`features/web_config.py::apply_web_switch_override`, the local
+`/set-switch-state` handler in `features/web_runtime.py`,
+`features/publish_cycle.py::publish_metadata_refresh_cycle`, and its call site
+in `app.py`. Reuse the existing state/event publication helpers while preserving
+lazy imports and the shallow command stacks. The cPyNodus III v0.26.288.2 review
+found the local web action requesting only metadata refresh, the deferred
+refresh call omitting a live switch snapshot, and the MQTT switch handler not
+propagating updated runtime configuration. Review cPyNodus II for the same gaps
+rather than assuming identical behavior.
+
+- Return/propagate updated runtime configuration after MQTT channel commands.
+- Supply a fresh switch snapshot when deferred metadata is constructed.
+- Queue state/event/patch publication after a local web change; a full metadata
+  refresh alone is not the runtime synchronization flow.
+- Preserve constrained heap/pystack behavior, lazy command imports, non-retained
+  commands, and existing filesystem fallback semantics.
+- Add host tests for both UI origins, stale metadata after a live state change,
+  repeated metadata refresh, failed persistence, disconnected/reconnect behavior,
+  two channels with opposite states, and duplicate state/event/patch delivery.
+- Verify on hardware with broker-visible captures. Check the device file,
+  runtime/device UI, physical output, and Sensorius UI separately; host tests
+  alone do not establish GPIO correctness or broker delivery.
+
 ## Switch `config/set`
 
 Canonical topic:
