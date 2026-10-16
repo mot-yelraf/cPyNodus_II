@@ -59,7 +59,25 @@ def _operational_routes(runtime_config):
             path="/setup",
             methods=("GET",),
             kind="ui",
-            description="Setup and operational configuration view",
+            description="Network settings view",
+        ),
+        WebRoute(
+            path="/time-setup",
+            methods=("GET",),
+            kind="ui",
+            description="Time zone and NTP settings view",
+        ),
+        WebRoute(
+            path="/mqtt-setup",
+            methods=("GET",),
+            kind="ui",
+            description="Profile and MQTT settings view",
+        ),
+        WebRoute(
+            path="/display-setup",
+            methods=("GET",),
+            kind="ui",
+            description="Sensor location and display settings view",
         ),
         WebRoute(
             path="/calibration",

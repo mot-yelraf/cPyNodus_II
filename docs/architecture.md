@@ -39,6 +39,10 @@ The architecture is split into three layers:
 - The initial `/` page imports only the compact status renderer. Configuration
   and automation renderers are imported on their independent routes after a
   garbage-collection pass and route-specific free-heap admission check.
+- Settings are split into Network (`/setup`), Time (`/time-setup`), Profile &
+  MQTT (`/mqtt-setup`), and Sensor Display (`/display-setup`). Each response
+  builds only its own payload and form, and each save submits only those
+  fields. `/setup` remains the Network entry point in AP and NodusWeb modes.
 - The web poll loop treats malformed browser/TLS probes reported as
   `Unparseable raw_request` as recoverable and continues serving requests.
   TLS ClientHello probes sent to the plain HTTP port are discarded silently;
@@ -57,6 +61,10 @@ The architecture is split into three layers:
   Unexpected poll failures move the web
   controller to `error`; periodic web health logging reports its phase, server
   presence, route count, and errors.
+- A broken pipe scoped to a response send closes and collects that client
+  without disabling HTTP polling. Other unexpected errors retain the existing
+  controller-error behavior. Declared request bodies above 4096 bytes are
+  closed before additional body reads and do not disable the listener.
 - After every successfully sent HTTP response, the web controller collects
   garbage before accepting another request. On Pico2 W this promptly releases
   closed client-socket resources that can otherwise remain unavailable until a
@@ -71,9 +79,10 @@ The architecture is split into three layers:
   after constructing the body and again before allocating the contiguous final
   document. The response still uses a fixed content length and bounded
   256-byte socket writes.
-- Setup rendering additionally joins and releases profile and display-row
-  fragments independently before formatting the body. A guarded
-  `MemoryError` reports only its failing stage and free heap.
+- Settings rendering joins and releases only the requested page's field
+  fragments before wrapping the body. Profile options exist only on the MQTT
+  page, and display rows only on Sensor Display. A guarded `MemoryError`
+  reports its route, failing stage, and free heap.
 - Status, Config, and Automation renderer modules are mutually exclusive in
   the module cache. Before rendering one page family, the runtime removes the
   other page-specific modules from `sys.modules` and the features package,
@@ -85,6 +94,10 @@ The architecture is split into three layers:
   60-second cadence. The web controller receives only the latest successful
   snapshot; HTTP request handlers never call sensor drivers. This avoids Pico2
   W Python-stack exhaustion in the deeper HTTP dispatch/response call path.
+- Status refreshes and switch requests share one browser-side in-flight guard.
+  Refreshes schedule their successor after completion, with a 12-second abort
+  timer. Hidden pages pause polling; page departure aborts the active request.
+  Aborting a browser request does not undo a device-side switch command.
 
 ## Filesystem transaction boundaries
 

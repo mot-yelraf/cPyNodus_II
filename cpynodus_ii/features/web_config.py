@@ -5,8 +5,12 @@ including switch overrides and settings writes that may require a reboot.
 """
 
 from dataclasses import dataclass
+from math import isfinite
 
 from cpynodus_ii.core.settings import Settings
+
+_MAX_WEB_UPDATES = 32
+_MAX_WEB_VALUE_CHARS = 256
 
 
 @dataclass(frozen=True)
@@ -37,6 +41,8 @@ class WebConfigResult:
 
 def classify_web_update(update):
     """Classify a web update as live, restart-required, or rejected."""
+    if _invalid_web_update(update):
+        return WebConfigDecision("", "", None, False, False, False, "invalid_update")
     section = str(update.get("section", "") or "").strip()
     key = str(update.get("key", "") or "").strip()
     value = update.get("value")
@@ -122,6 +128,14 @@ def classify_web_update(update):
 
 def apply_web_config_updates(runtime_config, updates, *, settings_root=None):
     """Persist updates and apply live-safe changes to runtime config."""
+    if (
+        not isinstance(updates, (list, tuple))
+        or len(updates) > _MAX_WEB_UPDATES
+        or any(_invalid_web_update(update) for update in updates)
+    ):
+        return WebConfigResult(
+            runtime_config, (), (), (), (), errors=("invalid_config_payload",)
+        )
     normalized_updates = []
     decisions = []
     for update in updates or ():
@@ -156,6 +170,14 @@ def apply_web_config_updates(runtime_config, updates, *, settings_root=None):
             normalized_updates,
             settings_root=settings_root,
         )
+    else:
+        # Restart-required settings cannot survive a reboot without a writer.
+        applied_updates = tuple(
+            update for update in normalized_updates
+            if classify_web_update(update).applies_live
+        )
+        if any(decision.requires_restart for decision in decisions):
+            persistence_errors = ("settings_not_writable",)
     live_updates = []
     restart_required_updates = []
     ignored_updates = []
@@ -186,7 +208,9 @@ def apply_web_config_updates(runtime_config, updates, *, settings_root=None):
         ignored_updates.append(_decision_payload(decision))
 
     for decision in decisions:
-        if decision.accepted:
+        if decision.accepted and not (
+            settings_root is None and decision.requires_restart
+        ):
             continue
         ignored_updates.append(_decision_payload(decision))
 
@@ -198,11 +222,63 @@ def apply_web_config_updates(runtime_config, updates, *, settings_root=None):
         ignored_updates=tuple(ignored_updates),
         errors=tuple(persistence_errors),
         persistence_mode="volatile"
+        if settings_root is None
+        else "partial"
         if persistence_errors
-        else "persisted"
-        if settings_root is not None
-        else "",
+        else "persisted",
     )
+
+
+def _invalid_web_update(update):
+    """Reject malformed values before any live change or filesystem write."""
+    if not isinstance(update, dict):
+        return True
+    section = update.get("section")
+    key = update.get("key")
+    value = update.get("value")
+    if (
+        not isinstance(section, str) or not section.strip() or len(section) > 32
+        or not isinstance(key, str) or not key.strip() or len(key) > 64
+        or not isinstance(value, (str, bool, int, float))
+        or (isinstance(value, str) and len(value) > _MAX_WEB_VALUE_CHARS)
+    ):
+        return True
+    section = section.strip()
+    key = key.strip().upper()
+    boolean = (
+        (section == "MQTT" and key == "USE_TLS")
+        or (section == "Switch" and key.endswith("_LAST_STATE"))
+        or (section == "HomeAssistant" and key.startswith("PUBLISH_"))
+    )
+    if boolean:
+        return str(value).lower() not in (
+            "true", "false", "1", "0", "yes", "no", "on", "off"
+        )
+    integer = (
+        (section == "Network" and key in ("HTTPPORT", "AP_CHANNEL"))
+        or (section == "MQTT" and key == "PORT")
+        or (section == "Time" and key == "TZ_OFFSET")
+    )
+    numeric = section in ("Calibration.System", "Calibration.Device", "NPK")
+    if integer or numeric:
+        try:
+            number = float(value or 0)
+            if isinstance(value, bool) or not isfinite(number):
+                return True
+            if integer:
+                if int(value or 0) != number:
+                    return True
+                if key in ("HTTPPORT", "PORT") and not 1 <= number <= 65535:
+                    return True
+                if key == "AP_CHANNEL" and not 1 <= number <= 14:
+                    return True
+        except (ValueError, TypeError, OverflowError):
+            return True
+    elif not boolean and not isinstance(value, str):
+        return True
+    if section == "Profile" and key == "ACTIVE_PROFILE":
+        return value not in ("nodusweb", "sensorius", "weewx", "homeassistant")
+    return False
 
 
 def apply_web_switch_override(

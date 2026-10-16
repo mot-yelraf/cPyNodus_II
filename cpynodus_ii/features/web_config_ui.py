@@ -22,6 +22,9 @@ def render_config_html(page, payload, *, status_payload=None, event_logger=None)
         switch_present=switch_present,
         automations=payload["profile"] == "nodusweb" and switch_present,
         current={
+            "time": "/time-setup",
+            "mqtt": "/mqtt-setup",
+            "display": "/display-setup",
             "calibration": "/calibration",
             "switch": "/switch-setup",
             "info": "/info",
@@ -34,7 +37,7 @@ def render_config_html(page, payload, *, status_payload=None, event_logger=None)
     elif page == "info":
         title, body, script = _info_page(payload, status_payload or {})
     else:
-        title, body, script = _setup_page(payload, event_logger=event_logger)
+        title, body, script = _setup_page(page, payload, event_logger=event_logger)
     # CircuitPython does not immediately reclaim all temporary list and format
     # objects created by the page-specific renderer. Release them before the
     # largest contiguous allocation: the final full-page wrapper.
@@ -52,78 +55,175 @@ def render_config_html(page, payload, *, status_payload=None, event_logger=None)
     )
 
 
-def _setup_page(payload, *, event_logger=None):
-    stage = "profiles"
-    network = payload["network"]
-    time_config = payload["time"]
-    mqtt = payload["mqtt"]
-    sensor = payload["sensor"]
+def _setup_page(page, payload, *, event_logger=None):
+    """Build only the requested settings form and its save controls."""
+    stage = "fields"
     try:
-        profiles = []
-        for profile in ("nodusweb", "sensorius", "weewx", "homeassistant"):
-            selected = " selected" if profile == payload["profile"] else ""
-            profiles.append(
-                '<option value="{}"{}>{}</option>'.format(
-                    profile, selected, profile
+        rows = []
+        fields = ()
+        if page == "setup":
+            title = "Network"
+            section = "Network"
+            values = payload["network"]
+            fields = (
+                ("SSID", "SSID", "ssid", values["ssid"], "text"),
+                (
+                    "Password",
+                    "PASSWORD",
+                    "wifi_password",
+                    values["password"],
+                    "password",
+                ),
+                ("Hostname", "HOSTNAME", "hostname", values["hostname"], "text"),
+            )
+        elif page == "time":
+            title = "Time"
+            section = "Time"
+            values = payload["time"]
+            fields = (
+                ("Time Zone", "TZ", "time_tz", values["tz"], "text"),
+                (
+                    "TZ Offset",
+                    "TZ_OFFSET",
+                    "time_offset",
+                    values["tz_offset"],
+                    "number",
+                ),
+                ("TZ Name", "TZ_NAME", "time_name", values["tz_name"], "text"),
+                (
+                    "NTP Server",
+                    "NTP_SERVER",
+                    "ntp_server",
+                    values["ntp_server"],
+                    "text",
+                ),
+                (
+                    "NTP Server IP",
+                    "NTP_SERVER_IP",
+                    "ntp_ip",
+                    values["ntp_server_ip"],
+                    "text",
+                ),
+            )
+        elif page == "mqtt":
+            title = "Profile & MQTT"
+            section = "MQTT"
+            values = payload["mqtt"]
+            stage = "profiles"
+            profiles = []
+            for profile in ("nodusweb", "sensorius", "weewx", "homeassistant"):
+                selected = " selected" if profile == payload["profile"] else ""
+                profiles.append(
+                    '<option value="{}"{}>{}</option>'.format(
+                        profile, selected, profile
+                    )
+                )
+            rows.append(
+                '<div class="row"><label>Profile</label><select id="profile" data-section="Profile" data-key="ACTIVE_PROFILE">{}</select></div>'.format(
+                    "".join(profiles)
                 )
             )
-        profiles_html = "".join(profiles)
-        del profiles
-        gc.collect()
-
-        stage = "display_rows"
-        display = []
-        for index, metric in enumerate(sensor["display_metrics"], 1):
-            display.append(
-                '<div class="f"><label>Metric {}</label><input id="metric_{}" value="{}"></div><div class="f"><label>Style {}</label><input id="style_{}" value="{}"></div>'.format(
-                    index,
-                    index,
-                    html_escape(metric),
-                    index,
-                    index,
-                    html_escape(sensor["display_styles"][index - 1]),
+            del profiles
+            gc.collect()
+            fields = (
+                ("Broker", "BROKER", "mqtt_broker", values["broker"], "text"),
+                ("Username", "USERNAME", "mqtt_user", values["username"], "text"),
+                (
+                    "Password",
+                    "PASSWORD",
+                    "mqtt_password",
+                    values["password"],
+                    "password",
+                ),
+                ("Port", "PORT", "mqtt_port", values["port"], "number"),
+                ("Use TLS", "USE_TLS", "mqtt_tls", values["use_tls"], "checkbox"),
+            )
+        else:
+            title = "Sensor Display"
+            section = "Sensor"
+            values = payload["sensor"]
+            rows.append(
+                _setting_input(
+                    section, "Location", "LOCATION", "location", values["location"]
                 )
             )
-        display_html = "".join(display)
-        del display
+            rows.append('<div class="g">')
+            stage = "display_rows"
+            for index, metric in enumerate(values["display_metrics"], 1):
+                suffix = str(index)
+                rows.append(
+                    _setting_input(
+                        "Display",
+                        "Metric " + suffix,
+                        "METRIC_" + suffix,
+                        "metric_" + suffix,
+                        metric,
+                        row_class="f",
+                    )
+                )
+                rows.append(
+                    _setting_input(
+                        "Display.Style",
+                        "Style " + suffix,
+                        "METRIC_" + suffix,
+                        "style_" + suffix,
+                        values["display_styles"][index - 1],
+                        row_class="f",
+                    )
+                )
+            rows.append("</div>")
+        for field in fields:
+            rows.append(_setting_input(section, *field))
+        stage = "body_join"
+        body = "".join(rows)
+        del rows, fields
         gc.collect()
-
-        stage = "body_format"
-        body = """<details open><summary>Network</summary><div class="group"><div class="row"><label>SSID</label><input id="ssid" value="{ssid}"></div><div class="row"><label>Password</label><input id="wifi_password" type="password" value="{password}"></div><div class="row"><label>Hostname</label><input id="hostname" value="{hostname}"></div></div></details>
-<details open><summary>Time</summary><div class="group"><div class="row"><label>Time Zone</label><input id="time_tz" value="{tz}"></div><div class="row"><label>TZ Offset</label><input id="time_offset" type="number" value="{offset}"></div><div class="row"><label>TZ Name</label><input id="time_name" value="{tz_name}"></div><div class="row"><label>NTP Server</label><input id="ntp_server" value="{ntp}"></div><div class="row"><label>NTP Server IP</label><input id="ntp_ip" value="{ntp_ip}"></div></div></details>
-<details><summary>Profile and MQTT</summary><div class="group"><div class="row"><label>Profile</label><select id="profile">{profiles}</select></div><div class="row"><label>Broker</label><input id="mqtt_broker" value="{broker}"></div><div class="row"><label>Username</label><input id="mqtt_user" value="{user}"></div><div class="row"><label>Password</label><input id="mqtt_password" type="password" value="{mqtt_password}"></div><div class="row"><label>Port</label><input id="mqtt_port" type="number" value="{port}"></div><div class="row"><label>Use TLS</label><input id="mqtt_tls" type="checkbox"{tls}></div></div></details>
-<details><summary>Sensor Display</summary><div class="group"><div class="f loc"><label>Location</label><input id="location" value="{location}"></div><div class="g">{display}</div></div></details><div class="actions"><button onclick="saveSetup(true)">Save &amp; Restart</button><span id="setup_status" class="status"></span><button onclick="saveSetup(false)">Save</button></div>""".format(
-            ssid=html_escape(network["ssid"]),
-            password=html_escape(network["password"]),
-            hostname=html_escape(network["hostname"]),
-            tz=html_escape(time_config["tz"]),
-            offset=html_escape(time_config["tz_offset"]),
-            tz_name=html_escape(time_config["tz_name"]),
-            ntp=html_escape(time_config["ntp_server"]),
-            ntp_ip=html_escape(time_config["ntp_server_ip"]),
-            profiles=profiles_html,
-            broker=html_escape(mqtt["broker"]),
-            user=html_escape(mqtt["username"]),
-            mqtt_password=html_escape(mqtt["password"]),
-            port=html_escape(mqtt["port"]),
-            tls=" checked" if mqtt["use_tls"] else "",
-            location=html_escape(sensor["location"]),
-            display=display_html,
+        restart = (
+            '<button onclick="saveSetup(true)">Save &amp; Restart</button>'
+            if page in ("setup", "mqtt")
+            else ""
         )
-        script = """function e(id){return document.getElementById(id)}function add(u,s,k,id){const x=e(id);if(x)u.push({section:s,key:k,value:x.type==='checkbox'?x.checked:x.value})}async function post(path,p){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});return r.json()}async function saveSetup(restart){const u=[];add(u,'Network','SSID','ssid');add(u,'Network','PASSWORD','wifi_password');add(u,'Network','HOSTNAME','hostname');add(u,'Time','TZ','time_tz');add(u,'Time','TZ_OFFSET','time_offset');add(u,'Time','TZ_NAME','time_name');add(u,'Time','NTP_SERVER','ntp_server');add(u,'Time','NTP_SERVER_IP','ntp_ip');add(u,'Profile','ACTIVE_PROFILE','profile');add(u,'MQTT','BROKER','mqtt_broker');add(u,'MQTT','USERNAME','mqtt_user');add(u,'MQTT','PASSWORD','mqtt_password');add(u,'MQTT','PORT','mqtt_port');add(u,'MQTT','USE_TLS','mqtt_tls');add(u,'Sensor','LOCATION','location');for(let i=1;i<=6;i++){add(u,'Display','METRIC_'+i,'metric_'+i);add(u,'Display.Style','METRIC_'+i,'style_'+i)}const r=await post('/config',{updates:u});e('setup_status').textContent=r.success?'Settings saved.':JSON.stringify(r);if(restart&&r.success)await post('/restart',{mode:'soft'})}"""
-        return "Setup", body, script
+        body += '<div class="actions">{}<span id="setup_status" class="status"></span><button onclick="saveSetup(false)">Save</button></div>'.format(
+            restart
+        )
+        script = """let saving=false;const e=id=>document.getElementById(id);async function post(path,p){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});return r.json()}async function saveSetup(restart){if(saving)return;saving=true;try{const u=[];document.querySelectorAll('[data-section]').forEach(x=>u.push({section:x.dataset.section,key:x.dataset.key,value:x.type==='checkbox'?x.checked:x.value}));const r=await post('/config',{updates:u}),ok=r.success&&r.persistence_mode==='persisted';e('setup_status').textContent=ok?'Saved':r.success?'Applied until reboot; not saved':'Not fully saved';if(restart&&ok)await post('/restart',{mode:'soft'})}catch(err){e('setup_status').textContent='Save response interrupted; check settings.'}finally{saving=false}}"""
+        return title, body, script
     except MemoryError:
-        _log_setup_stage(event_logger, "memory_error_{}".format(stage), 0)
+        _log_setup_stage(event_logger, page, "memory_error_" + stage)
         raise
 
 
-def _log_setup_stage(event_logger, phase, chars):
+def _setting_input(
+    section, label, key, field_id, value, input_type="text", row_class="row"
+):
+    """Render one scalar setting with its section and key for form submission."""
+    if input_type == "checkbox":
+        value_attribute = " checked" if value else ""
+    else:
+        value_attribute = ' value="{}"'.format(html_escape(value))
+    return '<div class="{}"><label>{}</label><input id="{}" type="{}"{} data-section="{}" data-key="{}"></div>'.format(
+        row_class,
+        html_escape(label),
+        field_id,
+        input_type,
+        value_attribute,
+        section,
+        key,
+    )
+
+
+def _log_setup_stage(event_logger, page, phase):
     if not callable(event_logger):
         return
+    path = {
+        "time": "/time-setup",
+        "mqtt": "/mqtt-setup",
+        "display": "/display-setup",
+    }.get(page, "/setup")
     try:
         event_logger(
-            "request path=/setup phase=setup_{} chars={} free_mem={}".format(
-                phase, chars, _free_mem_text()
+            "request path={} phase=setup_{} free_mem={}".format(
+                path, phase, _free_mem_text()
             )
         )
     except Exception:
@@ -283,6 +383,6 @@ def _page_style(page):
         return ".loc{margin-bottom:9px}.loc label,.sf>label{display:block;margin-bottom:5px}.g{display:grid;grid-template-columns:1fr 1fr;gap:9px}.ctl{display:grid;grid-template-columns:auto minmax(0,1fr);gap:8px}.ctl input{width:90%}"
     if page == "calibration":
         return ".g{display:grid;grid-template-columns:1fr 1fr;gap:9px}.cal{grid-column:1}.cal label{display:block;margin-bottom:5px}"
-    if page == "setup":
+    if page == "display":
         return ".g{display:grid;grid-template-columns:1fr 1fr;gap:9px}.f label{display:block;margin-bottom:5px}.loc{margin-bottom:9px}"
     return ""

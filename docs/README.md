@@ -218,7 +218,12 @@ AP mode is used when:
 - the saved station SSID equals the configured AP SSID, or
 - Wi‑Fi connection fails.
 
-AP mode exposes `/itaot-init`, `/itaot-meta`, `/setup`, `/config`, `/current-data`, `/set-switch-state`, and `/restart` when enough memory is available. Sensorius provisioning uses `/itaot-init`; manual JSON posts to `/config` can persist supported settings and then `/restart` can reboot into normal mode.
+AP mode exposes `/itaot-init`, `/itaot-meta`, the four settings pages
+(`/setup`, `/time-setup`, `/mqtt-setup`, `/display-setup`), `/config`,
+`/current-data`, `/set-switch-state`, and `/restart` when enough memory is
+available. Sensorius provisioning uses `/itaot-init`; manual JSON posts to
+`/config` can persist supported settings and then `/restart` can reboot into
+normal mode.
 
 ## Web UI Memory Guards
 
@@ -227,6 +232,9 @@ Nodus uses intentional low-memory guards around the web UI to protect runtime st
 - Every HTML page request runs garbage collection before checking free heap.
 - HTML pages require at least 10 KB free after collection.
 - Configuration and automation code is imported only when its independent page is requested; it is not embedded in the initial status response.
+- Settings use four independent menu pages: Network (`/setup`), Time
+  (`/time-setup`), Profile & MQTT (`/mqtt-setup`), and Sensor Display
+  (`/display-setup`). Each page renders and saves only its own fields.
 - Guarded requests return `503 Service Unavailable` with a retry message. This is a protective response, not necessarily a crash or reboot condition.
 - HTML responses use nonblocking accepted-client sockets. Failed response
   sends close that client immediately and are collected; two consecutive send

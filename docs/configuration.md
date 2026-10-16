@@ -269,9 +269,9 @@ transition, and reboot reason.
 ## Local setup UI
 
 The built-in `nodusweb` UI uses independent pages so the initial `/` response
-contains only status and switch controls. Setup, calibration, switch settings,
-automation editing, and device information are generated only when their
-navigation link is requested. The UI is available in normal mode only for
+contains only status and switch controls. Network, time, profile/MQTT, sensor
+display, calibration, switch settings, automation, and information pages are
+generated only when their navigation link is requested. The UI is available in normal mode only for
 `ACTIVE_PROFILE = "nodusweb"`; AP recovery continues to expose the setup
 surface, while MQTT profiles remain headless.
 
@@ -287,7 +287,11 @@ the WeeWX web surfaces, without adding a favicon route or HTTP request.
 - `Status`: the last successfully gathered sensor sample, its RTC timestamp,
   and a switch card with state controls and local automation ownership. A
   waiting or failed read keeps the prior sample; no history buffer is allocated.
-- `Setup`: network, time, profile/MQTT, sensor location, and display settings
+- `Network` (`/setup`): Wi-Fi credentials and hostname. Existing onboarding
+  links keep this entry point.
+- `Time` (`/time-setup`): time zone, offset/name, and NTP server settings
+- `Profile & MQTT` (`/mqtt-setup`): active profile and broker settings
+- `Sensor Display` (`/display-setup`): location, metrics, and styles
 - `Switch Settings`: two-column switch controls with the immediate state toggle
   before a shortened editable label field
 - `Automations`: NodusWeb-local rules for enabled switch devices
@@ -323,9 +327,9 @@ After constructing a configuration page body, the renderer collects temporary
 formatting objects before allocating the full document. A second collection
 immediately before that allocation limits fragmentation from shared wrapper
 construction.
-Setup profile and display fragment lists are released and collected before the
-next larger allocation. A guarded `MemoryError` logs only its failing stage and
-free heap.
+Each settings page builds only its own payload and form controls. Form-row
+fragments are released and collected before the final page allocation. A
+guarded `MemoryError` logs its route, failing stage, and free heap.
 Page-specific Status, Config, and Automation renderer modules are released when
 navigating to another page family.
 Unexpected page-renderer failures return HTTP 500 and leave other web routes
@@ -341,6 +345,31 @@ rendered page:
 - restart-required: `Network.SSID`, `Network.PASSWORD`, `Network.HOSTNAME`,
   `Network.HTTPPORT`, `Network.AP_CHANNEL`, `[MQTT]`, `[Profile]`, and
   `[HomeAssistant]`
+
+Web configuration submissions are bounded to 32 scalar updates, with string
+values limited to 256 characters. Malformed entries, invalid numeric/boolean
+values, and unknown profile values reject the batch before live changes or
+writes and return HTTP 400. HTTP request bodies are limited to 4096 bytes;
+oversized declared bodies are closed before additional reads. An oversized
+body already available to `/config` returns HTTP 413.
+
+When no writable settings directory is available, live-safe updates remain
+available with `persistence_mode=volatile`; they are lost on reboot.
+Restart-required updates are rejected with `settings_not_writable` and are
+excluded from the applied count. A mixed submission can apply its live-safe
+values but reports `success=false` for the unsaved restart-required values.
+Persistence errors also report `success=false`, including partial writes
+(`persistence_mode=partial`). Each form submits only its own displayed fields
+through the existing `/config` API. Time and Sensor Display expose Save only,
+so their live-safe edits work independently in ROFS. Network and Profile & MQTT
+also expose Save & Restart; restart runs only after a successful
+`persistence_mode=persisted` result. All four pages show volatile or failed-save
+feedback and prevent overlapping saves from the same page.
+
+Status polling waits for the prior request to finish and shares that guard
+with manual switch requests. Hidden pages pause polling; requests are aborted
+after 12 seconds or on page departure. An interrupted switch request is
+followed by a state refresh rather than an automatic command retry.
 
 Temperature metric names are unit-neutral and their values are metric:
 `Temperature`, `Plant Temperature`, `Dew Point`, `Plant Dew Point`, and
