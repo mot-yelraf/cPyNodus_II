@@ -6,6 +6,19 @@ This document is the canonical forward-only contract between current
 The two projects move together. Old topic names and compatibility shims do not
 define the contract. When other docs drift, this document wins.
 
+## Cross-project contract maintenance
+
+The `docs/sensorius_contract.md` files in Sensorius_AI, cPyNodus_II, and
+cPyNodus_III describe the same app/device interfaces. Changes to shared topic
+names, field names, accepted values, correlation, retention, state ownership,
+or user-visible command annotations must be reflected in all three copies.
+Keep board/profile-specific behavior explicit rather than copying one
+firmware's implementation claims into another project's contract.
+
+Required behavior and current implementation support are distinct. An
+implementation gap must remain documented until the corresponding code and
+verification exist; updating a contract does not establish deployed support.
+
 ## Principles
 
 - AP bootstrap uses only `/itaot-meta` and `/itaot-init`.
@@ -698,7 +711,8 @@ implements the complete flow.
 ### Manual change from the Sensorius UI
 
 1. Sensorius resolves the stable channel ID and sends one non-retained,
-   correlated channel `config/set` command using the existing envelope.
+   correlated channel `config/set` command using the existing envelope with
+   top-level `reason: "manual"`; annotation support is tracked below.
 2. Publication or `config/ack` means requested/accepted, not a confirmed state
    change. Sensorius keeps the last device-confirmed state visible and exposes
    the requested state separately as pending. It does not synthesize a switch
@@ -810,6 +824,7 @@ Canonical switch-control envelope:
 ```json
 {
   "message_id": "cfg-123",
+  "reason": "manual",
   "payload": {
     "updates": [
       {
@@ -866,6 +881,80 @@ Implemented behavior:
   has no MQTT runtime, and MQTT profiles have no normal web server.
 - Nodus does not clear `nodus/<channel_id>/config/set`; Sensorius owns retained
   command cleanup for commands it publishes retained.
+
+### Switch reasons and rule names (shared app/device requirements)
+
+These requirements apply to both Nodus generations and Sensorius. The support
+matrix below records current source support, not a claim about deployed devices.
+
+- `reason` is a top-level command-envelope string, outside `payload.updates`.
+  Sensorius user toggles send `"manual"`; automation actions send `"auto"`.
+  Local Nodus web controls and local automations must supply the same distinction
+  to device history. Transport (`mqtt`) and operation (`switch_set`) are separate
+  from the action reason; automation ownership alone does not establish cause.
+- Named automation commands also carry top-level `rule_name`, containing the
+  rule's display name. Preserve the complete name, including colons. Omit this
+  field for manual commands or when no rule name is known. It is annotation,
+  not a configuration update or an instruction to evaluate a rule on Nodus.
+- Keep `reason` exactly `"auto"`; never send `"auto - Cooling"` in that field.
+  Both UIs should render a known name as `auto - Cooling`, falling back to
+  `auto` when only the reason is known, and `manual` for a manual action.
+- Missing or unsupported reasons remain unknown. Do not infer a reason from
+  the current automation owner, a matching On/Off value, or the transport.
+  Existing unknown historical transitions cannot be classified retroactively.
+  A missing rule name must not invalidate a valid automatic action.
+- Required receiver behavior is to preserve the reason and available rule name
+  with the actual applied transition. A queued publish or ACK is not a
+  transition. Match action metadata by channel and `message_id` when available;
+  do not transfer annotations between channels or unrelated command IDs.
+- Repeated reports of the same recorded transition must preserve its known
+  reason, name, and last-change timestamp. Generic state refreshes must not
+  create new unknown-origin events. A later opposite transition without a known
+  cause remains unknown; it must not inherit the previous action's reason.
+- Existing plain `ON`/`OFF` state reports remain valid and carry no reason or
+  action ID. Do not require a JSON state conversion or extra publications for
+  this annotation. JSON reports that carry action annotations use the same
+  top-level `reason` and `rule_name` names alongside existing identity and
+  correlation fields. Their absence is not a protocol error or proof of cause.
+- The annotation does not change command topics, QoS, retain rules, ACK/result
+  semantics, physical channel identity, or persistence-success reporting.
+
+Named automation command example on `nodus/<channel_id>/config/set`:
+
+```json
+{
+  "message_id": "cfg-auto-123",
+  "reason": "auto",
+  "rule_name": "Cooling",
+  "payload": {
+    "updates": [
+      {
+        "section": "Switch",
+        "key": "SWITCH_1_LAST_STATE",
+        "value": true,
+        "name": "switch.toml"
+      }
+    ]
+  },
+  "restart": false
+}
+```
+
+Current source support reviewed 2026-10-16:
+
+| Project | Implemented | Remaining work |
+| --- | --- | --- |
+| Sensorius | Sends `reason` and known `rule_name`; accepts these fields in JSON channel state/event reports; preserves its recorded transition annotation and timestamp on repeated reports; displays `auto - <rule name>`. | Verify the app/device flow on deployed firmware. |
+| cPyNodus II | Existing state command handling accepts the envelope but does not read `reason` or `rule_name`. | Implement reason/name handling and corresponding history/display support where available; verify on-device. |
+| cPyNodus III | Reads `reason: "manual"` / `"auto"` from channel commands and records it in local history. Local web controls and automations supply their reasons. | Read and preserve `rule_name` for named history/display. Current MQTT reports do not echo these annotations; reason/name report support must be implemented before relying on it. Verify on-device. |
+
+Shared acceptance checks: manual toggles from either UI, named automation
+commands, unnamed automatic commands, omitted/invalid reasons, rule names with
+colons, duplicate state/event/patch delivery after temporary command metadata
+expires, mismatched command IDs/channels, and a later unannotated opposite
+transition. Validate stored history and both UI labels as well as switch state.
+Host tests do not establish physical output behavior or broker delivery.
+
 
 ## `calibration/set`
 
