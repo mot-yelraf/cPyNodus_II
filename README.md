@@ -170,3 +170,6 @@ This project is licensed under the [BSD 2-Clause License](LICENSE).
 `cPyNodus_II` builds on work from the earlier `cPyNodus` project. Development
 included AI-agent assistance, followed by substantial human-directed testing,
 hardware validation, and revision to achieve the current device behavior.
+
+- System Architecture: TW Farley
+- Implementation and Coding: TW Farley and ChatGPT/Codex
