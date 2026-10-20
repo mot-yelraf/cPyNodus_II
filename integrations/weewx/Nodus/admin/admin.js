@@ -6,10 +6,10 @@ let state = {};
 let automations = [];
 let metricOptions = {};
 let channelOptions = [];
-const apiOrigin = location.port === "8767"
+const apiOrigin = location.port === "8001"
   ? ""
-  : `${location.protocol}//${location.hostname}:8767`;
-const systemOrigin = `${location.protocol}//${location.hostname}:8768`;
+  : `${location.protocol}//${location.hostname}:8001`;
+const systemOrigin = `${location.protocol}//${location.hostname}:8002`;
 
 function selectSetupView() {
   const aliases = {"#sensor": "sensor-settings", "#switch": "switch-settings"};

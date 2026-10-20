@@ -1,8 +1,8 @@
 "use strict";
 const $ = id => document.getElementById(id);
 let state = {};
-const apiOrigin = `${location.protocol}//${location.hostname}:${location.port || 8768}`;
-const automationOrigin = `${location.protocol}//${location.hostname}:8767`;
+const apiOrigin = `${location.protocol}//${location.hostname}:${location.port || 8002}`;
+const automationOrigin = `${location.protocol}//${location.hostname}:8001`;
 function notice(message,status="success"){const el=$("notice");el.textContent=message||"";el.className=message?status:"";}
 async function api(path,options={}){const response=await fetch(`${apiOrigin}${path}`,{...options,headers:{"Content-Type":"application/json",...(options.headers||{})}});const data=await response.json();if(!response.ok||data.ok===false)throw new Error(data.error||"Request failed");return data;}
 function selectView(){let name=location.hash.slice(1)||"system-settings";if(!$(name))name="system-settings";document.querySelectorAll("[data-view]").forEach(link=>link.toggleAttribute("aria-current",link.dataset.view===name));document.querySelectorAll(".view-card").forEach(view=>view.hidden=view.id!==name);}

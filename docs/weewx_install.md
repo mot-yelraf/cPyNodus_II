@@ -7,6 +7,25 @@ This is the short operator procedure. [`weewx.md`](weewx.md) is the detailed
 reference for schemas, services, MQTT permissions, automations, and manual
 configurations.
 
+## Host and device ports
+
+| Service | Host | TCP port |
+| --- | --- | --- |
+| Device editor/API and automations | WeeWX host | `8001` |
+| Discovery manager and system settings | WeeWX host | `8002` |
+| Nodus local HTTP UI/API and temporary OTA | Nodus device | `8000` (unchanged) |
+| MQTT broker | Configured broker | `1883`, or `8883` with TLS (unchanged) |
+
+The editor/API and manager previously used ports `8767` and `8768`.
+For an existing installation, rerun the updated installer to regenerate
+`/etc/weewx/nodus.conf`, the managed template, discovery configuration, and
+installed web assets. Restart `weewx@nodus.service` when a device is installed
+and `nodus-weewx-discovery.service` to activate the new listeners. Update any
+host firewall rules and bookmarks to ports `8001` and `8002`, and reload open
+dashboard/setup pages so their links use the new ports. For a discovery-only
+host, retain `--discovery-only --family FAMILY` and leave the operational WeeWX
+service inactive until a device is installed.
+
 ## The safe workflow
 
 The safe installation order is always:
@@ -108,7 +127,7 @@ If those options are missing, update the project copy before continuing.
 Check whether the manager is already installed:
 
 ```bash
-curl -sS http://127.0.0.1:8768/api/system |
+curl -sS http://127.0.0.1:8002/api/system |
   python3 -m json.tool
 ```
 
@@ -133,7 +152,7 @@ the official WeeWX Debian package and continues after package installation.
 Use the General Settings page:
 
 ```text
-http://<weewx-host>:8768/system/#system-settings
+http://<weewx-host>:8002/system/#system-settings
 ```
 
 Open **WeeWX Preferences**, set **Automatic provisioning** to **No**, and
@@ -150,7 +169,7 @@ curl -sS \
     "online_timeout_seconds":150,
     "auto_provision":false
   }' \
-  http://127.0.0.1:8768/api/system |
+  http://127.0.0.1:8002/api/system |
   python3 -m json.tool
 ```
 
@@ -165,7 +184,7 @@ Verify that the response from `/api/system` now contains:
 Open:
 
 ```text
-http://<weewx-host>:8768/system/#remove-device
+http://<weewx-host>:8002/system/#remove-device
 ```
 
 Select only the device carrying the **Installed** badge. Check the confirmation
@@ -326,7 +345,7 @@ proof that the broker received the data.
 Check the manager:
 
 ```bash
-curl -sS http://127.0.0.1:8768/api/system |
+curl -sS http://127.0.0.1:8002/api/system |
   python3 -m json.tool
 ```
 
@@ -347,7 +366,7 @@ Keep automatic provisioning set to **No**.
 Open:
 
 ```text
-http://<weewx-host>:8768/system/#install-device
+http://<weewx-host>:8002/system/#install-device
 ```
 
 Then:
@@ -369,7 +388,7 @@ curl -sS \
   -X POST \
   -H 'Content-Type: application/json' \
   --data '{"device_id":"avpd-1jm5s1"}' \
-  http://127.0.0.1:8768/api/install |
+  http://127.0.0.1:8002/api/install |
   python3 -m json.tool
 ```
 
@@ -380,7 +399,7 @@ Do not enable automatic provisioning merely to install a selected device.
 ### 10.1 Confirm the selected device
 
 ```bash
-curl -sS http://127.0.0.1:8768/api/system |
+curl -sS http://127.0.0.1:8002/api/system |
   python3 -m json.tool
 ```
 

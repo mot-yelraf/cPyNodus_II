@@ -9,6 +9,7 @@ import json
 import threading
 import time
 from pathlib import Path
+from unittest.mock import Mock
 
 MODULE_PATH = (
     Path(__file__).resolve().parents[1]
@@ -322,3 +323,15 @@ def test_manager_removes_exact_device_switch_and_channel_retained_topics(tmp_pat
     assert all(item[1:] == ("", 0, True) for item in published)
     assert result["results"]["aht-va41ka"]["installed"] is False
     assert discovery.registry["devices"] == {}
+
+
+def test_manager_listener_default_and_explicit_ports(monkeypatch):
+    module = _load_module()
+    server = Mock()
+    monkeypatch.setattr(module, "ThreadingHTTPServer", server)
+    monkeypatch.setattr(module.threading, "Thread", Mock())
+
+    for settings, expected in (({}, 8002), ({"admin_port": 9002}, 9002)):
+        manager = module.NodusManager(settings, object())
+        assert manager.port == expected
+        assert server.call_args.args[0] == ("0.0.0.0", expected)

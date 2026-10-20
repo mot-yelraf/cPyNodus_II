@@ -362,7 +362,7 @@ render_config "$2" "5.2.0" "Greenhouse" "32.79" "-108.27" \
   "1782, meter" "nodus.sdb" "/var/www/html/weewx/nodus" \
   "broker.local" "1883" "reader" 'p"ass' "false" "" \
   "nodus/aqi-example/data" "user.MQTTSubscribe" \
-  "operator" "admin-secret" "8767"
+  "operator" "admin-secret"
 '''
     subprocess.run(
         ["bash", "-c", command, "installer-test", str(INSTALLER), str(output)],
@@ -393,6 +393,7 @@ render_config "$2" "5.2.0" "Greenhouse" "32.79" "-108.27" \
     assert "max_events = 20" in config
     assert "rules_file = /var/lib/weewx/nodus_automation_rules.json" in config
     assert "runtime_file = /var/lib/weewx/nodus_automation_runtime.json" in config
+    assert "admin_port = 8001" in config
     assert "admin_enabled = true" in config
     assert "admin_require_auth = false" in config
     assert 'admin_username = "operator"' in config

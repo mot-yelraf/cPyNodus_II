@@ -42,7 +42,7 @@ channel labels and switch/network information. There is no System Calibration
 view. Saved host-side automations and their editor belong to the General
 Settings navigation alongside General Settings, Install Device, and Remove Device. The
 switch-status service
-supplies its unauthenticated LAN API on TCP port 8767. The UI supports
+supplies its unauthenticated LAN API on TCP port 8001. The UI supports
 locations, switch labels, change-only calibration writes, and bounded host-side
 automations with AND/OR metric, timer, time/day, Astral, and switch-state
 conditions plus multiple switch actions. See `docs/weewx.md` for its limits,
@@ -58,13 +58,13 @@ four WeeWX archive metrics and recent switch-state transitions over ranges
 from one hour through 90 days. Its earliest returned observation anchors the
 left edge while live refreshes fill the selected window toward the right. Each
 history request owns a new WeeWX archive manager in its HTTP worker thread.
-The system gear opens the persistent port-8768 manager. Its menus are General
+The system gear opens the persistent port-8002 manager. Its menus are General
 Settings, Automations, Install Device, and Remove Device. General Settings uses
 collapsed WeeWX
 Preferences, Station & MQTT, and WeeWX Runtime & Files groups while retaining
 all host-specific fields. Its title displays the independently versioned
 WeeWX Nodus AI release from `system/nodus-ai-version.js`. Automations links to
-the existing port-8767 editor, which presents the same General Settings
+the existing port-8001 editor, which presents the same General Settings
 navigation context without changing the rules engine or storage contract. The
 manager stores host settings in
 `/var/lib/weewx/nodus_system.toml`, displays explicit Installed/Discovered

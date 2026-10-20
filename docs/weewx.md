@@ -115,7 +115,7 @@ restarted so it cannot continue overwriting the current dashboard.
 
 `nodus-weewx-discovery.service` runs as the unprivileged `weewx` account and
 maintains `/var/lib/weewx/nodus_discovery.json`, the local system-settings
-TOML, the port-8768 system UI, and live MQTT receipt times. Privileged file and
+TOML, the port-8002 system UI, and live MQTT receipt times. Privileged file and
 service changes are performed only by `nodus-weewx-manager-action.service`,
 which consumes a validated fixed-path request. Registration is bounded to 32
 devices. Only one device is operationally installed in
@@ -798,9 +798,9 @@ observations use the recent retained switch-event list as
 ON/OFF transition markers. Each history request opens and closes its own
 WeeWX archive manager so SQLite access remains owned by the HTTP worker thread.
 Its adjacent settings gear opens the
-persistent manager at `http://<weewx-host>:8768/system/`. That sidebar has
+persistent manager at `http://<weewx-host>:8002/system/`. That sidebar has
 General Settings, Automations, Install Device, and Remove Device. Automations
-opens the existing host-side editor on port 8767 in the same General Settings
+opens the existing host-side editor on port 8001 in the same General Settings
 navigation context. General settings are stored separately in
 `/var/lib/weewx/nodus_system.toml` and use
 collapsed WeeWX Preferences, Station & MQTT, and WeeWX Runtime & Files groups.
@@ -847,10 +847,10 @@ device response arrives. Automation notifications are explicitly identified
 as host-side WeeWX saves because automation rules are not Nodus configuration.
 
 The device setup HTML is installed below the generated dashboard and its live
-API is provided by `weewx@nodus.service` on port 8767. The persistent system
-UI is provided by the manager on port 8768, including while no device is
+API is provided by `weewx@nodus.service` on port 8001. The persistent system
+UI is provided by the manager on port 8002, including while no device is
 installed. These limited LAN UIs are intentionally
-unauthenticated; do not expose ports 8767/8768 or the Nodus dashboard to an
+unauthenticated; do not expose ports 8001/8002 or the Nodus dashboard to an
 untrusted network.
 
 The MQTT account configured for the Nodus WeeWX instance needs these ACLs for

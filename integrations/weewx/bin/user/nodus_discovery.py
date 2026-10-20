@@ -431,7 +431,7 @@ class NodusManager:
             str(settings.get("system_web_root") or "/etc/weewx/skins/Nodus/system")
         )
         self.host = str(settings.get("admin_host") or "0.0.0.0")
-        self.port = int(settings.get("admin_port") or 8768)
+        self.port = int(settings.get("admin_port") or 8002)
         self.server = ThreadingHTTPServer((self.host, self.port), self._handler())
         self.thread = threading.Thread(
             target=self.server.serve_forever, name="nodus-manager-http", daemon=True

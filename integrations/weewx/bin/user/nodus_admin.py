@@ -468,7 +468,7 @@ class NodusAdminHTTP:
         self.backend = backend
         self.host = str(section.get("admin_host") or "0.0.0.0")
         port = section.get("admin_port")
-        self.port = int(8767 if port in (None, "") else port)
+        self.port = int(8001 if port in (None, "") else port)
         self.username = str(section.get("admin_username") or "admin")
         self.password = str(section.get("admin_password") or "")
         self.require_auth = str(section.get("admin_require_auth") or "false").lower() \

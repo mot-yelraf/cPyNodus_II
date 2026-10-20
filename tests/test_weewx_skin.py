@@ -126,7 +126,7 @@ def test_nodus_bundle_includes_the_copied_stylesheet():
     assert "cdn.jsdelivr.net" not in template
     assert (SKIN_ROOT / "pico.min.css").is_file()
     assert 'href="style.css?v=20260814-3"' in template
-    assert 'src="dashboard.js?v=20260814-3"' in template
+    assert 'src="dashboard.js?v=20261020-1"' in template
     assert (SKIN_ROOT / "moon-surface.png").is_file()
     assert ".tile-grid" in stylesheet
     assert "@media (prefers-color-scheme: dark)" in stylesheet
@@ -185,7 +185,7 @@ def test_system_info_uses_requested_five_five_four_grid():
     assert 'id="install-device-list"' in page
     assert 'api("/api/install"' in script
     assert 'src="nodus-ai-version.js"' in page
-    assert 'window.NODUS_AI_VERSION = "v0.26.226.1"' in version
+    assert 'window.NODUS_AI_VERSION = "v0.26.293.1"' in version
 
 
 def test_nodus_skin_uses_current_name_everywhere():
@@ -245,7 +245,7 @@ def test_nodus_shows_discovered_switches_without_automation_rules():
     assert "$event.display" in template
     assert "mode-$channel.mode_class" in template
     assert 'data-channel-id="$channel.channel_id"' in template
-    assert 'src="dashboard.js?v=20260814-3"' in template
+    assert 'src="dashboard.js?v=20261020-1"' in template
     assert ".switch-current.mode-automated" in stylesheet
     assert ".switch-current.mode-automated .switch-control-mode" in stylesheet
     assert "grid-template-columns: minmax(150px, 1.05fr)" in stylesheet
@@ -386,7 +386,7 @@ def test_nodus_admin_ui_uses_sensorius_style_sensor_and_switch_views():
     assert page.index('id="notice"') < page.index('id="sensor-settings"')
     assert 'href="admin.css"' in page
     assert 'src="admin.js"' in page
-    assert "location.hostname}:8767`" in script
+    assert "location.hostname}:8001`" in script
     assert '"#sensor": "sensor-settings"' in script
     assert '"#switch": "switch-settings"' in script
     assert 'window.addEventListener("hashchange", selectSetupView)' in script
@@ -422,8 +422,8 @@ def test_nodus_automations_use_system_navigation_context():
     assert 'id="automations-link"' in system_page
     assert "const automationView = selected.startsWith(\"automation\")" in admin_script
     assert '$("system-nav").hidden = !automationView' in admin_script
-    assert "location.hostname}:8768`" in admin_script
-    assert "location.hostname}:8767`" in system_script
+    assert "location.hostname}:8002`" in admin_script
+    assert "location.hostname}:8001`" in system_script
     assert "System Settings" not in system_page
     assert 'class="circle-close"' in system_page
 
@@ -476,3 +476,15 @@ def test_nodus_generates_24_hour_card_micrographs():
     assert ".micrograph" in stylesheet
     assert "font-size: clamp(1.8rem, 2.2vw, 2.6rem);" in stylesheet
     assert "  min-height: 0;" in stylesheet
+
+
+def test_weewx_browser_ports_preserve_device_http_port():
+    dashboard = (SKIN_ROOT / "dashboard.js").read_text(encoding="utf-8")
+    admin = (SKIN_ROOT / "admin" / "admin.js").read_text(encoding="utf-8")
+    system = (SKIN_ROOT / "system" / "system.js").read_text(encoding="utf-8")
+
+    assert "location.hostname}:8001`" in dashboard
+    assert "location.hostname}:8002`" in dashboard
+    assert 'location.port === "8001"' in admin
+    assert "location.port || 8002" in system
+    assert "device.address}:8000`" in system
