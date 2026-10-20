@@ -616,7 +616,7 @@ render_config() {
   local mqtt_module="$7"
   local admin_username="${8:-admin}"
   local admin_password="${9:-change-me}"
-  local admin_port="${10:-8767}"
+  local admin_port="${10:-8001}"
 
   conf_escape "$location"; location="$CONF_ESCAPED"
   conf_escape "$broker"; broker="$CONF_ESCAPED"
@@ -1089,7 +1089,7 @@ main() {
   local mqtt_module="user.MQTTSubscribe"
   local admin_username="admin"
   local admin_password=""
-  local admin_port="8767"
+  local admin_port="8001"
   local profile_path=""
   local profile_exists=0
 
@@ -1342,7 +1342,7 @@ document = {
     "longitude": longitude,
     "altitude": altitude,
     "admin_host": "0.0.0.0",
-    "admin_port": 8768,
+    "admin_port": 8002,
     "system_web_root": "/etc/weewx/skins/Nodus/system",
     "system_settings_file": "/var/lib/weewx/nodus_system.toml",
     "request_file": "/var/lib/weewx/nodus_manager_request.json",
@@ -1424,7 +1424,7 @@ PY
     log "Service log:  sudo journalctl -u $target_service -f"
     log "Report output: $html_root/"
   fi
-  log "Manager UI: http://<host>:8768/system/"
+  log "Manager UI: http://<host>:8002/system/"
   log "Discovery registry: /var/lib/weewx/nodus_discovery.json"
   log "Manager log: sudo journalctl -u $DISCOVERY_SERVICE -f"
 }

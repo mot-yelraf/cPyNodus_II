@@ -1,7 +1,7 @@
 "use strict";
 
-const nodusApiOrigin = `${location.protocol}//${location.hostname}:8767`;
-const nodusManagerOrigin = `${location.protocol}//${location.hostname}:8768`;
+const nodusApiOrigin = `${location.protocol}//${location.hostname}:8001`;
+const nodusManagerOrigin = `${location.protocol}//${location.hostname}:8002`;
 const nodusGuardUntil = {};
 let nodusSwitchTimer = null;
 let nodusManagerTimer = null;

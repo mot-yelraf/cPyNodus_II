@@ -7,6 +7,7 @@ and rejection of unsupported administrative requests.
 import importlib.util
 import json
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -236,3 +237,18 @@ def test_admin_rejects_switch_dependency_cycles():
         module.validate_rules(
             rules, ["S1-yuk0nv", "S2-yuk0nv"], ["inTemp"]
         )
+
+
+@pytest.mark.parametrize(
+    "port, expected", [(None, 8001), ("", 8001), (0, 0), (9001, 9001)]
+)
+def test_admin_listener_default_and_explicit_ports(monkeypatch, port, expected):
+    module = _load_module()
+    server = Mock()
+    monkeypatch.setattr(module, "ThreadingHTTPServer", server)
+    monkeypatch.setattr(module.threading, "Thread", Mock())
+
+    admin = module.NodusAdminHTTP(object(), {"admin_port": port})
+
+    assert admin.port == expected
+    assert server.call_args.args[0] == ("0.0.0.0", expected)
