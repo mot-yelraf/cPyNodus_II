@@ -276,7 +276,7 @@ Field testing on Pico 2 W devices has shown a failure mode where:
 
 When this specific failure mode appears, a normal CircuitPython reflash by itself may not fix it.
 
-Observed remediation:
+Historical remediation observed on two devices:
 
 1. Save the device TOML files.
 2. Flash `flash_nuke.uf2`.
@@ -284,7 +284,29 @@ Observed remediation:
 4. Deploy a clean Nodus build.
 5. Restore the TOML files.
 
-In recent validation, two separate Nodus devices that exhibited this MQTT publish-stall / broker-mismatch behavior were restored to normal operation only after the full `flash_nuke.uf2` + fresh CircuitPython reflash sequence. A plain CircuitPython reflash alone did not clear the issue.
+In that validation, two separate Nodus devices that exhibited this MQTT
+publish-stall / broker-mismatch behavior were restored to normal operation only
+after the full `flash_nuke.uf2` + fresh CircuitPython reflash sequence. A plain
+CircuitPython reflash alone did not clear those cases. This is a historical
+observation, not a confirmed root cause or generally sufficient remedy.
+
+The [October 25 investigation](debug-notes/mqtt-runtime-stall-2026-10-25.md)
+records similar failures after an operator-reported complete reflash. It also
+records a roughly hour-long run with Sensorius stopped: a steady-state
+heartbeat send stalled for approximately ten seconds and led to hard reset,
+followed by a startup SUBACK timeout, reconnect `ENOMEM`, and station-reset
+recovery. The same investigation separates the deep `app_startup` platform
+probe's repeatable `pystack exhausted` failure from normal-runtime transport
+stalls. `Socket not managed` cleanup errors also occurred after successful
+broker-visible probe traffic and SUBACK, so that message alone does not prove
+native socket corruption. See the dated note for evidence and limitations.
+
+For a controlled long-duration reproduction, see the standalone
+[MQTT soak apparatus](../testApparatus/mqtt_soak_test.md). It separates direct
+firmware-adapter and shallow packet modes, records the first failure before
+cleanup, and reports transport and cleanup results independently. Hardware
+and broker validation are required; host tests do not establish that the
+approximately hour-delayed heartbeat stall is reproduced.
 
 ## Halt before removing power
 
