@@ -3,14 +3,15 @@
 Copy this file to CIRCUITPY root and call run() from the REPL with the normal
 app stopped. The adapter mode calls firmware operations directly from one
 loop. The flat comparison mode substitutes shallow packet I/O. No commands
-are executed, files written, or automatic MCU resets requested. See the
+are executed or automatic MCU resets requested. Optional filesystem controls
+write only a dedicated diagnostic file. See the
 companion mqtt_soak_test.md for capture instructions and comparison limits.
 """
 
 import gc
 import time
 
-TEST_VERSION = "2026-10-25.2"
+TEST_VERSION = "2026-10-27.1"
 MAX_PACKET_BYTES = 4096
 MAX_QUEUE_ITEMS = 32
 MAX_INTERLEAVED_PACKETS = 8
@@ -40,6 +41,12 @@ def run(
     gc_interval_s=300,
     preflight_attempts=3,
     metrics=None,
+    cleanup_mode="adapter",
+    fs_activity="none",
+    write_interval_s=300,
+    write_limit=256,
+    write_sync=False,
+    write_max_bytes=65536,
 ):
     """Run a bounded soak and return separate transport and cleanup results.
 
@@ -47,6 +54,9 @@ def run(
     one MQTT rebuild and then one station/radio reset after captured failures.
     A recovered failure still makes transport_ok false. Ctrl-C closes MQTT
     and propagates KeyboardInterrupt. No hard reset or soft reload is issued.
+    fs_activity selects no writes, periodic writes, or a write before/after
+    each close. cleanup_mode="direct" bypasses MiniMQTT's close manager.
+    Inspect write_errors independently, including errors on final cleanup.
     """
     if mode not in ("adapter", "flat"):
         raise ValueError("mode must be adapter or flat")
@@ -58,6 +68,17 @@ def run(
         raise ValueError("base_topic must be nonempty or None")
     if preflight_attempts not in (1, 2, 3):
         raise ValueError("preflight_attempts must be 1, 2, or 3")
+    if cleanup_mode not in ("adapter", "direct"):
+        raise ValueError("cleanup_mode must be adapter or direct")
+    if fs_activity not in ("none", "periodic", "before_close", "after_close"):
+        raise ValueError("invalid fs_activity")
+    if write_interval_s <= 0 or not 1 <= write_limit <= 256 or write_max_bytes < 256:
+        raise ValueError("invalid diagnostic write limits")
+    writer = (
+        DiagnosticWriter(settings_root, write_limit, write_sync, write_max_bytes)
+        if fs_activity != "none"
+        else None
+    )
 
     # Import once, before the measured session; never import the old harness.
     from cpynodus_ii import __version__
@@ -93,6 +114,9 @@ def run(
             "Pressure": 1013.25,
         },
     )
+    if metrics is None and config.sensor.device == "co2":
+        del snapshot.metrics["Pressure"]
+        snapshot.metrics["CO2"] = 600.0
     transport = MQTTTransport(config.mqtt.preferred_host, config.mqtt.port)
     adapter = None
     failures = 0
@@ -107,7 +131,10 @@ def run(
     last_availability = started
     last_sensor = started
     last_paced_publish = -1.0
+    next_write = None
+    last_write_count = 0
     stage = "connect"
+    operation = "connect"
     switch_subscriptions_queued = False
     _log(
         started,
@@ -130,10 +157,27 @@ def run(
         ),
     )
     _memory(started, "initial", transport)
+    _log(
+        started,
+        "controls",
+        "sensor={} sensor_id={} switches={} cleanup={} fs_activity={} "
+        "write_interval_s={} write_limit={} write_sync={} write_max_bytes={}".format(
+            config.sensor.device,
+            config.sensor.sensor_id,
+            len(config.switch.channels),
+            cleanup_mode,
+            fs_activity,
+            write_interval_s,
+            write_limit,
+            int(write_sync),
+            write_max_bytes,
+        ),
+    )
     try:
         while time.monotonic() - started < duration_s:
             try:
                 if stage == "connect":
+                    operation = "connect"
                     adapter = client.build_mqtt_client_adapter(
                         config,
                         socket_pool=network.socket_pool,
@@ -191,6 +235,13 @@ def run(
                     _log(started, "connected", "generation={}".format(generations))
 
                 now = time.monotonic()
+                if stage == "steady" and fs_activity == "periodic":
+                    if next_write is None:
+                        next_write = now + write_interval_s
+                    if now >= next_write and writer.count < write_limit:
+                        if not writer.write(started, "periodic", transport):
+                            break
+                        next_write = time.monotonic() + write_interval_s
                 if now >= next_gc:
                     _memory(started, "before_gc", transport)
                     gc.collect()
@@ -220,6 +271,7 @@ def run(
                         time.sleep(0.05)
                         continue
                     operations += 1
+                    operation = "publish_or_subscribe"
                     op_started = time.monotonic()
                     if mode == "adapter":
                         # Keep this call directly in run(), avoiding harness frames.
@@ -275,6 +327,7 @@ def run(
                 # Poll without dispatching commands. Idle timeouts are normal;
                 # EOF is a failure in flat mode (the adapter's policy is unchanged).
                 if mode == "adapter":
+                    operation = "poll"
                     result = client.poll_mqtt_client(adapter, transport)
                     if result.errors or result.phase == "error":
                         raise OSError(str(result.errors))
@@ -286,9 +339,21 @@ def run(
                         )
                         transport.received_messages.clear()
                 else:
+                    operation = "poll"
                     packet = _read_packet(adapter.client._sock, idle=True)
                     if packet is not None:
                         _discard_packet(adapter.client._sock, packet, started)
+                if writer is not None and writer.count != last_write_count:
+                    _log(
+                        started,
+                        "post_write_cycle",
+                        "write_n={} pub={} sub={} local_only=1".format(
+                            writer.count,
+                            len(transport.published_messages),
+                            len(transport.subscriptions),
+                        ),
+                    )
+                    last_write_count = writer.count
                 time.sleep(0.1)
             except Exception as exc:
                 failures += 1
@@ -296,16 +361,23 @@ def run(
                 _log(
                     started,
                     "failure",
-                    "n={} stage={} kind={} type={} error={}".format(
-                        operations, stage, last_failure, type(exc).__name__, exc
+                    "n={} stage={} operation={} kind={} type={} error={}".format(
+                        operations, stage, operation, last_failure,
+                        type(exc).__name__, exc
                     ),
                 )
                 # Capture BEFORE cleanup or GC can alter the failure evidence.
                 _memory(started, "failure_before_cleanup", transport)
                 _network_state(started, network)
-                cleanup_errors += _close(adapter, transport, client, started)
+                cleanup_errors += _finish_connection(
+                    adapter, transport, client, started, cleanup_mode,
+                    writer if last_failure != "stack_limit" else None, fs_activity,
+                )
                 adapter = None
-                if not recover or failures > 2 or last_failure == "stack_limit":
+                if (
+                    not recover or failures > 2 or last_failure == "stack_limit"
+                    or writer is not None and writer.errors
+                ):
                     break
                 gc.collect()
                 if failures == 2:
@@ -334,7 +406,9 @@ def run(
         _log(started, "interrupted", "operator=1")
         raise
     finally:
-        cleanup_errors += _close(adapter, transport, client, started)
+        cleanup_errors += _finish_connection(
+            adapter, transport, client, started, cleanup_mode, writer, fs_activity,
+        )
     summary = {
         "completed": finished,
         "transport_ok": finished and failures == 0 and operational > 0,
@@ -347,9 +421,105 @@ def run(
         "operational_generations": operational,
         "last_failure": last_failure,
         "elapsed_s": round(time.monotonic() - started, 1),
+        "write_count": writer.count if writer is not None else 0,
+        "write_errors": writer.errors if writer is not None else 0,
+        "cleanup_mode": cleanup_mode,
+        "fs_activity": fs_activity,
     }
     _log(started, "summary", str(summary))
     return summary
+
+
+class DiagnosticWriter:
+    """Write bounded recovery-style records only to a fresh apparatus log."""
+
+    def __init__(self, root, limit, sync, max_bytes):
+        import os
+
+        if _filesystem_mode() != "RWFS":
+            raise ValueError("diagnostic writes require confirmed RWFS")
+        self.path = str(root).rstrip("/") + "/_mqtt_soak_test.log"
+        for suffix in ("", ".tmp", ".bak"):
+            try:
+                os.stat(self.path + suffix)
+            except OSError as exc:
+                if not exc.args or exc.args[0] != 2:
+                    raise
+            else:
+                raise ValueError("remove prior apparatus log first: " + self.path)
+        from cpynodus_ii.core.recovery_log import append_recovery_event
+
+        self.append = append_recovery_event
+        self.limit = limit
+        self.sync = sync
+        self.max_bytes = max_bytes
+        self.count = 0
+        self.errors = 0
+
+    def write(self, started, phase, transport):
+        """Log write timing and retain errors separately from transport faults."""
+        import os
+
+        if self.count >= self.limit or self.errors:
+            return not self.errors
+        self.count += 1
+        before = time.monotonic()
+        _memory(started, "before_write", transport)
+        _log(started, "write_begin", "n={} phase={}".format(self.count, phase))
+        try:
+            ok = self.append(
+                "mqtt_soak",
+                "n={} phase={} elapsed_s={:.3f}".format(
+                    self.count, phase, before - started
+                ),
+                path=self.path,
+                device_id="apparatus",
+                max_bytes=self.max_bytes,
+            )
+            if not ok:
+                raise OSError("diagnostic_append_failed")
+            if os.stat(self.path)[6] > self.max_bytes:
+                raise OSError("diagnostic_trim_failed")
+            if self.sync:
+                os.sync()
+        except Exception as exc:
+            self.errors += 1
+            _log(started, "write_error", "n={} error={}".format(self.count, exc))
+        _log(
+            started, "write_end", "n={} elapsed_ms={} errors={}".format(
+                self.count, int((time.monotonic() - before) * 1000), self.errors
+            ),
+        )
+        _memory(started, "after_write", transport)
+        return self.errors == 0
+
+
+def _finish_connection(adapter, transport, client, started, mode, writer, activity):
+    if adapter is None:
+        return 0
+    try:
+        if writer is not None and activity == "before_close":
+            writer.write(started, "before_close", transport)
+    finally:
+        # Ctrl-C during the diagnostic write must still attempt socket cleanup.
+        if mode == "adapter":
+            errors = _close(adapter, transport, client, started)
+        else:
+            errors = 0
+            sock = getattr(adapter.client, "_sock", None)
+            try:
+                if sock is not None:
+                    sock.close()
+                adapter.client._sock = None
+                adapter.client._is_connected = False
+            except Exception as exc:
+                errors = 1
+                _log(started, "direct_close_error", str(exc))
+            transport.mark_disconnected(reason="apparatus_direct_close")
+            _log(started, "cleanup", "mode=direct errors={}".format(errors))
+    if writer is not None and activity == "after_close":
+        writer.write(started, "after_close", transport)
+    return errors
 
 
 def _setup(settings_root):
@@ -563,6 +733,10 @@ def _idle_timeout(exc):
 
 def _failure_kind(exc):
     text = str(exc).lower()
+    if "ebadf" in text or "bad file descriptor" in text or (
+        exc.args and exc.args[0] == 9
+    ):
+        return "bad_descriptor"
     if "pystack" in text:
         return "stack_limit"
     if (

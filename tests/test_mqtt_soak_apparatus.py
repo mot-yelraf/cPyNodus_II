@@ -400,3 +400,191 @@ def test_ctrl_c_closes_socket_and_does_not_become_a_pass(environment, monkeypatc
     with pytest.raises(KeyboardInterrupt):
         soak.run(duration_s=130)
     assert all(sock.closed for sock in environment.pool.sockets)
+
+
+@pytest.fixture
+def writable_probe(environment, monkeypatch, tmp_path):
+    monkeypatch.setattr(soak, "_filesystem_mode", lambda: "RWFS")
+    return tmp_path
+
+
+@pytest.mark.parametrize("activity", ["before_close", "after_close"])
+@pytest.mark.parametrize("stall", [False, True])
+def test_diagnostic_write_order_preserves_first_failure(
+    environment, writable_probe, capsys, activity, stall
+):
+    environment.pool.stalls = int(stall)
+    result = soak.run(
+        duration_s=130, settings_root=str(writable_probe), fs_activity=activity
+    )
+    log = capsys.readouterr().out
+    write = log.index("event=write_begin")
+    close = log.index("event=cleanup")
+    assert (write < close) is (activity == "before_close")
+    if stall:
+        evidence = log.index("failure_before_cleanup")
+        assert evidence < min(write, close)
+        assert result["last_failure"] == "send_stall"
+    assert result["transport_ok"] is not stall
+    assert result["cleanup_errors"] == 2
+    assert result["write_count"] == 1
+    assert result["write_errors"] == 0
+    paths = list(writable_probe.iterdir())
+    assert [p.name for p in paths] == ["_mqtt_soak_test.log"]
+    assert "recovery event: mqtt_soak" in paths[0].read_text()
+
+
+def test_periodic_writes_are_paced_bounded_and_followed_by_mqtt(
+    environment, writable_probe, capsys
+):
+    result = soak.run(
+        duration_s=160, settings_root=str(writable_probe), fs_activity="periodic",
+        write_interval_s=30, write_limit=2,
+    )
+    log = capsys.readouterr().out
+    assert result["transport_ok"] is True
+    assert result["write_count"] == 2
+    assert result["write_errors"] == 0
+    assert log.count("event=post_write_cycle") == 2
+    times = [
+        float(line.split("elapsed_s=")[1].split()[0])
+        for line in log.splitlines() if "event=write_begin" in line
+    ]
+    assert times[1] - times[0] >= 30
+    assert environment.pool.publications[-1][0] > times[-1]
+
+
+def test_rwfs_no_write_control_never_constructs_writer(
+    environment, writable_probe, monkeypatch
+):
+    def forbidden(*args):
+        raise AssertionError("baseline must not create diagnostic writer")
+
+    monkeypatch.setattr(soak, "DiagnosticWriter", forbidden)
+    result = soak.run(duration_s=130, settings_root=str(writable_probe))
+    assert result["write_count"] == 0
+    assert result["write_errors"] == 0
+    assert not list(writable_probe.iterdir())
+
+
+def test_direct_close_avoids_manager_and_closes_raw_socket(environment, monkeypatch):
+    def forbidden(*args):
+        raise AssertionError("direct mode must bypass adapter cleanup")
+
+    monkeypatch.setattr(mqtt_client, "close_mqtt_client", forbidden)
+    result = soak.run(duration_s=130, cleanup_mode="direct")
+    assert result["transport_ok"] is True
+    assert result["cleanup_ok"] is True
+    assert all(sock.closed for sock in environment.pool.sockets)
+
+
+def test_injected_ebadf_records_failure_before_write_and_close(
+    environment, writable_probe, monkeypatch, capsys
+):
+    original = mqtt_client.poll_mqtt_client
+
+    def poll(adapter, transport):
+        if environment.clock.now > 60:
+            return SimpleNamespace(adapter=adapter, phase="error", errors="EBADF")
+        return original(adapter, transport)
+
+    monkeypatch.setattr(mqtt_client, "poll_mqtt_client", poll)
+    result = soak.run(
+        duration_s=130, settings_root=str(writable_probe), fs_activity="before_close"
+    )
+    log = capsys.readouterr().out
+    assert result["last_failure"] == "bad_descriptor"
+    assert "operation=poll" in log
+    assert (
+        log.index("failure_before_cleanup") < log.index("event=write_begin")
+        < log.index("event=cleanup")
+    )
+
+
+def test_write_failure_stops_without_claiming_transport_fault(
+    environment, writable_probe, monkeypatch
+):
+    from cpynodus_ii.core import recovery_log
+
+    monkeypatch.setattr(recovery_log, "append_recovery_event", lambda *a, **k: False)
+    result = soak.run(
+        duration_s=130, settings_root=str(writable_probe), fs_activity="periodic",
+        write_interval_s=5,
+    )
+    assert result["completed"] is False
+    assert result["write_errors"] == 1
+    assert result["failures"] == 0
+    assert result["last_failure"] == "none"
+    assert all(sock.closed for sock in environment.pool.sockets)
+
+
+@pytest.mark.parametrize("suffix", ["", ".tmp", ".bak"])
+def test_existing_diagnostic_files_are_preserved(
+    environment, writable_probe, suffix
+):
+    path = writable_probe / ("_mqtt_soak_test.log" + suffix)
+    path.write_text("prior evidence")
+    with pytest.raises(ValueError, match="remove prior apparatus log"):
+        soak.run(settings_root=str(writable_probe), fs_activity="before_close")
+    assert path.read_text() == "prior evidence"
+    assert not environment.pool.sockets
+
+
+def test_rofs_write_request_fails_before_network(environment, monkeypatch):
+    monkeypatch.setattr(soak, "_filesystem_mode", lambda: "ROFS")
+    with pytest.raises(ValueError, match="require confirmed RWFS"):
+        soak.run(fs_activity="periodic")
+    assert not environment.pool.sockets
+
+
+def test_explicit_sync_and_trim_are_separate_controls(
+    environment, writable_probe, monkeypatch
+):
+    import os
+
+    syncs = []
+    monkeypatch.setattr(os, "sync", lambda: syncs.append(True))
+    writer = soak.DiagnosticWriter(str(writable_probe), 8, False, 65536)
+    transport = SimpleNamespace(
+        published_messages=[], subscriptions=[], received_messages=[]
+    )
+    assert writer.write(0, "control", transport)
+    assert not syncs
+    writer.sync = True
+    assert writer.write(0, "sync", transport)
+    assert len(syncs) == 1
+    writer.sync = False
+    writer.max_bytes = 256
+    for _ in range(4):
+        assert writer.write(0, "trim", transport)
+    assert (writable_probe / "_mqtt_soak_test.log").stat().st_size <= 256
+    assert (writable_probe / "_mqtt_soak_test.log.bak").exists()
+
+
+def test_co2_defaults_use_synthetic_co2_metric(environment):
+    import json
+
+    environment.config.sensor.device = "co2"
+    result = soak.run(duration_s=130)
+    assert result["transport_ok"] is True
+    payloads = [
+        json.loads(payload) for _, topic, _, payload in environment.pool.publications
+        if topic.endswith("/data")
+    ]
+    assert payloads
+    assert "CO2" in str(payloads)
+
+
+def test_interrupt_during_final_write_still_closes_socket(
+    environment, writable_probe, monkeypatch
+):
+    def interrupt(*args):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(soak.DiagnosticWriter, "write", interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        soak.run(
+            duration_s=130, settings_root=str(writable_probe),
+            fs_activity="before_close",
+        )
+    assert all(sock.closed for sock in environment.pool.sockets)

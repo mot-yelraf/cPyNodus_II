@@ -11,8 +11,10 @@ See the [investigation record](../docs/debug-notes/mqtt-runtime-stall-2026-10-25
 The normal application must be stopped. The apparatus reads existing settings
 and uses core network ownership, the firmware MQTT adapter, and firmware
 payload/subscription builders. It does not start sensor drivers, relay GPIO,
-web services, command handlers, or OTA processing, and does not write settings,
-logs, NVM markers, or device files. It never requests an MCU reset or soft reload.
+web services, command handlers, or OTA processing. The default writes no files.
+Opt-in filesystem comparisons write only `_mqtt_soak_test.log` and its
+rotation files in `settings_root`; settings, production logs, and NVM markers
+are untouched. It never requests an MCU reset or soft reload.
 Incoming command packets are acknowledged where necessary and discarded.
 
 Defaults:
@@ -41,7 +43,9 @@ Defaults:
   never run this concurrently with the normal app or another copy of the test.
 
 The snapshots are synthetic and do not confirm physical switch state. Default
-metrics are representative AVPD values. Pass `metrics={...}` to match an
+metrics are representative AVPD values, with `CO2` replacing `Pressure` for
+a configured CO2 sensor. These are eight fixed synthetic values, not measured
+values or executions of the sensor derivation code. Pass `metrics={...}` to match an
 observed sensor payload more closely; packet sizes are logged. RTC time is used
 as-is; no NTP sync is attempted. Record whether RTC was already synchronized,
 because timestamp width can affect payload sizes. Firmware version and test
@@ -198,6 +202,138 @@ A recovered failure still produces `transport_ok=False`. Injected host-test
 timeouts or delayed full-count sends verify detection and sequencing, not
 reproduction of the initiating native transport fault. Do not shorten publish
 intervals or add artificial heap pressure until the baseline is recorded.
+
+## October 27 filesystem and cleanup comparisons
+
+Test version `2026-10-27.1` adds independent `cleanup_mode` and `fs_activity`
+controls. Production firmware is unchanged. Use the same apparatus file on
+`co2-pmoopn` and `avpd-zbcalz`. Run the comparison sequence on each device;
+comparing CO2/ROFS directly against AVPD/RWFS changes multiple factors.
+
+Before each run, record board identity, exact firmware/library artifacts,
+CircuitPython version, filesystem mode, switch gate/channel count, broker,
+consumer state, RTC synchronization, and startup method. Keep switches disabled
+for the first comparisons. The start record includes configured sensor identity,
+channel count, and experiment controls. The normal app must remain stopped.
+Use the same startup method each time; Ctrl-C does not undo existing radio state.
+Operator deployment and changing the physical filesystem guard remain manual.
+No apparatus code writes to the mounted device from the host.
+
+Start separate serial and broker captures for each device and run. Use the
+broker capture commands above, substituting `.237` for CO2 and `.225` for AVPD
+in the TCP filter. The existing serial captures end in `3401.log` for CO2 and
+`4201.log` for AVPD. Broker messages on `probe/#` include each configured device
+ID. Never run the normal app and apparatus concurrently with the same client ID.
+
+### Short healthy-connection comparisons
+
+Each call establishes a connection and exercises startup plus normal synthetic
+traffic for three minutes. Broker capture must confirm traffic before cleanup;
+`transport_ok=True` is only a local observation. Run one case per controlled
+session, saving the result and captures before the next case.
+
+```python
+import mqtt_soak_test
+# A: no writes, firmware cleanup (ROFS or RWFS).
+result = mqtt_soak_test.run(duration_s=180)
+
+# B: RWFS only, a diagnostic write immediately before firmware cleanup.
+result = mqtt_soak_test.run(duration_s=180, fs_activity="before_close")
+
+# C: no writes, bypass MiniMQTT's manager and close the raw socket directly.
+result = mqtt_soak_test.run(duration_s=180, cleanup_mode="direct")
+```
+
+Hold filesystem mode constant when comparing A, B, and C on RWFS. Case A versus
+C on ROFS is an additional no-write ownership control. Case C sends no MQTT
+DISCONNECT: the broker may publish the retained offline Last Will. That is an
+expected difference, and the direct-close mode is not a proposed runtime fix.
+The adapter result can contain two manager ownership errors even when its
+direct fallback closes the raw socket. Do not label that a transport failure.
+
+### Overnight transport comparisons
+
+Use adapter mode, default `recover=False`, and one 14-hour session per case:
+
+```python
+# 1: operator selects ROFS; no apparatus writes.
+result = mqtt_soak_test.run(duration_s=50400)
+
+# 2: operator selects RWFS; still no apparatus writes.
+result = mqtt_soak_test.run(duration_s=50400)
+
+# 3: RWFS; append a diagnostic record every five minutes after startup.
+result = mqtt_soak_test.run(duration_s=50400, fs_activity="periodic")
+```
+
+For case 3, the production `append_recovery_event` writer is called with a
+dedicated path and device label. It appends/closes a recovery-style record and
+checks the size. Defaults allow 256 write attempts, five minutes apart, with a
+65536-byte cap. They cover a 14-hour run without normally reaching the cap.
+There is no explicit sync by default and no GC added around the write. This
+models diagnostic file operations, not production write frequency or exact
+full-app allocations. Writer imports are loaded before network setup; that
+additional resident state is a comparison limitation. When the write limit is
+reached, MQTT continues but no more records are written.
+
+For independent later tests, add `write_sync=True` to request `os.sync()` after
+each append, or set `write_max_bytes=4096` to exercise log trimming/rotation
+after enough records. Do not change sync, trimming, and write cadence together.
+Trimming uses the production helper, which can itself synchronize through its
+transactional commit path. The cap bounds the live file; `.bak` and `.tmp` can
+also occupy space during rotation.
+
+Write-enabled runs require confirmed RWFS and refuse to start if any of
+`_mqtt_soak_test.log`, `.log.tmp`, or `.log.bak` already exists. Preserve those
+files after each run, then remove them manually before the next write-enabled
+run. No automatic deletion or reuse of prior evidence occurs. Write-enabled
+initialization checks the path but creates the file only on the first write.
+Changing the guard requires the appropriate operator reboot; the apparatus
+never remounts the filesystem.
+
+### Failure ordering comparisons
+
+Use these as separate RWFS sessions after the no-write baseline:
+
+```python
+# Send-stall ordering: preserve failure evidence, close, then write.
+result = mqtt_soak_test.run(duration_s=50400, fs_activity="after_close")
+
+# Poll-failure ordering: preserve failure evidence, write, then close.
+result = mqtt_soak_test.run(duration_s=50400, fs_activity="before_close")
+```
+
+These options apply their ordering on either a transport failure or a normal
+end-of-run close. A healthy ending therefore also produces a diagnostic write.
+They deliberately test the selected ordering regardless of which failure kind
+occurs; they do not implement the production recovery state machine. Stack
+exhaustion skips the optional failure write. With `recover=True`, the selected
+write occurs at each failed connection close within the existing recovery
+budget; recovery is a separate comparison.
+
+`failure_before_cleanup` and network diagnostics precede every selected
+failure write or cleanup. Failure records identify connect/startup/steady stage,
+poll versus publication/subscription work, and classification (`bad_descriptor`
+for EBADF). `write_begin` / `write_end` include attempt number, phase, duration,
+and errors, with heap/queues before and after. `post_write_cycle` marks the
+first following locally successful MQTT loop; it does not prove publication
+or broker delivery. Correlate subsequent operation records and packet capture.
+
+The summary adds `write_count` (attempts), `write_errors`, `cleanup_mode`, and
+`fs_activity`. Check all fields. A periodic write error stops the run and is
+reported separately from transport failure count. An end-of-run write error
+can coexist with `completed=True` and `transport_ok=True`; it invalidates the
+filesystem comparison. A requested write mode with zero writes does not test
+filesystem interaction. Existing cleanup ownership errors remain independent.
+
+Host tests inject a delayed send and an EBADF result to verify ordering and
+classification. There is no on-device fault-injection mode: injected host
+failures do not reproduce the native initiating mechanism. No mode reads real
+CO2/BME280 sensors, derives live metrics, operates relay GPIO, executes MQTT
+commands, or reproduces full-app heap/stack pressure. A successful synthetic
+run cannot exclude those mechanisms. On-device validation of this revision is
+still required on both devices, including startup stack headroom and broker
+delivery; the earlier two-hour result below belongs to the older revision.
 
 ## Host verification
 
