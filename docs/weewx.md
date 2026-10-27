@@ -79,7 +79,7 @@ the Debian or Raspberry Pi OS system that will run WeeWX:
 
 ```bash
 cd /path/to/cPyNodus_II
-./setup_nodus_weewx_host.sh
+./scripts/setup_nodus_weewx_host.sh
 ```
 
 Do not run the script on the CircuitPython device or on a workstation that
@@ -146,7 +146,7 @@ For a discovery-first installation, bootstrap only the host and one supported
 sensor-family template without naming a device:
 
 ```bash
-./setup_nodus_weewx_host.sh \
+./scripts/setup_nodus_weewx_host.sh \
   --discovery-only \
   --family avpd
 ```
@@ -197,7 +197,7 @@ it.
 Before making changes, config detection can be checked independently:
 
 ```bash
-./setup_nodus_weewx_host.sh \
+./scripts/setup_nodus_weewx_host.sh \
   --inspect-config /etc/weewx/weewx.conf
 ```
 
@@ -205,13 +205,13 @@ Use `--dry-run` to complete the prompts and review the installation plan
 without changing the system:
 
 ```bash
-./setup_nodus_weewx_host.sh --dry-run
+./scripts/setup_nodus_weewx_host.sh --dry-run
 ```
 
 The discovery-first plan can likewise be validated without changes:
 
 ```bash
-./setup_nodus_weewx_host.sh \
+./scripts/setup_nodus_weewx_host.sh \
   --discovery-only \
   --family avpd \
   --dry-run
