@@ -1,11 +1,9 @@
 # cPyNodus_II
 
-`cPyNodus_II` is pre-1.0 CircuitPython firmware for small Wi-Fi sensor and
-relay devices. A Nodus can operate as a sensor, a switch, or a combined
+`cPyNodus_II` requires CircuitPython 9.2.8 VM, the code implements a Wi-Fi sensor and/or
+relay Nodus device. A Nodus device can operate as a sensor, a switch, or a combined
 sensor-and-switch node. It supports local setup through NodusWeb as well as
-MQTT integrations with Sensorius, WeeWX, and Home Assistant.
-
-Current firmware version: `v0.26.203.4`
+MQTT integrations with Sensorius, Home Assistant, and Weewx open source projects.
 
 ![NodusWeb status page](assets/screenshots/nodusweb-status.png)
 
@@ -13,7 +11,7 @@ Current firmware version: `v0.26.203.4`
 
 The firmware is under active development and is intended for hobbyist,
 educational, and experimental IoT deployments. Configuration keys, MQTT
-contracts, and internal architecture may change before version 1.0.
+contracts, and internal architecture may change as the software matures.
 
 The supported boards and core runtime paths have been tested on physical
 hardware. Host-side tests supplement, but do not replace, on-device validation.
@@ -39,8 +37,8 @@ for the current board mappings.
 - Lightweight NodusWeb status, setup, calibration, switch, and automation pages
 - MQTT telemetry, retained state, availability, configuration, and calibration
 - Sensorius onboarding and device-management contracts
-- WeeWX 5 integration and Nodus report skin
 - Home Assistant MQTT discovery
+- WeeWX 5 integration and Nodus report skin
 - NodusWeb-local sensor, time, timer, and AND/OR switch automations
 - Bounded recovery and reboot diagnostics on writable filesystems
 - Target-specific compiled MPY firmware builds
@@ -93,18 +91,25 @@ runtime details.
 | --- | --- |
 | `nodusweb` | Local web UI and API without an MQTT broker; supports local switch automations |
 | `sensorius` | Headless MQTT operation managed by Sensorius |
-| `weewx` | Headless MQTT publishing for the included WeeWX integration |
 | `homeassistant` | Headless MQTT operation with Home Assistant discovery |
+| `weewx` | Headless MQTT publishing for the included WeeWX integration |
 
 AP mode remains available for initial setup and network recovery. Normal
 runtime web pages are intentionally disabled for the headless MQTT profiles.
 
 ## WeeWX host setup
 
-On the Debian or Raspberry Pi OS host that will run WeeWX 5, use the root
-entry point:
+On the Debian or Raspberry Pi OS host that will run WeeWX 5, run the entry
+point in `scripts/` from the repository root:
 
 ```bash
+./scripts/setup_nodus_weewx_host.sh
+```
+
+You can also run it from inside `scripts/`:
+
+```bash
+cd scripts
 ./setup_nodus_weewx_host.sh
 ```
 

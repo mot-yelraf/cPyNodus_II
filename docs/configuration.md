@@ -19,7 +19,7 @@ intended `weewx`-profile device appears as Discovered. Automatic selection is
 performed only when one discovered device matches the managed family.
 
 Run the installer from the repository root with
-`./setup_nodus_weewx_host.sh`. The root entry point delegates to
+`./scripts/setup_nodus_weewx_host.sh`. This entry point delegates to
 `integrations/weewx/install_nodus_weewx.sh`.
 
 Live configuration is stored as TOML files at the project root. Defaults are
