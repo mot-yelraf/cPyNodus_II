@@ -10,8 +10,8 @@ See the [investigation record](../docs/debug-notes/mqtt-runtime-stall-2026-10-25
 
 The normal application must be stopped. The apparatus reads existing settings
 and uses core network ownership, the firmware MQTT adapter, and firmware
-payload/subscription builders. It does not start sensor drivers, relay GPIO,
-web services, command handlers, or OTA processing. The default writes no files.
+payload/subscription builders. By default it does not start sensor drivers,
+relay GPIO, web services, command handlers, or OTA processing. The default writes no files.
 Opt-in filesystem comparisons write only `_mqtt_soak_test.log` and its
 rotation files in `settings_root`; settings, production logs, and NVM markers
 are untouched. It never requests an MCU reset or soft reload.
@@ -42,7 +42,7 @@ Defaults:
   have a different length. MQTT client identity remains the configured identity:
   never run this concurrently with the normal app or another copy of the test.
 
-The snapshots are synthetic and do not confirm physical switch state. Default
+Default snapshots are synthetic and do not confirm physical switch state. Default
 metrics are representative AVPD values, with `CO2` replacing `Pressure` for
 a configured CO2 sensor. These are eight fixed synthetic values, not measured
 values or executions of the sensor derivation code. Pass `metrics={...}` to match an
@@ -51,6 +51,123 @@ as-is; no NTP sync is attempted. Record whether RTC was already synchronized,
 because timestamp width can affect payload sizes. Firmware version and test
 version are both printed. Unlike the old harness, metadata uses the firmware
 version rather than the probe version.
+
+## Real sensor acquisition comparison (October 28)
+
+Apparatus version `2026-10-28.1` adds `sensor_mode="real"`. The default remains
+`sensor_mode="synthetic"`; use the same new apparatus version for both controls.
+No production firmware modules or firmware version are changed.
+
+For co2-pmoopn, the operator must restore the intended sensor configuration
+before testing. The current switch-only configuration cannot supply real sensor
+data. Confirm the controls show the expected CO2 sensor and two switch channels.
+The normal app must be stopped. Relay GPIO is not initialized with the default `switch_mode="inactive"`,
+and commands are still discarded; account for attached loads when stopping the
+app. This comparison does not validate relay state.
+
+```python
+import gc
+gc.collect()
+import mqtt_soak_test
+result = mqtt_soak_test.run(duration_s=50400, sensor_mode="real")
+```
+
+Real mode uses the production sensor planner, runtime builder, hardware binding,
+and sensor service, without importing the main app. It initializes the sensor
+and takes an initial sample before MQTT connect. Each subsequent 60-second
+sensor interval acquires a fresh snapshot, including calibration and derived
+metrics, then queues it through the existing sensor payload builder. Sensor
+work precedes the availability check, preserving the apparatus's existing
+ordering when both timers are due. MQTT sends remain direct calls from `run()`;
+the acquisition helper has returned before sending. Reconnect startup reuses the
+latest snapshot; MQTT recovery does not restart the sensor hardware.
+
+`sensor_begin` / `sensor_end` report sample number, phase, metric count,
+acquisition/processing duration, and errors. `before_sensor` / `after_sensor`
+report heap and queue depths without adding GC. A `waiting` sample publishes no
+data and does not replay an older sample; liveness scheduling continues. Other
+sensor phases or acquisition exceptions stop the run after recording failure
+evidence, even with `recover=True`. They increment `sensor_errors`, separately
+from MQTT `failures`, and do not trigger station recovery. There is no sensor
+reinitialization/reset policy. Real mode requires a configured sensor and rejects
+`metrics={...}` overrides. Native sensor calls can exceed the requested duration;
+time limits are checked between calls.
+
+The summary adds `sensor_mode`, `sensor_reads` (attempts including the initial
+sample), `sensor_skips` (non-ready returned samples), `sensor_errors`, and
+`sensor_cleanup_errors`. Sensor cleanup is attempted after MQTT cleanup on normal
+exit, failure, or Ctrl-C. Check it independently of `cleanup_ok`, which still
+describes MQTT cleanup. The firmware stop helper suppresses individual deinit
+exceptions, so zero sensor cleanup errors cannot prove electrical bus release.
+
+Keep board, deployed firmware/libraries, sensor and switch configuration,
+filesystem mode, broker, startup method, consumer state, intervals, and capture
+filters constant between synthetic and real runs. Capture `probe/#`, device TCP
+traffic, and serial. Use the same fresh-start procedure for each run: sensor
+modules can remain resident after cleanup, contaminating a subsequent synthetic
+control in the same interpreter.
+
+Real mode adds sensor imports, resident driver/bus objects, and acquisition
+allocations. It does not equalize heap with the synthetic control, reproduce the
+whole app, add NTP, or start switch services unless `switch_mode="real"` is selected. These remain comparison limits.
+Host tests exercise changing CO2 readings through firmware acquisition,
+calibration, derivation, payload, and adapter paths with simulated hardware.
+On-device startup stack headroom, real I2C acquisition, and broker delivery
+remain unvalidated. Begin with a short run reaching `event=operational` and
+multiple fresh broker-visible data samples before the long comparison.
+
+## Real switch service comparison (October 28)
+
+Apparatus `2026-10-28.2` adds opt-in `switch_mode="real"`. The default
+`switch_mode="inactive"` preserves the existing control. Switch availability
+was already published every 30 seconds for configured channels in both modes.
+
+Real mode uses the production switch planner, runtime, GPIO binding, and
+service without importing the main app. It requires a configured switch and
+**applies saved channel states at startup**, which can energize attached loads.
+The operator must select safe loads and stop the normal app before running.
+The operator owns copying and executing this apparatus on the device.
+
+For the combined acquisition/service comparison:
+
+```python
+import gc
+gc.collect()
+import mqtt_soak_test
+result = mqtt_soak_test.run(
+    duration_s=50400, sensor_mode="real", switch_mode="real"
+)
+```
+
+Switch startup precedes sensor startup and MQTT connection. Output snapshots
+are read at startup and before each periodic availability refresh (30 seconds
+by default). `switch_snapshot` logs states and read duration; `before_switch`
+and `after_switch` log heap/queue depths without adding GC. Initial snapshots
+feed startup switch metadata. Subsequent snapshots are serial diagnostics;
+periodic MQTT topics, payload shapes, and cadence remain unchanged. GPIO output
+readback does not establish physical relay contact state. No commands, automatic
+toggles, persistence, or additional periodic state publications are introduced.
+
+The service and GPIO handles remain resident across MQTT recovery. Reconnect
+startup uses the latest snapshot without reapplying saved states. Switch startup
+or read failures stop the run even with `recover=True`, increment `switch_errors`
+separately from MQTT `failures`, and do not trigger network recovery. The summary
+includes `switch_mode`, `switch_reads` (successful snapshots), `switch_errors`,
+and `switch_cleanup_errors`. GPIO deinitialization is attempted on normal exit,
+failure, and Ctrl-C; releasing outputs may change relay state. The firmware stop
+helper suppresses individual deinit errors, so zero cleanup errors is not proof
+that every pin was released. `cleanup_ok` continues to describe MQTT cleanup.
+
+Use the same apparatus version for controls; vary only `switch_mode` while
+keeping real sensor acquisition and the other controls constant. Use the same
+fresh-start procedure because imported modules can remain resident. Capture
+serial, `probe/#`, and broker TCP traffic throughout. Begin with a short run
+showing `operational`, multiple fresh sensor publications, switch snapshots,
+and fresh per-channel availability messages at the broker. Physical state is
+an independent operator check. Host tests cover simulated GPIO and combined
+sensor processing; CircuitPython stack/heap headroom and broker delivery still
+require on-device validation. This mode does not reproduce command execution,
+deferred command metadata, or the full app's memory footprint.
 
 ## First run
 
@@ -145,8 +262,9 @@ a slow operation. These differences must be considered when interpreting a pass.
 
 Do not infer a QoS-specific cause by comparing this with the old QoS 0 flat
 probe: both modes here retain current startup QoS selection. Neither mode is a
-complete application replica: feature tasks, sensor reads, command mutations,
-real relay reports, NTP traffic, and full app heap pressure are absent. Metadata
+complete application replica: full app coordination, command mutations, relay
+command reports, NTP traffic, and full app heap pressure are absent. Sensor reads are
+also absent in synthetic mode. Metadata
 is built from runtime config without reading saved configuration snapshots via
 `settings_root`. A clean standalone soak does not exonerate the full app.
 
@@ -328,10 +446,11 @@ filesystem interaction. Existing cleanup ownership errors remain independent.
 
 Host tests inject a delayed send and an EBADF result to verify ordering and
 classification. There is no on-device fault-injection mode: injected host
-failures do not reproduce the native initiating mechanism. No mode reads real
-CO2/BME280 sensors, derives live metrics, operates relay GPIO, executes MQTT
-commands, or reproduces full-app heap/stack pressure. A successful synthetic
-run cannot exclude those mechanisms. On-device validation of this revision is
+failures do not reproduce the native initiating mechanism. Version
+`2026-10-27.1` does not read real sensors or derive live metrics;
+the October 28 opt-in sensor mode adds those operations. The default leaves relay GPIO inactive; `switch_mode="real"` initializes it.
+No mode executes MQTT commands or reproduces full-app heap/stack pressure. A
+successful synthetic run cannot exclude those mechanisms. On-device validation of this revision is
 still required on both devices, including startup stack headroom and broker
 delivery; the earlier two-hour result below belongs to the older revision.
 

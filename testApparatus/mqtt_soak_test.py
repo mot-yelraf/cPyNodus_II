@@ -1,4 +1,4 @@
-"""Exercise long-lived MQTT traffic without sensor or relay hardware.
+"""Exercise long-lived MQTT traffic with synthetic or real sensor data.
 
 Copy this file to CIRCUITPY root and call run() from the REPL with the normal
 app stopped. The adapter mode calls firmware operations directly from one
@@ -11,7 +11,7 @@ companion mqtt_soak_test.md for capture instructions and comparison limits.
 import gc
 import time
 
-TEST_VERSION = "2026-10-27.1"
+TEST_VERSION = "2026-10-28.2"
 MAX_PACKET_BYTES = 4096
 MAX_QUEUE_ITEMS = 32
 MAX_INTERLEAVED_PACKETS = 8
@@ -41,6 +41,8 @@ def run(
     gc_interval_s=300,
     preflight_attempts=3,
     metrics=None,
+    sensor_mode="synthetic",
+    switch_mode="inactive",
     cleanup_mode="adapter",
     fs_activity="none",
     write_interval_s=300,
@@ -57,9 +59,19 @@ def run(
     fs_activity selects no writes, periodic writes, or a write before/after
     each close. cleanup_mode="direct" bypasses MiniMQTT's close manager.
     Inspect write_errors independently, including errors on final cleanup.
+    sensor_mode="real" uses configured sensor hardware and firmware processing;
+    metrics overrides are synthetic-only. switch_mode="real" starts relay GPIO
+    at saved states and reads outputs each availability interval. Commands are
+    discarded in every mode; switch snapshots do not verify relay contacts.
     """
     if mode not in ("adapter", "flat"):
         raise ValueError("mode must be adapter or flat")
+    if sensor_mode not in ("synthetic", "real"):
+        raise ValueError("sensor_mode must be synthetic or real")
+    if switch_mode not in ("inactive", "real"):
+        raise ValueError("switch_mode must be inactive or real")
+    if sensor_mode == "real" and metrics is not None:
+        raise ValueError("metrics overrides require synthetic sensor mode")
     if min(duration_s, availability_interval_s, sensor_interval_s, gc_interval_s) <= 0:
         raise ValueError("duration and intervals must be positive")
     if availability_interval_s > 30:
@@ -97,24 +109,30 @@ def run(
 
     started = time.monotonic()
     config, network = _setup(settings_root)
+    if sensor_mode == "real" and not config.sensor.present:
+        raise ValueError("real acquisition requires a configured sensor")
+    if switch_mode == "real" and not config.switch.present:
+        raise ValueError("real switch mode requires a configured switch")
     if base_topic is not None:
         config.mqtt.base_topic = str(base_topic).strip(" /")
-    snapshot = SyntheticSnapshot(
-        config,
-        metrics
-        if metrics is not None
-        else {
-            "Temperature": 22.0,
-            "Rel-Humidity": 50.0,
-            "Humidity": 9.7,
-            "Ambient VPD": 1.32,
-            "Dew Point": 11.1,
-            "Dew Point Deficit": 10.9,
-            "DewVPD Risk": 20.0,
-            "Pressure": 1013.25,
-        },
-    )
-    if metrics is None and config.sensor.device == "co2":
+    snapshot = None
+    if sensor_mode == "synthetic":
+        snapshot = SyntheticSnapshot(
+            config,
+            metrics
+            if metrics is not None
+            else {
+                "Temperature": 22.0,
+                "Rel-Humidity": 50.0,
+                "Humidity": 9.7,
+                "Ambient VPD": 1.32,
+                "Dew Point": 11.1,
+                "Dew Point Deficit": 10.9,
+                "DewVPD Risk": 20.0,
+                "Pressure": 1013.25,
+            },
+        )
+    if snapshot is not None and metrics is None and config.sensor.device == "co2":
         del snapshot.metrics["Pressure"]
         snapshot.metrics["CO2"] = 600.0
     transport = MQTTTransport(config.mqtt.preferred_host, config.mqtt.port)
@@ -125,6 +143,16 @@ def run(
     preflight_errors = 0
     generations = 0
     operational = 0
+    switch_service = None
+    switch_snapshot = {}
+    switch_reads = 0
+    switch_errors = 0
+    switch_cleanup_errors = 0
+    sensor_service = None
+    sensor_reads = 0
+    sensor_skips = 0
+    sensor_errors = 0
+    sensor_cleanup_errors = 0
     last_failure = "none"
     finished = False
     next_gc = started + gc_interval_s
@@ -133,7 +161,9 @@ def run(
     last_paced_publish = -1.0
     next_write = None
     last_write_count = 0
-    stage = "connect"
+    stage = "sensor_startup" if sensor_mode == "real" else "connect"
+    if switch_mode == "real":
+        stage = "switch_startup"
     operation = "connect"
     switch_subscriptions_queued = False
     _log(
@@ -161,7 +191,8 @@ def run(
         started,
         "controls",
         "sensor={} sensor_id={} switches={} cleanup={} fs_activity={} "
-        "write_interval_s={} write_limit={} write_sync={} write_max_bytes={}".format(
+        "write_interval_s={} write_limit={} write_sync={} write_max_bytes={} "
+        "sensor_mode={} switch_mode={}".format(
             config.sensor.device,
             config.sensor.sensor_id,
             len(config.switch.channels),
@@ -171,11 +202,34 @@ def run(
             write_limit,
             int(write_sync),
             write_max_bytes,
+            sensor_mode,
+            switch_mode,
         ),
     )
     try:
         while time.monotonic() - started < duration_s:
             try:
+                if stage == "switch_startup":
+                    operation = "switch_startup"
+                    switch_service = _start_real_switch(config)
+                    if switch_service.phase != "ready":
+                        raise OSError("switch_startup:{}".format(switch_service.errors))
+                    operation = "switch_read"
+                    switch_snapshot = _read_switch(switch_service, started, transport)
+                    switch_reads += 1
+                    stage = "sensor_startup" if sensor_mode == "real" else "connect"
+                if stage == "sensor_startup":
+                    operation = "sensor_startup"
+                    sensor_service = _start_real_sensor(config)
+                    if sensor_service.phase != "ready":
+                        raise OSError("sensor_startup:{}".format(sensor_service.errors))
+                    operation = "sensor_read"
+                    sensor_reads += 1
+                    snapshot = _acquire_sensor(
+                        sensor_service, config, started, sensor_reads, transport
+                    )
+                    sensor_skips += int(snapshot.phase != "ready")
+                    stage = "connect"
                 if stage == "connect":
                     operation = "connect"
                     adapter = client.build_mqtt_client_adapter(
@@ -224,7 +278,7 @@ def run(
                         config,
                         version=__version__,
                         sensor_snapshot=snapshot,
-                        switch_snapshot={},
+                        switch_snapshot=switch_snapshot,
                         active_broker=adapter.active_broker,
                         ip_address=network.ip_address,
                         publish_switch_startup=False,
@@ -251,9 +305,24 @@ def run(
                 if stage == "steady":
                     # Sensor before availability matches the steady-state cycle.
                     if now - last_sensor >= sensor_interval_s:
+                        if sensor_mode == "real":
+                            operation = "sensor_read"
+                            sensor_reads += 1
+                            snapshot = _acquire_sensor(
+                                sensor_service, config, started, sensor_reads, transport
+                            )
+                            sensor_skips += int(snapshot.phase != "ready")
+                        operation = "queue_sensor"
                         publish_sensor_cycle(transport, config, snapshot)
                         last_sensor = now
                     if now - last_availability >= availability_interval_s:
+                        if switch_service is not None:
+                            operation = "switch_read"
+                            switch_snapshot = _read_switch(
+                                switch_service, started, transport
+                            )
+                            switch_reads += 1
+                        operation = "queue_availability"
                         publish_availability_refresh_cycle(transport, config)
                         last_availability = now
                 if (
@@ -356,8 +425,19 @@ def run(
                     last_write_count = writer.count
                 time.sleep(0.1)
             except Exception as exc:
-                failures += 1
+                sensor_failure = operation in ("sensor_startup", "sensor_read")
+                switch_failure = operation in ("switch_startup", "switch_read")
+                if switch_failure:
+                    switch_errors += 1
+                elif sensor_failure:
+                    sensor_errors += 1
+                else:
+                    failures += 1
                 last_failure = _failure_kind(exc)
+                if switch_failure and last_failure != "stack_limit":
+                    last_failure = "switch_error"
+                if sensor_failure and last_failure != "stack_limit":
+                    last_failure = "sensor_error"
                 _log(
                     started,
                     "failure",
@@ -375,7 +455,8 @@ def run(
                 )
                 adapter = None
                 if (
-                    not recover or failures > 2 or last_failure == "stack_limit"
+                    sensor_failure or switch_failure or not recover or failures > 2
+                    or last_failure == "stack_limit"
                     or writer is not None and writer.errors
                 ):
                     break
@@ -396,7 +477,7 @@ def run(
                         break
                 else:
                     _log(started, "recovery", "action=mqtt_rebuild")
-                # Clean session, bounded queues; replay synthetic startup afresh.
+                # Clean session, bounded queues; reuse the latest sensor snapshot.
                 transport = MQTTTransport(config.mqtt.preferred_host, config.mqtt.port)
                 stage = "connect"
                 time.sleep(1)
@@ -406,9 +487,27 @@ def run(
         _log(started, "interrupted", "operator=1")
         raise
     finally:
-        cleanup_errors += _finish_connection(
-            adapter, transport, client, started, cleanup_mode, writer, fs_activity,
-        )
+        try:
+            cleanup_errors += _finish_connection(
+                adapter, transport, client, started, cleanup_mode, writer, fs_activity,
+            )
+        finally:
+            if switch_service is not None:
+                from cpynodus_ii.features.switch_service import stop_switch_service
+
+                try:
+                    stop_switch_service(switch_service)
+                except Exception as exc:
+                    switch_cleanup_errors += 1
+                    _log(started, "switch_cleanup_error", str(exc))
+            if sensor_service is not None:
+                from cpynodus_ii.features.sensor_service import stop_sensor_service
+
+                try:
+                    stop_sensor_service(sensor_service)
+                except Exception as exc:
+                    sensor_cleanup_errors += 1
+                    _log(started, "sensor_cleanup_error", str(exc))
     summary = {
         "completed": finished,
         "transport_ok": finished and failures == 0 and operational > 0,
@@ -425,9 +524,102 @@ def run(
         "write_errors": writer.errors if writer is not None else 0,
         "cleanup_mode": cleanup_mode,
         "fs_activity": fs_activity,
+        "switch_mode": switch_mode,
+        "switch_reads": switch_reads,
+        "switch_errors": switch_errors,
+        "switch_cleanup_errors": switch_cleanup_errors,
+        "sensor_mode": sensor_mode,
+        "sensor_reads": sensor_reads,
+        "sensor_skips": sensor_skips,
+        "sensor_errors": sensor_errors,
+        "sensor_cleanup_errors": sensor_cleanup_errors,
     }
     _log(started, "summary", str(summary))
     return summary
+
+
+def _start_real_switch(config):
+    """Build the firmware switch stack and apply configured startup states."""
+    from cpynodus_ii.features.switch import plan_switch_initialization
+    from cpynodus_ii.features.switch_runtime import build_switch_runtime
+    from cpynodus_ii.features.switch_service import (
+        start_switch_service,
+        stop_switch_service,
+    )
+    from cpynodus_ii.hardware.switch_adapter import bind_switch_hardware
+
+    runtime = build_switch_runtime(plan_switch_initialization(config))
+    hardware = bind_switch_hardware(runtime)
+    try:
+        return start_switch_service(runtime, hardware)
+    except BaseException:
+        stop_switch_service(hardware)
+        raise
+
+
+def _read_switch(service, started, transport):
+    """Measure firmware output snapshots without applying further states."""
+    from cpynodus_ii.features.switch_service import snapshot_switch_states
+
+    _memory(started, "before_switch", transport)
+    began = time.monotonic()
+    snapshot = snapshot_switch_states(service)
+    _log(
+        started, "switch_snapshot",
+        "elapsed_ms={} channels={} states={}".format(
+            int((time.monotonic() - began) * 1000), len(snapshot), snapshot
+        ),
+    )
+    _memory(started, "after_switch", transport)
+    if len(snapshot) != service.channel_count or any(
+        item["phase"] != "ready" or item["state"] is None
+        for item in snapshot.values()
+    ):
+        raise OSError("switch_snapshot_not_ready")
+    return snapshot
+
+
+def _start_real_sensor(config):
+    """Build only the firmware sensor stack without importing the main app."""
+    from cpynodus_ii.features.sensor import plan_sensor_initialization
+    from cpynodus_ii.features.sensor_runtime import build_sensor_runtime
+    from cpynodus_ii.features.sensor_service import (
+        start_sensor_service,
+        stop_sensor_service,
+    )
+    from cpynodus_ii.hardware.sensor_adapter import bind_sensor_hardware
+
+    plan = plan_sensor_initialization(config)
+    runtime = build_sensor_runtime(plan, config)
+    hardware = bind_sensor_hardware(runtime, config)
+    try:
+        return start_sensor_service(runtime, hardware, config)
+    except BaseException:
+        # The service has not been returned to run() to own cleanup yet.
+        stop_sensor_service(hardware)
+        raise
+
+
+def _acquire_sensor(service, config, started, number, transport):
+    """Measure real acquisition and derivation without forcing collection."""
+    from cpynodus_ii.features.sensor_service import read_sensor_snapshot
+
+    _memory(started, "before_sensor", transport)
+    _log(started, "sensor_begin", "n={}".format(number))
+    before = time.monotonic()
+    snapshot = read_sensor_snapshot(service, config)
+    _log(
+        started,
+        "sensor_end",
+        "n={} phase={} metrics={} elapsed_ms={} errors={}".format(
+            number, snapshot.phase, len(snapshot.metrics),
+            int((time.monotonic() - before) * 1000), snapshot.errors,
+        ),
+    )
+    _memory(started, "after_sensor", transport)
+    if snapshot.phase not in ("ready", "waiting"):
+        raise OSError("sensor_acquisition:{}".format(snapshot.errors))
+    return snapshot
 
 
 class DiagnosticWriter:
