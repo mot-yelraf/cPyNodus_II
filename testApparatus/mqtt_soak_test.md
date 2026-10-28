@@ -10,9 +10,11 @@ See the [investigation record](../docs/debug-notes/mqtt-runtime-stall-2026-10-25
 
 The normal application must be stopped. The apparatus reads existing settings
 and uses core network ownership, the firmware MQTT adapter, and firmware
-payload/subscription builders. It does not start sensor drivers, relay GPIO,
-web services, command handlers, or OTA processing, and does not write settings,
-logs, NVM markers, or device files. It never requests an MCU reset or soft reload.
+payload/subscription builders. By default it does not start sensor drivers,
+relay GPIO, web services, command handlers, or OTA processing. The default writes no files.
+Opt-in filesystem comparisons write only `_mqtt_soak_test.log` and its
+rotation files in `settings_root`; settings, production logs, and NVM markers
+are untouched. It never requests an MCU reset or soft reload.
 Incoming command packets are acknowledged where necessary and discarded.
 
 Defaults:
@@ -40,13 +42,132 @@ Defaults:
   have a different length. MQTT client identity remains the configured identity:
   never run this concurrently with the normal app or another copy of the test.
 
-The snapshots are synthetic and do not confirm physical switch state. Default
-metrics are representative AVPD values. Pass `metrics={...}` to match an
+Default snapshots are synthetic and do not confirm physical switch state. Default
+metrics are representative AVPD values, with `CO2` replacing `Pressure` for
+a configured CO2 sensor. These are eight fixed synthetic values, not measured
+values or executions of the sensor derivation code. Pass `metrics={...}` to match an
 observed sensor payload more closely; packet sizes are logged. RTC time is used
 as-is; no NTP sync is attempted. Record whether RTC was already synchronized,
 because timestamp width can affect payload sizes. Firmware version and test
 version are both printed. Unlike the old harness, metadata uses the firmware
 version rather than the probe version.
+
+## Real sensor acquisition comparison (October 28)
+
+Apparatus version `2026-10-28.1` adds `sensor_mode="real"`. The default remains
+`sensor_mode="synthetic"`; use the same new apparatus version for both controls.
+No production firmware modules or firmware version are changed.
+
+For co2-pmoopn, the operator must restore the intended sensor configuration
+before testing. The current switch-only configuration cannot supply real sensor
+data. Confirm the controls show the expected CO2 sensor and two switch channels.
+The normal app must be stopped. Relay GPIO is not initialized with the default `switch_mode="inactive"`,
+and commands are still discarded; account for attached loads when stopping the
+app. This comparison does not validate relay state.
+
+```python
+import gc
+gc.collect()
+import mqtt_soak_test
+result = mqtt_soak_test.run(duration_s=50400, sensor_mode="real")
+```
+
+Real mode uses the production sensor planner, runtime builder, hardware binding,
+and sensor service, without importing the main app. It initializes the sensor
+and takes an initial sample before MQTT connect. Each subsequent 60-second
+sensor interval acquires a fresh snapshot, including calibration and derived
+metrics, then queues it through the existing sensor payload builder. Sensor
+work precedes the availability check, preserving the apparatus's existing
+ordering when both timers are due. MQTT sends remain direct calls from `run()`;
+the acquisition helper has returned before sending. Reconnect startup reuses the
+latest snapshot; MQTT recovery does not restart the sensor hardware.
+
+`sensor_begin` / `sensor_end` report sample number, phase, metric count,
+acquisition/processing duration, and errors. `before_sensor` / `after_sensor`
+report heap and queue depths without adding GC. A `waiting` sample publishes no
+data and does not replay an older sample; liveness scheduling continues. Other
+sensor phases or acquisition exceptions stop the run after recording failure
+evidence, even with `recover=True`. They increment `sensor_errors`, separately
+from MQTT `failures`, and do not trigger station recovery. There is no sensor
+reinitialization/reset policy. Real mode requires a configured sensor and rejects
+`metrics={...}` overrides. Native sensor calls can exceed the requested duration;
+time limits are checked between calls.
+
+The summary adds `sensor_mode`, `sensor_reads` (attempts including the initial
+sample), `sensor_skips` (non-ready returned samples), `sensor_errors`, and
+`sensor_cleanup_errors`. Sensor cleanup is attempted after MQTT cleanup on normal
+exit, failure, or Ctrl-C. Check it independently of `cleanup_ok`, which still
+describes MQTT cleanup. The firmware stop helper suppresses individual deinit
+exceptions, so zero sensor cleanup errors cannot prove electrical bus release.
+
+Keep board, deployed firmware/libraries, sensor and switch configuration,
+filesystem mode, broker, startup method, consumer state, intervals, and capture
+filters constant between synthetic and real runs. Capture `probe/#`, device TCP
+traffic, and serial. Use the same fresh-start procedure for each run: sensor
+modules can remain resident after cleanup, contaminating a subsequent synthetic
+control in the same interpreter.
+
+Real mode adds sensor imports, resident driver/bus objects, and acquisition
+allocations. It does not equalize heap with the synthetic control, reproduce the
+whole app, add NTP, or start switch services unless `switch_mode="real"` is selected. These remain comparison limits.
+Host tests exercise changing CO2 readings through firmware acquisition,
+calibration, derivation, payload, and adapter paths with simulated hardware.
+On-device startup stack headroom, real I2C acquisition, and broker delivery
+remain unvalidated. Begin with a short run reaching `event=operational` and
+multiple fresh broker-visible data samples before the long comparison.
+
+## Real switch service comparison (October 28)
+
+Apparatus `2026-10-28.2` adds opt-in `switch_mode="real"`. The default
+`switch_mode="inactive"` preserves the existing control. Switch availability
+was already published every 30 seconds for configured channels in both modes.
+
+Real mode uses the production switch planner, runtime, GPIO binding, and
+service without importing the main app. It requires a configured switch and
+**applies saved channel states at startup**, which can energize attached loads.
+The operator must select safe loads and stop the normal app before running.
+The operator owns copying and executing this apparatus on the device.
+
+For the combined acquisition/service comparison:
+
+```python
+import gc
+gc.collect()
+import mqtt_soak_test
+result = mqtt_soak_test.run(
+    duration_s=50400, sensor_mode="real", switch_mode="real"
+)
+```
+
+Switch startup precedes sensor startup and MQTT connection. Output snapshots
+are read at startup and before each periodic availability refresh (30 seconds
+by default). `switch_snapshot` logs states and read duration; `before_switch`
+and `after_switch` log heap/queue depths without adding GC. Initial snapshots
+feed startup switch metadata. Subsequent snapshots are serial diagnostics;
+periodic MQTT topics, payload shapes, and cadence remain unchanged. GPIO output
+readback does not establish physical relay contact state. No commands, automatic
+toggles, persistence, or additional periodic state publications are introduced.
+
+The service and GPIO handles remain resident across MQTT recovery. Reconnect
+startup uses the latest snapshot without reapplying saved states. Switch startup
+or read failures stop the run even with `recover=True`, increment `switch_errors`
+separately from MQTT `failures`, and do not trigger network recovery. The summary
+includes `switch_mode`, `switch_reads` (successful snapshots), `switch_errors`,
+and `switch_cleanup_errors`. GPIO deinitialization is attempted on normal exit,
+failure, and Ctrl-C; releasing outputs may change relay state. The firmware stop
+helper suppresses individual deinit errors, so zero cleanup errors is not proof
+that every pin was released. `cleanup_ok` continues to describe MQTT cleanup.
+
+Use the same apparatus version for controls; vary only `switch_mode` while
+keeping real sensor acquisition and the other controls constant. Use the same
+fresh-start procedure because imported modules can remain resident. Capture
+serial, `probe/#`, and broker TCP traffic throughout. Begin with a short run
+showing `operational`, multiple fresh sensor publications, switch snapshots,
+and fresh per-channel availability messages at the broker. Physical state is
+an independent operator check. Host tests cover simulated GPIO and combined
+sensor processing; CircuitPython stack/heap headroom and broker delivery still
+require on-device validation. This mode does not reproduce command execution,
+deferred command metadata, or the full app's memory footprint.
 
 ## First run
 
@@ -141,8 +262,9 @@ a slow operation. These differences must be considered when interpreting a pass.
 
 Do not infer a QoS-specific cause by comparing this with the old QoS 0 flat
 probe: both modes here retain current startup QoS selection. Neither mode is a
-complete application replica: feature tasks, sensor reads, command mutations,
-real relay reports, NTP traffic, and full app heap pressure are absent. Metadata
+complete application replica: full app coordination, command mutations, relay
+command reports, NTP traffic, and full app heap pressure are absent. Sensor reads are
+also absent in synthetic mode. Metadata
 is built from runtime config without reading saved configuration snapshots via
 `settings_root`. A clean standalone soak does not exonerate the full app.
 
@@ -198,6 +320,139 @@ A recovered failure still produces `transport_ok=False`. Injected host-test
 timeouts or delayed full-count sends verify detection and sequencing, not
 reproduction of the initiating native transport fault. Do not shorten publish
 intervals or add artificial heap pressure until the baseline is recorded.
+
+## October 27 filesystem and cleanup comparisons
+
+Test version `2026-10-27.1` adds independent `cleanup_mode` and `fs_activity`
+controls. Production firmware is unchanged. Use the same apparatus file on
+`co2-pmoopn` and `avpd-zbcalz`. Run the comparison sequence on each device;
+comparing CO2/ROFS directly against AVPD/RWFS changes multiple factors.
+
+Before each run, record board identity, exact firmware/library artifacts,
+CircuitPython version, filesystem mode, switch gate/channel count, broker,
+consumer state, RTC synchronization, and startup method. Keep switches disabled
+for the first comparisons. The start record includes configured sensor identity,
+channel count, and experiment controls. The normal app must remain stopped.
+Use the same startup method each time; Ctrl-C does not undo existing radio state.
+Operator deployment and changing the physical filesystem guard remain manual.
+No apparatus code writes to the mounted device from the host.
+
+Start separate serial and broker captures for each device and run. Use the
+broker capture commands above, substituting `.237` for CO2 and `.225` for AVPD
+in the TCP filter. The existing serial captures end in `3401.log` for CO2 and
+`4201.log` for AVPD. Broker messages on `probe/#` include each configured device
+ID. Never run the normal app and apparatus concurrently with the same client ID.
+
+### Short healthy-connection comparisons
+
+Each call establishes a connection and exercises startup plus normal synthetic
+traffic for three minutes. Broker capture must confirm traffic before cleanup;
+`transport_ok=True` is only a local observation. Run one case per controlled
+session, saving the result and captures before the next case.
+
+```python
+import mqtt_soak_test
+# A: no writes, firmware cleanup (ROFS or RWFS).
+result = mqtt_soak_test.run(duration_s=180)
+
+# B: RWFS only, a diagnostic write immediately before firmware cleanup.
+result = mqtt_soak_test.run(duration_s=180, fs_activity="before_close")
+
+# C: no writes, bypass MiniMQTT's manager and close the raw socket directly.
+result = mqtt_soak_test.run(duration_s=180, cleanup_mode="direct")
+```
+
+Hold filesystem mode constant when comparing A, B, and C on RWFS. Case A versus
+C on ROFS is an additional no-write ownership control. Case C sends no MQTT
+DISCONNECT: the broker may publish the retained offline Last Will. That is an
+expected difference, and the direct-close mode is not a proposed runtime fix.
+The adapter result can contain two manager ownership errors even when its
+direct fallback closes the raw socket. Do not label that a transport failure.
+
+### Overnight transport comparisons
+
+Use adapter mode, default `recover=False`, and one 14-hour session per case:
+
+```python
+# 1: operator selects ROFS; no apparatus writes.
+result = mqtt_soak_test.run(duration_s=50400)
+
+# 2: operator selects RWFS; still no apparatus writes.
+result = mqtt_soak_test.run(duration_s=50400)
+
+# 3: RWFS; append a diagnostic record every five minutes after startup.
+result = mqtt_soak_test.run(duration_s=50400, fs_activity="periodic")
+```
+
+For case 3, the production `append_recovery_event` writer is called with a
+dedicated path and device label. It appends/closes a recovery-style record and
+checks the size. Defaults allow 256 write attempts, five minutes apart, with a
+65536-byte cap. They cover a 14-hour run without normally reaching the cap.
+There is no explicit sync by default and no GC added around the write. This
+models diagnostic file operations, not production write frequency or exact
+full-app allocations. Writer imports are loaded before network setup; that
+additional resident state is a comparison limitation. When the write limit is
+reached, MQTT continues but no more records are written.
+
+For independent later tests, add `write_sync=True` to request `os.sync()` after
+each append, or set `write_max_bytes=4096` to exercise log trimming/rotation
+after enough records. Do not change sync, trimming, and write cadence together.
+Trimming uses the production helper, which can itself synchronize through its
+transactional commit path. The cap bounds the live file; `.bak` and `.tmp` can
+also occupy space during rotation.
+
+Write-enabled runs require confirmed RWFS and refuse to start if any of
+`_mqtt_soak_test.log`, `.log.tmp`, or `.log.bak` already exists. Preserve those
+files after each run, then remove them manually before the next write-enabled
+run. No automatic deletion or reuse of prior evidence occurs. Write-enabled
+initialization checks the path but creates the file only on the first write.
+Changing the guard requires the appropriate operator reboot; the apparatus
+never remounts the filesystem.
+
+### Failure ordering comparisons
+
+Use these as separate RWFS sessions after the no-write baseline:
+
+```python
+# Send-stall ordering: preserve failure evidence, close, then write.
+result = mqtt_soak_test.run(duration_s=50400, fs_activity="after_close")
+
+# Poll-failure ordering: preserve failure evidence, write, then close.
+result = mqtt_soak_test.run(duration_s=50400, fs_activity="before_close")
+```
+
+These options apply their ordering on either a transport failure or a normal
+end-of-run close. A healthy ending therefore also produces a diagnostic write.
+They deliberately test the selected ordering regardless of which failure kind
+occurs; they do not implement the production recovery state machine. Stack
+exhaustion skips the optional failure write. With `recover=True`, the selected
+write occurs at each failed connection close within the existing recovery
+budget; recovery is a separate comparison.
+
+`failure_before_cleanup` and network diagnostics precede every selected
+failure write or cleanup. Failure records identify connect/startup/steady stage,
+poll versus publication/subscription work, and classification (`bad_descriptor`
+for EBADF). `write_begin` / `write_end` include attempt number, phase, duration,
+and errors, with heap/queues before and after. `post_write_cycle` marks the
+first following locally successful MQTT loop; it does not prove publication
+or broker delivery. Correlate subsequent operation records and packet capture.
+
+The summary adds `write_count` (attempts), `write_errors`, `cleanup_mode`, and
+`fs_activity`. Check all fields. A periodic write error stops the run and is
+reported separately from transport failure count. An end-of-run write error
+can coexist with `completed=True` and `transport_ok=True`; it invalidates the
+filesystem comparison. A requested write mode with zero writes does not test
+filesystem interaction. Existing cleanup ownership errors remain independent.
+
+Host tests inject a delayed send and an EBADF result to verify ordering and
+classification. There is no on-device fault-injection mode: injected host
+failures do not reproduce the native initiating mechanism. Version
+`2026-10-27.1` does not read real sensors or derive live metrics;
+the October 28 opt-in sensor mode adds those operations. The default leaves relay GPIO inactive; `switch_mode="real"` initializes it.
+No mode executes MQTT commands or reproduces full-app heap/stack pressure. A
+successful synthetic run cannot exclude those mechanisms. On-device validation of this revision is
+still required on both devices, including startup stack headroom and broker
+delivery; the earlier two-hour result below belongs to the older revision.
 
 ## Host verification
 

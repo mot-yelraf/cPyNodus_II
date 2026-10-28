@@ -400,3 +400,451 @@ def test_ctrl_c_closes_socket_and_does_not_become_a_pass(environment, monkeypatc
     with pytest.raises(KeyboardInterrupt):
         soak.run(duration_s=130)
     assert all(sock.closed for sock in environment.pool.sockets)
+
+
+@pytest.fixture
+def writable_probe(environment, monkeypatch, tmp_path):
+    monkeypatch.setattr(soak, "_filesystem_mode", lambda: "RWFS")
+    return tmp_path
+
+
+@pytest.mark.parametrize("activity", ["before_close", "after_close"])
+@pytest.mark.parametrize("stall", [False, True])
+def test_diagnostic_write_order_preserves_first_failure(
+    environment, writable_probe, capsys, activity, stall
+):
+    environment.pool.stalls = int(stall)
+    result = soak.run(
+        duration_s=130, settings_root=str(writable_probe), fs_activity=activity
+    )
+    log = capsys.readouterr().out
+    write = log.index("event=write_begin")
+    close = log.index("event=cleanup")
+    assert (write < close) is (activity == "before_close")
+    if stall:
+        evidence = log.index("failure_before_cleanup")
+        assert evidence < min(write, close)
+        assert result["last_failure"] == "send_stall"
+    assert result["transport_ok"] is not stall
+    assert result["cleanup_errors"] == 2
+    assert result["write_count"] == 1
+    assert result["write_errors"] == 0
+    paths = list(writable_probe.iterdir())
+    assert [p.name for p in paths] == ["_mqtt_soak_test.log"]
+    assert "recovery event: mqtt_soak" in paths[0].read_text()
+
+
+def test_periodic_writes_are_paced_bounded_and_followed_by_mqtt(
+    environment, writable_probe, capsys
+):
+    result = soak.run(
+        duration_s=160, settings_root=str(writable_probe), fs_activity="periodic",
+        write_interval_s=30, write_limit=2,
+    )
+    log = capsys.readouterr().out
+    assert result["transport_ok"] is True
+    assert result["write_count"] == 2
+    assert result["write_errors"] == 0
+    assert log.count("event=post_write_cycle") == 2
+    times = [
+        float(line.split("elapsed_s=")[1].split()[0])
+        for line in log.splitlines() if "event=write_begin" in line
+    ]
+    assert times[1] - times[0] >= 30
+    assert environment.pool.publications[-1][0] > times[-1]
+
+
+def test_rwfs_no_write_control_never_constructs_writer(
+    environment, writable_probe, monkeypatch
+):
+    def forbidden(*args):
+        raise AssertionError("baseline must not create diagnostic writer")
+
+    monkeypatch.setattr(soak, "DiagnosticWriter", forbidden)
+    result = soak.run(duration_s=130, settings_root=str(writable_probe))
+    assert result["write_count"] == 0
+    assert result["write_errors"] == 0
+    assert not list(writable_probe.iterdir())
+
+
+def test_direct_close_avoids_manager_and_closes_raw_socket(environment, monkeypatch):
+    def forbidden(*args):
+        raise AssertionError("direct mode must bypass adapter cleanup")
+
+    monkeypatch.setattr(mqtt_client, "close_mqtt_client", forbidden)
+    result = soak.run(duration_s=130, cleanup_mode="direct")
+    assert result["transport_ok"] is True
+    assert result["cleanup_ok"] is True
+    assert all(sock.closed for sock in environment.pool.sockets)
+
+
+def test_injected_ebadf_records_failure_before_write_and_close(
+    environment, writable_probe, monkeypatch, capsys
+):
+    original = mqtt_client.poll_mqtt_client
+
+    def poll(adapter, transport):
+        if environment.clock.now > 60:
+            return SimpleNamespace(adapter=adapter, phase="error", errors="EBADF")
+        return original(adapter, transport)
+
+    monkeypatch.setattr(mqtt_client, "poll_mqtt_client", poll)
+    result = soak.run(
+        duration_s=130, settings_root=str(writable_probe), fs_activity="before_close"
+    )
+    log = capsys.readouterr().out
+    assert result["last_failure"] == "bad_descriptor"
+    assert "operation=poll" in log
+    assert (
+        log.index("failure_before_cleanup") < log.index("event=write_begin")
+        < log.index("event=cleanup")
+    )
+
+
+def test_write_failure_stops_without_claiming_transport_fault(
+    environment, writable_probe, monkeypatch
+):
+    from cpynodus_ii.core import recovery_log
+
+    monkeypatch.setattr(recovery_log, "append_recovery_event", lambda *a, **k: False)
+    result = soak.run(
+        duration_s=130, settings_root=str(writable_probe), fs_activity="periodic",
+        write_interval_s=5,
+    )
+    assert result["completed"] is False
+    assert result["write_errors"] == 1
+    assert result["failures"] == 0
+    assert result["last_failure"] == "none"
+    assert all(sock.closed for sock in environment.pool.sockets)
+
+
+@pytest.mark.parametrize("suffix", ["", ".tmp", ".bak"])
+def test_existing_diagnostic_files_are_preserved(
+    environment, writable_probe, suffix
+):
+    path = writable_probe / ("_mqtt_soak_test.log" + suffix)
+    path.write_text("prior evidence")
+    with pytest.raises(ValueError, match="remove prior apparatus log"):
+        soak.run(settings_root=str(writable_probe), fs_activity="before_close")
+    assert path.read_text() == "prior evidence"
+    assert not environment.pool.sockets
+
+
+def test_rofs_write_request_fails_before_network(environment, monkeypatch):
+    monkeypatch.setattr(soak, "_filesystem_mode", lambda: "ROFS")
+    with pytest.raises(ValueError, match="require confirmed RWFS"):
+        soak.run(fs_activity="periodic")
+    assert not environment.pool.sockets
+
+
+def test_explicit_sync_and_trim_are_separate_controls(
+    environment, writable_probe, monkeypatch
+):
+    import os
+
+    syncs = []
+    monkeypatch.setattr(os, "sync", lambda: syncs.append(True))
+    writer = soak.DiagnosticWriter(str(writable_probe), 8, False, 65536)
+    transport = SimpleNamespace(
+        published_messages=[], subscriptions=[], received_messages=[]
+    )
+    assert writer.write(0, "control", transport)
+    assert not syncs
+    writer.sync = True
+    assert writer.write(0, "sync", transport)
+    assert len(syncs) == 1
+    writer.sync = False
+    writer.max_bytes = 256
+    for _ in range(4):
+        assert writer.write(0, "trim", transport)
+    assert (writable_probe / "_mqtt_soak_test.log").stat().st_size <= 256
+    assert (writable_probe / "_mqtt_soak_test.log.bak").exists()
+
+
+def test_co2_defaults_use_synthetic_co2_metric(environment):
+    import json
+
+    environment.config.sensor.device = "co2"
+    result = soak.run(duration_s=130)
+    assert result["transport_ok"] is True
+    payloads = [
+        json.loads(payload) for _, topic, _, payload in environment.pool.publications
+        if topic.endswith("/data")
+    ]
+    assert payloads
+    assert "CO2" in str(payloads)
+
+
+def test_interrupt_during_final_write_still_closes_socket(
+    environment, writable_probe, monkeypatch
+):
+    def interrupt(*args):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(soak.DiagnosticWriter, "write", interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        soak.run(
+            duration_s=130, settings_root=str(writable_probe),
+            fs_activity="before_close",
+        )
+    assert all(sock.closed for sock in environment.pool.sockets)
+
+
+@pytest.fixture
+def real_sensor(environment, monkeypatch):
+    """Use firmware CO2 acquisition and derivation with a changing fake driver."""
+    class Driver:
+        temperature = 23.5
+        relative_humidity = 36.2
+        data_available = True
+        reads = 0
+        closed = False
+        fail_after = None
+
+        @property
+        def CO2(self):
+            if self.fail_after is not None and self.reads >= self.fail_after:
+                raise OSError("sensor_bus_failed")
+            self.reads += 1
+            return 530 + self.reads
+
+        def deinit(self):
+            self.closed = True
+
+    environment.config.sensor = DetectedSensor(
+        sensor_id="co2-test", device="co2", family="i2c"
+    )
+    driver = Driver()
+    service = SimpleNamespace(
+        phase="ready", driver_kind="adafruit_scd30", driver=driver,
+        transport=None, errors=(),
+    )
+    monkeypatch.setattr(soak, "_start_real_sensor", lambda config: service)
+    return driver
+
+
+@pytest.mark.parametrize("mode", ["adapter", "flat"])
+def test_real_acquisition_publishes_fresh_derived_data_and_closes(
+    environment, real_sensor, mode, capsys
+):
+    import json
+
+    result = soak.run(duration_s=190, mode=mode, sensor_mode="real")
+    assert result["transport_ok"] is True
+    assert result["sensor_reads"] >= 3
+    assert result["sensor_errors"] == result["sensor_cleanup_errors"] == 0
+    assert real_sensor.closed
+    values = [json.loads(payload)["values"]
+              for _, topic, _, payload in environment.pool.publications
+              if topic.endswith("/data")]
+    assert len(values) >= 3
+    assert [v["CO2"] for v in values] == sorted({v["CO2"] for v in values})
+    assert all("Ambient VPD" in v and "Dew Point" in v for v in values)
+    log = capsys.readouterr().out
+    assert "event=sensor_begin" in log and "phase=after_sensor" in log
+
+
+def test_sensor_read_failure_stops_without_mqtt_recovery(
+    environment, real_sensor, capsys
+):
+    real_sensor.fail_after = 1
+    result = soak.run(duration_s=190, sensor_mode="real", recover=True)
+    assert result["completed"] is result["transport_ok"] is False
+    assert result["sensor_errors"] == 1
+    assert result["failures"] == 0
+    assert result["generations"] == 1
+    assert result["last_failure"] == "sensor_error"
+    assert real_sensor.closed
+    assert "event=recovery" not in capsys.readouterr().out
+
+
+def test_sensor_waiting_skips_data_without_reusing_stale_sample(
+    environment, real_sensor
+):
+    real_sensor.data_available = False
+    result = soak.run(duration_s=130, sensor_mode="real")
+    assert result["transport_ok"] is True
+    assert result["sensor_skips"] == result["sensor_reads"] >= 2
+    assert not any(t.endswith("/data") for _, t, _, _ in environment.pool.publications)
+    assert any(t.endswith("/status/heartbeat")
+               for _, t, _, _ in environment.pool.publications)
+    assert real_sensor.closed
+
+
+def test_sensor_ctrl_c_releases_hardware(environment, real_sensor, monkeypatch):
+    def interrupt(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(mqtt_client, "sync_transport_to_client", interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        soak.run(duration_s=130, sensor_mode="real")
+    assert real_sensor.closed
+    assert all(s.closed for s in environment.pool.sockets)
+
+
+def test_synthetic_mode_does_not_initialize_sensor(environment, monkeypatch):
+    def forbidden(config):
+        pytest.fail("synthetic control initialized sensor hardware")
+
+    monkeypatch.setattr(soak, "_start_real_sensor", forbidden)
+    result = soak.run(duration_s=130)
+    assert result["sensor_mode"] == "synthetic"
+    assert result["sensor_reads"] == result["sensor_errors"] == 0
+
+
+def test_real_mode_rejects_missing_sensor_and_metrics_override(environment):
+    with pytest.raises(ValueError, match="metrics overrides"):
+        soak.run(sensor_mode="real", metrics={"CO2": 600})
+    environment.config.sensor = DetectedSensor()
+    with pytest.raises(ValueError, match="configured sensor"):
+        soak.run(sensor_mode="real")
+
+
+def test_sensor_startup_failure_closes_service_without_connecting(
+    environment, real_sensor
+):
+    service = soak._start_real_sensor(environment.config)
+    service.phase = "error"
+    service.errors = ("sensor_not_found",)
+    result = soak.run(duration_s=130, sensor_mode="real", recover=True)
+    assert result["sensor_errors"] == 1
+    assert result["generations"] == result["failures"] == 0
+    assert result["completed"] is False
+    assert real_sensor.closed
+
+
+@pytest.fixture
+def real_switch(environment, monkeypatch):
+    """Bind the actual switch planner, adapter, and service to fake GPIO."""
+    import sys
+
+    handles = []
+
+    class Pin:
+        def __init__(self, pin):
+            self.pin = pin
+            self.value = False
+            self.closed = False
+            self.read_error = False
+            handles.append(self)
+
+        @property
+        def value(self):
+            if self.read_error:
+                raise OSError("gpio_read_failed")
+            return self._value
+
+        @value.setter
+        def value(self, value):
+            self._value = value
+
+        def deinit(self):
+            self.closed = True
+
+    monkeypatch.setitem(sys.modules, "board", SimpleNamespace(GP5=5, GP28=28))
+    monkeypatch.setitem(sys.modules, "digitalio", SimpleNamespace(
+        DigitalInOut=Pin, Direction=SimpleNamespace(OUTPUT="output")
+    ))
+    environment.config.switch.channel_count = 1
+    channel = environment.config.switch.channels[0]
+    channel.enable_pin = "GP5"
+    channel.control_pin = "GP28"
+    channel.last_state = True
+    return handles
+
+
+@pytest.mark.parametrize("mode", ["adapter", "flat"])
+def test_real_switch_with_real_sensor_reads_and_releases_gpio(
+    environment, real_sensor, real_switch, mode, capsys
+):
+    result = soak.run(
+        duration_s=190, mode=mode, sensor_mode="real", switch_mode="real"
+    )
+    assert result["transport_ok"] is True
+    assert result["switch_reads"] >= 5
+    assert result["sensor_reads"] >= 3
+    assert result["switch_errors"] == result["switch_cleanup_errors"] == 0
+    assert len(real_switch) == 2
+    assert all(h.closed and h.value for h in real_switch)
+    assert real_sensor.closed
+    pubs = environment.pool.publications
+    assert sum(t == "probe/S1-test/availability" for _, t, _, _ in pubs) >= 5
+    assert any(t.endswith("/meta/switch") and b'"state":true' in p
+               for _, t, _, p in pubs)
+    log = capsys.readouterr().out
+    assert "event=switch_snapshot" in log and "phase=after_switch" in log
+
+
+def test_inactive_switch_does_not_bind_gpio(environment, monkeypatch):
+    def forbidden(config):
+        pytest.fail("inactive control initialized switch GPIO")
+
+    monkeypatch.setattr(soak, "_start_real_switch", forbidden)
+    result = soak.run(duration_s=130)
+    assert result["switch_mode"] == "inactive"
+    assert result["switch_reads"] == result["switch_errors"] == 0
+
+
+def test_switch_read_failure_stops_without_network_recovery(
+    environment, real_switch, monkeypatch, capsys
+):
+    original = soak._read_switch
+
+    def read(service, *args):
+        result = original(service, *args)
+        real_switch[1].read_error = True
+        return result
+
+    monkeypatch.setattr(soak, "_read_switch", read)
+    result = soak.run(duration_s=130, switch_mode="real", recover=True)
+    assert result["completed"] is result["transport_ok"] is False
+    assert result["switch_errors"] == 1
+    assert result["failures"] == 0
+    assert result["last_failure"] == "switch_error"
+    assert all(h.closed for h in real_switch)
+    assert "event=recovery" not in capsys.readouterr().out
+
+
+def test_switch_ctrl_c_releases_gpio(environment, real_switch, monkeypatch):
+    def interrupt(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(mqtt_client, "sync_transport_to_client", interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        soak.run(duration_s=130, switch_mode="real")
+    assert all(h.closed for h in real_switch)
+
+
+def test_real_switch_rejects_missing_configuration(environment):
+    environment.config.switch = SwitchConfig()
+    with pytest.raises(ValueError, match="configured switch"):
+        soak.run(switch_mode="real")
+
+
+def test_mqtt_recovery_keeps_switch_service(environment, real_switch):
+    environment.pool.stalls = 1
+    result = soak.run(duration_s=130, switch_mode="real", recover=True)
+    assert result["completed"] is True
+    assert result["generations"] == 2
+    assert result["failures"] == 1
+    assert result["switch_errors"] == 0
+    assert len(real_switch) == 2
+    assert all(h.closed for h in real_switch)
+
+
+def test_switch_startup_failure_stops_and_releases_gpio(
+    environment, real_switch, monkeypatch
+):
+    original = soak._start_real_switch
+
+    def start(config):
+        from dataclasses import replace
+
+        return replace(original(config), phase="error", errors=("test_failure",))
+
+    monkeypatch.setattr(soak, "_start_real_switch", start)
+    result = soak.run(duration_s=130, switch_mode="real", recover=True)
+    assert result["completed"] is False
+    assert result["switch_errors"] == 1
+    assert result["generations"] == result["failures"] == 0
+    assert all(h.closed for h in real_switch)
