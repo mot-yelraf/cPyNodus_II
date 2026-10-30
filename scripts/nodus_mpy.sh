@@ -7,10 +7,12 @@ BUILD_ROOT="$ROOT_DIR/build/firmware"
 REQUIRED_MPY_ABI="mpy v6.3"
 PICO2W_LIB_SOURCE="$ROOT_DIR/../mcu_libs/circuitPython_9.2.8/libs/adafruit-circuitpython-bundle-9.x-mpy-20250314/lib"
 XESP32S3_LIB_SOURCE="$ROOT_DIR/../mcu_libs/circuitPython_10.x.x/adafruit-circuitpython-bundle-10.x-mpy-20260606/lib"
+CP1031_LIB_SOURCE="$ROOT_DIR/../mcu_libs/circuitPython_10.x.x/adafruit-circuitpython-bundle-10.x-mpy-20261030/lib"
 
 COMPILER=""
 COMPILER_VERSION=""
 TARGET="pico2w"
+CIRCUITPY_VERSION_OVERRIDE=""
 TARGET_CIRCUITPY_VERSION="9.2.8"
 TARGET_COMPILER_VERSION_TOKEN="CircuitPython 9.2.8"
 TARGET_COMPILER_ENV="MPY_CROSS_PICO2W"
@@ -51,6 +53,10 @@ Options:
   --target VALUE      Build target: pico2w or xesp32s3.
                       Aliases: pico2w-mpy, xesp32s3-mpy.
                       Default: pico2w.
+  --circuitpython-version VALUE
+                      Select 10.3.1 for either target, or its existing default:
+                      pico2w=9.2.8, xesp32s3=10.2.1.
+                      10.3.1 builds use build/firmware/<target>/10.3.1/.
   --compiler VALUE    Path to a CircuitPython-compatible mpy-cross.
                       Defaults to target-specific MPY_CROSS_* env vars,
                       $MPY_CROSS, then known local target candidates.
@@ -58,7 +64,7 @@ Options:
                       version and emit MPY v6.3.
   --lib-source VALUE  Override the Adafruit bundle lib/ source for the target.
   --dry-run           Show compile actions without writing artifacts.
-  --clean             Remove build/firmware/<target>/ before compiling.
+  --clean             Reset selected artifacts, preserving other version builds.
   --no-prune-stale    Keep existing .mpy files that no longer have source .py.
   --no-stage-libs     Do not stage target lib/ dependencies.
   --help              Show this help.
@@ -85,6 +91,7 @@ normalize_target() {
 
 configure_target() {
   local normalized=""
+  local default_lib_source=""
   if ! normalized="$(normalize_target "$TARGET")"; then
     echo "Invalid --target '$TARGET'. Use pico2w or xesp32s3." >&2
     exit 2
@@ -94,19 +101,31 @@ configure_target() {
   case "$TARGET" in
     pico2w)
       TARGET_CIRCUITPY_VERSION="9.2.8"
-      TARGET_COMPILER_VERSION_TOKEN="CircuitPython 9.2.8"
       TARGET_COMPILER_ENV="MPY_CROSS_PICO2W"
-      TARGET_LIB_SOURCE="${TARGET_LIB_SOURCE:-$PICO2W_LIB_SOURCE}"
+      default_lib_source="$PICO2W_LIB_SOURCE"
       ;;
     xesp32s3)
       TARGET_CIRCUITPY_VERSION="10.2.1"
-      TARGET_COMPILER_VERSION_TOKEN="CircuitPython 10.2.1"
       TARGET_COMPILER_ENV="MPY_CROSS_XESP32S3"
-      TARGET_LIB_SOURCE="${TARGET_LIB_SOURCE:-$XESP32S3_LIB_SOURCE}"
+      default_lib_source="$XESP32S3_LIB_SOURCE"
       ;;
   esac
 
+  if [[ -n "$CIRCUITPY_VERSION_OVERRIDE" ]]; then
+    if [[ "$CIRCUITPY_VERSION_OVERRIDE" != "$TARGET_CIRCUITPY_VERSION" \
+       && "$CIRCUITPY_VERSION_OVERRIDE" != "10.3.1" ]]; then
+      echo "Unsupported CircuitPython $CIRCUITPY_VERSION_OVERRIDE for $TARGET; use $TARGET_CIRCUITPY_VERSION or 10.3.1." >&2
+      exit 2
+    fi
+    TARGET_CIRCUITPY_VERSION="$CIRCUITPY_VERSION_OVERRIDE"
+  fi
+  TARGET_COMPILER_VERSION_TOKEN="CircuitPython $TARGET_CIRCUITPY_VERSION"
   TARGET_BUILD_ROOT="$BUILD_ROOT/$TARGET"
+  if [[ "$TARGET_CIRCUITPY_VERSION" == "10.3.1" ]]; then
+    default_lib_source="$CP1031_LIB_SOURCE"
+    TARGET_BUILD_ROOT="$TARGET_BUILD_ROOT/10.3.1"
+  fi
+  TARGET_LIB_SOURCE="${TARGET_LIB_SOURCE:-$default_lib_source}"
   PACKAGE_OUT="$TARGET_BUILD_ROOT/cpynodus_ii"
   LIB_OUT="$TARGET_BUILD_ROOT/lib"
   BUILD_INFO="$TARGET_BUILD_ROOT/BUILD_INFO"
@@ -123,40 +142,56 @@ find_compiler() {
     return 0
   fi
 
-  case "$TARGET" in
-    pico2w)
-      candidates=(
-        "${MPY_CROSS_PICO2W:-}"
-        "${MPY_CROSS_CP928:-}"
-        "${MPY_CROSS:-}"
-        "$ROOT_DIR/../mcu_libs/mpy-cross/mpy-cross"
-        "$ROOT_DIR/../mcu_libs/circuitpython-9.2.8/mpy-cross/build/mpy-cross"
-        "$ROOT_DIR/../mcu_libs/circuitpython_9.2.8/mpy-cross/build/mpy-cross"
-        "$ROOT_DIR/../mcu_libs/circuitPython_9.2.8/mpy-cross/build/mpy-cross"
-        "$ROOT_DIR/../mcu_libs/circuitpython/mpy-cross/build/mpy-cross"
-        "$ROOT_DIR/tools/mpy-cross/pico2w/mpy-cross"
-        "$ROOT_DIR/tools/mpy-cross/9.2.8/mpy-cross"
-      )
-      command_candidates=(mpy-cross-cp928 mpy-cross-v6.3 mpy-cross)
-      ;;
-    xesp32s3)
-      candidates=(
-        "${MPY_CROSS_XESP32S3:-}"
-        "${MPY_CROSS_CP1021:-}"
-        "${MPY_CROSS:-}"
-        "$ROOT_DIR/../mcu_libs/circuitpython-10.2.1/mpy-cross/build/mpy-cross"
-        "$ROOT_DIR/../mcu_libs/circuitpython_10.2.1/mpy-cross/build/mpy-cross"
-        "$ROOT_DIR/../mcu_libs/circuitPython_10.2.1/mpy-cross/build/mpy-cross"
-        "$ROOT_DIR/../mcu_libs/circuitPython_10.x.x/mpy-cross/build/mpy-cross"
-        "$ROOT_DIR/../mcu_libs/circuitPython_10.x.x/mpy-cross-macos-10.2.1-arm64"
-        "$ROOT_DIR/../mcu_libs/mpy-cross-10.2.1/mpy-cross"
-        "$ROOT_DIR/tools/mpy-cross/xesp32s3/mpy-cross"
-        "$ROOT_DIR/tools/mpy-cross/10.2.1/mpy-cross"
-        "$ROOT_DIR/../mcu_libs/circuitpython/mpy-cross/build/mpy-cross"
-      )
-      command_candidates=(mpy-cross-cp1021 circuitpython10-mpy-cross mpy-cross)
-      ;;
-  esac
+  if [[ "$TARGET_CIRCUITPY_VERSION" == "10.3.1" ]]; then
+    case "$TARGET" in
+      pico2w) candidates=("${MPY_CROSS_PICO2W:-}") ;;
+      xesp32s3) candidates=("${MPY_CROSS_XESP32S3:-}") ;;
+    esac
+    candidates+=(
+      "${MPY_CROSS_CP1031:-}"
+      "${MPY_CROSS:-}"
+      "$ROOT_DIR/../mcu_libs/circuitPython_10.x.x/mpy-cross-macos-10.3.1-arm64"
+      "$ROOT_DIR/../mcu_libs/circuitPython_10.x.x/mpy-cross-macos-10.3.1-x86_64"
+      "$ROOT_DIR/../mcu_libs/circuitpython-10.3.1/mpy-cross/build/mpy-cross"
+      "$ROOT_DIR/tools/mpy-cross/10.3.1/mpy-cross"
+    )
+    command_candidates=(mpy-cross-cp1031 mpy-cross)
+  else
+    case "$TARGET" in
+      pico2w)
+        candidates=(
+          "${MPY_CROSS_PICO2W:-}"
+          "${MPY_CROSS_CP928:-}"
+          "${MPY_CROSS:-}"
+          "$ROOT_DIR/../mcu_libs/mpy-cross/mpy-cross"
+          "$ROOT_DIR/../mcu_libs/circuitpython-9.2.8/mpy-cross/build/mpy-cross"
+          "$ROOT_DIR/../mcu_libs/circuitpython_9.2.8/mpy-cross/build/mpy-cross"
+          "$ROOT_DIR/../mcu_libs/circuitPython_9.2.8/mpy-cross/build/mpy-cross"
+          "$ROOT_DIR/../mcu_libs/circuitpython/mpy-cross/build/mpy-cross"
+          "$ROOT_DIR/tools/mpy-cross/pico2w/mpy-cross"
+          "$ROOT_DIR/tools/mpy-cross/9.2.8/mpy-cross"
+        )
+        command_candidates=(mpy-cross-cp928 mpy-cross-v6.3 mpy-cross)
+        ;;
+      xesp32s3)
+        candidates=(
+          "${MPY_CROSS_XESP32S3:-}"
+          "${MPY_CROSS_CP1021:-}"
+          "${MPY_CROSS:-}"
+          "$ROOT_DIR/../mcu_libs/circuitpython-10.2.1/mpy-cross/build/mpy-cross"
+          "$ROOT_DIR/../mcu_libs/circuitpython_10.2.1/mpy-cross/build/mpy-cross"
+          "$ROOT_DIR/../mcu_libs/circuitPython_10.2.1/mpy-cross/build/mpy-cross"
+          "$ROOT_DIR/../mcu_libs/circuitPython_10.x.x/mpy-cross/build/mpy-cross"
+          "$ROOT_DIR/../mcu_libs/circuitPython_10.x.x/mpy-cross-macos-10.2.1-arm64"
+          "$ROOT_DIR/../mcu_libs/mpy-cross-10.2.1/mpy-cross"
+          "$ROOT_DIR/tools/mpy-cross/xesp32s3/mpy-cross"
+          "$ROOT_DIR/tools/mpy-cross/10.2.1/mpy-cross"
+          "$ROOT_DIR/../mcu_libs/circuitpython/mpy-cross/build/mpy-cross"
+        )
+        command_candidates=(mpy-cross-cp1021 circuitpython10-mpy-cross mpy-cross)
+        ;;
+    esac
+  fi
 
   for candidate in "${candidates[@]}"; do
     [[ -n "$candidate" ]] || continue
@@ -187,7 +222,8 @@ compiler_matches_target() {
 
   version="$("$compiler" --version 2>&1 || true)"
   [[ "$version" == *"$REQUIRED_MPY_ABI"* ]] \
-    && [[ "$version" == *"$TARGET_COMPILER_VERSION_TOKEN"* ]]
+    && [[ "$version" == *"$TARGET_COMPILER_VERSION_TOKEN on "* \
+       || "$version" == *"$TARGET_COMPILER_VERSION_TOKEN-dirty on "* ]]
 }
 
 validate_compiler() {
@@ -215,7 +251,8 @@ validate_compiler() {
     exit 1
   fi
 
-  if [[ "$version" != *"$TARGET_COMPILER_VERSION_TOKEN"* ]]; then
+  if [[ "$version" != *"$TARGET_COMPILER_VERSION_TOKEN on "* \
+     && "$version" != *"$TARGET_COMPILER_VERSION_TOKEN-dirty on "* ]]; then
     echo "MPY compiler must match CircuitPython $TARGET_CIRCUITPY_VERSION for target $TARGET." >&2
     echo "Compiler: $compiler" >&2
     echo "Version: ${version:-unknown}" >&2
@@ -277,9 +314,12 @@ compile_package() {
 
   if [[ $CLEAN -eq 1 ]]; then
     if [[ $DRY_RUN -eq 1 ]]; then
-      echo "Would remove $TARGET_BUILD_ROOT"
-    else
+      echo "Would clean artifacts in $TARGET_BUILD_ROOT"
+    elif [[ "$TARGET_CIRCUITPY_VERSION" == "10.3.1" ]]; then
       rm -rf "$TARGET_BUILD_ROOT"
+    else
+      # Default artifacts share their parent with opt-in version directories.
+      rm -rf "$PACKAGE_OUT" "$LIB_OUT" "$BUILD_INFO"
     fi
   fi
 
@@ -376,6 +416,10 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --target)
       TARGET="${2:-}"
+      shift 2
+      ;;
+    --circuitpython-version)
+      CIRCUITPY_VERSION_OVERRIDE="${2:?--circuitpython-version requires a value}"
       shift 2
       ;;
     --compiler)
