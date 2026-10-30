@@ -14,6 +14,8 @@ MQTT_POLL_SOCKET_TIMEOUT_S = 1
 MQTT_SUBACK_SOCKET_TIMEOUT_S = MQTT_POLL_SOCKET_TIMEOUT_S
 MQTT_SUBACK_INTERLEAVED_LIMIT = 8
 MQTT_PUBACK_SOCKET_TIMEOUT_S = MQTT_POLL_SOCKET_TIMEOUT_S
+MQTT_PUBACK_INTERLEAVED_LIMIT = 8
+MQTT_PUBACK_MAX_PACKET_BYTES = 4096
 MQTT_CONNECT_RETRIES = 1
 MQTT_SLOW_OPERATION_MS = 5000
 MQTT_RAW_SEND_CHUNK_BYTES = 256
@@ -445,6 +447,7 @@ def sync_transport_to_client(
             payload,
             message.retain,
             startup_meta_publish=startup_meta_publish,
+            transport=transport,
         )
     except Exception as exc:
         elapsed_ms = _elapsed_ms(operation_started)
@@ -534,7 +537,9 @@ def sync_transport_to_client(
     )
 
 
-def _publish_mqtt(client, topic, payload, retain, *, startup_meta_publish=False):
+def _publish_mqtt(
+    client, topic, payload, retain, *, startup_meta_publish=False, transport=None
+):
     sock = getattr(client, "_sock", None)
     if sock is None or not callable(getattr(sock, "send", None)):
         client.publish(topic, payload, retain=retain)
@@ -546,7 +551,9 @@ def _publish_mqtt(client, topic, payload, retain, *, startup_meta_publish=False)
         and packet_size > MQTT_RAW_VERIFY_PUBLISH_BYTES
         and _socket_can_recv(sock)
     ):
-        return _publish_mqtt_qos1_verified(client, sock, topic, payload, retain)
+        return _publish_mqtt_qos1_verified(
+            client, sock, topic, payload, retain, transport
+        )
     packet = _mqtt_qos0_publish_packet(topic, payload, retain)
     _send_mqtt_packet(
         sock,
@@ -600,7 +607,7 @@ def _mqtt_publish_packet_size(topic, payload, *, qos=0):
     return 1 + len(_mqtt_remaining_length(remaining)) + remaining
 
 
-def _publish_mqtt_qos1_verified(client, sock, topic, payload, retain):
+def _publish_mqtt_qos1_verified(client, sock, topic, payload, retain, transport):
     packet_id = _next_mqtt_packet_id(client)
     packet = _mqtt_qos1_publish_packet(topic, payload, retain, packet_id)
     runtime_timeout = _poll_timeout_for_client(client)
@@ -621,7 +628,7 @@ def _publish_mqtt_qos1_verified(client, sock, topic, payload, retain):
                 MQTT_PUBACK_SOCKET_TIMEOUT_S,
             )
         puback_started = time.monotonic()
-        _read_mqtt_puback(sock, packet_id)
+        _read_mqtt_puback(sock, packet_id, transport)
         puback_elapsed_ms = _elapsed_ms(puback_started)
     except Exception as exc:
         puback_elapsed_ms = _elapsed_ms(puback_started)
@@ -1161,22 +1168,128 @@ def _mqtt_raw_publish_failure_detail(
     )
 
 
-def _read_mqtt_puback(sock, packet_id):
+def _read_mqtt_puback(sock, packet_id, transport):
+    """Await the matching PUBACK while queuing bounded incoming publications."""
+    # Keep receive and dispatch in this frame: nested exact-read/dispatch helpers
+    # add Pico2 W stack pressure. Preserve the caller's socket timeout handling.
     stage = "header"
+    deadline = time.monotonic() + MQTT_PUBACK_SOCKET_TIMEOUT_S
+    recv = getattr(sock, "recv", None)
+    recv_into = getattr(sock, "recv_into", None)
+    can_recv = callable(recv)
+    can_recv_into = callable(recv_into)
+    scratch = bytearray(1)
+    scratch_view = memoryview(scratch)
+    view = scratch_view
+    offset = 0
+    interleaved = 0
     try:
-        header = _recv_mqtt_byte(sock)
-        if header != 0x40:
-            raise OSError("mqtt_puback_unexpected:{:02x}".format(header))
-        stage = "remaining"
-        remaining = _recv_mqtt_remaining_length(sock)
-        stage = "payload"
-        payload = _recv_socket_exact(sock, remaining)
-        if len(payload) < 2:
-            raise OSError("mqtt_puback_short:{}".format(len(payload)))
-        stage = "packet_id"
-        received_id = (payload[0] << 8) | payload[1]
-        if received_id != packet_id:
-            raise OSError("mqtt_puback_packet_id:{}:{}".format(received_id, packet_id))
+        while True:
+            if time.monotonic() >= deadline:
+                raise OSError("mqtt_puback_deadline_timeout")
+            wanted = len(view) - offset
+            if can_recv:
+                data = recv(wanted)
+                count = len(data)
+                if count > wanted:
+                    raise OSError("mqtt_socket_recv_count_invalid")
+                view[offset:offset + count] = data
+                data = None
+            elif can_recv_into:
+                try:
+                    count = recv_into(view[offset:], wanted)
+                except TypeError as exc:
+                    if not _is_socket_nbytes_required_error(exc):
+                        raise
+                    count = recv_into(view[offset:])
+            else:
+                raise OSError("mqtt_socket_recv_unavailable")
+            if time.monotonic() >= deadline:
+                raise OSError("mqtt_puback_deadline_timeout")
+            if not count:
+                raise OSError("mqtt_socket_recv_empty")
+            if count < 0 or count > wanted:
+                raise OSError("mqtt_socket_recv_count_invalid")
+            offset += count
+            if offset < len(view):
+                continue
+            offset = 0
+            if stage == "header":
+                header = scratch[0]
+                if header not in (0x40, 0xD0):
+                    if header == 0xE0:
+                        raise OSError("mqtt_disconnect_packet")
+                    if header >> 4 != 3:
+                        raise OSError("mqtt_puback_unexpected:{:02x}".format(header))
+                    qos = (header >> 1) & 3
+                    if qos > 1:
+                        raise OSError("mqtt_publish_qos_unsupported:{}".format(qos))
+                stage = "remaining"
+                remaining = 0
+                multiplier = 1
+                continue
+            if stage == "remaining":
+                encoded = scratch[0]
+                remaining += (encoded & 0x7F) * multiplier
+                if remaining > MQTT_PUBACK_MAX_PACKET_BYTES:
+                    raise OSError("mqtt_puback_packet_too_large:{}".format(remaining))
+                if encoded & 0x80:
+                    multiplier *= 128
+                    if multiplier > 128 * 128 * 128:
+                        raise OSError("mqtt_remaining_length_invalid")
+                    continue
+                if header == 0x40 and remaining != 2:
+                    raise OSError("mqtt_puback_length:{}".format(remaining))
+                if header == 0xD0 and remaining != 0:
+                    raise OSError("mqtt_pingresp_length:{}".format(remaining))
+                if header != 0x40 and interleaved >= MQTT_PUBACK_INTERLEAVED_LIMIT:
+                    raise OSError("mqtt_puback_interleaved_limit")
+                if header == 0xD0:
+                    interleaved += 1
+                    stage = "header"
+                    continue
+                if header >> 4 == 3 and remaining < 2:
+                    raise OSError("mqtt_publish_short:{}".format(remaining))
+                packet = bytearray(remaining)
+                view = memoryview(packet)
+                stage = "payload"
+                continue
+            if header == 0x40:
+                stage = "packet_id"
+                received_id = (packet[0] << 8) | packet[1]
+                if received_id != packet_id or received_id == 0:
+                    raise OSError(
+                        "mqtt_puback_packet_id:{}:{}".format(received_id, packet_id)
+                    )
+                return
+            stage = "interleaved_publish"
+            topic_end = 2 + ((packet[0] << 8) | packet[1])
+            if topic_end == 2 or topic_end > len(packet):
+                raise OSError("mqtt_publish_topic_invalid")
+            try:
+                topic = packet[2:topic_end].decode("utf-8")
+            except Exception:
+                topic = bytes(packet[2:topic_end]).decode("utf-8", errors="ignore")
+            payload_offset = topic_end
+            if qos:
+                if len(packet) < payload_offset + 2:
+                    raise OSError("mqtt_publish_packet_id_short")
+                incoming_id = (packet[payload_offset] << 8) | packet[payload_offset + 1]
+                if incoming_id == 0:
+                    raise OSError("mqtt_publish_packet_id_zero")
+                payload_offset += 2
+                _send_mqtt_packet(sock, _mqtt_puback_packet(incoming_id))
+            try:
+                payload_text = packet[payload_offset:].decode("utf-8")
+            except Exception:
+                payload_text = bytes(packet[payload_offset:]).decode(
+                    "utf-8", errors="ignore"
+                )
+            transport.receive(topic, payload_text)
+            interleaved += 1
+            view = scratch_view
+            packet = None
+            stage = "header"
     except Exception as exc:
         raise OSError("mqtt_puback_stage={}:{}".format(stage, exc))
 
@@ -1688,7 +1801,8 @@ def _is_mqtt_poll_no_data_error(exc):
         return True
     if "would block" in text or "again" in text:
         return True
-    return "mqtt_socket_recv_empty" in text
+    # A zero-byte receive is EOF, not an idle timeout/would-block poll.
+    return False
 
 
 def _is_pystack_exhausted(exc):

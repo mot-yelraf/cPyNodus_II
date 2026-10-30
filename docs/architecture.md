@@ -229,6 +229,15 @@ the device:
   packets, including retained PUBLISH messages. This prevents retained command
   delivery from being misclassified as an unexpected SUBACK while keeping the
   constrained startup path bounded.
+- The raw PUBACK wait accepts at most eight interleaved QoS 0/1 PUBLISH or
+  PINGRESP packets before the matching ACK. PUBLISH messages enter the existing
+  receive queue for normal shallow command dispatch; QoS 1 messages receive
+  their protocol PUBACK. No feature handler executes inside the reader.
+  Bodies are capped at 4096 bytes before allocation. An absolute one-second
+  deadline is checked before and after native reads and is not renewed by
+  partial reads or interleaved packets. Native calls cannot be preempted if
+  they overrun. Socket timeout configuration/restoration stays on the existing
+  caller path; malformed packets and failed waits enter existing recovery.
 - Pre-operational MQTT recovery is bounded. Slow startup publishes, errno 119
   socket-progress failures, errno 116 CONNECT/SUBACK timeouts, and associated
   errno 12 allocation failures share the same recovery episode. The first

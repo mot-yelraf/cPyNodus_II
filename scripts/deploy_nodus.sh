@@ -11,6 +11,7 @@ MPY_LIB_ROOT="$MPY_TARGET_ROOT/lib"
 MPY_VERSION_ARTIFACT="$MPY_BUILD_ROOT/__init__.mpy"
 MPY_BUILD_INFO="$MPY_TARGET_ROOT/BUILD_INFO"
 MPY_TARGET_CIRCUITPY_VERSION="9.2.8"
+CIRCUITPY_VERSION_OVERRIDE=""
 MPY_REQUIRED_ABI="mpy v6.3"
 DEPRECATED_MANIFEST="$ROOT_DIR/scripts/deprecated_target_files.txt"
 MPY_REBUILD_DEFERRED=0
@@ -63,7 +64,18 @@ set_mpy_target_paths() {
       exit 2
       ;;
   esac
+  if [[ -n "$CIRCUITPY_VERSION_OVERRIDE" ]]; then
+    if [[ "$CIRCUITPY_VERSION_OVERRIDE" != "$MPY_TARGET_CIRCUITPY_VERSION" \
+       && "$CIRCUITPY_VERSION_OVERRIDE" != "10.3.1" ]]; then
+      echo "Unsupported CircuitPython $CIRCUITPY_VERSION_OVERRIDE for $MPY_TARGET; use $MPY_TARGET_CIRCUITPY_VERSION or 10.3.1." >&2
+      exit 2
+    fi
+    MPY_TARGET_CIRCUITPY_VERSION="$CIRCUITPY_VERSION_OVERRIDE"
+  fi
   MPY_TARGET_ROOT="$ROOT_DIR/build/firmware/$MPY_TARGET"
+  if [[ "$MPY_TARGET_CIRCUITPY_VERSION" == "10.3.1" ]]; then
+    MPY_TARGET_ROOT="$MPY_TARGET_ROOT/10.3.1"
+  fi
   MPY_BUILD_ROOT="$MPY_TARGET_ROOT/cpynodus_ii"
   MPY_LIB_ROOT="$MPY_TARGET_ROOT/lib"
   MPY_VERSION_ARTIFACT="$MPY_BUILD_ROOT/__init__.mpy"
@@ -118,7 +130,8 @@ mpy_build_info_rebuild_reason() {
   fi
 
   value="$(build_info_value "compiler_version")"
-  if [[ "$value" != *"CircuitPython $MPY_TARGET_CIRCUITPY_VERSION"* ]]; then
+  if [[ "$value" != *"CircuitPython $MPY_TARGET_CIRCUITPY_VERSION on "* \
+     && "$value" != *"CircuitPython $MPY_TARGET_CIRCUITPY_VERSION-dirty on "* ]]; then
     echo "MPY compiler version does not match target CircuitPython $MPY_TARGET_CIRCUITPY_VERSION"
     return 0
   fi
@@ -165,6 +178,10 @@ Options:
                       compiled build/firmware/<target>/cpynodus_ii/*.mpy,
                       removing matching target cpynodus_ii/*.py first. It runs
                       scripts/nodus_mpy.sh first when artifacts are stale.
+  --circuitpython-version VALUE
+                      MPY builds only: select 10.3.1 for either MCU, or its
+                      default (pico2w=9.2.8, xesp32s3=10.2.1).
+                      Uses version-specific 10.3.1 artifacts and libraries.
   --dry-run           Show what would be copied, do not write anything.
   --force             Skip CIRCUITPY path safety guard.
   --delete            Delete files on destination not present in source set.
@@ -210,6 +227,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --content)
       CONTENT="${2:-}"
+      shift 2
+      ;;
+    --circuitpython-version)
+      CIRCUITPY_VERSION_OVERRIDE="${2:?--circuitpython-version requires a value}"
       shift 2
       ;;
     --dry-run)
@@ -281,6 +302,9 @@ esac
 
 if [[ "$CONTENT" == *"-mpy" ]]; then
   set_mpy_target_paths
+elif [[ -n "$CIRCUITPY_VERSION_OVERRIDE" ]]; then
+  echo "--circuitpython-version requires --content pico2w-mpy or xesp32s3-mpy." >&2
+  exit 2
 fi
 
 if ! command -v rsync >/dev/null 2>&1; then
@@ -454,13 +478,14 @@ run_mpy_build_if_needed() {
   fi
 
   if [[ $DRY_RUN -eq 1 ]]; then
-    echo "Would run ${MPY_BUILD_SCRIPT#$ROOT_DIR/} --target $MPY_TARGET before --content $CONTENT deploy: $reason"
+    echo "Would run ${MPY_BUILD_SCRIPT#$ROOT_DIR/} --target $MPY_TARGET --circuitpython-version $MPY_TARGET_CIRCUITPY_VERSION before --content $CONTENT deploy: $reason"
     MPY_REBUILD_DEFERRED=1
     return 0
   fi
 
-  echo "Running ${MPY_BUILD_SCRIPT#$ROOT_DIR/} --target $MPY_TARGET before --content $CONTENT deploy: $reason"
-  "$MPY_BUILD_SCRIPT" --target "$MPY_TARGET"
+  echo "Running ${MPY_BUILD_SCRIPT#$ROOT_DIR/} --target $MPY_TARGET --circuitpython-version $MPY_TARGET_CIRCUITPY_VERSION before --content $CONTENT deploy: $reason"
+  "$MPY_BUILD_SCRIPT" --target "$MPY_TARGET" \
+    --circuitpython-version "$MPY_TARGET_CIRCUITPY_VERSION"
 }
 
 validate_mpy_build() {
@@ -481,7 +506,7 @@ validate_mpy_build() {
   metadata_reason="$(mpy_build_info_rebuild_reason)"
   if [[ -n "$metadata_reason" ]]; then
     echo "MPY build metadata does not match --content $CONTENT: $metadata_reason" >&2
-    echo "Run ${MPY_BUILD_SCRIPT#$ROOT_DIR/} --target $MPY_TARGET first." >&2
+    echo "Run ${MPY_BUILD_SCRIPT#$ROOT_DIR/} --target $MPY_TARGET --circuitpython-version $MPY_TARGET_CIRCUITPY_VERSION first." >&2
     exit 1
   fi
 

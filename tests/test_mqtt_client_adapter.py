@@ -1408,6 +1408,216 @@ def test_sync_transport_to_client_keeps_mid_size_raw_publish_qos0():
     assert sock.incoming == bytearray(b"\x40\x02\x00\x01")
 
 
+@pytest.mark.parametrize("qos", [0, 1])
+@pytest.mark.parametrize("receive_api", ["recv", "recv_into", "recv_into_one_arg"])
+def test_metadata_puback_queues_interleaved_commands(qos, receive_api, monkeypatch):
+    transport = MQTTTransport("broker.local", 1883)
+    adapter = build_mqtt_client_adapter(
+        _runtime_config(),
+        socket_pool=object(),
+        modules={"mqtt_cls": _PubackSocketPublishMQTTClient},
+    )
+    adapter = connect_mqtt_client(adapter, transport).adapter
+    sock = adapter.client._sock
+    initial_timeouts = list(sock.timeouts)
+    for helper in (
+        "_recv_mqtt_byte",
+        "_recv_socket_exact",
+        "_receive_subscribe_publish",
+    ):
+        monkeypatch.setattr(
+            mqtt_client_module,
+            helper,
+            lambda *_: pytest.fail("deep ACK helper entered"),
+        )
+    topic = "nodus/S1-x943fm/config/set"
+    payload = '{"message_id":"puback-1","payload":{"state":"ON"}}'
+    incoming = mqtt_client_module._mqtt_publish_packet(
+        topic, payload, True, qos=qos, packet_id=17
+    )
+    sock.incoming = incoming + b"\xd0\x00\x40\x02\x00\x01"
+    if receive_api == "recv":
+        sock.recv = lambda size: _PubackSocket.recv(sock, min(size, 7))
+    else:
+
+        def receive(buffer, size):
+            # Partial reads exercise the body receive loop as well as headers.
+            data = _PubackSocket.recv(sock, min(size, 7))
+            buffer[: len(data)] = data
+            return len(data)
+
+        sock.recv_into = (
+            receive
+            if receive_api == "recv_into"
+            else lambda buffer: receive(buffer, len(buffer))
+        )
+        sock.recv = None
+    adapter.client.on_message = lambda *_: pytest.fail(
+        "feature callback ran in ACK read"
+    )
+    meta_topic = "nodus/avpd-test/meta/switch"
+    transport.publish(meta_topic, "{}", retain=True)
+
+    result = sync_transport_to_client(adapter, transport)
+
+    assert result.phase == "synced"
+    assert result.published_count == 1
+    assert transport.connected is True
+    assert transport.published_messages == []
+    assert [(m.topic, m.payload_text) for m in transport.received_messages] == [
+        (topic, payload)
+    ]
+    expected = bytes(
+        mqtt_client_module._mqtt_qos1_publish_packet(meta_topic, "{}", True, 1)
+    )
+    if qos:
+        expected += b"\x40\x02\x00\x11"
+    assert sock.sent == expected
+    assert sock.incoming == b""
+    assert "last_ack_kind=puback" in transport.ack_diagnostic()
+    # Runtime timeout is already one second: do not add timeout-setting churn.
+    assert sock.timeouts == initial_timeouts
+
+
+@pytest.mark.parametrize(
+    "incoming, error",
+    [
+        (b"\x40\x02\x00\x02", "mqtt_puback_packet_id:2:1"),
+        (b"\x40\x02\x00\x00", "mqtt_puback_packet_id:0:1"),
+        (b"\x40\x01", "mqtt_puback_length:1"),
+        (b"\x40\x03", "mqtt_puback_length:3"),
+        (b"\x41\x02\x00\x01", "mqtt_puback_unexpected:41"),
+        (b"\xd0\x01", "mqtt_pingresp_length:1"),
+        (b"\xe0\x00", "mqtt_disconnect_packet"),
+        (b"\x90\x03\x00\x01\x00", "mqtt_puback_unexpected:90"),
+        (b"\x30\x81\x20", "mqtt_puback_packet_too_large:4097"),
+        (b"\x30\x80\x80\x80\x80", "mqtt_remaining_length_invalid"),
+        (b"\x30\x01\x00", "mqtt_publish_short"),
+        (b"\x30\x02\x00\x00", "mqtt_publish_topic_invalid"),
+        (b"\x30\x03\x00\x02x", "mqtt_publish_topic_invalid"),
+        (b"\x32\x03\x00\x01x", "mqtt_publish_packet_id_short"),
+        (b"\x32\x05\x00\x01x\x00\x00", "mqtt_publish_packet_id_zero"),
+        (b"\x34", "mqtt_publish_qos_unsupported:2"),
+        (b"\x36", "mqtt_publish_qos_unsupported:3"),
+        (b"\xd0\x00" * 9, "mqtt_puback_interleaved_limit"),
+    ],
+)
+def test_puback_rejects_invalid_or_excess_packets(incoming, error):
+    sock = _PubackSocket(incoming)
+    transport = MQTTTransport("broker.local", 1883)
+    with pytest.raises(OSError, match=error):
+        mqtt_client_module._read_mqtt_puback(sock, 1, transport)
+    assert transport.received_messages == []
+    assert sock.sent == b""
+    assert sock.timeouts == []
+
+
+@pytest.mark.parametrize("receive_api", ["recv", "recv_into"])
+@pytest.mark.parametrize("prefix", [b"", b"\x40", b"\x40\x02\x00"])
+def test_puback_eof_fails_in_each_packet_stage(receive_api, prefix):
+    class EOFSocket(_PubackSocket):
+        def recv(self, size):
+            return super().recv(size) if self.incoming else b""
+
+        def recv_into(self, buffer, size):
+            data = EOFSocket.recv(self, size)
+            buffer[: len(data)] = data
+            return len(data)
+
+    sock = EOFSocket(prefix)
+    if receive_api == "recv_into":
+        sock.recv = None
+    with pytest.raises(OSError, match="mqtt_socket_recv_empty"):
+        mqtt_client_module._read_mqtt_puback(sock, 1, MQTTTransport("broker", 1883))
+
+
+def test_puback_accepts_eight_in_order_publications_including_maximum_body():
+    transport = MQTTTransport("broker", 1883)
+    incoming = bytearray()
+    payloads = [str(i) for i in range(7)] + ["x" * 4093]
+    for payload in payloads:
+        incoming.extend(
+            mqtt_client_module._mqtt_qos0_publish_packet("x", payload, False)
+        )
+    incoming.extend(b"\x40\x02\x00\x01")
+    sock = _PubackSocket(incoming)
+    mqtt_client_module._read_mqtt_puback(sock, 1, transport)
+    assert [m.payload_text for m in transport.received_messages] == payloads
+    assert sock.incoming == b""
+    assert sock.timeouts == []
+
+
+def test_puback_stops_before_queuing_ninth_publication():
+    message = mqtt_client_module._mqtt_qos0_publish_packet("x", "cmd", False)
+    sock = _PubackSocket(message * 9 + b"\x40\x02\x00\x01")
+    transport = MQTTTransport("broker", 1883)
+    with pytest.raises(OSError, match="mqtt_puback_interleaved_limit"):
+        mqtt_client_module._read_mqtt_puback(sock, 1, transport)
+    assert len(transport.received_messages) == 8
+    assert sock.incoming.endswith(b"\x40\x02\x00\x01")
+
+
+@pytest.mark.parametrize("incoming", [b"\xd0\x00" * 8, b"\x40\x02\x00\x01"])
+def test_puback_deadline_does_not_restart_on_packets_or_partial_reads(
+    incoming, monkeypatch
+):
+    clock = [0.0]
+    monkeypatch.setattr(mqtt_client_module.time, "monotonic", lambda: clock[0])
+
+    class SlowSocket(_PubackSocket):
+        def recv(self, size):
+            clock[0] += 0.3
+            return super().recv(1)
+
+    sock = SlowSocket(incoming)
+    with pytest.raises(OSError, match="mqtt_puback_deadline_timeout"):
+        mqtt_client_module._read_mqtt_puback(sock, 1, MQTTTransport("broker", 1883))
+    assert clock[0] == pytest.approx(1.2)
+    assert sock.timeouts == []
+
+
+def test_puback_deadline_rejects_ack_after_slow_inbound_ack_send(monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(mqtt_client_module.time, "monotonic", lambda: clock[0])
+    incoming = mqtt_client_module._mqtt_qos1_publish_packet("x", "cmd", False, 17)
+
+    class SlowAckSocket(_PubackSocket):
+        def send(self, buffer):
+            clock[0] += 2.0
+            return super().send(buffer)
+
+    sock = SlowAckSocket(incoming + b"\x40\x02\x00\x01")
+    transport = MQTTTransport("broker", 1883)
+    with pytest.raises(OSError, match="mqtt_puback_deadline_timeout"):
+        mqtt_client_module._read_mqtt_puback(sock, 1, transport)
+    assert sock.sent == b"\x40\x02\x00\x11"
+    assert [m.payload_text for m in transport.received_messages] == ["cmd"]
+    assert sock.incoming == b"\x40\x02\x00\x01"
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_puback_preserves_existing_nondefault_timeout_restoration(failure):
+    transport = MQTTTransport("broker", 1883)
+    adapter = build_mqtt_client_adapter(
+        _runtime_config(),
+        socket_pool=object(),
+        modules={"mqtt_cls": _PubackSocketPublishMQTTClient},
+    )
+    adapter = connect_mqtt_client(adapter, transport).adapter
+    adapter.client._socket_timeout = 3
+    sock = adapter.client._sock
+    sock.timeouts.clear()
+    if failure:
+        sock.incoming = bytearray(b"\x40\x02\x00\x02")
+    transport.publish("nodus/avpd-test/meta", "{}", retain=True)
+    result = sync_transport_to_client(adapter, transport)
+    assert result.phase == ("error" if failure else "synced")
+    assert sock.timeouts == [1, 3.0]
+    assert transport.connected is (not failure)
+    if failure:
+        assert len(transport.published_messages) == 1
+
+
 def test_sync_transport_to_client_reports_startup_puback_timeout_by_default():
     runtime_config = _runtime_config()
     transport = MQTTTransport("broker.local", 1883)
@@ -1708,6 +1918,76 @@ def test_poll_mqtt_client_receives_qos0_publish_on_recv_into_only_socket():
         len(_mqtt_publish_packet("nodus/S1-x943fm/config/set", "ON")) - 2,
     ]
     assert connect_result.adapter.client._sock.incoming == bytearray()
+
+
+@pytest.mark.parametrize("recv_into", [False, True])
+@pytest.mark.parametrize("prefix", [b"", b"\x30", b"\x30\x04\x00"])
+def test_poll_mqtt_client_reports_eof_as_transport_failure(recv_into, prefix):
+    class EOFSocket(_SocketPoll):
+        def recv(self, size):
+            return super().recv(size) if self.incoming else b""
+
+        def recv_into(self, buffer, size):
+            if not self.incoming:
+                return 0
+            data = _SocketPoll.recv(self, size)
+            buffer[: len(data)] = data
+            return len(data)
+
+    transport = MQTTTransport("broker.local", 1883)
+    adapter = build_mqtt_client_adapter(
+        _runtime_config(), socket_pool=object(), modules={"mqtt_cls": _FakeMQTTClient}
+    )
+    adapter = connect_mqtt_client(adapter, transport).adapter
+    sock = EOFSocket(prefix)
+    if recv_into:
+        sock.recv = None
+    adapter.client._sock = sock
+    result = poll_mqtt_client(adapter, transport)
+
+    assert result.phase == "error"
+    assert result.received_count == 0
+    assert "mqtt_socket_recv_empty" in result.errors[0]
+    assert "mqtt_socket_recv_empty" in transport.last_disconnect_reason
+    assert transport.connected is False
+    assert transport.received_messages == []
+    assert transport.last_loop_socket_state == ""
+
+
+@pytest.mark.parametrize("recv_into", [False, True])
+@pytest.mark.parametrize("errno", [11, 116])
+@pytest.mark.parametrize("prefix", [b"", b"\x30", b"\x30\x04\x00"])
+def test_poll_mqtt_client_only_tolerates_timeout_before_packet(
+    recv_into, errno, prefix
+):
+    class TimeoutSocket(_SocketPoll):
+        def recv(self, size):
+            if not self.incoming:
+                raise OSError(errno)
+            return super().recv(size)
+
+        def recv_into(self, buffer, size):
+            if not self.incoming:
+                raise OSError(errno)
+            data = _SocketPoll.recv(self, size)
+            buffer[: len(data)] = data
+            return len(data)
+
+    transport = MQTTTransport("broker.local", 1883)
+    adapter = build_mqtt_client_adapter(
+        _runtime_config(), socket_pool=object(), modules={"mqtt_cls": _FakeMQTTClient}
+    )
+    adapter = connect_mqtt_client(adapter, transport).adapter
+    sock = TimeoutSocket(prefix)
+    if recv_into:
+        sock.recv = None
+    adapter.client._sock = sock
+    result = poll_mqtt_client(adapter, transport)
+
+    assert result.phase == ("error" if prefix else "polled")
+    assert result.received_count == 0
+    assert transport.connected is (not bool(prefix))
+    assert transport.received_messages == []
 
 
 def test_poll_mqtt_client_treats_socket_timeout_as_empty_poll():

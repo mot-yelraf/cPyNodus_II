@@ -133,6 +133,24 @@ Examples:
 - Build compiled package artifacts first:
   - `scripts/nodus_mpy.sh --target pico2w`
   - `scripts/nodus_mpy.sh --target xesp32s3`
+- Opt in to CircuitPython 10.3.1 for either MCU:
+
+  ```sh
+  scripts/nodus_mpy.sh --target pico2w --circuitpython-version 10.3.1 --clean
+  scripts/nodus_mpy.sh --target xesp32s3 --circuitpython-version 10.3.1 --clean
+  ```
+
+  Operator deployment must select the same version, for example:
+
+  ```sh
+  scripts/deploy_nodus.sh --target /Volumes/CIRCUITPY \
+    --content pico2w-mpy --circuitpython-version 10.3.1 --dry-run
+  ```
+
+  Use `--content xesp32s3-mpy` for XIAO. Remove `--dry-run` to copy. Install the
+  matching board's CircuitPython 10.3.1 runtime separately; these scripts build
+  and copy application artifacts, not the CircuitPython UF2/BIN. Runtime behavior
+  on 10.3.1 remains an operator validation target, not a verified baseline.
 
 Notes:
 
@@ -148,11 +166,29 @@ Notes:
   requested target, CircuitPython version, MPY ABI, compiler path/version, and
   staged library source. Deploy validates it before syncing so `pico2w-mpy`
   and `xesp32s3-mpy` cannot accidentally deploy the wrong firmware image.
+  With `--circuitpython-version 10.3.1`, all three paths instead live under
+  `build/firmware/<target>/10.3.1/`. Default builds and 10.3.1 builds coexist;
+  `--clean` resets only the selected build's artifacts. Deploy validates
+  the requested version and passes it through to any automatic rebuild.
 - `scripts/nodus_mpy.sh` requires a compiler that reports the matching
   CircuitPython version and emits `mpy v6.3`: Pico2 W uses CircuitPython
-  `9.2.8`, and XIAO ESP32-S3 uses CircuitPython `10.2.1`. Set
+  `9.2.8` by default, and XIAO ESP32-S3 defaults to `10.2.1`. Both accept
+  `--circuitpython-version 10.3.1`; other target/version combinations are rejected.
+  For 10.3.1 the scripts discover the prebuilt compiler under
+  `~/Projects/mcu_libs/circuitPython_10.x.x/mpy-cross-macos-10.3.1-arm64`
+  (or `-x86_64`), and stage the selected dependencies from
+  `adafruit-circuitpython-bundle-10.x-mpy-20261030/lib` in that directory.
+  Set `MPY_CROSS_CP1031` to share an alternate 10.3.1 compiler across both targets.
+  Set
   `MPY_CROSS_PICO2W` or `MPY_CROSS_XESP32S3`, or pass `--compiler`, when the
   compiler is outside the standard `~/Projects/mcu_libs` layout.
+  `--lib-source` overrides the build script's bundle location. Libraries are
+  copied as precompiled `.mpy` files; the project modules are freshly compiled.
+  `BUILD_INFO` records both sources. Device import/API compatibility and MQTT
+  stability still require on-device checks. Existing OTA release procedures
+  retain their verified target versions; this option does not migrate OTA.
+  Compiler version checks also accept the existing local `-dirty` build suffix
+  for the selected release; the full compiler banner remains in `BUILD_INFO`.
 - Target MPY deploys sync root startup files, board TOML templates, compiled
   `.mpy` files, and the target library tree. Before copying
   the compiled package, deploy removes matching `cpynodus_ii/*.py` files from
