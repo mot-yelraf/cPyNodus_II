@@ -234,6 +234,36 @@ python scripts/nodus_log_analyze.py --device-id co2-v5p04u
 
 ## Troubleshooting
 
+### Raw socket EOF
+
+Firmware `v0.26.303.1` isolates the handoff's EOF correction. A zero-byte
+`recv()` or `recv_into()` result now fails the MQTT poll with
+`mqtt_socket_recv_empty` and marks the transport disconnected for existing
+app-owned recovery. Timeout/would-block before the first packet byte remains
+an idle poll; EOF or timeout after a packet begins is a failure.
+
+This change does not revise socket cleanup ownership, PUBACK reads, timeouts,
+QoS, command handling, or the recovery classifier. It is not a confirmed fix
+for spontaneous native send stalls. See the
+[isolated correction and validation record](../testApparatus/mqtt_soak_test.md#october-30-isolated-eof-correction).
+
+### PUBACK interleaving
+
+Firmware `v0.26.303.2` adds the handoff's PUBACK correction on top of the EOF
+change. While awaiting a matching PUBACK, the adapter queues up to eight
+interleaved QoS 0/1 publications or accepts PINGRESP. Incoming QoS 1 messages
+receive their protocol ACK; feature handlers run only through normal shallow
+dispatch afterward. Packet bodies are limited to 4096 bytes before allocation.
+QoS 2/3, malformed packets, mismatched ACK IDs, EOF and failed waits are errors.
+
+One absolute one-second deadline covers the wait, including partial reads and
+interleaved traffic. It is checked around native receives and between packets;
+native calls can overrun and cannot be interrupted by this reader. Existing
+socket timeout setup/restoration, outgoing publication QoS/payloads, cleanup
+ownership and recovery classification remain unchanged. This correction is
+not a confirmed cure for native send stalls. See the
+[normal-app validation procedure](../testApparatus/mqtt_soak_test.md#october-30-isolated-puback-correction).
+
 ### Validate Command Subscriptions After Recovery
 
 Host regression tests model an empty or partially drained subscription queue,

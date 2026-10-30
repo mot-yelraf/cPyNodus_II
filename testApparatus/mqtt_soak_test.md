@@ -321,6 +321,189 @@ timeouts or delayed full-count sends verify detection and sequencing, not
 reproduction of the initiating native transport fault. Do not shorten publish
 intervals or add artificial heap pressure until the baseline is recorded.
 
+## October 30 normal-app serial review
+
+Read-only review through approximately 16:48 local time covered Pico2 W /
+CircuitPython 9.2.8 captures `~/cu.usbmodem21233401.log` (CO2, `303.1`, RWFS)
+and `~/cu.usbmodem21234201.log` (AVPD, `303.1` then `303.2`, ROFS then RWFS).
+The operator identified an induced restart section; the supplied line range
+`57130-37445` was interpreted as AVPD lines 57130-57445 and excluded. Explicit
+KeyboardInterrupt sessions were not counted as spontaneous recovery failures.
+Version labels do not independently establish deployed source/MPY equality.
+
+- CO2 metadata PUBACK timeouts at 07:15:13, 09:00:19, 10:15:16 and 16:00:19
+  each recovered without reboot in 8-10 seconds. An initial reconnect reported
+  `Out of sockets`; the subsequent reconnect restored four device subscriptions
+  and two switch subscriptions and reached the operational checkpoint.
+- AVPD `303.2` at 14:26:59 reported a startup metadata PUBACK timeout, then
+  ENOMEM at 14:27:00. Station reset and socket/client rebuild reached the
+  operational checkpoint at 14:27:16 without reboot (lines 57474-57503).
+- Approximately ten-second send stalls persist: CO2 `303.1` at 11:47:14 and
+  15:18:11; AVPD `303.2` at 10:54:44, 13:14:21, 13:40:10 and 15:18:13.
+  These entered existing native-poison hard-reset recovery; operational
+  checkpoints followed in approximately 30-39 seconds. AVPD `303.1` also
+  stalled at 06:52:56. Startup experiments and interrupted runs are separate
+  from these steady-state observations and do not establish a failure rate.
+- The near-simultaneous 15:18 stalls warrant correlation with broker/network
+  evidence; a shared initiating event remains a hypothesis. `Socket not managed`
+  remains subject to the ownership-mismatch caveat in the investigation handoff.
+- At the snapshot end both devices reported idle recovery, MQTT connected and
+  empty queues, with post-GC free heap about 49.7 KB CO2 / 48.9 KB AVPD.
+
+No `mqtt_socket_recv_empty` or `mqtt_puback_unexpected` event was found in the
+reviewed normal-app intervals. These captures demonstrate serial-side recovery
+completion, but do not directly exercise the EOF correction or establish PUBACK
+interleaving. Matching broker/TCP evidence was not reviewed; resumed delivery,
+command handling and spontaneous-stall resolution remain unconfirmed. No device
+writes or live commands were performed during this review.
+
+## October 30 isolated PUBACK correction
+
+Firmware `v0.26.303.2` adds only bounded PUBACK interleaving to the existing
+`303.1` EOF correction. Raw-socket cleanup/manager ownership, app recovery
+classification (including the pending `Out of sockets` gap), startup order,
+QoS selection, send chunking and socket timeout setup/restoration are unchanged.
+
+The PUBACK reader uses one receive/dispatch frame, replacing its nested
+exact-read helpers. It accepts a matching PUBACK after at most eight PUBLISH
+or PINGRESP packets. PUBLISH bodies are capped at 4096 bytes before allocation;
+QoS 0/1 messages enter the existing inbound queue, and QoS 1 receives its protocol
+ACK. Feature handlers, imports and persistence never execute inside this reader.
+The one-second deadline is checked before/after native receives and between
+packets, without per-byte timeout changes. It cannot preempt native receive or
+send calls that overrun; a late PUBACK is not accepted after they return.
+
+Resource effects: the common ACK path holds a one-byte scratch buffer, views
+and a two-byte ACK body. An interleaved packet adds at most 4096 body bytes,
+receive/decoding copies and its queued message. The outgoing metadata packet
+remains resident until the wait returns. Up to eight additional messages can
+be queued per wait; this is not a global transport queue bound. No new task,
+persistent adapter state or imports are added. The larger reader adds resident
+bytecode; Pico2 W heap/stack headroom remains a device validation requirement.
+Using the existing `9.2.8-dirty` / MPY v6.3 compiler with identical source labels,
+the compiled adapter grows from 30122 to 31402 bytes (**1280 bytes**). This
+artifact-size difference is not a measurement of live heap or stack use.
+
+Host fault cases first reproduced PUBLISH rejection on all three supported
+receive API forms. Coverage includes ordered QoS 0/1 queueing, protocol ACK IDs,
+partial reads, EOF, malformed/oversized packets, unsupported incoming QoS,
+interleaving limits, absolute deadlines, and existing timeout restoration.
+No new probe mode or unchanged long probe soak is proposed: earlier long runs
+did not reproduce the full application failure.
+
+Host verification for this candidate:
+
+- `pytest -q tests/test_mqtt_client_adapter.py tests/test_command_intake.py tests/test_publish_cycle.py tests/test_mqtt_soak_apparatus.py tests/test_network_stack.py tests/test_recovery_policy.py tests/test_app_startup.py --tb=short --show-capture=no`:
+  **426 passed**.
+- `pytest -q tests --tb=short --show-capture=no`: **1164 passed**, with local
+  socket access enabled for the HTTP probe test.
+- Ruff checks on the changed runtime/test Python files and `git diff --check`:
+  passed.
+- `scripts/nodus_mpy.sh --target pico2w --circuitpython-version 9.2.8`:
+  **72 modules compiled**, with matching `v0.26.303.2` build metadata.
+- Source checks confirmed raw cleanup, SUBACK and shared receive helpers still
+  match baseline `51d8294`; app recovery code was not edited.
+
+After operator deployment on CircuitPython 9.2.8, capture serial, broker
+subscriber output and broker TCP traffic in the normal combined application.
+Confirm startup metadata, subscriptions and ongoing heartbeat/data/availability
+before command tests. Use fresh IDs for harmless single-key config commands
+during deferred retained metadata work. Require TCP evidence of an incoming
+PUBLISH before the outgoing metadata's matching PUBACK; timing commands close
+together alone does not establish interleaving. Correlate normal command
+ACK/result/patch and deferred metadata, followed by two availability cycles.
+For switch commands, use the separate operator-approved safe relay procedure
+and check event/state, physical output and persistence independently.
+
+Record exact artifacts, profile, filesystem mode, broker interface and cold
+versus warm startup. Stop on missing confirmations, stack/memory errors or
+recovery; do not change cleanup or reset policy to compensate. Hardware and
+broker validation of this candidate remain pending. No live commands, relay
+actions or device writes are performed by the agent.
+
+## October 30 isolated EOF correction
+
+The October 30 review inspected the latest ongoing real-sensor/real-switch runs
+using apparatus `2026-10-28.2`, RWFS, broker `10.0.0.241`, `recover=False`:
+
+| Device | Mode / reported firmware | Inspected elapsed time | Operations |
+| --- | --- | --- | --- |
+| CO2 `co2-pmoopn` | adapter / `v0.26.302.2` | 48749.969 s (13.54 h) | 7198 |
+| AVPD `avpd-zbcalz` | flat / `v0.26.289.5` | 48729.609 s (13.54 h) | 7131 |
+
+Neither inspected run contains a failure, error operation, slow-send record,
+cleanup or final summary. These are ongoing intervals, not completed 14-hour
+results. The operator's pasted subscriber excerpt contains heartbeat, sensor
+and channel availability traffic for both devices; it does not establish every
+packet's delivery over the entire interval. Exact deployed artifact equality
+was not independently verified. The probe again did not reproduce the normal
+application's failure; no further unchanged probe soak is proposed here.
+
+With operator authorization to implement the handoff corrections one at a time,
+`v0.26.303.1` changes only EOF classification in the adapter. Zero-byte raw
+receive now fails the poll and marks the transport disconnected. Existing
+recovery receives that failure. The raw cleanup mismatch and PUBACK reader
+remain at the rollback baseline, including the current native-poison classifier
+inputs. No new imports, buffers, call frames or background state are added.
+
+The new host cases cover both receive APIs at header, remaining-length and
+payload EOF, valid idle timeouts, and failure on timeout after a packet begins.
+Before the fix, both initial EOF cases failed while the other 16 cases passed.
+Hardware and broker validation of this isolated candidate remain pending.
+
+Host verification for the isolated candidate:
+
+- `pytest -q tests/test_mqtt_client_adapter.py tests/test_command_intake.py tests/test_publish_cycle.py tests/test_mqtt_soak_apparatus.py tests/test_network_stack.py tests/test_recovery_policy.py tests/test_app_startup.py --tb=short --show-capture=no`:
+  **389 passed**.
+- `pytest -q tests --tb=short --show-capture=no`: **1101 passed**, with local
+  socket access enabled for the HTTP probe test.
+- Ruff checks on the changed Python files and `git diff --check`: passed.
+
+After operator deployment, validate the normal combined app from a recorded
+cold start with the same configuration and `.241` broker. Require broker-visible
+startup metadata, subscriptions, heartbeat/data and availability. In a separate
+controlled peer-close case, correlate broker TCP FIN/EOF with serial
+`mqtt_socket_recv_empty`, existing recovery and resumed broker-visible traffic.
+Do not treat a timeout or successful local return as proof of EOF handling.
+Continue normal-app observation for the spontaneous stalls; retain this one
+change until its startup/recovery behavior has been assessed. No live relay
+actions or device writes are performed by the agent.
+
+## October 29 candidate withdrawal and rollback
+
+The operator rejected candidate `v0.26.302.1` after reporting regressive behavior
+and approved rollback. Firmware `v0.26.302.2` restores the MQTT adapter exactly
+to repository baseline `51d8294` (`v0.26.289.5` behavior). EOF classification,
+raw-socket cleanup, PUBACK reads and socket timeout handling all return to that
+baseline. Candidate-only host tests and changed cleanup expectations were
+withdrawn with the implementation.
+
+CO2 serial capture reports candidate MQTT CONNECT success against `10.0.0.241`
+at 15:21:39, a metadata PUBACK timeout at 15:21:44, and an approximately ten-second
+two-byte DISCONNECT send at 15:21:56. The operator reports Ethernet removed and
+only the broker Wi-Fi address `.241` available. AVPD was still running `289.5`
+when it also encountered failures against `.241`; the initiating timeout cause
+remains unconfirmed without matching broker TCP evidence and verified artifacts.
+
+A host comparison using the existing soak socket/client fakes also confirmed
+that candidate cleanup changed effective recovery: the same simulated stalled
+publish plus baseline cleanup errors selects native-poison hard reset, while
+candidate cleanup without those errors does not. Leaving the app classifier
+unchanged did not preserve its outcome. Future cleanup changes require a
+separate recovery proposal and operator approval.
+
+The rollback restores a comparison baseline, not a proven native-stall fix.
+Operator deployment and device/broker validation remain pending. Keep board,
+CircuitPython, artifacts, profile, filesystem mode, broker interface, startup
+method, workload and command pacing constant for baseline comparisons.
+
+Rollback host verification: the focused adapter, command intake, publish cycle,
+soak apparatus, network, recovery and app-startup suites passed (**371 tests**).
+`pytest -q tests --tb=short --show-capture=no` passed (**1083 tests**) with local
+socket access enabled for the HTTP probe. Ruff checks on the rollback Python
+files and `git diff --check` passed. Adapter, test and contract-doc baseline
+restoration was checked byte-for-byte against `51d8294`.
+
 ## October 27 filesystem and cleanup comparisons
 
 Test version `2026-10-27.1` adds independent `cleanup_mode` and `fs_activity`
