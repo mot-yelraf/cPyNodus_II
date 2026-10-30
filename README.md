@@ -1,6 +1,6 @@
 # cPyNodus_II
 
-**Learn connected embedded systems by building a working sensor and controller.**
+**Learn embedded system concepts by building a fully functional WiFi sensor and relay/switch with MQTT automation control and configuration.**
 
 cPyNodus II is a CircuitPython project for makers, students, and educators with
 basic Python and electronics experience who want to explore Raspberry Pi Pico 2 W
