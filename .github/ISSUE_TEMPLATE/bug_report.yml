@@ -1,28 +1,30 @@
 name: Bug report
-description: Report a reproducible cPyNodus_II firmware or integration problem.
+description: Report a reproducible problem.
 title: "[Bug]: "
-labels: ["bug", "needs triage"]
+labels: [bug]
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for reporting a problem. Remove Wi-Fi passwords, MQTT credentials, onboarding tokens, and other private data from logs and screenshots.
+        Please search existing issues before submitting a report.
+        Do not include credentials, precise coordinates, private addresses, or unredacted logs.
+        Report suspected security vulnerabilities privately using the Security report link in the issue chooser.
   - type: textarea
-    id: summary
+    id: description
     attributes:
-      label: Summary
-      description: What happened?
+      label: What happened?
+      description: Describe the problem and its effect on your use of the project.
     validations:
       required: true
   - type: textarea
-    id: steps
+    id: reproduce
     attributes:
       label: Steps to reproduce
-      description: Include the smallest reliable sequence that triggers the problem.
+      description: Provide the smallest reliable sequence that demonstrates the problem.
       placeholder: |
-        1. Configure ...
-        2. Boot ...
-        3. Publish or open ...
+        1. Set up...
+        2. Open or run...
+        3. Observe...
     validations:
       required: true
   - type: textarea
@@ -32,64 +34,33 @@ body:
       description: What did you expect to happen?
     validations:
       required: true
-  - type: textarea
-    id: actual
+  - type: input
+    id: version
     attributes:
-      label: Actual behavior
-      description: What happened instead?
+      label: Project version or commit
+      description: Enter the version or commit you are using, or say unknown if you cannot find it.
     validations:
       required: true
   - type: dropdown
-    id: target
+    id: platform
     attributes:
-      label: Target board
+      label: Platform
       options:
-        - Raspberry Pi Pico 2 W (pico2w)
-        - Seeed Studio XIAO ESP32-S3 Sense (xesp32s3)
-        - Host-side integration or tooling
-        - Not sure
-    validations:
-      required: true
-  - type: dropdown
-    id: profile
-    attributes:
-      label: Active profile
-      options:
-        - nodusweb
-        - sensorius
-        - weewx
-        - homeassistant
-        - AP or recovery mode
-        - Not applicable or not sure
+        - Raspberry Pi
+        - macOS
+        - Windows
+        - Linux
+        - CircuitPython / microcontroller
+        - Other
     validations:
       required: true
   - type: textarea
     id: environment
     attributes:
-      label: Environment
-      description: Firmware version, CircuitPython version, sensor/switch hardware, filesystem mode, and MQTT broker type when relevant.
-      placeholder: |
-        cPyNodus_II version:
-        CircuitPython version:
-        Hardware:
-        Filesystem mode (ROFS/RWFS):
-        MQTT broker/profile:
-    validations:
-      required: true
+      label: Environment and hardware
+      description: Include OS, Python or CircuitPython version, browser, board, sensors, and integrations as relevant. Identify the platform here if you selected Other.
   - type: textarea
-    id: evidence
+    id: context
     attributes:
-      label: Sanitized evidence
-      description: Add relevant serial output, broker-visible MQTT evidence, recovery logs, or screenshots after removing credentials and private identifiers.
-      render: shell
-    validations:
-      required: false
-  - type: checkboxes
-    id: checks
-    attributes:
-      label: Submission checks
-      options:
-        - label: I removed credentials, tokens, private addresses, and other sensitive data.
-          required: true
-        - label: I searched existing issues and documentation for this problem.
-          required: true
+      label: Logs, screenshots, and additional context
+      description: Include relevant excerpts or screenshots after removing credentials and private information.
