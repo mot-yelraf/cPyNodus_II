@@ -266,7 +266,10 @@ documented there.
 
 ## License
 
-This project is licensed under the [BSD 2-Clause License](LICENSE).
+Copyright (c) 2026 T.W. Farley, dba Peace Hill Studios.
+
+This project is licensed under the [GNU General Public License version 3](LICENSE)
+(GPL-3.0-only). Third-party components retain their respective licenses.
 
 ## Acknowledgments
 
