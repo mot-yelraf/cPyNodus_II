@@ -112,11 +112,37 @@ def process_inbound_messages(
                 return tuple(results)
             continue
 
-        if _is_empty_payload(message.payload_text) and _is_sensor_calibration_topic(
-            message.topic,
-            runtime_config,
-        ):
-            continue
+        if _is_sensor_calibration_topic(message.topic, runtime_config):
+            if _is_empty_payload(message.payload_text):
+                continue
+            if '"soil_derived_apply"' in message.payload_text:
+                try:
+                    from cpynodus_ii.features.soil_derived_calibration import (
+                        process_soil_derived_message,
+                    )
+
+                    result = process_soil_derived_message(
+                        transport, runtime_config, topic=message.topic,
+                        payload_text=message.payload_text, settings_root=settings_root,
+                    )
+                except (MemoryError, RuntimeError) as exc:
+                    if isinstance(exc, RuntimeError):
+                        if "pystack exhausted" not in str(exc).lower():
+                            raise
+                        error = "calibration_handler_pystack"
+                    else:
+                        error = "calibration_handler_memory"
+                    _restore_received_messages(transport, messages[index + 1 :])
+                    results.append(
+                        _publish_minimal_calibration_failure(
+                            transport, runtime_config, topic=message.topic,
+                            payload_text=message.payload_text, error=error,
+                        )
+                    )
+                    return tuple(results)
+                if result is not None:
+                    results.append(result)
+                    continue
 
         fast_result = None
         if _should_try_calibration_apply_fast_path(
@@ -504,6 +530,20 @@ def process_calibration_message(
             published_count=0,
             runtime_config=runtime_config,
         )
+    if (
+        '"soil_derived_apply"' in payload_text
+        and _is_sensor_calibration_topic(topic, runtime_config)
+    ):
+        from cpynodus_ii.features.soil_derived_calibration import (
+            process_soil_derived_message,
+        )
+
+        result = process_soil_derived_message(
+            transport, runtime_config, topic=topic, payload_text=payload_text,
+            settings_root=settings_root,
+        )
+        if result is not None:
+            return result
     if _payload_may_apply_calibration_offsets(payload_text):
         result = _process_calibration_offsets_message(
             transport,

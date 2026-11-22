@@ -22,6 +22,12 @@ _CONFIG = 2
 _SWITCH = 4
 
 
+def mark_soil_derived_metadata_dirty(transport):
+    """Request a retained configuration refresh after a local soil save."""
+    pending = int(getattr(transport, "_metadata_refresh_pending", 0))
+    transport._metadata_refresh_pending = pending | _CONFIG
+
+
 def refresh_saved_metadata(
     transport,
     config,
@@ -39,13 +45,16 @@ def refresh_saved_metadata(
     pending = int(getattr(transport, "_metadata_refresh_pending", 0)) & required
     for result in results:
         if (
-            result.command_type
-            in ("config", "switch", "calibration", "calibration_session")
-            and getattr(result, "persistence_mode", "") == "persisted"
+            getattr(result, "persistence_mode", "") == "persisted"
             and not getattr(result, "duplicate", False)
             and result.phase == "published"
         ):
-            pending |= required
+            if result.command_type == "soil_derived_calibration":
+                pending |= _CONFIG
+            elif result.command_type in (
+                "config", "switch", "calibration", "calibration_session"
+            ):
+                pending |= required
     transport._metadata_refresh_pending = pending
     if (
         defer_build

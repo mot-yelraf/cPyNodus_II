@@ -154,6 +154,11 @@ Examples:
 
 Notes:
 
+- Drive mode compares file contents with checksums, so identical files keep
+  their existing timestamps and only new or changed files are copied. The
+  comparison reads existing files from the device. Cleanup options and the
+  default postmortem log cleanup still apply. Use `--keep-reboot-log` to retain
+  those logs.
 - The script excludes development files (`tests/`, `docs/`, `.git/`, caches, etc.).
 - `--content` options are `full` (default), `runtime`, `pico2w-mpy`, or
   `xesp32s3-mpy`. `mpy` remains a compatibility alias for `pico2w-mpy`.
@@ -468,7 +473,7 @@ example `canonical`, `soil_2in1`, `soil_4in1`, or `soil_7in1`.
 
 HaliSense-compatible RS485 soil sensors are the best-tested soil devices because their register layout matches the default Nodus register map. Nodus reads the configured register map and omits metrics whose register read fails. For 4-in-1 and 7-in-1 soil profiles, Nodus keeps the configured map as primary but can use the observed alternate `pH@0x0007` and `EC@0x000C` registers when the primary pH register is not plausible and the alternate pH value is valid.
 
-When one soil channel is active, Nodus publishes unprefixed metric names. When both RS485 channels are active, Nodus prefixes each metric with the channel name, for example `CH1 Soil Moisture` and `CH2 Soil pH`.
+When one soil channel is configured, Nodus publishes unprefixed metric names. When both RS485 channels are configured, Nodus prefixes each metric with the channel name, for example `CH1 Soil Moisture` and `CH2 Soil pH`. A failed probe read leaves the other probe's prefix in place.
 
 ### `soil` (RS485 Modbus 2-in-1)
 
@@ -592,7 +597,8 @@ Nodus normalizes each nutrient against the `[NPK]` targets in `sensor_soil.toml`
 n_score = clamp(Soil Nitrogen / N_TARGET, 0.0, 1.0)
 p_score = clamp(Soil Phosphorus / P_TARGET, 0.0, 1.0)
 k_score = clamp(Soil Potassium / K_TARGET, 0.0, 1.0)
-Soil Fertility Index = 100 * ((0.5 * min_score) + (0.5 * avg_score))
+w = SFI_MIN_WEIGHT_PCT / 100
+Soil Fertility Index = 100 * ((w * min_score) + ((1 - w) * avg_score))
 ```
 
 The result is rounded and clamped to `0-100%`. `Soil Fertility Index` is only reported when the active soil channel has `SOIL_VARIANT = "soil_7in1"`. If any N/P/K value is missing or any target is `0` or lower, `Soil Fertility Index` is not reported.

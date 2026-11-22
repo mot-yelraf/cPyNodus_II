@@ -86,6 +86,17 @@ def add_configuration_snapshot(payload, config, root=None, *, compact=False):
             key: getattr(config.homeassistant, key.lower()) for key in _HA_KEYS
         }
     calibration = {}
+    derived_groups = None
+    saved_derived = None
+    if not compact and sensor.family == "soil" and sensor.sensor_id:
+        from cpynodus_ii.core.soil_derived import (
+            SOIL_DERIVED_GROUPS,
+            soil_derived_snapshot,
+        )
+
+        derived_groups = SOIL_DERIVED_GROUPS
+        if root is not None:
+            saved_derived = {}
     device_keys = _SOIL_KEYS if sensor.family == "soil" else _DEVICE_KEYS
     if compact:
         device_keys = () if sensor.family == "soil" else ("ALTITUDE_METERS",)
@@ -190,6 +201,15 @@ def add_configuration_snapshot(payload, config, root=None, *, compact=False):
                     ):
                         target = metrics if section == "Display" else styles
                         target[key] = value
+                elif saved_derived is not None:
+                    parts = section.split(".")
+                    group = derived_groups.get(parts[0].strip())
+                    if group and key in group[2] and (
+                        len(parts) == 1
+                        or (len(parts) == 2 and parts[1].strip() in ("CH1", "CH2"))
+                    ):
+                        table = ".".join(part.strip() for part in parts)
+                        saved_derived.setdefault(table, {})[key] = value
             if not compact:
                 payload["sensor"]["display_metrics"] = [
                     metrics[key] for key in sorted(metrics) if metrics[key]
@@ -197,6 +217,10 @@ def add_configuration_snapshot(payload, config, root=None, *, compact=False):
                 payload["sensor"]["display_styles"] = [
                     styles[key] for key in sorted(styles) if styles[key]
                 ]
+    if derived_groups is not None:
+        derived = soil_derived_snapshot(sensor, saved=saved_derived)
+        if derived is not None:
+            payload["soil_derived"] = derived
     if sensor.present:
         payload["sensor"]["calibration"] = calibration
 

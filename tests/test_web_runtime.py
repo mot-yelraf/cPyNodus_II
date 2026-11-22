@@ -5,6 +5,7 @@ request handling, cleanup, and timeout recovery.
 """
 
 import builtins
+import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -1888,3 +1889,73 @@ def test_web_switch_offline_or_new_generation_does_not_replay_live_events(
     controller.publish_pending_switch_report()
     assert transport.published_messages == []
     assert controller.runtime_config.switch.channels[1].last_state is True
+
+
+def test_soil_calibration_page_shows_readings_and_saves_one_group(tmp_path):
+    from cpynodus_ii.core.mqtt import MQTTTransport
+    from cpynodus_ii.features.sensor_service import SensorSnapshot
+
+    (tmp_path / "settings.toml").write_text(
+        '[Network]\nSSID = "test-network"\n[Profile]\nACTIVE_PROFILE = "nodusweb"\n'
+    )
+    (tmp_path / "sensor_soil.toml").write_text(
+        '[Sensor]\nDEVICE = "soil"\nSENSOR_ID = "soil-test"\n'
+        '[Modbus.CH2]\nUART_TX = "GP4"\nUART_RX = "GP5"\n'
+        'SOIL_VARIANT = "soil_7in1"\n'
+    )
+    config = Settings.from_directory(tmp_path).runtime_config()
+    stack = build_network_stack(
+        config, wifi_radio=_FakeRadio(), connection_manager_module=_FakeConnMgr
+    )
+    mqtt = MQTTTransport()
+    mqtt.mark_connected()
+    controller = WebRuntimeController(
+        config,
+        stack,
+        version="test",
+        sensor_snapshot=SensorSnapshot(
+            phase="ready", sensor_id="soil-test", device="soil",
+            metrics={"Soil Moisture": 25.0, "Soil Moisture Deficit": 65.0},
+        ),
+        settings_root=tmp_path,
+        server_module=_FakeServerModule,
+        mqtt_transport=mqtt,
+    ).start()
+
+    get = controller.server.routes[("/calibration", ("GET",))]
+    page = get(_FakeRequest()).body
+    assert 'data-channel="CH2"' in page
+    assert 'data-channel="CH1"' not in page
+    assert 'data-group="NPK"' in page
+    assert "Soil Moisture 25.0 %" in page
+
+    post = controller.server.routes[("/config", ("POST",))]
+    body = {
+        "action": "soil_derived_apply", "channel": "CH2", "group": "SoilDeficit",
+        "values": {"SPD_WET_THRESHOLD_PCT": 49, "SPD_DRY_THRESHOLD_PCT": 21},
+    }
+    response = post(_FakeRequest(body=json.dumps(body).encode()))
+    assert response.body == {"success": True, "persistence_mode": "persisted"}
+    messages = list(mqtt.published_messages)
+    assert len(messages) == 2
+    assert len({message.payload["message_id"] for message in messages}) == 2
+    for message, key in zip(messages, body["values"]):
+        assert message.topic == "nodus/soil-test/meta/patch"
+        assert message.payload["source"] == "calibration_local"
+        update, = message.payload["updates"]
+        assert update["section"] == "SoilDeficit.CH2"
+        assert update["key"] == key
+        assert update["value"] == body["values"][key]
+
+    response = post(_FakeRequest(body=json.dumps(body).encode()))
+    assert response.body["success"]
+    assert mqtt.published_messages == messages
+    assert mqtt._metadata_refresh_pending
+    updated = get(_FakeRequest()).body
+    assert 'name="SPD_WET_THRESHOLD_PCT" step="any" required value="49.0"' in updated
+
+    body["values"]["SPD_DRY_THRESHOLD_PCT"] = "21"
+    response = post(_FakeRequest(body=json.dumps(body).encode()))
+    assert response.status[0] == 400
+    assert response.body["error"] == "invalid_soil_derived_values"
+    assert mqtt.published_messages == messages

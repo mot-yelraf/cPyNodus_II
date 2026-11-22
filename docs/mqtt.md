@@ -17,6 +17,9 @@ wins.
   `restart = true`.
 - Runtime switch config uses `nodus/<channel_id>/config/set`.
 - Calibration uses `nodus/<device_id>/calibration/set`.
+- Derived soil calibration saves one setting for one probe per `soil_derived_apply`
+  command. Firmware advertises support in retained `meta/config`. See the
+  [derived soil calibration contract](calibration_mqtt_contract.md#action-derived-soil-calibration).
 - Log retrieval uses `nodus/<device_id>/logs/get` and returns chunked MQTT
   payloads on `nodus/<device_id>/logs/chunk`.
 - OTA prepare uses signed `nodus-fwupdate/v2` state on

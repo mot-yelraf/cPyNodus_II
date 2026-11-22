@@ -166,17 +166,21 @@ def calculate_dewvpd_risk(
     return 100.0 * (weight * dew_risk + (1.0 - weight) * vpd_risk)
 
 
-def calculate_npk_fertility_index(n_value, p_value, k_value, targets):
+def calculate_npk_fertility_index(
+    n_value, p_value, k_value, targets, *, overrides=None
+):
     """Return a 0-100 NPK fertility score from N/P/K readings and targets."""
     if n_value is None or p_value is None or k_value is None or targets is None:
         return None
     try:
-        n_target = float(getattr(targets, "n_target", 0.0) or 0.0)
-        p_target = float(getattr(targets, "p_target", 0.0) or 0.0)
-        k_target = float(getattr(targets, "k_target", 0.0) or 0.0)
+        n_target = float(_soil_setting(targets, overrides, "n_target", 0.0) or 0.0)
+        p_target = float(_soil_setting(targets, overrides, "p_target", 0.0) or 0.0)
+        k_target = float(_soil_setting(targets, overrides, "k_target", 0.0) or 0.0)
+        minimum_weight = _soil_setting(targets, overrides, "min_weight_pct", 50.0)
+        weight = float(minimum_weight) / 100.0
     except (TypeError, ValueError):
         return None
-    if n_target <= 0.0 or p_target <= 0.0 or k_target <= 0.0:
+    if not 0.0 <= weight <= 1.0 or min(n_target, p_target, k_target) <= 0.0:
         return None
 
     n_score = _nutrient_score(n_value, n_target)
@@ -187,7 +191,7 @@ def calculate_npk_fertility_index(n_value, p_value, k_value, targets):
 
     min_score = min(n_score, p_score, k_score)
     avg_score = (n_score + p_score + k_score) / 3.0
-    index = 100.0 * ((0.5 * min_score) + (0.5 * avg_score))
+    index = 100.0 * (weight * min_score + (1.0 - weight) * avg_score)
     return round(min(max(index, 0.0), 100.0), 0)
 
 
@@ -297,8 +301,13 @@ def _add_soil_derivatives(metrics, runtime_config, prefix=""):
     temp_c = metrics.get("{}Soil Temperature".format(label_prefix))
     moisture = metrics.get("{}Soil Moisture".format(label_prefix))
 
-    wet = getattr(getattr(soil, "soil_thresholds", None), "wet_pct", None)
-    dry = getattr(getattr(soil, "soil_thresholds", None), "dry_pct", None)
+    channels = getattr(soil.modbus, "channels", ())
+    channel = prefix or (channels[0].name if len(channels) == 1 else "CH1")
+    overrides = soil.soil_derived_overrides or {}
+    deficit_overrides = overrides.get((channel, "SoilDeficit"))
+    thresholds = soil.soil_thresholds
+    wet = _soil_setting(thresholds, deficit_overrides, "wet_pct")
+    dry = _soil_setting(thresholds, deficit_overrides, "dry_pct")
     if (
         moisture is not None
         and wet is not None
@@ -311,16 +320,18 @@ def _add_soil_derivatives(metrics, runtime_config, prefix=""):
             1,
         )
 
-    stress = getattr(soil, "soil_stress", None)
+    stress = soil.soil_stress
+    stress_overrides = overrides.get((channel, "SoilStress"))
     deficit = metrics.get("{}Soil Moisture Deficit".format(label_prefix))
-    temp_stress = _soil_temp_stress_pct(temp_c, stress)
+    temp_stress = _soil_temp_stress_pct(temp_c, stress, stress_overrides)
     if deficit is not None and temp_stress is not None and stress is not None:
-        total = float(stress.moisture_weight_pct) + float(stress.temp_weight_pct)
+        moisture_weight = float(
+            _soil_setting(stress, stress_overrides, "moisture_weight_pct")
+        )
+        temp_weight = float(_soil_setting(stress, stress_overrides, "temp_weight_pct"))
+        total = moisture_weight + temp_weight
         if total > 0:
-            ssi = (
-                (float(deficit) * float(stress.moisture_weight_pct))
-                + (temp_stress * float(stress.temp_weight_pct))
-            ) / total
+            ssi = (float(deficit) * moisture_weight + temp_stress * temp_weight) / total
             metrics["{}Soil Stress Index".format(label_prefix)] = round(
                 min(max(ssi, 0.0), 100.0),
                 1,
@@ -330,9 +341,8 @@ def _add_soil_derivatives(metrics, runtime_config, prefix=""):
         metrics.get("{}Soil Nitrogen".format(label_prefix)),
         metrics.get("{}Soil Phosphorus".format(label_prefix)),
         metrics.get("{}Soil Potassium".format(label_prefix)),
-        getattr(soil, "soil_npk", None)
-        if _soil_supports_npk(runtime_config, prefix=prefix)
-        else None,
+        soil.soil_npk if _soil_supports_npk(runtime_config, prefix=prefix) else None,
+        overrides=overrides.get((channel, "NPK")),
     )
     if fertility is not None:
         metrics["{}Soil Fertility Index".format(label_prefix)] = fertility
@@ -357,13 +367,18 @@ def _soil_variant_is_7in1(variant):
     return str(variant or "").strip().lower() == "soil_7in1"
 
 
-def _soil_temp_stress_pct(temp_c, stress):
+def _soil_setting(shared, overrides, field, default=None):
+    value = getattr(shared, field, default)
+    return overrides.get(field, value) if overrides is not None else value
+
+
+def _soil_temp_stress_pct(temp_c, stress, overrides):
     if temp_c is None or stress is None:
         return None
-    low_crit = float(stress.temp_low_crit_c)
-    low_ok = float(stress.temp_low_ok_c)
-    high_ok = float(stress.temp_high_ok_c)
-    high_crit = float(stress.temp_high_crit_c)
+    low_crit = float(_soil_setting(stress, overrides, "temp_low_crit_c"))
+    low_ok = float(_soil_setting(stress, overrides, "temp_low_ok_c"))
+    high_ok = float(_soil_setting(stress, overrides, "temp_high_ok_c"))
+    high_crit = float(_soil_setting(stress, overrides, "temp_high_crit_c"))
     if not (low_crit < low_ok <= high_ok < high_crit):
         return None
     temp_c = float(temp_c)

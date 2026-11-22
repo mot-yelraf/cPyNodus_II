@@ -613,6 +613,7 @@ If the temperature band is invalid or the total weight is zero, `Soil Stress Ind
 - `N_TARGET`
 - `P_TARGET`
 - `K_TARGET`
+- `SFI_MIN_WEIGHT_PCT`
 
 `Soil Fertility Index` is a normalized `0-100%` NPK sufficiency score for 7-in-1 soil sensors. It is derived from reported `Soil Nitrogen`, `Soil Phosphorus`, and `Soil Potassium`.
 
@@ -622,10 +623,12 @@ Formula:
 n_score = clamp(Soil Nitrogen / N_TARGET, 0.0, 1.0)
 p_score = clamp(Soil Phosphorus / P_TARGET, 0.0, 1.0)
 k_score = clamp(Soil Potassium / K_TARGET, 0.0, 1.0)
-Soil Fertility Index = 100 * ((0.5 * min_score) + (0.5 * avg_score))
+w = SFI_MIN_WEIGHT_PCT / 100
+Soil Fertility Index = 100 * ((w * min_score) + ((1 - w) * avg_score))
 ```
 
 The lowest nutrient score is weighted with the average nutrient score so one deficient nutrient lowers the final index. The output is rounded and clamped to `0-100%`.
+`SFI_MIN_WEIGHT_PCT` defaults to 50, giving the minimum and average equal weight.
 
 Defaults in `sensor_soil.toml.def` are in `mg/kg`, matching the 7-in-1 sensor's reported nutrient metrics. They are sensor-scale defaults based on healthy living-soil readings, not lab sufficiency thresholds:
 
@@ -634,6 +637,20 @@ Defaults in `sensor_soil.toml.def` are in `mg/kg`, matching the 7-in-1 sensor's 
 - `K_TARGET = 70.0`
 
 `Soil Fertility Index` is only reported when the active soil channel has `SOIL_VARIANT = "soil_7in1"`. If any N/P/K value is missing or any target is `0` or lower, `Soil Fertility Index` is not reported.
+
+### Per-probe derived calibration
+
+The shared `[SoilDeficit]`, `[SoilStress]`, and `[NPK]` tables beside
+`[Calibration.Device]` in `sensor_soil.toml` supply defaults for all probes.
+Per-probe tables such as `[SoilDeficit.CH1]`, `[SoilStress.CH2]`, or
+`[NPK.CH1]` contain overrides. Each field without an override inherits from
+the shared table and firmware defaults. Active probe identifiers come from
+`[Modbus.CH1]` and `[Modbus.CH2]`. A legacy `[Modbus]` probe uses CH1.
+
+The local `/calibration` page in the web profile saves changed fields for a
+group together. The [derived-soil MQTT action](calibration_mqtt_contract.md#action-derived-soil-calibration)
+saves one field per command. The next sample uses the new values after a
+successful write to disk.
 
 ## Tips
 

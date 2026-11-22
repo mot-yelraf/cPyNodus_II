@@ -987,13 +987,13 @@ Canonical replies:
 
 Implemented behavior:
 
-- Calibration mutations contain exactly one offset per command. Multi-offset
+- Offset calibration mutations contain exactly one offset per command. Multi-offset
   mutations are acknowledged and rejected with `single_update_required`.
 - Apply, status, soil-session start, and soil-session cancel all use shallow
   handlers and never fall through to the general command handler.
 - Nodus publishes `calibration/ack` after a valid calibration envelope is
   accepted for handling.
-- Duplicate `message_id` values produce `calibration/ack` and
+- For offset calibration, duplicate `message_id` values produce `calibration/ack` and
   `calibration/result` with `applied = true`, `updated = 0`, and no
   `meta/patch`.
 - `action = "apply"`, `"set"`, or `"update"` writes accepted calibration
@@ -1014,6 +1014,11 @@ Implemented behavior:
 - Soil pH session actions publish command-scoped `calibration/result` plus the
   soil calibration event topics described in
   `docs/calibration_mqtt_contract.md`.
+- `soil_derived_apply` saves one derived soil setting for one physical probe in
+  `sensor_soil.toml` using `payload.section`, `payload.key`, and `payload.value`.
+  Firmware advertises it as `soil_derived.version = 1` in retained `meta/config`.
+  This action has its own persistence and duplicate replay rules. See the
+  [derived soil MQTT contract](calibration_mqtt_contract.md#action-derived-soil-calibration).
 - Empty payloads on `nodus/<device_id>/calibration/set` are ignored. This
   allows Sensorius retained command cleanup publishes to be received safely
   after reconnect.

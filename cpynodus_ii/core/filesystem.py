@@ -8,10 +8,11 @@ They reduce interrupted-write exposure; FAT is not a power-loss-safe journal.
 import os
 
 
-def commit_file(path, tmp_path, backup_path):
+def commit_file(path, tmp_path, backup_path, *, rollback_on_sync_failure=False):
     """Sync a closed temporary, retain the prior file, and install the new one."""
     sync = getattr(os, "sync", None)
     moved = False
+    installed = False
     try:
         if sync is not None:
             sync()
@@ -35,9 +36,12 @@ def commit_file(path, tmp_path, backup_path):
         if sync is not None:
             sync()
         os.rename(tmp_path, path)
+        installed = True
         if sync is not None:
             sync()
     except Exception:
+        if installed and rollback_on_sync_failure:
+            os.remove(path)
         if moved:
             try:
                 os.stat(path)
