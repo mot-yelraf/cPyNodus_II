@@ -830,6 +830,18 @@ def process_calibration_message(
             runtime_config=runtime_config,
         )
 
+    if '"soil_derived_apply"' in payload_text:
+        from cpynodus_ii.features.soil_derived_calibration import (
+            process_soil_derived_message,
+        )
+
+        result = process_soil_derived_message(
+            transport, runtime_config, topic=topic, payload_text=payload_text,
+            settings_root=settings_root,
+        )
+        if result is not None:
+            return result
+
     command = parse_calibration_command(payload_text)
     if command is None:
         return CommandResult(

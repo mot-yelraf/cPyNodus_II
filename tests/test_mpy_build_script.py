@@ -364,6 +364,34 @@ def test_default_deploy_ignores_sibling_1031_build(build_repo):
     assert b"bundle-9.x-mpy-20250314" in library
 
 
+@pytest.mark.skipif(shutil.which("rsync") is None, reason="rsync unavailable")
+def test_mpy_drive_redeploy_skips_identical_modules_and_libraries(build_repo):
+    destination = build_repo / "CIRCUITPY-test"
+    args = (
+        "--target", str(destination), "--content", "pico2w-mpy", "--keep-reboot-log",
+    )
+    deployed = run_script(
+        build_repo, "deploy_nodus.sh", *args,
+        compiler=make_compiler(build_repo, "9.2.8"),
+    )
+    assert deployed.returncode == 0, deployed.stderr
+
+    deployed_paths = (
+        destination / "cpynodus_ii/sample.mpy",
+        destination / "lib/adafruit_ntp.mpy",
+    )
+    for path in deployed_paths:
+        os.utime(path, (1_600_000_000, 1_600_000_000))
+    before = [path.stat() for path in deployed_paths]
+
+    deployed = run_script(build_repo, "deploy_nodus.sh", *args)
+    assert deployed.returncode == 0, deployed.stderr
+    for path, previous in zip(deployed_paths, before):
+        current = path.stat()
+        assert current.st_mtime_ns == previous.st_mtime_ns
+        assert current.st_ctime_ns == previous.st_ctime_ns
+
+
 def test_clean_default_preserves_1031_artifacts(build_repo):
     selected = build_repo / "build/firmware/pico2w/10.3.1"
     selected.mkdir(parents=True)

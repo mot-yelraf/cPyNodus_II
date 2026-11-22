@@ -13,6 +13,20 @@ _MAX_WEB_UPDATES = 32
 _MAX_WEB_VALUE_CHARS = 256
 
 
+def apply_web_soil_calibration(runtime_config, payload, *, settings_root, message_id):
+    """Save one local derived calibration group using the MQTT validation rules."""
+    sensor = runtime_config.sensor
+    if sensor.family != "soil" or sensor.active_config_file != "sensor_soil.toml":
+        return "invalid_soil_derived_target", None
+    from cpynodus_ii.features.soil_derived_calibration import save_soil_derived_group
+
+    return save_soil_derived_group(
+        runtime_config, payload.get("channel"), payload.get("group"),
+        payload.get("values"), settings_root=settings_root, message_id=message_id,
+        source="calibration_local",
+    )
+
+
 @dataclass(frozen=True)
 class WebConfigDecision:
     """Describe how one web configuration update should be handled."""

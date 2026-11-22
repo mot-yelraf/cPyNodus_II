@@ -21,11 +21,8 @@ from cpynodus_ii.core.config import (
     SensorCalibration,
     SoilModbusChannelConfig,
     SoilModbusConfig,
-    SoilNPKConfig,
     SoilRegisterMap,
     SoilScaleMap,
-    SoilStressConfig,
-    SoilThresholdConfig,
     SwitchChannelConfig,
     SwitchConfig,
     TimeConfig,
@@ -1171,9 +1168,6 @@ class Settings:
         soil_modbus_doc = sensor_soil_doc.get("Modbus", {})
         soil_register_doc = sensor_soil_doc.get("SoilSensorRegisters", {})
         soil_scale_doc = sensor_soil_doc.get("SoilSensorScales", {})
-        soil_deficit_doc = sensor_soil_doc.get("SoilDeficit", {})
-        soil_stress_doc = sensor_soil_doc.get("SoilStress", {})
-        soil_npk_doc = sensor_soil_doc.get("NPK", {})
         soil_display_doc = sensor_soil_doc.get("Display", {})
         soil_display_style_doc = sensor_soil_doc.get("Display.Style", {})
         if not soil_display_style_doc and isinstance(soil_display_doc, dict):
@@ -1196,6 +1190,9 @@ class Settings:
         i2c_device = str(i2c_sensor_doc.get("DEVICE", "") or "").strip().lower()
 
         if soil_device == "soil":
+            from cpynodus_ii.core.soil_derived import load_soil_derived
+
+            derived_settings, derived_overrides = load_soil_derived(sensor_soil_doc)
             return DetectedSensor(
                 family="soil",
                 interface="modbus_rs485",
@@ -1231,33 +1228,7 @@ class Settings:
                     p=float(soil_scale_doc.get("P_SCALE", 1.0)),
                     k=float(soil_scale_doc.get("K_SCALE", 1.0)),
                 ),
-                soil_thresholds=SoilThresholdConfig(
-                    wet_pct=float(soil_deficit_doc.get("SPD_WET_THRESHOLD_PCT", 38.0)),
-                    dry_pct=float(soil_deficit_doc.get("SPD_DRY_THRESHOLD_PCT", 18.0)),
-                ),
-                soil_stress=SoilStressConfig(
-                    temp_low_crit_c=float(
-                        soil_stress_doc.get("SSI_TEMP_LOW_CRIT_C", 15.0)
-                    ),
-                    temp_low_ok_c=float(soil_stress_doc.get("SSI_TEMP_LOW_OK_C", 18.0)),
-                    temp_high_ok_c=float(
-                        soil_stress_doc.get("SSI_TEMP_HIGH_OK_C", 24.0)
-                    ),
-                    temp_high_crit_c=float(
-                        soil_stress_doc.get("SSI_TEMP_HIGH_CRIT_C", 30.0)
-                    ),
-                    moisture_weight_pct=float(
-                        soil_stress_doc.get("SSI_MOISTURE_WEIGHT_PCT", 70.0)
-                    ),
-                    temp_weight_pct=float(
-                        soil_stress_doc.get("SSI_TEMP_WEIGHT_PCT", 30.0)
-                    ),
-                ),
-                soil_npk=SoilNPKConfig(
-                    n_target=float(soil_npk_doc.get("N_TARGET", 20.0)),
-                    p_target=float(soil_npk_doc.get("P_TARGET", 30.0)),
-                    k_target=float(soil_npk_doc.get("K_TARGET", 70.0)),
-                ),
+                soil_derived_overrides=derived_overrides,
                 display=DisplayConfig(
                     metrics=tuple(
                         _canonical_display_metric(
@@ -1287,6 +1258,7 @@ class Settings:
                         soil_device_cal_doc.get("SOIL_EC_CAL_VAL", 0.0)
                     ),
                 ),
+                **derived_settings,
             )
 
         if i2c_device:

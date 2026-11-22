@@ -6,7 +6,9 @@ an interrupted update does not directly overwrite the active document.
 """
 
 
-def persist_calibration_updates(runtime_config, updates, *, settings_root):
+def persist_calibration_updates(
+    runtime_config, updates, *, settings_root, require_commit=False
+):
     """Persist calibration updates to the active sensor TOML file."""
     filename = str(runtime_config.sensor.active_config_file or "").strip()
     if not filename:
@@ -16,13 +18,14 @@ def persist_calibration_updates(runtime_config, updates, *, settings_root):
     return _write_calibration_file(
         _join_settings_path(settings_root, filename),
         updates,
+        require_commit=require_commit,
     )
 
 
-def _write_calibration_file(path, updates):
+def _write_calibration_file(path, updates, *, require_commit=False):
     import os
 
-    from cpynodus_ii.core.filesystem import commit_file
+    from cpynodus_ii.core.filesystem import commit_file, readable_path
 
     targets = _calibration_patch_targets(updates)
     if not targets:
@@ -31,16 +34,22 @@ def _write_calibration_file(path, updates):
     found = [False] * len(targets)
     current_section = ""
     seen_sections = []
+    target_sections = {target[0] for target in targets} if require_commit else None
     tmp_path = "{}.tmp".format(path)
     backup_path = "{}.bak".format(path)
     try:
-        with open(path, "r", encoding="utf-8") as source:
+        source_path = readable_path(path) if require_commit else path
+        with open(source_path, "r", encoding="utf-8") as source:
             with open(tmp_path, "w", encoding="utf-8") as target:
                 while True:
                     raw_line = source.readline()
                     if raw_line == "":
                         break
+                    if require_commit and not raw_line.endswith("\n"):
+                        raw_line += "\n"
                     stripped = str(raw_line or "").strip()
+                    if require_commit and stripped.startswith("["):
+                        stripped = stripped.split("#", 1)[0].rstrip()
                     if stripped.startswith("[") and stripped.endswith("]"):
                         _append_missing_targets_for_section(
                             target,
@@ -49,7 +58,17 @@ def _write_calibration_file(path, updates):
                             found,
                         )
                         current_section = stripped[1:-1].strip()
-                        if current_section not in seen_sections:
+                        if require_commit:
+                            current_section = ".".join(
+                                part.strip() for part in current_section.split(".")
+                            )
+                        if (
+                            current_section not in seen_sections
+                            and (
+                                target_sections is None
+                                or current_section in target_sections
+                            )
+                        ):
                             seen_sections.append(current_section)
                         target.write(raw_line)
                         continue
@@ -83,7 +102,10 @@ def _write_calibration_file(path, updates):
             return ("calibration_key_missing",)
         if _path_size(tmp_path) <= 0:
             return ("toml_write_empty_tmp",)
-        commit_file(path, tmp_path, backup_path)
+        if require_commit:
+            commit_file(path, tmp_path, backup_path, rollback_on_sync_failure=True)
+        else:
+            commit_file(path, tmp_path, backup_path)
     except OSError as exc:
         try:
             os.remove(tmp_path)

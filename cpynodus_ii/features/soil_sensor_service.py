@@ -135,7 +135,7 @@ def _drain_uart_input(uart_transport):
 def _read_soil_snapshot_metrics(transport, sensor):
     if isinstance(transport, tuple):
         result = {}
-        active = []
+        prefixed = len(sensor.modbus.channels) > 1
         for item in transport:
             if not isinstance(item, tuple) or len(item) < 2:
                 continue
@@ -143,17 +143,9 @@ def _read_soil_snapshot_metrics(transport, sensor):
             metrics = _compact_metrics(
                 _read_soil_metrics(channel_transport, sensor, channel=channel)
             )
-            if metrics:
-                active.append(
-                    (
-                        getattr(channel, "name", "") or "CH{}".format(len(active) + 1),
-                        metrics,
-                    )
-                )
-        if len(active) == 1:
-            return active[0][1]
-        for name, metrics in active:
-            prefix = "{} ".format(str(name or "").strip().upper())
+            if not prefixed:
+                return metrics
+            prefix = "{} ".format(channel.name)
             for key, value in metrics.items():
                 result["{}{}".format(prefix, key)] = value
         return result

@@ -15,6 +15,8 @@ SOIL_MOIST_CAL_VAL = 0.0
 SOIL_PH_CAL_VAL = 0.0
 SOIL_EC_CAL_VAL = 0.0
 
+# Derived calibration defaults shared by both probes.
+# Optional per-probe tables use a .CH1 or .CH2 suffix, e.g. [SoilDeficit.CH1].
 [SoilDeficit]
 SPD_WET_THRESHOLD_PCT = 38.0
 SPD_DRY_THRESHOLD_PCT = 18.0
@@ -31,6 +33,7 @@ SSI_TEMP_WEIGHT_PCT = 30.0
 N_TARGET = 20.0
 P_TARGET = 30.0
 K_TARGET = 70.0
+SFI_MIN_WEIGHT_PCT = 50.0
 
 [Display]
 METRIC_1 = "Soil Moisture"

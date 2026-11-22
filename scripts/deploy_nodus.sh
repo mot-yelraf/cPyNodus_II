@@ -169,6 +169,7 @@ Target formats:
 Options:
   --target VALUE      Required. Destination path or host:path.
   --mode VALUE        `auto` (default), `drive`, or `staging`.
+                      Drive mode skips byte-identical files.
   --content VALUE     `full` (default), `runtime`, `pico2w-mpy`, or
                       `xesp32s3-mpy`. `mpy` remains a `pico2w-mpy` alias.
                       `runtime` syncs boot/code, package files, board
@@ -371,10 +372,16 @@ if [[ "$DEPLOY_MODE" == "auto" ]]; then
   fi
 fi
 
+DRIVE_RSYNC_ARGS=(
+  --checksum --no-times
+  --inplace --no-perms --no-owner --no-group --omit-dir-times
+)
+
 if [[ "$DEPLOY_MODE" == "drive" ]]; then
   require_circuitpy_path "$TARGET_PATH_ONLY"
+  # Compare file contents because FAT timestamps may differ or be rounded.
   # CIRCUITPY mass-storage can fail rsync temp-file rename operations.
-  RSYNC_ARGS+=(--inplace --no-perms --no-owner --no-group --omit-dir-times)
+  RSYNC_ARGS+=("${DRIVE_RSYNC_ARGS[@]}")
 fi
 
 if [[ "$CONTENT" != "full" && $DELETE_MODE -eq 1 ]]; then
@@ -389,7 +396,7 @@ run_full_sync() {
 
 sync_ota_public_key() {
   local destination="$1"
-  local key_rsync_args=(-av --checksum --human-readable)
+  local key_rsync_args=(-av --human-readable)
   if [[ -z "$OTA_PUBLIC_KEY_PATH" ]]; then
     return
   fi
@@ -401,7 +408,14 @@ sync_ota_public_key() {
     key_rsync_args+=(--dry-run --itemize-changes)
   fi
   if [[ "$DEPLOY_MODE" == "drive" ]]; then
-    key_rsync_args+=(--inplace --no-perms --no-owner --no-group --omit-dir-times)
+    # openrsync can resend an identical file when the destination renames it.
+    if [[ "$TARGET" != *:* ]] && cmp -s "$OTA_PUBLIC_KEY_PATH" \
+      "${destination%/}/ota-public-key.json"; then
+      return
+    fi
+    key_rsync_args+=("${DRIVE_RSYNC_ARGS[@]}")
+  else
+    key_rsync_args+=(--checksum)
   fi
   rsync "${key_rsync_args[@]}" "$OTA_PUBLIC_KEY_PATH" \
     "${destination%/}/ota-public-key.json"

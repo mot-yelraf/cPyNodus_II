@@ -466,7 +466,10 @@ class WebRuntimeController:
                     request, {"success": False, "error": "request_body_too_large"},
                     status_code=413,
                 )
-            updates = _extract_updates(request)
+            body = _parse_json_body(request)
+            if body is not None and body.get("action") == "soil_derived_apply":
+                return self._save_soil_calibration(request, body)
+            updates = _extract_updates(body)
             if updates is None:
                 return self._json_response(
                     request,
@@ -780,6 +783,11 @@ class WebRuntimeController:
                 version=self.version,
                 page=page,
             )
+            if page == "calibration" and self.runtime_config.sensor.family == "soil":
+                from cpynodus_ii.core.soil_derived import soil_derived_snapshot
+
+                setup["soil_derived"] = soil_derived_snapshot(self.runtime_config.sensor)
+                setup["soil_readings"] = getattr(self._latest_sensor_snapshot, "metrics", {})
             stage = "status_payload"
             status = self._build_status_payload() if page == "info" else None
             stage = "html_render"
@@ -817,6 +825,36 @@ class WebRuntimeController:
             return self._web_unavailable_response(request)
         except Exception as exc:
             return self._web_render_error_response(request, "automations", exc)
+
+    def _save_soil_calibration(self, request, body):
+        from cpynodus_ii.features.web_config import apply_web_soil_calibration
+
+        message_id = "local-soil-{}-{}".format(int(time()), int(monotonic() * 1000))
+        error, patch = apply_web_soil_calibration(
+            self.runtime_config, body, settings_root=self.settings_root,
+            message_id=message_id,
+        )
+        if error:
+            return self._json_response(
+                request, {"success": False, "error": error}, status_code=400,
+            )
+        transport = self._mqtt_transport
+        if transport is not None and transport.connected and patch["updates"]:
+            from cpynodus_ii.features.metadata_refresh import (
+                mark_soil_derived_metadata_dirty,
+            )
+            from cpynodus_ii.features.topics import mqtt_topic
+
+            topic = mqtt_topic(self.runtime_config, patch["device_id"], "meta", "patch")
+            for index, update in enumerate(patch["updates"], 1):
+                field_patch = dict(patch)
+                field_patch["message_id"] = "{}-{}".format(message_id, index)
+                field_patch["updates"] = [update]
+                transport.publish(topic, field_patch, retain=False)
+            mark_soil_derived_metadata_dirty(transport)
+        return self._json_response(
+            request, {"success": True, "persistence_mode": "persisted"},
+        )
 
     def _web_unavailable_response(self, request):
         return self._plain_response(
@@ -955,8 +993,7 @@ def _parse_json_body(request):
     return payload if isinstance(payload, dict) else None
 
 
-def _extract_updates(request):
-    payload = _parse_json_body(request)
+def _extract_updates(payload):
     if payload is None:
         return None
     if isinstance(payload.get("updates"), list):

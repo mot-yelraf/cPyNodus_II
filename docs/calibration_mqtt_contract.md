@@ -6,6 +6,7 @@ Scope:
 
 - MQTT calibration writes
 - MQTT calibration status queries
+- Per-probe derived soil calibration
 - MQTT-triggered soil pH sampling sessions for automatic offset calculation on Nodus
 - MQTT progress/result events published by Nodus
 
@@ -78,7 +79,8 @@ All calibration commands use the same top-level envelope:
 Required fields:
 
 - `message_id`: client-generated unique id for correlation
-- `action`: one of `apply`, `set`, `update`, `status`, `soil_ph_session_start`, `soil_ph_session_cancel`
+- `action`: one of `apply`, `set`, `update`, `status`, `soil_ph_session_start`,
+  `soil_ph_session_cancel`, `soil_derived_apply`
 
 `payload` is required for calibration writes and optional for `status`.
 
@@ -150,6 +152,86 @@ Behavior:
   Legacy `Calibration.Device.SOIL_TEMP_MOIST_VAL` is still accepted by current
   firmware for deployed files and older publishers, but new commands should use
   `SOIL_MOIST_CAL_VAL` or `soil_moisture_offset`.
+
+## Action: Derived Soil Calibration
+
+The retained `nodus/<device_id>/meta/config` companion advertises
+`soil_derived.version = 1`, the soil `sensor_id`, and a `channels` map keyed
+by the physical probe. Each channel lists `metric_prefix` and the effective
+`groups` in the field order below. A single configured probe uses an empty
+prefix, including CH2 when configured alone. The legacy flat `[Modbus]`
+configuration identifies CH1. With both probes configured, readings keep the
+`CH1 ` and `CH2 ` prefixes even if only one probe returns data in a sample.
+
+| Group | Field order in retained metadata |
+| --- | --- |
+| `SoilDeficit` | `SPD_WET_THRESHOLD_PCT`, `SPD_DRY_THRESHOLD_PCT` |
+| `SoilStress` | `SSI_TEMP_LOW_CRIT_C`, `SSI_TEMP_LOW_OK_C`, `SSI_TEMP_HIGH_OK_C`, `SSI_TEMP_HIGH_CRIT_C`, `SSI_MOISTURE_WEIGHT_PCT`, `SSI_TEMP_WEIGHT_PCT` |
+| `NPK` | `N_TARGET`, `P_TARGET`, `K_TARGET`, `SFI_MIN_WEIGHT_PCT` |
+
+The `NPK` group is available on `soil_7in1` probes. Shared tables in
+`sensor_soil.toml` supply defaults until a probe has its own override.
+
+Send one scalar setting to `nodus/<device_id>/calibration/set` with QoS 1
+and retain disabled. Supply a fresh message ID, the exact soil sensor ID and
+filename, and the physical probe in `payload.section` as `<group>.<channel>`.
+
+```json
+{
+  "message_id": "soil-save-01",
+  "action": "soil_derived_apply",
+  "sensor_id": "soil-test",
+  "name": "sensor_soil.toml",
+  "payload": {
+    "section": "SoilDeficit.CH1",
+    "key": "SPD_WET_THRESHOLD_PCT",
+    "value": 43.0
+  }
+}
+```
+
+The payload contains exactly `section`, `key`, and `value`. Use a finite JSON
+number. Nodus validates the resulting effective group using the other saved or
+inherited fields. Moisture thresholds and weights range from 0 to 100
+inclusive. Wet must exceed dry. Temperature thresholds are absolute °C and
+must obey low critical < low acceptable ≤ high acceptable < high critical.
+Stress weights must have a positive sum. NPK targets in mg/kg must be positive.
+See [configuration](configuration.md#soil-npk-targets) for the fertility formula.
+
+Nodus queues a non-retained ACK confirming receipt, persists only the requested
+key, and installs the value for the next sample. The non-retained result echoes
+`message_id`, `sensor_id`, `name`, `section`, and `key` with
+`applied: true`, `persistence_mode: "persisted"`, `updated: 1`, and an empty
+`error` on success. This also applies when the supplied value already equals
+the effective value.
+
+The correlated non-retained `meta/patch` uses `source: "calibration_set"`
+and contains one update with the saved key and effective value. Nodus refreshes
+retained `meta/config` after the command replies drain. Sensorius waits for
+the matching ACK, result, and patch before sending the next field to the same
+device. Choose an order in which each intermediate group remains valid.
+
+Rejections send `applied: false`, `updated: 0`, and an error, without a
+patch. A read-only or failed write keeps the previous settings, including
+earlier successful commands in the same sequence. Recent duplicate message IDs
+replay their original result without an additional write or patch.
+
+The local `/calibration` page shows the effective settings and latest sample.
+It validates the submitted group and saves its changed keys in one transaction.
+With MQTT connected, it publishes one patch per changed key using
+`source: "calibration_local"` and refreshes retained `meta/config`. A save in
+the web-only profile becomes visible to Sensorius at the next MQTT startup.
+
+For on-device acceptance, capture one command at a time on both supported
+boards with a broker subscriber and serial log. Verify the ACK, persisted
+result, one-key patch, refreshed retained companion, and next `/data` sample.
+Reboot and confirm the saved key and inherited values. Cover a legacy CH1
+probe, CH2 alone, and two probes including a mixed 7-in-1 and non-NPK pair.
+Exercise grouped-payload rejection, duplicates, a failed later field, and a
+read-only save. Record command timing, heap and stack headroom, and recovery
+events during repeated saves. With two 7-in-1 probes, check the retained
+configuration packet against the Pico2 W 1,460-byte guard including topic
+and MQTT overhead.
 
 ## Action: Status
 

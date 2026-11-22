@@ -169,6 +169,7 @@ class SoilNPKConfig:
     n_target: float = 20.0
     p_target: float = 30.0
     k_target: float = 70.0
+    min_weight_pct: float = 50.0
 
     def __post_init__(self):
         _raw_setattr(self, "n_target", float(self.n_target or 0.0))
@@ -365,6 +366,7 @@ class DetectedSensor:
     calibration_system: SensorCalibration = field(default_factory=SensorCalibration)
     calibration_device: SensorCalibration = field(default_factory=SensorCalibration)
     display: DisplayConfig = field(default_factory=DisplayConfig)
+    soil_derived_overrides: dict | None = None
 
     def __post_init__(self):
         family = str(self.family or "").strip().lower()

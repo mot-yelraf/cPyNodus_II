@@ -256,7 +256,77 @@ def _calibration_page(payload):
         "".join(rows)
     )
     script = """async function post(path,p){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});return r.json()}async function saveCalibration(){const u=[];document.querySelectorAll('[id^=cal_]').forEach(e=>u.push({section:'Calibration.Device',key:e.id.slice(4),value:e.value}));const r=await post('/config',{updates:u});document.getElementById('cal_status').textContent=r.success?'Calibration saved.':JSON.stringify(r)}async function restartDevice(){await post('/restart',{mode:'soft'})}"""
+    if payload.get("soil_derived"):
+        body += _soil_calibration_controls(payload["soil_derived"], payload["soil_readings"])
+        script += """
+async function saveSoil(event, form) {
+  event.preventDefault();
+  const button = form.querySelector('button');
+  const status = form.querySelector('output');
+  const values = {};
+  for (const input of form.querySelectorAll('input')) {
+    values[input.name] = input.valueAsNumber;
+  }
+  button.disabled = true;
+  try {
+    const result = await post('/config', {
+      action: 'soil_derived_apply',
+      channel: form.dataset.channel,
+      group: form.dataset.group,
+      values
+    });
+    status.textContent = result.success ? 'Saved.' : result.error;
+  } catch (error) {
+    status.textContent = 'Save request failed.';
+  } finally {
+    button.disabled = false;
+  }
+}
+"""
     return "Device Calibration", body, script
+
+
+def _soil_calibration_controls(derived, readings):
+    from cpynodus_ii.core.soil_derived import SOIL_DERIVED_GROUPS
+
+    labels = {
+        "SoilDeficit": "Soil Moisture Deficit",
+        "SoilStress": "Soil Stress Index",
+        "NPK": "Soil Fertility Index",
+    }
+    pieces = []
+    for channel, entry in derived["channels"].items():
+        prefix = entry["metric_prefix"]
+        pieces.append("<h2>{} Derived Soil Calibration</h2>".format(channel))
+        latest = []
+        for metric, unit in (
+            ("Soil Moisture", "%"), ("Soil Temperature", "°C"),
+            ("Soil Moisture Deficit", "%"), ("Soil Stress Index", "%"),
+            ("Soil Nitrogen", "mg/kg"), ("Soil Phosphorus", "mg/kg"),
+            ("Soil Potassium", "mg/kg"), ("Soil Fertility Index", "%"),
+        ):
+            value = readings.get(prefix + metric)
+            if value is not None:
+                latest.append("{} {} {}".format(metric, html_escape(value), unit))
+        pieces.append("<p>{}</p>".format(" · ".join(latest) or "No readings available."))
+        for group, values in entry["groups"].items():
+            pieces.append(
+                '<form data-channel="{}" data-group="{}" onsubmit="saveSoil(event,this)">'
+                '<fieldset><legend>{}</legend><div class="g">'.format(
+                    channel, group, labels[group]
+                )
+            )
+            for key, value in zip(SOIL_DERIVED_GROUPS[group][2], values):
+                pieces.append(
+                    '<label>{}<input type="number" name="{}" step="any" required '
+                    'value="{}"></label>'.format(key, key, html_escape(value))
+                )
+            pieces.append(
+                '</div><div class="actions"><output aria-live="polite"></output>'
+                '<button type="submit">Save {}</button></div></fieldset></form>'
+                .format(labels[group])
+            )
+    return "".join(pieces)
 
 
 def _switch_page(payload):
